@@ -1,2 +1,1 @@
-bun run src/index.ts
-
+bun run src/index.ts --edit --no-reasoning

@@ -114,20 +114,25 @@ export function digitalRain(rows = 6, cols = 78, seed = 0): string {
 }
 
 /** 启动横幅。 */
-export function banner(model: string, baseUrl: string): string {
+export function banner(model: string, baseUrl: string, providerName?: string, modelTier?: string): string {
   const title = "N E O";
   const sub = "wake up, neo... the matrix has you.";
   const host = hostOf(baseUrl);
+  const providerLine =
+    providerName === undefined
+      ? ""
+      : c.dim("  provider ") + c.accent(providerName) + (modelTier ? c.dim(` [${modelTier}]`) : "");
   const lines = [
     digitalRain(4, 76, 42),
     c.onAccent(`  ${title}  `) + c.dim("  ") + c.bright(sub),
     rule(76),
+    providerLine,
     c.dim("  model  ") + c.accent(model),
     c.dim("  endpoint ") + c.muted(host),
     c.dim("  tools  ") + c.muted("read_file write_file edit_file list_dir glob grep shell fetch"),
     rule(76),
   ];
-  return lines.join("\n");
+  return lines.filter((l) => l !== "").join("\n");
 }
 
 /** 从 URL 中提取 host，用于展示。 */

@@ -6,11 +6,17 @@
  *  - reasoning_content 不入历史，避免思维链污染后续轮次。
  */
 import { chatStream, estimateTokens, LLMError, type Message, type ToolSpec } from "./llm.ts";
-import type { Config } from "./config.ts";
+import {
+  applyTier,
+  isImplemented,
+  type Config,
+  type ModelTier,
+} from "./config.ts";
 import { Console } from "./ui/console.ts";
 import { StreamFormatter } from "./ui/stream.ts";
 import { renderMarkdown } from "./ui/render.ts";
 import { c, colorEnabled } from "./ui/theme.ts";
+import { Classifier } from "./classifier/index.ts";
 import { dispatch, toolSpecs, toolNames, type ToolCtx } from "./tools/index.ts";
 
 export type PermissionMode = "ask" | "auto-edit" | "auto-all" | "plan";
@@ -34,6 +40,8 @@ export interface AgentOptions {
   mode: PermissionMode;
   systemPrompt: string;
   onEvent?: (e: AgentEvent) => void;
+  /** 分类器。为 undefined 时不做自动分类。 */
+  classifier?: Classifier;
 }
 
 export interface TurnStats {
@@ -45,11 +53,15 @@ export interface TurnStats {
   iterations: number;
   finishReason: string | null;
   aborted: boolean;
+  /** 本轮因分类而发生的档位切换，无则 null。 */
+  tierSwitch: { from: ModelTier; to: ModelTier; reason: string; degraded?: string } | null;
 }
 
 export class Agent {
   messages: Message[] = [];
   mode: PermissionMode;
+  /** 连续工具失败计数。分类器用它判断当前档位是否撑不住。 */
+  private consecutiveFailures = 0;
   private abort: AbortController | null = null;
   private totalPrompt = 0;
   private totalCompletion = 0;
@@ -61,8 +73,16 @@ export class Agent {
     this.messages = [{ role: "system", content: opt.systemPrompt }];
   }
 
+  get classifier(): Classifier | undefined {
+    return this.opt.classifier;
+  }
+
   get stats(): TurnStats | null {
     return this.lastStats;
+  }
+
+  get toolFailureStreak(): number {
+    return this.consecutiveFailures;
   }
 
   get cumulative(): { prompt: number; completion: number; reasoning: number } {
@@ -76,6 +96,25 @@ export class Agent {
 
   cancel(): void {
     this.abort?.abort();
+  }
+
+  /**
+   * 模型 / provider 切换后同步系统提示词里的「模型」那一行。
+   * 不更新的话，模型看到的仍是启动时的旧模型名 —— 那会直接影响它的行为判断
+   * （例如是否该期待思维链先于正文出现）。
+   */
+  noteModelChange(cfg: Config): void {
+    const sys = this.messages[0];
+    if (!sys || sys.role !== "system") return;
+    const current = sys.content ?? "";
+    const line =
+      `- 模型：${cfg.model}（provider ${cfg.providerName}，档位 ${cfg.modelTier}；` +
+      `这是推理模型，你的思维链会先于正文输出，这是正常的）`;
+    if (/- 模型：[^\n]*/.test(current)) {
+      sys.content = current.replace(/- 模型：[^\n]*/, line);
+    } else {
+      sys.content = `${current}\n\n## 环境\n\n${line}\n`;
+    }
   }
 
   reset(keepSystem = true): void {
@@ -138,11 +177,59 @@ export class Agent {
     return used / this.opt.cfg.contextWindow;
   }
 
+  /**
+   * 轮次开始时的自动分类。
+   *
+   * 只在这里做，不在工具循环内部做。原因：跨 provider 的对话历史需要格式转换，
+   * 一个轮次里反复切换供应商会让转换次数和出错概率都上升。
+   * 代价是「工具报错立刻升档」做不到 —— 改为记录失败数，下轮生效。这个代价值得付。
+   */
+  private async classifyTurn(
+    userInput: string,
+  ): Promise<TurnStats["tierSwitch"]> {
+    const cls = this.opt.classifier;
+    if (!cls) return null;
+
+    const cfg = this.opt.cfg;
+    const before = cfg.modelTier;
+
+    const decision = await cls.classify(
+      userInput,
+      before,
+      this.contextUsage(),
+      this.consecutiveFailures,
+    );
+    if (!decision || decision.tier === before) {
+      // 即便没切档，失败计数也该清零 —— 下一轮是新任务
+      this.consecutiveFailures = 0;
+      return null;
+    }
+
+    const r = applyTier(cfg, decision.tier);
+    if (!r.ok) {
+      this.opt.console.warn(`分类结果无法应用：${r.error}`);
+      this.consecutiveFailures = 0;
+      return null;
+    }
+
+    this.noteModelChange(cfg);
+    this.consecutiveFailures = 0;
+    return {
+      from: before,
+      to: cfg.modelTier,
+      reason: decision.reason,
+      ...(r.degraded && r.note ? { degraded: r.note } : {}),
+    };
+  }
+
   /** 发送一条用户消息并跑完整个 agent 循环。 */
   async send(userInput: string): Promise<TurnStats> {
     const started = Date.now();
     this.abort = new AbortController();
     const signal = this.abort.signal;
+
+    // 分类在消息入队之前完成，这样本轮从一开始就用对模型
+    const tierSwitch = await this.classifyTurn(userInput);
 
     this.messages.push({ role: "user", content: userInput });
 
@@ -257,6 +344,14 @@ export class Agent {
           this.opt.console.toolResult(r.output, 16);
           this.opt.onEvent?.({ type: "tool_end", data: { name, ok: r.ok, truncated: r.truncated } });
 
+          // 连续失败计数：分类器据此判断当前档位是否撑不住。
+          // 成功即清零 —— 只关心连续失败，不累计历史失败。
+          if (r.ok) {
+            this.consecutiveFailures = 0;
+          } else {
+            this.consecutiveFailures++;
+          }
+
           this.messages.push({
             role: "tool",
             tool_call_id: call.id,
@@ -286,6 +381,7 @@ export class Agent {
               iterations,
               finishReason: "aborted",
               aborted: true,
+              tierSwitch,
             };
             return this.lastStats;
           }
@@ -315,6 +411,7 @@ export class Agent {
       iterations,
       finishReason,
       aborted: false,
+      tierSwitch,
     };
     this.opt.onEvent?.({ type: "turn_end", data: this.lastStats });
     void hadError;

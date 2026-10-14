@@ -10,7 +10,21 @@ import { existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { dirname, resolve, join } from "node:path";
 import { homedir } from "node:os";
 
-import { loadConfig, maskKey, type Config } from "./config.ts";
+import {
+  loadConfig,
+  maskKey,
+  switchProvider,
+  switchTier,
+  applyTier,
+  describeRoute,
+  isImplemented,
+  IMPLEMENTED_PROVIDER_TYPES,
+  ConfigError,
+  isModelTier,
+  MODEL_TIERS,
+  type Config,
+} from "./config.ts";
+import { Classifier, CLASSIFIER_NAMES, isClassifierName, type ClassifierName } from "./classifier/index.ts";
 import { Agent, type PermissionMode } from "./agent.ts";
 import { Console } from "./ui/console.ts";
 import { banner, c, rule } from "./ui/theme.ts";
@@ -20,7 +34,14 @@ import { listModels, type Message } from "./llm.ts";
 import { toolNames } from "./tools/index.ts";
 import { createSession, listSessions, loadSession, saveSession, type SessionMeta } from "./session.ts";
 
-const VERSION = "0.1.0";
+const VERSION = "0.0.2";
+
+/** /auto 列表里各实现的说明。 */
+const DESC: Record<string, string> = {
+  off: "关闭自动分类，始终用手动选的档位",
+  rule: "规则分类器，零延迟零成本（默认）",
+  llm: "用 classifier_model_name 判定，多一次调用",
+};
 
 /* ------------------------------------------------------------------ */
 /* 参数解析                                                            */
@@ -29,6 +50,9 @@ const VERSION = "0.1.0";
 interface Args {
   print: string | null;
   model: string | null;
+  provider: string | null;
+  tier: string | null;
+  auto: string | null;
   cwd: string | null;
   mode: PermissionMode;
   resume: string | null;
@@ -44,6 +68,9 @@ function parseArgs(argv: string[]): Args {
   const a: Args = {
     print: null,
     model: null,
+    provider: null,
+    tier: null,
+    auto: null,
     cwd: null,
     mode: "ask",
     resume: null,
@@ -72,6 +99,17 @@ function parseArgs(argv: string[]): Args {
       case "-m":
       case "--model":
         a.model = argv[++i] ?? null;
+        break;
+      case "-P":
+      case "--provider":
+        a.provider = argv[++i] ?? null;
+        break;
+      case "-t":
+      case "--tier":
+        a.tier = argv[++i] ?? null;
+        break;
+      case "--auto":
+        a.auto = argv[++i] ?? null;
         break;
       case "-C":
       case "--cwd":
@@ -113,14 +151,17 @@ ${c.accent("neo")} ${c.dim(`v${VERSION}`)} — Matrix 风格的终端编程助�
 ${c.bold("用法")}
   bun run src/index.ts                 进入交互模式
   bun run src/index.ts -p "问题"        单次执行一轮后退出
-  bun run src/index.ts -m <model>      指定模型
+  bun run src/index.ts -P <provider>   指定 provider
+  bun run src/index.ts -t <tier>       指定模型档位
   bun run src/index.ts -C <dir>        指定工作目录
   bun run src/index.ts --resume        恢复上一次会话
   bun run src/index.ts --sessions      列出会话
 
 ${c.bold("选项")}
   -p, --print <text>    单次模式
-  -m, --model <id>      覆盖模型
+  -m, --model <id>      直接指定模型 ID（绕过档位）
+  -P, --provider <name> 切换 provider
+  -t, --tier <name>     模型档位：${MODEL_TIERS.join(" / ")}
   -C, --cwd <dir>       切换工作目录
   -y, --yes             自动批准所有操作（慎用）
       --edit            自动批准文件写入，shell 仍需批准
@@ -135,14 +176,15 @@ ${c.bold("选项")}
 ${c.bold("交互命令")}
   /help            帮助            /clear       清空上下文
   /compact         压缩上下文      /cost        token 统计
-  /model [id]      查看/切模型     /tools       工具列表
-  /mode [m]        权限模式        /init        生成 AGENTS.md
-  /history         历史统计        /save [path] 导出会话
-  /sessions        历史会话        /exit        退出
+  /provider        切换 provider   /model       查看/切模型
+  /tools           工具列表        /mode        权限模式
+  /init            生成 AGENTS.md  /history     历史统计
+  /save [path]     导出会话        /sessions    历史会话
+  /exit            退出
   !<cmd>           直接执行 shell
 
 ${c.bold("环境变量")}
-  NEO_API_KEY / NEO_BASE_URL / NEO_MODEL  覆盖 settings.json
+  NEO_PROVIDER / NEO_TIER / NEO_MODEL / NEO_BASE_URL / NEO_API_KEY  覆盖 settings.json
 `;
 
 /* ------------------------------------------------------------------ */
@@ -151,6 +193,18 @@ ${c.bold("环境变量")}
 
 async function main(): Promise<number> {
   const args = parseArgs(process.argv.slice(2));
+
+  // 参数合法性先于 --help/--version 校验。
+  // 否则 `--auto bogus --version` 会打印版本后返回 0，
+  // 把一个拼写错误静默放过 —— 下次真正跑起来才报错，更难查。
+  if (args.auto && !isClassifierName(args.auto)) {
+    console.error(c.err(`✖ 未知分类器 "${args.auto}"。可选：${CLASSIFIER_NAMES.join(", ")}`));
+    return 2;
+  }
+  if (args.tier && !isModelTier(args.tier)) {
+    console.error(c.err(`✖ 未知档位 "${args.tier}"。可选：${MODEL_TIERS.join(", ")}`));
+    return 2;
+  }
 
   if (args.help) {
     console.log(HELP);
@@ -166,14 +220,60 @@ async function main(): Promise<number> {
   if (args.cwd) overrides.cwd = args.cwd;
   if (args.noReasoning) overrides.showReasoning = false;
 
-  const cfg = loadConfig(overrides);
+  // provider 与档位要在配置载入后处理：它们决定 model 的解析方式
+  let cfg: Config;
+  try {
+    cfg = loadConfig(overrides);
+
+    if (args.tier && isModelTier(args.tier)) {
+      const r = applyTier(cfg, args.tier);
+      if (!r.ok) {
+        console.error(c.err(`✖ ${r.error}`));
+        return 2;
+      }
+    }
+    if (args.provider) {
+      const r = switchProvider(cfg, args.provider);
+      if (!r.ok) {
+        console.error(c.err(`✖ ${r.error}`));
+        return 2;
+      }
+    }
+  } catch (e) {
+    if (e instanceof ConfigError) {
+      console.error(c.err(`✖ 配置错误：${e.message}`));
+      return 2;
+    }
+    throw e;
+  }
 
   if (!cfg.apiKey) {
-    console.error(c.err("✖ 未找到 API key。请设置 NEO_API_KEY 或在 settings.json 中填写 api-key。"));
+    console.error(
+      c.err(`✖ provider "${cfg.providerName}" 没有配置 api_key。`) +
+        c.dim("\n  请在 settings.json 的 providers 中填写，或设置环境变量 NEO_API_KEY。"),
+    );
     return 2;
   }
 
   const ui = new Console(cfg.theme === "matrix");
+
+  // default_provider 指向未接入的协议时，必须在启动就拦下。
+  // 放过的话会一路走到 fetch，得到的错误跟配置问题无关，排查方向完全被带偏。
+  if (!isImplemented(cfg.providerType)) {
+    const pending = cfg.providers.filter((p) => !isImplemented(p.type)).map((p) => p.name);
+    console.error(
+      c.err(`✖ default_provider "${cfg.providerName}" 使用 ${cfg.providerType} 协议，请求层尚未接入。`) +
+        c.dim(`\n  已实现的协议：${IMPLEMENTED_PROVIDER_TYPES.join(", ")}。`) +
+        c.dim("\n  可用 -P 指定其他 provider，或改 settings.json 的 default_provider。") +
+        c.dim(`\n  已配置但未接入：${pending.join(", ") || "无"}`),
+    );
+    return 2;
+  }
+
+  if (cfg.legacyFormat) {
+    ui.warn("检测到旧版扁平配置（api-key / OpenAI / model_name），已自动折算为 provider \"legacy\"。");
+    ui.line(c.dim("  新格式见 settings.example.json。"));
+  }
 
   if (args.listSessions) {
     printSessions(ui);
@@ -204,11 +304,14 @@ async function main(): Promise<number> {
     }
   }
 
+  // 分类器。默认规则版；用 --auto 可换成 off 或 llm。
+  const classifier = new Classifier(cfg, (args.auto ?? "rule") as ClassifierName);
   const agent = new Agent({
     cfg,
     console: ui,
     mode: args.mode,
     systemPrompt: buildSystemPrompt(cfg),
+    classifier,
   });
 
   if (restored && restored.length > 0) {
@@ -239,7 +342,19 @@ async function main(): Promise<number> {
     }
     const stats = await agent.send(prompt);
     persist(agent.messages, sess.meta);
-    if (!stats.aborted) ui.blank();
+    if (!stats.aborted) {
+      ui.blank();
+      if (stats.tierSwitch) {
+        const ts = stats.tierSwitch;
+        ui.line(
+          `${c.accent("⇅")} 档位 ${c.dim(ts.from)} → ${c.accent(ts.to)} ` +
+            `${c.dim(`(${cfg.providerName}/${cfg.model})`)}`,
+        );
+        ui.line(`  ${c.dim("理由:")} ${c.muted(ts.reason)}`);
+        if (ts.degraded) ui.line(`  ${c.warn("降级:")} ${c.warn(ts.degraded)}`);
+        ui.blank();
+      }
+    }
     return stats.aborted ? 130 : 0;
   }
 
@@ -252,7 +367,7 @@ async function main(): Promise<number> {
 
   // ---- 交互模式 ----
   if (process.stdin.isTTY) {
-    ui.line(banner(cfg.model, cfg.baseUrl));
+    ui.line(banner(cfg.model, cfg.baseUrl, cfg.providerName, cfg.modelTier));
   }
 
   const rl = createInterface({
@@ -308,7 +423,7 @@ async function main(): Promise<number> {
       }
 
       if (line.startsWith("/")) {
-        await handleCommand(line, agent, ui, cfg, sess.meta, shutdown);
+        await handleCommand(line, agent, ui, cfg, classifier, sess.meta, shutdown);
         continue;
       }
 
@@ -316,7 +431,19 @@ async function main(): Promise<number> {
       try {
         const stats = await agent.send(line);
         ui.blank();
-        showStats(ui, agent, stats);
+          ui.blank();
+      // 档位切换必须显式告知 —— 静默换模型会让人困惑「为什么这轮答得不一样」
+      if (stats.tierSwitch) {
+        const ts = stats.tierSwitch;
+        ui.line(
+          `${c.accent("⇅")} 档位 ${c.dim(ts.from)} → ${c.accent(ts.to)} ` +
+            `${c.dim(`(${cfg.providerName}/${cfg.model})`)}`,
+        );
+        ui.line(`  ${c.dim("理由:")} ${c.muted(ts.reason)}`);
+        if (ts.degraded) ui.line(`  ${c.warn("降级:")} ${c.warn(ts.degraded)}`);
+        ui.blank();
+      }
+      showStats(ui, agent, cfg, stats);
       } catch (e) {
         ui.error(`未捕获异常: ${(e as Error).message}`);
         if (process.env["NEO_DEBUG"]) console.error(e);
@@ -358,7 +485,7 @@ function persist(messages: Message[], meta: SessionMeta): void {
 /* 统计栏                                                              */
 /* ------------------------------------------------------------------ */
 
-function showStats(ui: Console, agent: Agent, stats: {
+function showStats(ui: Console, agent: Agent, cfg: Config, stats: {
   durationMs: number;
   promptTokens: number;
   completionTokens: number;
@@ -366,10 +493,13 @@ function showStats(ui: Console, agent: Agent, stats: {
   toolCalls: number;
   finishReason: string | null;
   aborted: boolean;
+  tierSwitch: { from: string; to: string; reason: string; degraded?: string } | null;
 }): void {
   const cum = agent.cumulative;
   const usage = agent.contextUsage();
   ui.statusBar([
+    ["model", `${cfg.providerName}/${cfg.model}`],
+    ["tier", cfg.modelTier],
     ["stop", String(stats.finishReason ?? "stop")],
     ["tok", `${stats.promptTokens}↑ ${stats.completionTokens}↓`],
     ["think", String(stats.reasoningTokens)],
@@ -390,6 +520,7 @@ async function handleCommand(
   agent: Agent,
   ui: Console,
   cfg: Config,
+  classifier: Classifier,
   meta: SessionMeta,
   shutdown: () => void,
 ): Promise<void> {
@@ -419,9 +550,13 @@ async function handleCommand(
     case "cost": {
       const cum = agent.cumulative;
       ui.blank();
+      ui.kv("provider", `${c.accent(cfg.providerName)} ${c.dim(`(${cfg.providerType})`)}`);
+      ui.kv("tier", c.muted(cfg.modelTier));
       ui.kv("model", c.accent(cfg.model));
       ui.kv("endpoint", c.muted(cfg.baseUrl));
       ui.kv("api key", c.muted(maskKey(cfg.apiKey)));
+      ui.kv("max_tokens", String(cfg.maxTokens));
+      ui.kv("temperature", String(cfg.temperature));
       ui.kv("prompt", `${cum.prompt} tokens`);
       ui.kv("completion", `${cum.completion} tokens`);
       ui.kv("thinking", `${cum.reasoning} tokens`);
@@ -431,11 +566,128 @@ async function handleCommand(
       break;
     }
 
+    case "provider": {
+      const p = cfg.providers.find((x) => x.name === cfg.providerName);
+      if (!arg) {
+        ui.blank();
+        ui.kv("当前", `${c.accent(cfg.providerName)} ${c.dim(`(${cfg.providerType})`)}`);
+        ui.blank();
+        for (const x of cfg.providers) {
+          const on = x.name === cfg.providerName;
+          const usable = isImplemented(x.type);
+          const tag = usable ? "" : c.warn(" [未接入]");
+          ui.line(
+            `${on ? c.accent("●") : c.dim("○")} ${on ? c.bright(x.name) : c.muted(x.name)} ` +
+              `${c.dim(x.type)} ${c.dim("→")} ${c.muted(x.baseUrl)}${tag}`,
+          );
+          if (on) {
+            for (const tier of MODEL_TIERS) {
+              const mark = tier === cfg.modelTier ? c.accent("▸") : " ";
+              ui.line(`    ${mark} ${c.dim(tier.padEnd(15))} ${c.muted(x.models[tier])}`);
+            }
+          }
+        }
+        ui.line(c.dim("  用 /provider <name> 切换"));
+        ui.blank();
+        break;
+      }
+      const r = switchProvider(cfg, arg);
+      if (!r.ok) {
+        ui.warn(r.error);
+        break;
+      }
+      agent.noteModelChange(cfg);
+      ui.success(`provider → ${cfg.providerName}（${cfg.providerType}）`);
+      ui.kv("model", `${cfg.model} ${c.dim(`[${cfg.modelTier}]`)}`);
+      ui.kv("endpoint", cfg.baseUrl);
+      break;
+    }
+
+    case "tier": {
+      if (!arg) {
+        ui.blank();
+        ui.kv("当前档位", c.accent(cfg.modelTier));
+        ui.kv("生效路由", `${c.accent(describeRoute(cfg, cfg.modelTier))}`);
+        ui.blank();
+        for (const tier of MODEL_TIERS) {
+          const on = tier === cfg.modelTier;
+          ui.line(
+            `${on ? c.accent("●") : c.dim("○")} ${on ? c.bright(tier.padEnd(15)) : c.muted(tier.padEnd(15))} ` +
+              `${c.dim("→")} ${c.muted(describeRoute(cfg, tier))}`,
+          );
+        }
+        ui.line(c.dim("  用 /tier <name> 切换"));
+        ui.blank();
+        break;
+      }
+      if (!isModelTier(arg)) {
+        ui.warn(`未知档位 "${arg}"。可选：${MODEL_TIERS.join(", ")}`);
+        break;
+      }
+      const r = applyTier(cfg, arg);
+      if (!r.ok) {
+        ui.warn(r.error);
+        break;
+      }
+      agent.noteModelChange(cfg);
+      if (r.degraded && r.note) ui.warn(r.note);
+      ui.success(`档位 → ${cfg.modelTier}（${cfg.providerName} / ${cfg.model}）`);
+      break;
+    }
+
+    case "auto": {
+      if (!arg) {
+        ui.blank();
+        ui.kv("自动分类", `${c.accent(classifier.name)}`);
+        ui.kv("分类器模型", `${c.muted(cfg.classifierProvider)} / ${c.muted(cfg.classifierModel)}`);
+        ui.kv("连续工具失败", String(agent.toolFailureStreak));
+        ui.blank();
+        for (const n of CLASSIFIER_NAMES) {
+          ui.line(
+            `${n === classifier.name ? c.accent("●") : c.dim("○")} ` +
+              `${n === classifier.name ? c.bright(n) : c.muted(n)} ${c.dim(DESC[n] ?? "")}`,
+          );
+        }
+        ui.line(c.dim("  用 /auto <off|rule|llm> 切换"));
+        ui.blank();
+        break;
+      }
+      if (!isClassifierName(arg)) {
+        ui.warn(`未知分类器 "${arg}"。可选：${CLASSIFIER_NAMES.join(", ")}`);
+        break;
+      }
+      try {
+        classifier.use(arg, cfg);
+        ui.success(`自动分类 → ${arg}`);
+      } catch (e) {
+        ui.warn((e as Error).message);
+      }
+      break;
+    }
+
+    case "why": {
+      ui.blank();
+      ui.kv("分类器", c.accent(classifier.name));
+      const last = classifier.lastResult;
+      if (!last) {
+        ui.info("还没有产生过判定。发一条消息后用 /why 查看。");
+      } else {
+        ui.kv("判定档位", c.accent(last.tier));
+        ui.kv("来源", c.muted(last.source));
+        ui.kv("理由", c.text(last.reason));
+      }
+      const fail = classifier.lastFailure;
+      if (fail) ui.kv("上次失败", c.err(fail));
+      ui.kv("当前生效", `${cfg.modelTier} → ${cfg.providerName} / ${cfg.model}`);
+      ui.blank();
+      break;
+    }
+
     case "model": {
       if (!arg) {
         ui.blank();
-        ui.kv("当前模型", c.accent(cfg.model));
-        ui.line(c.dim("  用 /model <id> 切换，或 neo -m <id>"));
+        ui.kv("当前模型", `${c.accent(cfg.model)} ${c.dim(`(${cfg.modelTier})`)}`);
+        ui.line(c.dim("  用 /model <id> 直接指定模型，或 /tier <档位> 切换档位"));
         ui.line(c.dim("  服务端可用模型："));
         try {
           const models = await listModels(cfg);
@@ -449,7 +701,8 @@ async function handleCommand(
         break;
       }
       cfg.model = arg;
-      ui.success(`模型已切到 ${arg}（本次会话内生效）。`);
+      agent.noteModelChange(cfg);
+      ui.success(`模型已切到 ${arg}（本次会话内生效，已绕过档位）。`);
       break;
     }
 

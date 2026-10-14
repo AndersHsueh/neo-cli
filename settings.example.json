@@ -1,10 +1,39 @@
 {
-  "api-key": "sk-REPLACE_ME",
-  "OpenAI": "https://your-gateway.example.com/v1",
-  "model_name": "your-model-id",
-  "max_tokens": 8192,
-  "temperature": 0.6,
-  "context_window": 200000,
+  "default_provider": "example",
+  "default_model_tier": "default",
+
+  "classifier_provider": "example",
+  "classifier_model_name": "your-fast-model-id",
+
+  "providers": [
+    {
+      "provider_name": "example",
+      "provider_type": "openai",
+      "base_url": "https://your-gateway.example.com/v1",
+      "api_key": "sk-REPLACE_ME",
+
+      "default_model_name": "your-model-id",
+      "deep_reasoning_model_name": "your-reasoning-model-id",
+      "balanced_model_name": "your-balanced-model-id",
+      "fast_model_name": "your-fast-model-id",
+
+      "max_tokens": 8192,
+      "temperature": 0.6,
+      "context_window": 200000
+    }
+  ],
+
+  "model_routes": {
+    "default": { "provider": "example", "model": "your-model-id" },
+    "balanced": { "provider": "example", "model": "your-balanced-model-id" },
+    "fast": { "provider": "example", "model": "your-fast-model-id" },
+    "deep_reasoning": {
+      "provider": "example",
+      "model": "your-reasoning-model-id",
+      "fallback_allowed": true
+    }
+  },
+
   "compact_threshold": 0.75,
   "max_tool_iterations": 40,
   "tool_output_limit": 30000,

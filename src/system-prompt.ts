@@ -105,7 +105,7 @@ export function buildSystemPrompt(cfg: Config): string {
 ## 环境
 
 - 工作目录：${cfg.cwd}
-- 模型：${cfg.model}（这是推理模型，你的思维链会先于正文输出，这是正常的）
+- 模型：${cfg.model}（provider ${cfg.providerName}，档位 ${cfg.modelTier}；这是推理模型，你的思维链会先于正文输出，这是正常的）
 ${treeText}
 `;
 }
