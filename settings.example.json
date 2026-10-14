@@ -1,0 +1,13 @@
+{
+  "api-key": "sk-REPLACE_ME",
+  "OpenAI": "https://your-gateway.example.com/v1",
+  "model_name": "your-model-id",
+  "max_tokens": 8192,
+  "temperature": 0.6,
+  "context_window": 200000,
+  "compact_threshold": 0.75,
+  "max_tool_iterations": 40,
+  "tool_output_limit": 30000,
+  "theme": "matrix",
+  "show_reasoning": true
+}

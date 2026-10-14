@@ -1,0 +1,12 @@
+node_modules/
+settings.json
+*.log
+.DS_Store
+.neo-session/
+
+# 构建产物
+dist/
+build/
+out/
+*.tsbuildinfo
+.cache/
