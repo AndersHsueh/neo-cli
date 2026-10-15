@@ -4,6 +4,9 @@ settings.json
 .DS_Store
 .neo-session/
 
+# git worktree 工作区（每个都是独立检出，不应被追踪）
+.worktrees/
+
 # 构建产物
 dist/
 build/
