@@ -34,7 +34,7 @@ import { listModels, type Message } from "./llm.ts";
 import { toolNames } from "./tools/index.ts";
 import { createSession, listSessions, loadSession, saveSession, type SessionMeta } from "./session.ts";
 
-const VERSION = "0.0.2";
+const VERSION = "0.0.3";
 
 /** /auto 列表里各实现的说明。 */
 const DESC: Record<string, string> = {
@@ -180,11 +180,15 @@ ${c.bold("交互命令")}
   /tools           工具列表        /mode        权限模式
   /init            生成 AGENTS.md  /history     历史统计
   /save [path]     导出会话        /sessions    历史会话
+  /tier [name]     查看/切档位      /auto [name] 切换分类器（off/rule/llm）
+  /fast /balanced /deep            档位快捷方式（等价 /tier）
+  /why             上次分类判定与理由
   /exit            退出
-  !<cmd>           直接执行 shell
+  !<cmd>           直接执行 shell（受权限模式约束）
 
 ${c.bold("环境变量")}
   NEO_PROVIDER / NEO_TIER / NEO_MODEL / NEO_BASE_URL / NEO_API_KEY  覆盖 settings.json
+  NEO_CLASSIFIER_PROVIDER / NEO_CLASSIFIER_MODEL                    指定分类器用的 provider 与模型
 `;
 
 /* ------------------------------------------------------------------ */
@@ -418,7 +422,7 @@ async function main(): Promise<number> {
       if (!line) continue;
 
       if (line.startsWith("!")) {
-        await runShell(line.slice(1), cfg, ui);
+        await runShell(line.slice(1), cfg, ui, agent.mode);
         continue;
       }
 
@@ -603,8 +607,20 @@ async function handleCommand(
       break;
     }
 
-    case "tier": {
-      if (!arg) {
+    case "tier":
+    // 档位快捷方式。存在的理由：规则分类器的 override 规则（/deep、/fast…）
+    // 匹配的是用户输入，若没有对应分支，输入会在到达分类器之前
+    // 就被 handleCommand 当成未知命令吃掉 —— 规则永远等不到它的输入。
+    case "fast":
+    case "balanced":
+    case "deep":
+    case "deep_reasoning":
+    case "default": {
+      // /deep 等价于 /tier deep_reasoning；带参数时（如 `/deep 分析这段代码`）
+      // 前半段是档位指令，其余作为普通输入继续走 agent。
+      const target = cmd === "deep" ? "deep_reasoning" : cmd;
+      // /tier 不带参数时是查询操作：列出全部档位的生效路由。
+      if (cmd === "tier" && rest.length === 0) {
         ui.blank();
         ui.kv("当前档位", c.accent(cfg.modelTier));
         ui.kv("生效路由", `${c.accent(describeRoute(cfg, cfg.modelTier))}`);
@@ -620,11 +636,11 @@ async function handleCommand(
         ui.blank();
         break;
       }
-      if (!isModelTier(arg)) {
-        ui.warn(`未知档位 "${arg}"。可选：${MODEL_TIERS.join(", ")}`);
+      if (!isModelTier(target)) {
+        ui.warn(`未知档位 "${target}"。可选：${MODEL_TIERS.join(", ")}`);
         break;
       }
-      const r = applyTier(cfg, arg);
+      const r = applyTier(cfg, target);
       if (!r.ok) {
         ui.warn(r.error);
         break;
@@ -632,6 +648,8 @@ async function handleCommand(
       agent.noteModelChange(cfg);
       if (r.degraded && r.note) ui.warn(r.note);
       ui.success(`档位 → ${cfg.modelTier}（${cfg.providerName} / ${cfg.model}）`);
+      // 剩余文本当作下一轮用户输入，不丢内容。
+      if (rest.length > 0) await agent.send(rest.join(" "));
       break;
     }
 
@@ -793,9 +811,34 @@ async function handleCommand(
 /* shell 直通                                                          */
 /* ------------------------------------------------------------------ */
 
-async function runShell(cmdline: string, cfg: Config, ui: Console): Promise<void> {
+/**
+ * `!cmd` 直通 shell。
+ *
+ * 权限必须与工具层的 approve 保持一致 —— 否则 `--plan` 只读模式下
+ * `!rm -rf` 照样执行，「只读模式」就名存实亡了。
+ * 规则：plan 一律拒；auto-all 直接放行；auto-edit 与 ask 都要审批。
+ */
+async function runShell(
+  cmdline: string,
+  cfg: Config,
+  ui: Console,
+  mode: PermissionMode,
+): Promise<void> {
   const cmd = cmdline.trim();
   if (!cmd) return;
+
+  if (mode === "plan") {
+    ui.warn(`plan 模式禁止执行 shell：${cmd}`);
+    return;
+  }
+  if (mode !== "auto-all") {
+    const ok = await ui.confirm(`shell — 执行: ${cmd}`);
+    if (!ok) {
+      ui.info("已拒绝。");
+      return;
+    }
+  }
+
   ui.blank();
   ui.line(`${c.dim("$")} ${c.text(cmd)}`);
   try {

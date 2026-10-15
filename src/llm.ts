@@ -300,24 +300,51 @@ export async function listModels(cfg: Config): Promise<string[]> {
 
 /** 粗略 token 估算：ASCII 约 4 字符/token，CJK 约 1.5 字符/token。 */
 export function estimateTokens(messages: Message[], tools: ToolSpec[] = []): number {
+  // 逐段累积「文本」与「字符数」两样东西：
+  // 字符数用于算ASCII 份额，文本本身用于数 CJK。
+  // 早期版本把字符数（number）当文本传给 countCjk，String(number) 后再数 CJK 恒为 0，
+  // 于是中文被按 4 字符/token 计，低估约 2.7 倍 —— 压缩触发点因此严重偏晚。
   let chars = 0;
+  let cjk = 0;
+  const eat = (s: string): void => {
+    chars += s.length;
+    cjk += countCjk(s);
+  };
+
   for (const m of messages) {
-    chars += (m.content ?? "").length;
-    for (const tc of m.tool_calls ?? []) chars += tc.function.arguments.length + tc.function.name.length;
+    eat(m.content ?? "");
+    for (const tc of m.tool_calls ?? []) {
+      eat(tc.function.arguments);
+      eat(tc.function.name);
+    }
   }
-  const toolChars = JSON.stringify(tools).length;
-  const total = chars + toolChars;
-  const cjk = countCjk(chars + toolChars);
-  const ascii = total - cjk;
+
+  eat(JSON.stringify(tools));
+
+  const ascii = Math.max(0, chars - cjk);
   return Math.ceil(ascii / 4 + cjk / 1.5) + messages.length * 4;
 }
 
-function countCjk(s: number | string): number {
-  const str = typeof s === "number" ? String(s) : s;
+/**
+ * 统计 CJK 字符数。
+ *
+ * 必须传字符串本身，不能传长度 —— 数字里没有 CJK，恒返回 0。
+ * 覆盖范围按 code point 判定，含中日韩表意文字与假名音标。
+ */
+function countCjk(s: string): number {
   let n = 0;
-  for (const ch of str) {
+  for (const ch of s) {
     const cp = ch.codePointAt(0) ?? 0;
-    if (cp >= 0x3000 && cp <= 0x9fff) n++;
+    // 0x3000-0x30FF：CJK 标点 / 假名；0x3400-0x9FFF：表意文字与兼容区
+    // 0xF900-0xFAFF：兼容表意文字；0xFF00-0xFF60：全角字符
+    if (
+      (cp >= 0x3000 && cp <= 0x30ff) ||
+      (cp >= 0x3400 && cp <= 0x9fff) ||
+      (cp >= 0xf900 && cp <= 0xfaff) ||
+      (cp >= 0xff00 && cp <= 0xff60)
+    ) {
+      n++;
+    }
   }
   return n;
 }

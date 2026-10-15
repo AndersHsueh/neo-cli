@@ -289,10 +289,12 @@ export function loadConfig(overrides: Partial<Config> = {}): Config {
     );
   }
 
-  // 默认 provider：settings.json > example 模板 > 列表第一项
+  // 默认 provider：环境变量 > settings.json > 列表第一项。
+  // 不从模板回落 —— 模板的 "example" 是示例名，本地 providers 里通常没有这个名字，
+  // 回落它会让 picked 静默退化成列表第一项，掩盖配置错误。
   const defProviderName = str(
     process.env["NEO_PROVIDER"],
-    str(raw["default_provider"], str(dflt["default_provider"], providers[0]?.name ?? "")),
+    str(raw["default_provider"], providers[0]?.name ?? ""),
   );
   const picked =
     providers.find((p) => p.name === defProviderName) ?? providers[0];
@@ -311,8 +313,10 @@ export function loadConfig(overrides: Partial<Config> = {}): Config {
   const gCtx = num(raw["context_window"], num(dflt["context_window"], 200_000));
 
   // ---- 档位路由 ----
-  // 未显式配置时，每个档位都指向当前 provider 的对应模型（即旧的单 provider 行为）。
-  const rawRoutes = (raw["model_routes"] ?? dflt["model_routes"]) as Raw | undefined;
+  // 未显式配置时，每个档位都指向当前 provider 的对应模型（即旧的单provider 行为）。
+  // 同样不从模板回落 model_routes：模板里的 provider 名（"example"）与本地无关，
+  // 混进来会凭空造出一条指向不存在 provider 的路由，或直接抛错。
+  const rawRoutes = raw["model_routes"] as Raw | undefined;
   const routes = {} as Record<ModelTier, RouteConfig>;
   for (const t of MODEL_TIERS) {
     const entry = rawRoutes?.[t];
@@ -346,12 +350,14 @@ export function loadConfig(overrides: Partial<Config> = {}): Config {
   }
 
   // 分类器固定绑在外部指定的 provider 上 —— 不能让它用自己的分类结果选自己
+  //
+  // 注意：classifier_provider 是「身份」字段，不能从模板回落。
+  // 模板里写的是示例值 "example"，本地配置若没写这一项就回落模板，
+  // 会得到一个不在本地 providers 列表里的名字，直接把启动卡死。
+  // 这与 providers 的处理是同一个道理：身份字段只认本地，模板只提供可调参数。
   const classifierProvider = str(
     process.env["NEO_CLASSIFIER_PROVIDER"],
-    str(
-      raw["classifier_provider"],
-      str(dflt["classifier_provider"], str(raw["default_provider"], str(dflt["default_provider"], picked.name))),
-    ),
+    str(raw["classifier_provider"], str(raw["default_provider"], picked.name)),
   );
   const clsProv = providers.find((p) => p.name === classifierProvider);
   if (!clsProv) {
@@ -360,9 +366,11 @@ export function loadConfig(overrides: Partial<Config> = {}): Config {
         `已配置：${providers.map((p) => p.name).join(", ")}`,
     );
   }
+  // 同理，模型名也不从模板取 —— 模板值是 "your-fast-model-id" 这种占位符，
+  // 落到真实请求里就是一次必然失败的调用。缺省用该 provider 的 fast 模型。
   const classifierModel = str(
     process.env["NEO_CLASSIFIER_MODEL"],
-    str(raw["classifier_model_name"], str(dflt["classifier_model_name"], clsProv.models["fast"])),
+    str(raw["classifier_model_name"], clsProv.models["fast"]),
   );
 
   const cfg: Config = {

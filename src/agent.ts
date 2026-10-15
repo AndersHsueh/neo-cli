@@ -254,12 +254,18 @@ export class Agent {
       }
 
       // ---- 发起一次流式请求 ----
+      // TTY 下逐 chunk 流式；非 TTY（管道 / CI / 重定向）改为块级：
+      // 逐 chunk 写进管道只会得到带控制符的碎片，且没有任何阅读价值。
+      // 做法是照常接收增量，但先累积，等本轮结束后一次性渲染。
+      const interactive = process.stdout.isTTY === true;
       const reasoningOpen = { open: false };
       const answerFmt = new StreamFormatter({ colorize: colorEnabled() });
       let answerOpen = false;
+      let blockReasoning = "";
+      let blockAnswer = "";
 
       try {
-        this.opt.console.startSpinner("连接中…");
+        if (interactive) this.opt.console.startSpinner("连接中…");
 
         const res = await chatStream(
           this.opt.cfg,
@@ -268,6 +274,11 @@ export class Agent {
           {
             onReasoning: (d) => {
               if (!this.opt.cfg.showReasoning) return;
+              this.opt.onEvent?.({ type: "reasoning", data: d });
+              if (!interactive) {
+                blockReasoning += d;
+                return;
+              }
               this.opt.console.stopSpinner();
               if (answerOpen) return; // 正文已开始，思维链增量忽略
               if (!reasoningOpen.open) {
@@ -275,9 +286,13 @@ export class Agent {
                 reasoningOpen.open = true;
               }
               this.opt.console.writeStream(d, "reasoning");
-              this.opt.onEvent?.({ type: "reasoning", data: d });
             },
             onContent: (d) => {
+              this.opt.onEvent?.({ type: "text", data: d });
+              if (!interactive) {
+                blockAnswer += d;
+                return;
+              }
               this.opt.console.stopSpinner();
               if (reasoningOpen.open) {
                 this.opt.console.endStream("reasoning");
@@ -288,20 +303,31 @@ export class Agent {
                 answerOpen = true;
               }
               answerFmt.write(d);
-              this.opt.onEvent?.({ type: "text", data: d });
             },
           },
           signal,
         );
 
-        this.opt.console.stopSpinner();
-        if (reasoningOpen.open) {
-          this.opt.console.endStream("reasoning");
-          reasoningOpen.open = false;
-        }
-        if (answerOpen) {
-          answerFmt.finish();
-          answerOpen = false;
+        if (!interactive) {
+          // 块级：思维链与正文各渲染一次
+          if (blockReasoning.trim() && this.opt.cfg.showReasoning) {
+            this.opt.console.line(c.dim("┌ think"));
+            this.opt.console.line(c.dim(this.opt.console.indent(blockReasoning.trim())));
+            this.opt.console.line(c.dim("└─"));
+          }
+          if (blockAnswer.trim()) {
+            this.opt.console.line(renderMarkdown(blockAnswer.trim(), this.opt.console.width));
+          }
+        } else {
+          this.opt.console.stopSpinner();
+          if (reasoningOpen.open) {
+            this.opt.console.endStream("reasoning");
+            reasoningOpen.open = false;
+          }
+          if (answerOpen) {
+            answerFmt.finish();
+            answerOpen = false;
+          }
         }
 
         if (res.usage) {
@@ -361,6 +387,18 @@ export class Agent {
         }
       } catch (e) {
         this.opt.console.stopSpinner();
+        // 块级模式下，出错也要把已收到的内容吐出来 ——
+        // 直接丢掉等于让用户误以为模型什么都没说。
+        if (!interactive) {
+          if (blockReasoning.trim() && this.opt.cfg.showReasoning) {
+            this.opt.console.line(c.dim("┌ think"));
+            this.opt.console.line(c.dim(this.opt.console.indent(blockReasoning.trim())));
+            this.opt.console.line(c.dim("└─"));
+          }
+          if (blockAnswer.trim()) {
+            this.opt.console.line(renderMarkdown(blockAnswer.trim(), this.opt.console.width));
+          }
+        }
         if (answerOpen) {
           answerFmt.finish();
           answerOpen = false;

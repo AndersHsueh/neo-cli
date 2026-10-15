@@ -41,8 +41,6 @@ export class LlmClassifier implements TierClassifier {
 
   constructor(
     private readonly cfg: Config,
-    /** 判定失败时的兜底档位。取当前档，避免失败反而把请求降级。 */
-    private readonly fallbackTo: ModelTier = "default",
     /**
      * 判定超时。分类器不值得等太久，超时就用兜底。
      */
@@ -53,11 +51,7 @@ export class LlmClassifier implements TierClassifier {
     // 不可用的档位先从候选里剔除，避免分类器推荐一个跑不通的档
     const candidates = TIER_ORDER.filter(ctx.tierAvailable);
     if (candidates.length === 0) {
-      return {
-        tier: ctx.currentTier,
-        reason: "没有可用档位，维持当前",
-        source: "fallback",
-      };
+      return this.hold(ctx, "没有可用档位，维持当前");
     }
 
     const hint = this.buildHint(ctx);
@@ -95,20 +89,19 @@ export class LlmClassifier implements TierClassifier {
           source: "llm",
         };
       }
-      return {
-        tier: this.fallbackTo,
-        reason: `LLM 输出无法解析: ${res.content.trim().slice(0, 40) || "(空)"}`,
-        source: "fallback",
-      };
+      return this.hold(ctx, `LLM 输出无法解析: ${res.content.trim().slice(0, 40) || "(空)"}`);
     } catch (e) {
-      // 分类失败绝不能让整个请求失败 —— 这是个优化层，不是必需品
+      // 分类失败绝不能让整个请求失败 —— 这是个优化层，不是必需品。
+      // 兜底必须是「当前档」而不是某个固定档：正在 deep_reasoning 时判错，
+      // 掉回 default 等于用更笨的模型硬扛难题，比不分类更糟。
       const msg = e instanceof LLMError ? e.message : (e as Error).message;
-      return {
-        tier: this.fallbackTo,
-        reason: `LLM 分类失败，回落兜底: ${msg.slice(0, 60)}`,
-        source: "fallback",
-      };
+      return this.hold(ctx, `LLM 分类失败，回落当前档: ${msg.slice(0, 60)}`);
     }
+  }
+
+  /** 兜底：留在当前档位。任何失败路径都走这里，绝不主动往下掉。 */
+  private hold(ctx: ClassifyContext, why: string): ClassifyResult {
+    return { tier: ctx.currentTier, reason: why, source: "fallback" };
   }
 
   /**

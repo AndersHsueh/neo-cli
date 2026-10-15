@@ -155,7 +155,18 @@ provider 里的 `*_model_name` 表示「**这个 provider** 在各档位上用�
 /mode      权限模式        /init      生成 AGENTS.md
 /history   历史统计        /save      导出会话
 /sessions  历史会话        /exit      退出
-!<cmd>     直接执行 shell
+/fast /balanced /deep /deep_reasoning /default   档位快捷方式（等价 /tier）
+!<cmd>     直接执行 shell（受权限模式约束，plan 模式下拒绝）
+```
+
+`!cmd` 与模型工具调用走**同一套权限判定**：`--plan` 下两者都会被拒绝，
+`auto-all` 下两者都直接放行，`ask` / `auto-edit` 下都要审批。
+
+## 开发
+
+```bash
+bun run check   # tsc --noEmit，strict + noUncheckedIndexedAccess
+bun test        # 单元测试，46 个用例
 ```
 
 ## 分类器

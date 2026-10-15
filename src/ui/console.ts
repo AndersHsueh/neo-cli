@@ -27,6 +27,19 @@ export class Console {
     return typeof n === "number" && n > 20 ? n : 100;
   }
 
+  /** 终端宽度，供块级渲染用。非 TTY 与异常宽度下统一回落100。 */
+  get width(): number {
+    return this.cols();
+  }
+
+  /** 统一缩进，避免各处自己拼前缀。 */
+  indent(body: string, prefix = "│ "): string {
+    return body
+      .split("\n")
+      .map((l) => prefix + l)
+      .join("\n");
+  }
+
   constructor(private readonly useMatrixSpinner = true) {}
 
   // ---------- 基础写入 ----------
