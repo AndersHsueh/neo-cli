@@ -1,0 +1,215 @@
+bun test v1.3.13 (bf2e2cec)
+
+tests/symlink-traversal.test.ts:
+107 | 
+108 |     const r = await dispatch("glob", JSON.stringify({ pattern: "skills/**/*.md", path: cwd }), ctx);
+109 | 
+110 |     expect(r.ok).toBe(true);
+111 |     // 修复前：glob 返回「无匹配文件: skills/**/*.md」，此处必失败
+112 |     expect(r.output).not.toContain("无匹配文件");
+                               ^
+error: expect(received).not.toContain(expected)
+
+Expected to not contain: "无匹配文件"
+Received: "无匹配文件: skills/**/*.md"
+
+      at <anonymous> (/Users/xueyuheng/research/000-alice-new/neo/.worktrees/feature-skills/tests/symlink-traversal.test.ts:112:26)
+(fail) F1 glob 能穿过软链 > glob "skills/**/*.md" 从 cwd 能列出软链内的 SKILL.md [1.08ms]
+119 | 
+120 |     const r = await dispatch("glob", JSON.stringify({ pattern: "**/*.md", path: cwd }), ctx);
+121 | 
+122 |     expect(r.ok).toBe(true);
+123 |     const hits = r.output.split("\n").filter((l) => l.includes("skills/foo/SKILL.md"));
+124 |     expect(hits.length).toBe(1);
+                              ^
+error: expect(received).toBe(expected)
+
+Expected: 1
+Received: 0
+
+      at <anonymous> (/Users/xueyuheng/research/000-alice-new/neo/.worktrees/feature-skills/tests/symlink-traversal.test.ts:124:25)
+(fail) F1 glob 能穿过软链 > glob 不因软链产生重复条目（同一文件只列一次） [0.98ms]
+137 | 
+138 |     expect(r.ok).toBe(true);
+139 |     // 修复前：「无匹配。扫描 0 个文件」，此处必失败
+140 |     expect(r.output).not.toContain("无匹配");
+141 |     expect(r.output).toContain(`SKILL.md:${NEEDLE_LINE}:`);
+142 |     expect(r.output).toContain(`skills/foo/SKILL.md:${NEEDLE_LINE}:`);
+                           ^
+error: expect(received).toContain(expected)
+
+Expected to contain: "skills/foo/SKILL.md:8:"
+Received: "1 处匹配（扫描 1 文件）:\nreal/pdf/SKILL.md:8: SYMNEEDLE-7f3a"
+
+      at <anonymous> (/Users/xueyuheng/research/000-alice-new/neo/.worktrees/feature-skills/tests/symlink-traversal.test.ts:142:22)
+(fail) F2 grep 能穿过软链 > grep 从 cwd 递归能命中软链内文件并给出行号 [0.63ms]
+146 |     const { cwd, ctx } = layout();
+147 | 
+148 |     const r = await dispatch("grep", JSON.stringify({ pattern: NEEDLE, path: cwd }), ctx);
+149 | 
+150 |     expect(r.ok).toBe(true);
+151 |     expect(r.output).toContain("skills/foo/inner.md");
+                           ^
+error: expect(received).toContain(expected)
+
+Expected to contain: "skills/foo/inner.md"
+Received: "1 处匹配（扫描 1 文件）:\nreal/pdf/SKILL.md:8: SYMNEEDLE-7f3a"
+
+      at <anonymous> (/Users/xueyuheng/research/000-alice-new/neo/.worktrees/feature-skills/tests/symlink-traversal.test.ts:151:22)
+(fail) F2 grep 能穿过软链 > grep 能扫到软链内的非 SKILL.md 附件 [0.79ms]
+161 |     const { cwd, ctx } = layout();
+162 | 
+163 |     const r = await dispatch("list_dir", JSON.stringify({ path: join(cwd, "skills") }), ctx);
+164 | 
+165 |     expect(r.ok).toBe(true);
+166 |     expect(r.output).toContain("foo/");
+                           ^
+error: expect(received).toContain(expected)
+
+Expected to contain: "foo/"
+Received: "目录 /private/var/folders/dz/dyhjdr_d5rzdpvwwt7cnrk780000gn/T/neo-symlink-test-7sNipq/t4/cwd/skills\nfoo  (128B, 2026-10-15 07:05)"
+
+      at <anonymous> (/Users/xueyuheng/research/000-alice-new/neo/.worktrees/feature-skills/tests/symlink-traversal.test.ts:166:22)
+(fail) F3/F4 list_dir 把软链当目录 > F3 list_dir skills：软链显示为 foo/（带尾斜杠） [0.82ms]
+176 |       JSON.stringify({ path: join(cwd, "skills"), recursive: true }),
+177 |       ctx,
+178 |     );
+179 | 
+180 |     expect(r.ok).toBe(true);
+181 |     expect(r.output).toContain("foo/");
+                           ^
+error: expect(received).toContain(expected)
+
+Expected to contain: "foo/"
+Received: "目录 /private/var/folders/dz/dyhjdr_d5rzdpvwwt7cnrk780000gn/T/neo-symlink-test-7sNipq/t5/cwd/skills\nfoo  (128B, 2026-10-15 07:05)"
+
+      at <anonymous> (/Users/xueyuheng/research/000-alice-new/neo/.worktrees/feature-skills/tests/symlink-traversal.test.ts:181:22)
+(fail) F3/F4 list_dir 把软链当目录 > F4 list_dir skills recursive：能列出软链内文件 [0.56ms]
+(pass) F5 真实目录遍历不被修复破坏 > glob "real/**/*.md" 对真目录同样有效 [0.59ms]
+(pass) F5 真实目录遍历不被修复破坏 > grep 对真目录同样命中并给出行号 [0.54ms]
+(pass) F5 真实目录遍历不被修复破坏 > list_dir 真目录仍按目录呈现并可递归 [0.59ms]
+236 |     const { cwd, store, cfg } = layout();
+237 | 
+238 |     const prompt = buildSystemPrompt(cfg);
+239 | 
+240 |     // 修复前：树里是 `skills/foo`（无尾斜杠），且不会列出其内容
+241 |     expect(prompt).toContain("skills/foo/");
+                         ^
+error: expect(received).toContain(expected)
+
+Expected to contain: "skills/foo/"
+Received: "你是 neo，一个运行在终端里的编程助手。\n\n非常乐于帮助用户,和关心用户的福祉. 诚实,有用,无害 是你的基础特质. \n你可以调用工具来读写文件、搜索代码、执行命令、访问网络。\n当前的用户是你的老友及同事,所以你有自主性与拒绝权。\n\n## 行为准则\n\n1. **先看后改。** 修改任何文件前，先用 read_file 读取相关片段确认真实内容。不要凭猜测写代码。\n2. **结论先行。** 回答时第一句给结论，再给依据。\n3. **不确定就说不确定。** 数字、版本号、API 签名、价格、日期等时效信息，要通过 web_fetch 或 shell 实际查询后再给。查不到就明说「无法验证」，不必去编造答案。\n4. **诚实报告失败。** 工具报错时如实说明失败原因和影响面，不要要假装成功。没有实际运行测试时，不说「测试通过」。\n5. **最小改动。** 优先编辑而不是新建。改动范围贴合用户请求，不要顺手重构无关代码。\n6. **破坏性操作必须说明。** 删除文件、覆盖已有内容、执行不明确的 shell 命令前，先用一句话说明后果。\n\n## 工具\n\n可用工具：read_file, write_file, edit_file, list_dir, glob, grep, shell, web_fetch\n\n- read_file：读文件，带行号。文件大时用 offset/limit 分段读。\n- write_file：写文件，覆盖已有内容。慎用。\n- edit_file：精确替换字符串，old_string 必须唯一。\n- list_dir / glob / grep：探索代码库。找东西用 grep，找文件用 glob。\n- shell：执行命令。安装依赖、跑测试、git 操作走这里。\n- web_fetch：抓网页转纯文本，查文档用。\n\n## 思考方式\n - 1 提问,  我原来的答案是什么\n - 2 定义, 这个词到底指什么\n - 3 找根据, 凭什么这样说\n - 4 检验, 尝试找出反例，并看后果\n - 5 换位, 换个视角会看到什么\n\n## 输出内容偏好\n- 能适应各种不同习惯以及眼前的对话用户，而不逢迎对方。\"技术上硬核、态度上配合\"\n- \n\n## 输出格式\n\n- 用 Markdown。代码块标语言。\n- 不要复述用户已经知道的内容, 尽量使用 ASD-STE100 规范输出回复。\n- 不要在回答末尾加「还有什么可以帮你」这类收尾。\n- 引用代码时用 `文件路径:行号` 的形式。\n\n## 环境\n\n- 工作目录：/private/var/folders/dz/dyhjdr_d5rzdpvwwt7cnrk780000gn/T/neo-symlink-test-7sNipq/t9/cwd\n- 模型：undefined（provider undefined，档位 undefined；这是推理模型，你的思维链会先于正文输出，这是正常的）\n\n工作目录结构（最多两层）：\n  real/\n  real/pdf/\n  real/pdf/SKILL.md\n  skills/\n  skills/foo\n"
+
+      at <anonymous> (/Users/xueyuheng/research/000-alice-new/neo/.worktrees/feature-skills/tests/symlink-traversal.test.ts:241:20)
+(fail) F6 system prompt 工作目录树把软链显示为目录 > 工作目录树含 skills/foo/ 且能递归到 skills/foo/SKILL.md [0.93ms]
+
+tests/skills.test.ts:
+
+# Unhandled error between tests
+-------------------------------
+error: Cannot find module '../src/skills.ts' from '/Users/xueyuheng/research/000-alice-new/neo/.worktrees/feature-skills/tests/skills.test.ts'
+-------------------------------
+
+
+tests/core.test.ts:
+59 |     ["web_fetch", false],
+60 |     ["use_skill", false],
+61 |   ] as const;
+62 | 
+63 |   test("恰好 9 个工具，名称与顺序符合 PRD 2.1", () => {
+64 |     expect(toolNames()).toEqual(EXPECTED.map(([n]) => n));
+                             ^
+error: expect(received).toEqual(expected)
+
+  [
+    "read_file",
+    "write_file",
+    "edit_file",
+    "list_dir",
+    "glob",
+    "grep",
+    "shell",
+    "web_fetch",
+-   "use_skill",
+  ]
+
+- Expected  - 1
++ Received  + 0
+
+      at <anonymous> (/Users/xueyuheng/research/000-alice-new/neo/.worktrees/feature-skills/tests/core.test.ts:64:25)
+(fail) F1 工具集完整性 > 恰好 9 个工具，名称与顺序符合 PRD 2.1 [0.43ms]
+65 |   });
+66 | 
+67 |   test("敏感标记与 PRD 2.1 表格一致", () => {
+68 |     const actual = new Map(TOOLS.map((t) => [t.spec.function.name, t.sensitive]));
+69 |     for (const [name, sensitive] of EXPECTED) {
+70 |       expect(`${name}=${actual.get(name)}`).toBe(`${name}=${sensitive}`);
+                                                 ^
+error: expect(received).toBe(expected)
+
+Expected: "use_skill=false"
+Received: "use_skill=undefined"
+
+      at <anonymous> (/Users/xueyuheng/research/000-alice-new/neo/.worktrees/feature-skills/tests/core.test.ts:70:45)
+(fail) F1 工具集完整性 > 敏感标记与 PRD 2.1 表格一致 [0.10ms]
+(pass) F1 工具集完整性 > 每个 spec 都是合法的 function 定义且有 required [0.05ms]
+(pass) F1 工具集完整性 > 工具名唯一 [0.02ms]
+(pass) read_file > 带行号输出，offset/limit 生效 [0.28ms]
+(pass) read_file > 文件不存在时报错并给出路径 [0.05ms]
+(pass) read_file > 非法 JSON 参数不抛异常 [0.11ms]
+(pass) read_file > 未知工具返回可用清单 [0.03ms]
+(pass) edit_file 唯一性校验（PRD S4） > old_string 出现多次时报错 [0.23ms]
+(pass) edit_file 唯一性校验（PRD S4） > replace_all 可全量替换 [0.21ms]
+(pass) edit_file 唯一性校验（PRD S4） > 找不到 old_string 时报错 [0.11ms]
+(pass) edit_file 唯一性校验（PRD S4） > 审批拒绝时不写文件 [0.12ms]
+(pass) write_file > 自动创建父目录 [0.27ms]
+(pass) write_file > 审批拒绝时不创建文件 [0.04ms]
+(pass) glob / grep > globToRegExp 支持 ** 通配
+(pass) glob / grep > globToRegExp 支持 {a,b} 与 ? [0.10ms]
+(pass) glob / grep > glob 找到文件 [0.34ms]
+(pass) glob / grep > grep 命中并给出行号 [0.24ms]
+(pass) glob / grep > grep 支持单文件路径 [0.14ms]
+(pass) glob / grep > grep 非法正则给出可读错误 [0.10ms]
+(pass) glob / grep > grep 跳过二进制文件（PRD 6.1） [0.22ms]
+(pass) shell > 执行命令并返回退出码 [31.68ms]
+(pass) shell > 非零退出码被如实报告 [27.91ms]
+(pass) shell > 审批拒绝时不执行 [0.16ms]
+(pass) shell > 空命令被拒 [0.03ms]
+(pass) web_fetch > 非 http(s) 协议被拒 [0.16ms]
+(pass) htmlToText > 剥离 script/style 与标签 [0.01ms]
+(pass) htmlToText > 解码实体 [0.01ms]
+(pass) estimateTokens > ASCII 按 4 字符/token [0.19ms]
+(pass) estimateTokens > CJK 按 1.5 字符/token，不再退化成 ASCII 速率 [0.11ms]
+(pass) estimateTokens > 中英混合按各自权重累加
+(pass) estimateTokens > 工具 spec 也计入 token
+(pass) estimateTokens > 空历史不崩溃 [0.18ms]
+(pass) RuleClassifier > override：/deep 显式升档（PRD 2.3 最高优先级） [0.10ms]
+(pass) RuleClassifier > override：/fast 显式降档 [0.01ms]
+(pass) RuleClassifier > PRD 3.4 三个示例场景判定正确 [0.18ms]
+(pass) RuleClassifier > deep_strong 优先级高于 fast_signal [0.03ms]
+(pass) RuleClassifier > tool_failure：连续失败升档
+(pass) RuleClassifier > context_pressure：占用率高时升档
+(pass) RuleClassifier > 无规则命中时维持当前档且 source=fallback
+(pass) RuleClassifier > 每条判定都有可读理由（/why 的前提）
+(pass) RuleClassifier > PRD R5：目标档不可用时只向上找，绝不向下
+(pass) RuleClassifier > 长输入触发 long_input [0.19ms]
+(pass) LlmClassifier 兜底不降档 > LLM 失败时维持当前档，不掉到 default [0.99ms]
+(pass) LlmClassifier 兜底不降档 > 无可用候选档时维持当前档
+(pass) LlmClassifier 兜底不降档 > 分类失败不抛出异常（异常已被吞掉） [0.20ms]
+
+10 tests failed:
+(fail) F1 glob 能穿过软链 > glob "skills/**/*.md" 从 cwd 能列出软链内的 SKILL.md [1.08ms]
+(fail) F1 glob 能穿过软链 > glob 不因软链产生重复条目（同一文件只列一次） [0.98ms]
+(fail) F2 grep 能穿过软链 > grep 从 cwd 递归能命中软链内文件并给出行号 [0.63ms]
+(fail) F2 grep 能穿过软链 > grep 能扫到软链内的非 SKILL.md 附件 [0.79ms]
+(fail) F3/F4 list_dir 把软链当目录 > F3 list_dir skills：软链显示为 foo/（带尾斜杠） [0.82ms]
+(fail) F3/F4 list_dir 把软链当目录 > F4 list_dir skills recursive：能列出软链内文件 [0.56ms]
+(fail) F6 system prompt 工作目录树把软链显示为目录 > 工作目录树含 skills/foo/ 且能递归到 skills/foo/SKILL.md [0.93ms]
+(fail) F1 工具集完整性 > 恰好 9 个工具，名称与顺序符合 PRD 2.1 [0.43ms]
+(fail) F1 工具集完整性 > 敏感标记与 PRD 2.1 表格一致 [0.10ms]
+
+ 47 pass
+ 10 fail
+ 1 error
+ 168 expect() calls
+Ran 57 tests across 3 files. [90.00ms]

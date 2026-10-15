@@ -1,0 +1,2 @@
+tests/skills.test.ts(32,81): error TS2307: Cannot find module '../src/skills.ts' or its corresponding type declarations.
+tests/skills.test.ts(33,32): error TS2307: Cannot find module '../src/skills.ts' or its corresponding type declarations.

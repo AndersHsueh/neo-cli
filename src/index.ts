@@ -32,6 +32,7 @@ import { renderMarkdown } from "./ui/render.ts";
 import { buildMemoryFile, buildSystemPrompt } from "./system-prompt.ts";
 import { listModels, type Message } from "./llm.ts";
 import { toolNames } from "./tools/index.ts";
+import { discoverSkills, isValidSkillName, formatSkillLine, normalizeDescription } from "./skills.ts";
 import { createSession, listSessions, loadSession, saveSession, type SessionMeta } from "./session.ts";
 
 const VERSION = "0.0.3";
@@ -178,6 +179,7 @@ ${c.bold("交互命令")}
   /compact         压缩上下文      /cost        token 统计
   /provider        切换 provider   /model       查看/切模型
   /tools           工具列表        /mode        权限模式
+  /skills          列出可用技能    /skills <名>  查看技能详情
   /init            生成 AGENTS.md  /history     历史统计
   /save [path]     导出会话        /sessions    历史会话
   /tier [name]     查看/切档位      /auto [name] 切换分类器（off/rule/llm）
@@ -730,6 +732,69 @@ async function handleCommand(
       for (const t of toolNames()) ui.line(`  ${c.tool("⚡")} ${c.text(t)}`);
       ui.blank();
       break;
+
+    case "skills": {
+      const skills = discoverSkills(cfg);
+      if (arg) {
+        // 约束 16：这是给**人**看的只读诊断入口 —— 不加载全文，也不建软链。
+        // 软链只由 use_skill 创建（那是模型行为，且会在输出里告知）。
+        // 所以这里只从已发现的索引里查，不能走 resolveSkill —— 它会建软链，
+        // 让一条纯查看命令悄悄改动了用户的项目目录。
+        //
+        // 但名称白名单仍要先过：arg 来自用户输入，`../etc` 这类必须报「非法」而非
+        // 混入下面的 find() 变成一句语义错误的「不存在」—— 否则路径穿越的形态被掩盖了。
+        if (!isValidSkillName(arg)) {
+          ui.error(`技能名非法: ${arg}`);
+          if (skills.length > 0) ui.info(`可用技能：${skills.map((s) => s.name).join(", ")}`);
+          break;
+        }
+        const hit = skills.find((s) => s.name === arg);
+        if (!hit) {
+          ui.error(`技能不存在: ${arg}`);
+          if (skills.length > 0) ui.info(`可用技能：${skills.map((s) => s.name).join(", ")}`);
+          break;
+        }
+        ui.blank();
+        ui.kv("名称", hit.name);
+        // 用与索引/list 完全相同的规范化函数，保证三处 description 逐字一致
+        ui.kv("说明", normalizeDescription(hit.description, hit.name));
+        ui.kv("来源", hit.source === "project" ? "项目" : "全局");
+        ui.kv("路径", hit.absPath);
+        let first = "";
+        try {
+          first = (readFileSync(join(hit.absPath, "SKILL.md"), "utf8").split("\n") ?? [])
+            .find((l) => l.trim().startsWith("# "))
+            ?.trim() ?? "";
+        } catch {
+          /* ignore */
+        }
+        if (first) ui.kv("标题", first);
+        ui.blank();
+        ui.info("完整正文请让模型调用 use_skill。");
+        break;
+      }
+
+      ui.blank();
+      if (skills.length === 0) {
+        ui.info(`没有可用技能。把技能目录放到 ${join(cfg.cwd, "skills")} 或全局技能库。`);
+        ui.blank();
+        break;
+      }
+      ui.kv("可用技能", String(skills.length));
+      for (const s of skills) {
+        const dot = c.tool("●");
+        // 形态与 system prompt 索引一致（formatSkillLine 保证 description 截断口径统一），
+        // 但**保留来源与软链标注** —— 它们是 name/description 之外的信息，
+        // 去掉会让用户看不出某技能是项目私有还是全局、是否为软链产物。
+        // 统一的是「技能行里name:description 的写法」，不是「只能有这两项」。
+        const origin = `${s.source === "project" ? "项目" : "全局"}${s.linked ? " · 软链" : ""}`;
+        ui.line(`  ${dot} ${formatSkillLine(s.name, s.description)}${origin ? `　[${origin}]` : ""}`);
+      }
+      ui.blank();
+      ui.info("用 /skills <名称> 查看详情，或让模型按需 use_skill。");
+      ui.blank();
+      break;
+    }
 
     case "mode": {
       const modes: Array<[string, string]> = [

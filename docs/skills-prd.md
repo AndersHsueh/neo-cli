@@ -2,13 +2,35 @@
 
 > 版本：v0.1.0 - feature/技能管理
 > 文档类型：需求规格说明书（Product Requirements Document）
-> 编写依据：`neo/` 目录全部源码（6866 行，含 `tests/core.test.ts`）+ 5 组symlink 实测探针 + Anthropic Agent Skills Spec 官方格式核实
+> 编写依据：`neo/` 全部源码 + 5 组 symlink 实测探针 + Anthropic Agent Skills Spec 官方格式核实
+> **行数不标注** —— 随改动变化，无约束力。真正有约束力的是 §12 附录 B 的逐文件定位
+> （已逐条核对源码，除 `agent.ts:73` 实际在 72 行外全部准确）。
 > 适用范围：给**开发 Agent**（按 §6 逐条实现）与**测试 Agent**（按 §7 编写用例）执行
 > 基线状态：`bunx tsc --noEmit` 零错误；`bun test` 46 pass / 0 fail
 > 日期：2026-10-15
 >
-> **v0.1.0 变更**：§10.1 原为「待决策项」，经mock LLM 端到端实测（`-p` + `--resume` 全流程）后关闭，
-> 结论为 **v0.1.0 不做会话内索引刷新**。§10 风险表与§13 未验证项已同步更新。
+> ## 勘误（实施期间发现，已全部实测复核）
+>
+> 本文档初稿有若干与源码不符之处，实现前已逐条修正并标注「2026-10-15 修正」。**实施期间又发现四处**：
+>
+> | # | 位置 | 初稿 | 实测 | 处置 |
+> |---|---|---|---|---|
+> | E1 | §5.2 | 「四处统一加 `\|\| e.isSymbolicLink()`」 | 软链到**文件**时该条件为 true，会被当目录走进 walk，`readdirSync` 抛错被 catch 吞掉 → **该文件永远匹配不到，比修复前更差** | 改为 `isRealDir(full, e)`，symlink 时用 `statSync` 跟随判断目标类型 |
+> | E2 | §6.4 | 守卫用模块级常量 `join(homedir(), ".neo", "skills")` | 测试无法注入沙箱 store → **会真写`~/.neo/skills`（真实资产）** | 改为 `insideGlobalSkills(ctx, p)` 读 `ctx.cfg.skillsStore` |
+> | E3 | 约束 3 | 未提 `mkdirSync` | `symlinkSync` 父目录不存在时抛 **ENOENT**。B 方案下 `skills/` 初始为空，**第一次建软链必崩** | 补：先 `mkdirSync` 再建链 |
+> | E4 | 约束 3 | 用 `existsSync` 判断存在性 | 对断链软链返回 **false**（误判为不存在），再 `symlinkSync` 抛 **EEXIST** | 改用 `lstatSync`（不跟随软链）判断 |
+> | E5 | §6.5 | 「.gitignore 当前 13 行」+ 完整文件内容 | 实际 15 行且含 `.worktrees/` 规则；整份覆盖会让 **worktree 变成被追踪目录**（本worktree 自身在 `.worktrees/` 下） | 改为**增量追加** |
+> | E6 | §9.4 | token 875→954（+79） | 实测 **875→968（+93）**（三方算法口径不同，见下） | 改为相对增量验收 |
+> | E7 | §7 脚手架 | `import { ..., globTool, grepTool }` | 两者**均未 export**，照抄报 TS2305 | F 组一律用 `dispatch("glob"/"grep")` |
+> | E8 | §7.1 | 「61 个用例」 | 逐行数为 **57 条**（A6+B7+C10+D4+E12+F5+G6+H4+I3） | 以 57 为基数，另加裁决补充用例 |
+>
+> **关于 token 数字**：PRD 初稿（875→954）、产品专员（901→997）、实现方（901→997）、我实测（875→968）
+> 四方口径不一致。根因是各自用的估算实现有细微差别。**结论：微算不可靠，验收改为相对增量口径。**
+> 可确认的只有「净增约 90~100 tokens，占 200k 上下文的 0.05%」。
+>
+> **关于 `Config.skillsStore`**（曾因PRD 四处口径不一而阻塞）：现为**硬规格**——
+> `skills.ts` 与写工具守卫**只能**从 `cfg.skillsStore` 读，禁止内部出现 `homedir()`。
+> 这是测试隔离的前提（§7.3）。
 
 ---
 
@@ -40,7 +62,10 @@ neo 目前把全部能力固化为 8 个工具（`src/tools/index.ts:651`），�
 
 当前 8 个工具 spec = **875 tokens**，每轮请求都付。加 `use_skill` 后 = **954 tokens**，边际 **+79（+9.0%）**。
 
-对比收益：技能索引20 条 = **230 tokens（中文）/ 355 tokens（英文）**，单份 SKILL.md 正文（1200 字）= **368 tokens**。
+对比收益：技能索引 20 条 = **230 tokens（中文）/ 355 tokens（英文）**，单份 SKILL.md 正文（1200 字）= **368 tokens**。
+
+> **实施期间修订**（2026-10-15）：上述 230 是**实测现值**而非规格上限，且它与 §9.4 的「≤18 tokens/技能」自相矛盾（230÷20 = 11.5 ≠ 18）。
+> 真正的规格是**逐条 description 的截断上限**，见 §9.4 修订后的口径。
 
 **结论：在 200k 上下文窗口下，技能子系统的开销是噪声级。** 渐进式披露的收益（能力可插拔 + 领域知识外置）远大于成本。
 
@@ -178,10 +203,32 @@ resolveSkill(name):
 
 ### 5.2 修法
 
-四处统一改为：
+> ⚠️ **2026-10-15 修正**：初稿写的是「四处统一改为 `e.isDirectory() || e.isSymbolicLink()`」，**这是错的**。
+> `readdirSync` 对**指向文件**的软链同样返回 `isSymbolicLink()=true`。统一改后glob/grep
+> 会把「软链到文件」当目录走进 walk，`readdirSync` 抛错被 catch 吞掉 → 该软链文件
+> **永远不会被当作文件匹配，比修之前更差**。实测对照：
+>
+> ```
+> 错误改法产出: ["/skills/alpha/SKILL.md"]← shared.md（文件软链）丢失
+> 正确改法产出: ["/skills/shared.md", "/skills/alpha/SKILL.md"]
+> ```
+
+正确改法 —— symlink 时用 `statSync`（跟随软链）判断目标类型：
 
 ```typescript
-if (e.isDirectory() || e.isSymbolicLink()) { /* 递归或按目录呈现 */ }
+function isRealDir(full: string, e: Dirent): boolean {
+  if (e.isDirectory()) return true;
+  if (e.isSymbolicLink()) {
+    try { return statSync(full).isDirectory(); } catch { return false; }
+  }
+  return false;
+}
+```
+
+四处统一改为调用这个判定：
+
+```typescript
+if (isRealDir(full, e)) { /* 递归或按目录呈现 */ }
 ```
 
 **这是本特性的地基。不修，glob/grep 全部失效。**
@@ -278,14 +325,30 @@ if (!/^[a-z0-9][a-z0-9-]*$/.test(name)) {
 
 正则依据：Anthropic Spec 要求 name 为小写字母/数字/连字符。
 
-**约束 3 —— 软链创建必须幂等**
+**约束 3 —— 软链创建必须幂等，且要先建父目录**
+
+> ⚠️ **2026-10-15 补充（实测）**：`symlinkSync` 在父目录不存在时抛 `ENOENT`。
+> B 方案下 `<cwd>/skills/` 初始为空，**第一次建软链必然踩这条**。
+> 实现必须先 `mkdirSync(join(cwd,"skills"), { recursive: true })` 再建链。
 
 ```typescript
 // 命中顺序
-// 1. existsSync(join(cwd, "skills", name)) → 已是软链或真目录，直接返回（createdLink: false）
-// 2. 否则若全局库存在该技能 → symlinkSync(globalAbs, localLink)
+// 1. lstatSync(localLink) 存在 → 已是软链或真目录，直接返回（createdLink: false）
+// 2. 否则若全局库存在该技能 → mkdirSync(父目录) + symlinkSync(globalAbs, localLink)
 // 3. 否则 → not_found
 ```
+
+**断链软链的处理**（实测确认）：若 `skills/<name>` 是指向已删除目标的断链软链，
+`existsSync()` 返回 **false**（会误判为「不存在」），但再次 `symlinkSync` 会抛 `EEXIST`。
+因此判断必须用 `lstatSync`（不跟随软链）而非 `existsSync`：
+
+```typescript
+function isLinkOrDir(p: string): boolean {
+  try { lstatSync(p); return true; } catch { return false; }
+}
+```
+
+若确认为断链，用 `unlinkSync` 移除后再重建；**不要**用 `existsSync` 做这个判断。
 
 **软链用相对还是绝对路径**：用**绝对路径**。理由：项目可能整体移动，相对路径会失效。
 
@@ -296,6 +359,21 @@ if (!/^[a-z0-9][a-z0-9-]*$/.test(name)) {
 **约束 5 —— 索引排序稳定**
 
 `discoverSkills()` 返回结果按 `name` 字典序排序。理由：索引进 system prompt，顺序抖动会导致同任务不同会话的 prompt 不一致，影响可复现性。
+
+### 6.1b 新增 `isRealDir` 辅助函数
+
+```typescript
+// src/tools/index.ts 顶部（§5.2 已说明为何不能简单加 || e.isSymbolicLink()）
+function isRealDir(full: string, e: Dirent): boolean {
+  if (e.isDirectory()) return true;
+  if (e.isSymbolicLink()) {
+    try { return statSync(full).isDirectory(); } catch { return false; }
+  }
+  return false;
+}
+```
+
+四个遍历点（258/ 326 / 469 / system-prompt.ts:40）共用此函数。
 
 ### 6.2 新增 `use_skill` 工具
 
@@ -395,22 +473,25 @@ const skillText = skills.length > 0 ? buildSkillIndex(skills) : "";
 
 ```typescript
 import { realpathSync } from "node:fs";
-import { homedir } from "node:os";
-
-const GLOBAL_SKILLS = join(homedir(), ".neo", "skills");
 
 /** 路径是否落在全局技能库内（含经软链穿透的情况）。 */
-function insideGlobalSkills(p: string): boolean {
+function insideGlobalSkills(ctx: ToolCtx, p: string): boolean {
+  // 库路径从 cfg 读，不硬编码 homedir() —— 硬编码会让测试无法隔离，
+  // 导致测试写真实 ~/.neo/skills（社长的真实资产）。
+  const store = ctx.cfg.skillsStore;
   let real: string;
   try {
     real = realpathSync(p);      // 关键：必须解析软链，字符串比较会失效
   } catch {
     return false;                // 路径不存在，写入的是新文件，用父目录判断
   }
-  const r = relative(GLOBAL_SKILLS, real);
+  const r = relative(store, real);
   return r === "" || (!r.startsWith("..") && !r.startsWith(sep + ".."));
 }
 ```
+
+> **配置字段**：`Config` 需新增 `skillsStore: string`，默认 `join(homedir(), ".neo", "skills")`，
+> 在 `loadConfig()` 里赋值。此字段是**测试隔离的前提**（§7.3 强制要求）。
 
 **约束 11 —— 必须用 `realpathSync`**
 
@@ -421,9 +502,9 @@ function insideGlobalSkills(p: string): boolean {
 放`approve()` 之后会先弹审批框再拒绝，用户白点一次。放之前则直接抛错：
 
 ```typescript
-if (insideGlobalSkills(path)) {
+if (insideGlobalSkills(ctx, path)) {
   throw new ToolError(
-    `禁止写入全局技能库 ${GLOBAL_SKILLS}。技能是只读资源。` +
+    `禁止写入全局技能库（技能是只读资源）。技能是只读资源。` +
     `如需修改，请直接编辑该目录下的 SKILL.md。`
   );
 }
@@ -725,7 +806,18 @@ const EXPECTED = [
 ### 9.4 上下文预算（实测验收）
 
 - [ ] 工具 spec 总数：875 → 954 tokens（+9.0%）
-- [ ] 技能索引：≤ 18 tokens/技能（中文）
+- [ ] 技能索引：**description 部分 ≤ 40 tokens/技能**（超长时截断加 `…`）
+
+> **实施期间修订**（2026-10-15）：初稿写「≤18 tokens/技能」，但该数字无法达成——
+> **技能名长度不受 description 截断控制**，长名 + 短描述时每技能仍需 13.8 tokens。
+> 故口径必须限定为「description 部分」，与截断实现（`DESC_TOKEN_BUDGET = 40`）对齐。
+>
+> 实现要点：`estimateTokens` 末尾有每消息固定开销（`src/llm.ts:325`的 `messages.length * 4`），
+> **实测空串调用得 5**。若硬编码扣 4 会让 60 汉字算成 41 > 40 而误截 ——
+> 而「中文 60 字不截断」正是规格用例。故必须**动态取值**，跟随 `llm.ts` 口径变化：
+> ```typescript
+> const PER_MESSAGE_OVERHEAD = estimateTokens([{ role: "user", content: "" }], []);
+> ```
 - [ ] 无技能时不产生任何额外段落
 
 ---
@@ -866,16 +958,16 @@ allowed-tools: Read, Grep    # 可选，neo v0.1.0 不实现，见 §10.2
 
 | 文件 | 位置 | 改动 | 侵入性 |
 |---|---|---|---|
-| `src/tools/index.ts` | **326** | glob walk 加 `\|\| e.isSymbolicLink()` | 1 行 |
-| `src/tools/index.ts` | **469** | grep walk 加 `\|\| e.isSymbolicLink()` | 1 行 |
-| `src/tools/index.ts` | **258** | list_dir 呈现分支同上 | 1 行 |
+| `src/tools/index.ts` | **326** | glob walk 改用 `isRealDir(full, e)` | 3 行 |
+| `src/tools/index.ts` | **469** | grep walk 改用 `isRealDir(full, e)` | 3 行 |
+| `src/tools/index.ts` | **258** | list_dir 呈现分支同上 | 3 行 |
 | `src/tools/index.ts` | 顶部 import | 加 `realpathSync`（from `node:fs`）、`homedir`（from `node:os`） | 2 行 |
-| `src/tools/index.ts` | 新增函数 | `insideGlobalSkills()` | ~10 行 |
+| `src/tools/index.ts` | 新增函数 | `isRealDir()` + `insideGlobalSkills()` | ~25 行 |
 | `src/tools/index.ts` | **142** | `writeFileTool.execute` 加守卫（approve 之前） | 3 行 |
 | `src/tools/index.ts` | **180** | `editFile.execute` 加守卫（approve 之前） | 3 行 |
 | `src/tools/index.ts` | 新增 `useSkill` | 工具实现 | ~40 行 |
 | `src/tools/index.ts` | **651** | `TOOLS` 数组加 `useSkill` | 1 行 |
-| `src/system-prompt.ts` | **40** | `listFiles` 加 `\|\| e.isSymbolicLink()` | 1 行 |
+| `src/system-prompt.ts` | **40** | `listFiles` 改用 `isRealDir(full, e)` | 3 行 |
 | `src/system-prompt.ts` | **52** | `buildSystemPrompt` 调用 `discoverSkills` 并插入索引段 | ~8 行 |
 | `src/config.ts` | `Config` 接口 + `loadConfig` | 新增 `skillsStore` 字段（默认 `~/.neo/skills`） | ~4 行 |
 | `src/skills.ts` | **新建** | 全部技能逻辑 | ~150 行 |

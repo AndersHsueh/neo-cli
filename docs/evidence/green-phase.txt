@@ -1,0 +1,139 @@
+bun test v1.3.13 (bf2e2cec)
+
+tests/symlink-traversal.test.ts:
+(pass) F1 glob 能穿过软链 > glob "skills/**/*.md" 从 cwd 能列出软链内的 SKILL.md [1.16ms]
+(pass) F1 glob 能穿过软链 > glob 不因软链产生重复条目（同一文件只列一次） [0.70ms]
+(pass) F2 grep 能穿过软链 > grep 从 cwd 递归能命中软链内文件并给出行号 [1.09ms]
+(pass) F2 grep 能穿过软链 > grep 能扫到软链内的非 SKILL.md 附件 [0.72ms]
+(pass) F3/F4 list_dir 把软链当目录 > F3 list_dir skills：软链显示为 foo/（带尾斜杠） [0.63ms]
+(pass) F3/F4 list_dir 把软链当目录 > F4 list_dir skills recursive：能列出软链内文件 [0.71ms]
+(pass) F5 真实目录遍历不被修复破坏 > glob "real/**/*.md" 对真目录同样有效 [0.66ms]
+(pass) F5 真实目录遍历不被修复破坏 > grep 对真目录同样命中并给出行号 [0.59ms]
+(pass) F5 真实目录遍历不被修复破坏 > list_dir 真目录仍按目录呈现并可递归 [0.54ms]
+(pass) F6 system prompt 工作目录树把软链显示为目录 > 工作目录树含 skills/foo/ 且能递归到 skills/foo/SKILL.md [0.72ms]
+
+tests/skills.test.ts:
+(pass) A. parseFrontmatter > A1 标准三字段 frontmatter [0.04ms]
+(pass) A. parseFrontmatter > A2 description 含中文与冒号时按第一个 ': ' 分割
+(pass) A. parseFrontmatter > A3 无 frontmatter 返回空对象，不抛异常 [0.05ms]
+(pass) A. parseFrontmatter > A4 frontmatter 未闭合返回空对象，不抛异常
+(pass) A. parseFrontmatter > A5 多行 YAML 只取首行，不解析嵌套
+(pass) A. parseFrontmatter > A6 空文件返回空对象
+(pass) B. discoverSkills > B1 store 中 3 个技能、项目为空 → 3 条 global/linked:false [0.76ms]
+(pass) B. discoverSkills > B2 项目真目录 + store 同名 → 两条都返回，项目那条 source=project [0.47ms]
+(pass) B. discoverSkills > B3 项目真目录 + store 无同名 → 返回项目条 source=project [0.50ms]
+(pass) B. discoverSkills > B4 目录缺 SKILL.md → 跳过，不产生条目 [0.30ms]
+(pass) B. discoverSkills > B5 store 目录不存在 → 返回 []，不抛异常 [0.05ms]
+(pass) B. discoverSkills > B6 三个 store 技能 a、b、c → 字典序稳定可复现 [0.71ms]
+(pass) B. discoverSkills > B7 目录名非法（大写 / 下划线 / 连字符开头）→ 跳过 [0.53ms]
+(pass) B. discoverSkills > B8 索引缺 description 时回退为 SKILL.md 首行标题（约束 1） [0.28ms]
+(pass) B. discoverSkills > B9 项目区软链也能被发现：linked=true，absPath 已解析软链 [0.43ms]
+(pass) C. resolveSkill > C1 合法名，项目已有软链 → ok:true, createdLink:false [0.50ms]
+(pass) C. resolveSkill > C2 合法名，store 有、项目软链已由上次调用建立 → createdLink:false [0.46ms]
+(pass) C. resolveSkill > C3 合法名，仅 store 有，首次调用 → createdLink:true 且软链落地为绝对路径 [0.43ms]
+(pass) C. resolveSkill > C4 重复调用 → createdLink:false，不报错，软链不被重建 [0.49ms]
+(pass) C. resolveSkill > C5 不存在的名 → ok:false, not_found, available 含已有技能名 [0.31ms]
+(pass) C. resolveSkill > C6 路径穿越 ../../etc/passwd → malformed [0.27ms]
+(pass) C. resolveSkill > C7 绝对路径 /etc/passwd → malformed [0.21ms]
+(pass) C. resolveSkill > C8 含下划线 my_skill → malformed [0.13ms]
+(pass) C. resolveSkill > C9 空字符串 → malformed [0.15ms]
+(pass) C. resolveSkill > C10 项目与 store 同名 → 用项目的，createdLink:false，全局库未被修改 [0.67ms]
+(pass) C. resolveSkill > C11 项目区无 skills 目录时自动创建并落地软链 [0.63ms]
+(pass) C. resolveSkill > C12 目录存在但缺 SKILL.md → ok:false，message 含「缺少 SKILL.md」（约束 8） [0.23ms]
+(pass) D. buildSkillIndex > D1 2 个技能 → 每技能一行，以 '- 名称：' 开头
+(pass) D. buildSkillIndex > D2 空数组 → 返回空字符串
+(pass) D. buildSkillIndex > D3 description 含换行 → 压成单行，不破坏「一行一技能」 [0.10ms]
+(pass) D. buildSkillIndex > D4 description 为空 → 回退为目录名，不为空
+(pass) D. buildSkillIndex > D5 同名技能去重，项目优先 [0.02ms]
+(pass) E. use_skill 工具 > E1 工具已注册，共 9 个，use_skill 在 web_fetch 之后 [0.01ms]
+(pass) E. use_skill 工具 > E2 标记为非敏感
+(pass) E. use_skill 工具 > E3 spec 结构合法：type=function，required 含 name [0.05ms]
+(pass) E. use_skill 工具 > E4 成功加载：输出含 SKILL.md 正文特征串 [1.13ms]
+(pass) E. use_skill 工具 > E5 输出含附件清单（references/ 与 scripts/ 下的文件名） [0.91ms]
+(pass) E. use_skill 工具 > E6 输出含来源说明 [0.45ms]
+(pass) E. use_skill 工具 > E7 首次调用后软链被创建（lstatSync.isSymbolicLink） [0.43ms]
+(pass) E. use_skill 工具 > E8 技能不存在 → ok:false，输出含「可用技能：」 [0.28ms]
+(pass) E. use_skill 工具 > E9 非法名 → ok:false，输出含「技能名非法」 [0.24ms]
+(pass) E. use_skill 工具 > E10 目录存在但无 SKILL.md → ok:false，含「缺少 SKILL.md」 [0.09ms]
+(pass) E. use_skill 工具 > E11 输出长度不超过 toolOutputLimit（约束 6） [0.71ms]
+(pass) E. use_skill 工具 > E12 非法 JSON 参数 → ok:false，含「不是合法 JSON」 [0.25ms]
+(pass) F. symlink 遍历修复 > F1 glob skills/**/*.md 能列出软链内的 SKILL.md（修复前为空） [0.62ms]
+(pass) F. symlink 遍历修复 > F2 grep 从 cwd 递归能命中软链内文件，输出含 SKILL.md:行号: [0.60ms]
+(pass) F. symlink 遍历修复 > F3 list_dir skills 把软链显示为 pdf/（带尾斜杠） [0.49ms]
+(pass) F. symlink 遍历修复 > F4 list_dir skills recursive 能列出软链内文件 [0.40ms]
+(pass) F. symlink 遍历修复 > F5 修复不破坏真实目录遍历：F1~F4 对真目录同样通过 [0.51ms]
+(pass) F. symlink 遍历修复 > F6 不破坏普通文件遍历：指向文件的软链仍能被 glob 匹配（P1 回归防护） [0.35ms]
+(pass) F. symlink 遍历修复 > F7 指向文件的软链仍能被 grep 命中（P1 回归防护） [0.59ms]
+(pass) F. symlink 遍历修复 > F8 system prompt 工作目录树把 skills/pdf 显示为目录（§5 第 4 处） [0.55ms]
+(pass) G. 写工具软链守卫 > G1 write_file 写向软链内 → ok:false，含「禁止写入全局技能库」 [0.61ms]
+(pass) G. 写工具软链守卫 > G2 edit_file 改软链内文件 → ok:false，含「禁止写入全局技能库」 [0.67ms]
+(pass) G. 写工具软链守卫 > G3 守卫触发时不调用 approve（约束 12：守卫必须在 approve 之前） [0.46ms]
+(pass) G. 写工具软链守卫 > G4 正常写项目文件 → ok:true（守卫不误伤） [0.53ms]
+(pass) G. 写工具软链守卫 > G5 store 目录外的相对路径正常放行 [0.30ms]
+(pass) G. 写工具软链守卫 > G6 守卫抛 ToolError 而非字符串 → dispatch 转 ok:false [0.42ms]
+(pass) G. 写工具软链守卫 > G7 约束 13：新文件（父目录存在、文件不存在）同样被拒 [0.39ms]
+(pass) G. 写工具软链守卫 > G8 守卫必须用 realpath 而非字符串比较（P2：路径必须来自 cfg.skillsStore） [0.45ms]
+(pass) H. system prompt 技能索引注入 > H1 有技能时 prompt 含「## 技能」与 use_skill [0.34ms]
+(pass) H. system prompt 技能索引注入 > H2 无技能时不含「## 技能」，无空标题残留（约束 10） [0.20ms]
+(pass) H. system prompt 技能索引注入 > H3 索引位置在「## 工具」之后、「## 环境」之前（约束 9） [0.31ms]
+(pass) H. system prompt 技能索引注入 > H4 不破坏模型行：noteModelChange 的正则仍只匹配一处 [0.48ms]
+(pass) H. system prompt 技能索引注入 > H5 索引每技能严格一行 [0.70ms]
+(pass) I. 端到端集成 > I1 完整流程：建 store 技能 → 发现 → 进 prompt → use_skill → 文件真实变更 [0.82ms]
+(pass) I. 端到端集成 > I2 二次加载同一技能：createdLink:false，内容一致，不重复建链 [1.09ms]
+(pass) I. 端到端集成 > I3 多技能共存：索引全在，各自 use_skill 拿到正确正文，不串内容 [2.42ms]
+(pass) J. 测试隔离红线 > J1 全部沙箱都在 tmpdir 之下，测试不可能碰到真实 ~/.neo/skills [2.30ms]
+(pass) J. 测试隔离红线 > J2 cfg.skillsStore 缺失时 discoverSkills 不崩溃
+(pass) J. 测试隔离红线 > J3 软链指向目录时 statSync 可判定为目录（P1 修复依赖此行为） [0.81ms]
+
+tests/core.test.ts:
+(pass) F1 工具集完整性 > 恰好 9 个工具，名称与顺序符合 PRD 2.1
+(pass) F1 工具集完整性 > 敏感标记与 PRD 2.1 表格一致
+(pass) F1 工具集完整性 > 每个 spec 都是合法的 function 定义且有 required
+(pass) F1 工具集完整性 > 工具名唯一 [0.54ms]
+(pass) read_file > 带行号输出，offset/limit 生效 [0.35ms]
+(pass) read_file > 文件不存在时报错并给出路径 [0.04ms]
+(pass) read_file > 非法 JSON 参数不抛异常 [0.02ms]
+(pass) read_file > 未知工具返回可用清单 [0.01ms]
+(pass) edit_file 唯一性校验（PRD S4） > old_string 出现多次时报错 [0.13ms]
+(pass) edit_file 唯一性校验（PRD S4） > replace_all 可全量替换 [0.22ms]
+(pass) edit_file 唯一性校验（PRD S4） > 找不到 old_string 时报错 [0.18ms]
+(pass) edit_file 唯一性校验（PRD S4） > 审批拒绝时不写文件 [0.16ms]
+(pass) write_file > 自动创建父目录 [0.24ms]
+(pass) write_file > 审批拒绝时不创建文件 [0.14ms]
+(pass) glob / grep > globToRegExp 支持 ** 通配
+(pass) glob / grep > globToRegExp 支持 {a,b} 与 ?
+(pass) glob / grep > glob 找到文件 [0.36ms]
+(pass) glob / grep > grep 命中并给出行号 [0.23ms]
+(pass) glob / grep > grep 支持单文件路径 [0.12ms]
+(pass) glob / grep > grep 非法正则给出可读错误 [0.07ms]
+(pass) glob / grep > grep 跳过二进制文件（PRD 6.1） [0.32ms]
+(pass) shell > 执行命令并返回退出码 [31.46ms]
+(pass) shell > 非零退出码被如实报告 [29.90ms]
+(pass) shell > 审批拒绝时不执行 [0.24ms]
+(pass) shell > 空命令被拒 [0.04ms]
+(pass) web_fetch > 非 http(s) 协议被拒 [0.25ms]
+(pass) htmlToText > 剥离 script/style 与标签 [0.11ms]
+(pass) htmlToText > 解码实体 [0.02ms]
+(pass) estimateTokens > ASCII 按 4 字符/token [0.21ms]
+(pass) estimateTokens > CJK 按 1.5 字符/token，不再退化成 ASCII 速率 [0.13ms]
+(pass) estimateTokens > 中英混合按各自权重累加
+(pass) estimateTokens > 工具 spec 也计入 token
+(pass) estimateTokens > 空历史不崩溃
+(pass) RuleClassifier > override：/deep 显式升档（PRD 2.3 最高优先级） [0.31ms]
+(pass) RuleClassifier > override：/fast 显式降档 [0.06ms]
+(pass) RuleClassifier > PRD 3.4 三个示例场景判定正确 [0.19ms]
+(pass) RuleClassifier > deep_strong 优先级高于 fast_signal [0.03ms]
+(pass) RuleClassifier > tool_failure：连续失败升档 [0.04ms]
+(pass) RuleClassifier > context_pressure：占用率高时升档 [0.03ms]
+(pass) RuleClassifier > 无规则命中时维持当前档且 source=fallback [0.04ms]
+(pass) RuleClassifier > 每条判定都有可读理由（/why 的前提） [0.05ms]
+(pass) RuleClassifier > PRD R5：目标档不可用时只向上找，绝不向下 [0.02ms]
+(pass) RuleClassifier > 长输入触发 long_input [0.05ms]
+(pass) LlmClassifier 兜底不降档 > LLM 失败时维持当前档，不掉到 default [0.98ms]
+(pass) LlmClassifier 兜底不降档 > 无可用候选档时维持当前档 [0.02ms]
+(pass) LlmClassifier 兜底不降档 > 分类失败不抛出异常（异常已被吞掉） [0.16ms]
+
+ 127 pass
+ 0 fail
+ 502 expect() calls
+Ran 127 tests across 3 files. [141.00ms]

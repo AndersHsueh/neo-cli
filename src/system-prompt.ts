@@ -6,6 +6,7 @@ import { existsSync, readdirSync, type Dirent } from "node:fs";
 import { join, relative, sep } from "node:path";
 import type { Config } from "./config.ts";
 import { toolNames } from "./tools/index.ts";
+import { buildSkillIndex, discoverSkills, isRealDir } from "./skills.ts";
 
 const IGNORE_DIRS = new Set([
   "node_modules",
@@ -37,7 +38,7 @@ function listFiles(root: string, depth = 2, max = 200): string[] {
       if (IGNORE_DIRS.has(e.name)) continue;
       const full = join(dir, e.name);
       const rel = relative(root, full).split(sep).join("/");
-      if (e.isDirectory()) {
+      if (isRealDir(full, e)) {
         out.push(`${rel}/`);
         walk(full, d + 1);
       } else {
@@ -57,6 +58,12 @@ export function buildSystemPrompt(cfg: Config): string {
       : `\n工作目录为空。`;
 
   const tools = toolNames().join(", ");
+
+  // 约束 9：索引插在「## 工具」之后、「## 环境」之前 ——
+  // 「## 环境」段的 `- 模型：xxx` 由 agent.ts 的 noteModelChange 用正则改写，
+  // 两者在不同段才不会互相干扰。约束 10：无技能时完全不输出该段。
+  const skills = discoverSkills(cfg);
+  const skillText = skills.length > 0 ? `\n${buildSkillIndex(skills)}\n` : "";
 
   return `你是 neo，一个运行在终端里的编程助手。
 
@@ -83,7 +90,7 @@ export function buildSystemPrompt(cfg: Config): string {
 - list_dir / glob / grep：探索代码库。找东西用 grep，找文件用 glob。
 - shell：执行命令。安装依赖、跑测试、git 操作走这里。
 - web_fetch：抓网页转纯文本，查文档用。
-
+${skillText}
 ## 思考方式
  - 1 提问,  我原来的答案是什么
  - 2 定义, 这个词到底指什么

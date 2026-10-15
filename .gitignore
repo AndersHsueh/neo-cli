@@ -4,6 +4,17 @@ settings.json
 .DS_Store
 .neo-session/
 
+# 技能：全局技能库在 home 目录下，本就不在任何 git 仓库里。
+# 这里只声明不提交全局库；项目 skills/<name> 软链由使用者自行 ignore
+# —— gitignore 无法区分 symlink 与真目录，写 skills/ 会连项目私有技能一起 ignore。
+.neo/skills/
+
+# neo 会话导出
+neo-session.json
+
+# wiki 派生物：能从 wiki 重新生成，不进版本控制
+.neo/.wiki/outputs/
+
 # git worktree 工作区（每个都是独立检出，不应被追踪）
 .worktrees/
 

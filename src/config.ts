@@ -112,6 +112,12 @@ export interface Config {
   thinking?: { type: "enabled" | "disabled" };
   cwd: string;
   settingsPath: string | null;
+  /**
+   * 全局技能库路径。默认 ~/.neo/skills。
+   * 独立字段而非在 skills.ts 里硬编码 homedir()：测试必须能注入沙箱路径，
+   * 否则会读写用户真实的技能库。
+   */
+  skillsStore: string;
 }
 
 type Raw = Record<string, unknown>;
@@ -398,6 +404,7 @@ export function loadConfig(overrides: Partial<Config> = {}): Config {
     showReasoning: bool(raw["show_reasoning"], bool(dflt["show_reasoning"], true)),
     cwd: here,
     settingsPath: found,
+    skillsStore: str(raw["skills_store"], join(homedir(), ".neo", "skills")),
     ...overrides,
   };
 

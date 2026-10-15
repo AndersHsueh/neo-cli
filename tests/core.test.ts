@@ -1,7 +1,7 @@
 /**
  * 核心逻辑单元测试。
  *
- * 覆盖 PRD 4.1 F1（8 个工具 spec 正确）与本次修复的回归点。
+ * 覆盖 PRD 4.1 F1（9 个工具 spec 正确）与本次修复的回归点。
  * 运行：bun test
  */
 import { describe, expect, test } from "bun:test";
@@ -44,7 +44,7 @@ function cleanup(): void {
 }
 
 /* ------------------------------------------------------------------ */
-/* F1：8 个工具的 spec 与敏感标记                                      */
+/* F1：9 个工具的 spec 与敏感标记                                      */
 /* ------------------------------------------------------------------ */
 
 describe("F1 工具集完整性", () => {
@@ -57,9 +57,10 @@ describe("F1 工具集完整性", () => {
     ["grep", false],
     ["shell", true],
     ["web_fetch", false],
+    ["use_skill", false],
   ] as const;
 
-  test("恰好 8 个工具，名称与顺序符合 PRD 2.1", () => {
+  test("恰好 9 个工具，名称与顺序符合 PRD 2.1", () => {
     expect(toolNames()).toEqual(EXPECTED.map(([n]) => n));
   });
 
