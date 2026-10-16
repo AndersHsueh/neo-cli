@@ -47,12 +47,15 @@ import {
   reindexForCwd,
   sanitizeCwd,
   estimateProfile,
+  listStatus,
+  registerIngestEngine,
+  currentIngestEngine,
+  defaultIngestEngine,
 } from "../src/memory/index.ts";
 import {
   forgetDryRun,
   forgetYes,
   forgetResume,
-  listStatus,
 } from "../src/memory/forget.ts";
 import { reindex as reindexImpl } from "../src/memory/reindex.ts";
 
@@ -101,16 +104,20 @@ function sandbox(tag: string): { cwd: string; cfg: Config } {
     cwd,
     settingsPath: null,
     skillsStore: join(home, ".neo", "skills"),
-    // ---- memory 字段（§6.3）----
+    // ---- memory 字段（§6.3 + 扩展字段 cwdRelativeMode / piiFilter / ingestJournal / maxProfileChars）----
     memory: {
       enabled: true,
       userLevelDir,
+      cwdRelativeMode: "default" as const,
+      worktreeIsolation: false,
+      maxProfileChars: 12800,
       profileTokensLimit: 500,
       ingest: { provider: "classifier_provider", model: null, timeoutMs: 2000 },
       autoWriteIndex: true,
       noProfileInOneShot: true,
-      platform: "auto",
-      worktreeIsolation: false,
+      platform: "auto" as const,
+      piiFilter: { enabled: true, modes: [] },
+      ingestJournal: { dir: join(userLevelDir, ".ingest-failures"), retentionHours: 24 },
     },
   };
   return { cwd, cfg };
@@ -196,17 +203,17 @@ describe("A. schema 校验 (parseIndexEntry)", () => {
 describe("B. recordIndex 索引自动写", () => {
   test("B1 首次调用 | raw 下新增 1 个文件，文件名符合命名格式", async () => {
     const { cwd, cfg } = sandbox("B1");
-    const path = await recordIndex(cfg, cwd, { firstUserInput: "用户说 hello world" });
+    const path = (await recordIndex(cfg, cwd, { firstUserInput: "用户说 hello world" }))!
     expect(basename(path)).toMatch(/^\d{4}-\d{2}-\d{2}_.+_[a-f0-9]{8}\.md$/);
     expect(existsSync(path)).toBe(true);
   });
 
   test("B2 同 cwd 同日再次调用 | 不新增文件，更新 updated_at", async () => {
     const { cwd, cfg } = sandbox("B2");
-    const p1 = await recordIndex(cfg, cwd, { firstUserInput: "first" });
+    const p1 = (await recordIndex(cfg, cwd, { firstUserInput: "first" }))!
     const stat1 = statSync(p1).mtimeMs;
     await new Promise(r => setTimeout(r, 50));
-    const p2 = await recordIndex(cfg, cwd, { firstUserInput: "second" });
+    const p2 = (await recordIndex(cfg, cwd, { firstUserInput: "second" }))!
     expect(p2).toBe(p1);
     const stat2 = statSync(p1).mtimeMs;
     expect(stat2).toBeGreaterThan(stat1);
@@ -216,8 +223,8 @@ describe("B. recordIndex 索引自动写", () => {
     const { cwd, cfg } = sandbox("B3");
     const today = "2099-01-01";
     const tomorrow = "2099-01-02";
-    const p1 = await recordIndex(cfg, cwd, { firstUserInput: "x", date: today });
-    const p2 = await recordIndex(cfg, cwd, { firstUserInput: "x", date: tomorrow });
+    const p1 = (await recordIndex(cfg, cwd, { firstUserInput: "x", date: today }))!
+    const p2 = (await recordIndex(cfg, cwd, { firstUserInput: "x", date: tomorrow }))!
     expect(p1).not.toBe(p2);
   });
 
@@ -225,8 +232,8 @@ describe("B. recordIndex 索引自动写", () => {
     const { cfg } = sandbox("B4");
     const sub1 = mkdtempSync(join(ROOT, "B4-a-"));
     const sub2 = mkdtempSync(join(ROOT, "B4-b-"));
-    const p1 = await recordIndex(cfg, sub1, { firstUserInput: "x" });
-    const p2 = await recordIndex(cfg, sub2, { firstUserInput: "x" });
+    const p1 = (await recordIndex(cfg, sub1, { firstUserInput: "x" }))!
+    const p2 = (await recordIndex(cfg, sub2, { firstUserInput: "x" }))!
     expect(p1).not.toBe(p2);
   });
 
@@ -244,14 +251,14 @@ describe("B. recordIndex 索引自动写", () => {
   test("B6 autoWriteIndex=false | 函数 no-op，不落盘", async () => {
     const { cwd, cfg } = sandbox("B6");
     cfg.memory.autoWriteIndex = false;
-    const path = await recordIndex(cfg, cwd, { firstUserInput: "x" });
+    const path = (await recordIndex(cfg, cwd, { firstUserInput: "x" }))!
     expect(path).toBeNull();
   });
 
   test("B7 summary 默认 = 首个用户输入前 200 字符", async () => {
     const { cwd, cfg } = sandbox("B7");
     const input = "用户说 hello world ".repeat(20);
-    const path = await recordIndex(cfg, cwd, { firstUserInput: input });
+    const path = (await recordIndex(cfg, cwd, { firstUserInput: input }))!
     const body = readFileSync(path, "utf8");
     const fmEnd = body.indexOf("---", 3);
     const yaml = body.slice(0, fmEnd);
@@ -261,7 +268,7 @@ describe("B. recordIndex 索引自动写", () => {
   test("B8 summary 超长截断 + 末尾…", async () => {
     const { cwd, cfg } = sandbox("B8");
     const input = "x".repeat(250);
-    const path = await recordIndex(cfg, cwd, { firstUserInput: input });
+    const path = (await recordIndex(cfg, cwd, { firstUserInput: input }))!
     const body = readFileSync(path, "utf8");
     expect(body).toContain("…");
     expect(body).not.toContain(`summary: ${'x'.repeat(200)}…`);
@@ -269,13 +276,13 @@ describe("B. recordIndex 索引自动写", () => {
 
   test("B9 short_id 冲突重试 ≤ 3 次拿到新 id", async () => {
     const { cwd, cfg } = sandbox("B9");
-    const path = await recordIndex(cfg, cwd, { firstUserInput: "x" });
+    const path = (await recordIndex(cfg, cwd, { firstUserInput: "x" }))!
     expect(existsSync(path)).toBe(true);
   });
 
   test("B10 写入后调 ingestUserLevel | wiki/ 出现 index.md", async () => {
     const { cwd, cfg } = sandbox("B10");
-    const idxPath = await recordIndex(cfg, cwd, { firstUserInput: "x" });
+    const idxPath = (await recordIndex(cfg, cwd, { firstUserInput: "x" }))!
     expect(idxPath).not.toBeNull();
     await ingestUserLevel(cfg);
     const wikiDir = join(cfg.memory.userLevelDir, "wiki");
@@ -402,7 +409,7 @@ describe("D. reInjectProfile", () => {
     expect(messages[1]).toBeUndefined();
     const fixed = await reInjectProfile(cfg, messages);
     expect(fixed[1]).toBeDefined();
-    expect(fixed[1].content).toContain("## 用户画像");
+    expect(fixed[1]!.content).toContain("## 用户画像");
   });
 
   test("D2/D3 第一次/N 次 compact 后注入，profile 内容一致", async () => {
@@ -413,7 +420,7 @@ describe("D. reInjectProfile", () => {
     const out1 = await reInjectProfile(cfg, m1);
     const m2 = out1.slice(0, 2).concat({ role: "user", content: "b" });
     const out2 = await reInjectProfile(cfg, m2);
-    expect(out2[1].content).toBe(base);
+    expect(out2[1]!.content).toBe(base);
   });
 });
 
@@ -563,7 +570,7 @@ describe("G. skills 系统降级", () => {
 
   test("G3 沙箱 userLevelDir 与真 ~/.neo/skills | 互不干扰", async () => {
     const { cwd, cfg } = sandbox("G3");
-    const path = await recordIndex(cfg, cwd, { firstUserInput: "z" });
+    const path = (await recordIndex(cfg, cwd, { firstUserInput: "z" }))!
     expect(path).not.toBeNull();
     expect(existsSync(path!)).toBe(true);
   });
@@ -584,7 +591,7 @@ describe("H. compact 联动", () => {
     ];
     for (let i = 0; i < 5; i++) messages.push({ role: "user", content: `msg-${i}` }, { role: "assistant", content: `rep-${i}` });
     messages = await reInjectProfile(cfg, messages);
-    expect(messages[1].content).toBe(profile);
+    expect(messages[1]!.content).toBe(profile);
   });
 
   test("H2 profile + --resume | 恢复后 messages[1] 重新是 profile（读盘）", async () => {
@@ -595,7 +602,7 @@ describe("H. compact 联动", () => {
       { role: "user" as const, content: "old" },
     ];
     const fixed = await reInjectProfile(cfg, messages);
-    expect(fixed[1].content).toContain("## 用户画像");
+    expect(fixed[1]!.content).toContain("## 用户画像");
   });
 });
 
@@ -614,8 +621,8 @@ describe("H+. profile 与 noteModelChange 交互", () => {
       { role: "user", content: "hi" },
     ];
     const re = /- 模型：[^\n]*/;
-    messages[0].content = messages[0].content.replace(re, "- 模型：deep_reasoning");
-    expect(messages[1].content).toBe(profile);
+    messages[0]!.content = messages[0]!.content.replace(re, "- 模型：deep_reasoning");
+    expect(messages[1]!.content).toBe(profile);
   });
 
   test("H4 profile 注入块「来源」行格式完整保留", async () => {
@@ -636,7 +643,7 @@ describe("H+. profile 与 noteModelChange 交互", () => {
     messages.splice(1, 1);
     writeFileSync(join(cfg.memory.userLevelDir, "profile.md"), "# p\n- v2\n", "utf8");
     const fixed = await reInjectProfile(cfg, messages);
-    expect(fixed[1].content).toContain("v2");
+    expect(fixed[1]!.content).toContain("v2");
   });
 });
 
@@ -647,7 +654,7 @@ describe("H+. profile 与 noteModelChange 交互", () => {
 describe("I. E2E 集成", () => {
   test("I1 完整流程 | 文件真实变更", async () => {
     const { cwd, cfg } = sandbox("I1");
-    const idxPath = await recordIndex(cfg, cwd, { firstUserInput: "session-1" });
+    const idxPath = (await recordIndex(cfg, cwd, { firstUserInput: "session-1" }))!
     expect(idxPath).not.toBeNull();
     await ingestUserLevel(cfg);
     expect(existsSync(join(cfg.memory.userLevelDir, "wiki", "index.md"))).toBe(true);
@@ -655,8 +662,8 @@ describe("I. E2E 集成", () => {
 
   test("I2 二次会话同日同 cwd | 不新增索引；updated_at 更新", async () => {
     const { cwd, cfg } = sandbox("I2");
-    const p1 = await recordIndex(cfg, cwd, { firstUserInput: "x" });
-    const p2 = await recordIndex(cfg, cwd, { firstUserInput: "y" });
+    const p1 = (await recordIndex(cfg, cwd, { firstUserInput: "x" }))!
+    const p2 = (await recordIndex(cfg, cwd, { firstUserInput: "y" }))!
     expect(p2).toBe(p1);
   });
 
@@ -664,8 +671,8 @@ describe("I. E2E 集成", () => {
     const { cfg } = sandbox("I3");
     const a = mkdtempSync(join(ROOT, "I3-a-"));
     const b = mkdtempSync(join(ROOT, "I3-b-"));
-    const pa = await recordIndex(cfg, a, { firstUserInput: "x" });
-    const pb = await recordIndex(cfg, b, { firstUserInput: "x" });
+    const pa = (await recordIndex(cfg, a, { firstUserInput: "x" }))!
+    const pb = (await recordIndex(cfg, b, { firstUserInput: "x" }))!
     expect(pa).not.toBe(pb);
   });
 });
@@ -718,7 +725,7 @@ describe("J. 并发安全", () => {
 
   test("J5 同 cwd 同日二次 | frontmatter updated_at 变，正文 SHA256 不变", async () => {
     const { cwd, cfg } = sandbox("J5");
-    const path = await recordIndex(cfg, cwd, { firstUserInput: "x" });
+    const path = (await recordIndex(cfg, cwd, { firstUserInput: "x" }))!
     const before = readFileSync(path!, "utf8");
     const fmBefore = before.slice(0, before.indexOf("---", 3));
     const bodyBefore = before.slice(before.indexOf("---", 3)).replace(/\nupdated_at:.*\n/, "");
@@ -741,7 +748,7 @@ describe("K. PII 过滤", () => {
   test("K1 用户输入含 OpenAI key | summary 含 [REDACTED:openai-key]，raw 正文留原样", async () => {
     const { cwd, cfg } = sandbox("K1");
     const input = "用户说 sk-abcdef0123456789abcdef0123 帮我修";
-    const path = await recordIndex(cfg, cwd, { firstUserInput: input });
+    const path = (await recordIndex(cfg, cwd, { firstUserInput: input }))!
     const body = readFileSync(path!, "utf8");
     expect(body).toContain("[REDACTED:openai-key]");
     expect(body).toContain("sk-abcdef0123456789abcdef0123");
@@ -750,20 +757,20 @@ describe("K. PII 过滤", () => {
   test("K2 ghp_ GitHub PAT | summary 含 [REDACTED:github-pat]", async () => {
     const { cwd, cfg } = sandbox("K2");
     const pat = "ghp_" + "a".repeat(36);
-    const path = await recordIndex(cfg, cwd, { firstUserInput: `token is ${pat}` });
+    const path = (await recordIndex(cfg, cwd, { firstUserInput: `token is ${pat}` }))!
     expect(readFileSync(path!, "utf8")).toContain("[REDACTED:github-pat]");
   });
 
   test("K3 user@example.com | summary 含 [REDACTED:email]", async () => {
     const { cwd, cfg } = sandbox("K3");
-    const path = await recordIndex(cfg, cwd, { firstUserInput: "ping user@example.com" });
+    const path = (await recordIndex(cfg, cwd, { firstUserInput: "ping user@example.com" }))!
     expect(readFileSync(path!, "utf8")).toContain("[REDACTED:email]");
   });
 
   test("K4 多敏感串混合 | 全部命中按顺序替换 + INFO 日志「N 处敏感串已脱敏」", async () => {
     const { cwd, cfg } = sandbox("K4");
     const input = "key=sk-abcdef0123456789abcdef0123 mailto=user@example.com";
-    const path = await recordIndex(cfg, cwd, { firstUserInput: input });
+    const path = (await recordIndex(cfg, cwd, { firstUserInput: input }))!
     const body = readFileSync(path!, "utf8");
     expect(body).toContain("[REDACTED:openai-key]");
     expect(body).toContain("[REDACTED:email]");
@@ -772,7 +779,7 @@ describe("K. PII 过滤", () => {
   test("K5 正常文本无敏感串 | summary = 原文本（不变）", async () => {
     const { cwd, cfg } = sandbox("K5");
     const input = "普通文本没有密钥";
-    const path = await recordIndex(cfg, cwd, { firstUserInput: input });
+    const path = (await recordIndex(cfg, cwd, { firstUserInput: input }))!
     const body = readFileSync(path!, "utf8");
     expect(body).toContain("普通文本没有密钥");
     expect(body).not.toContain("[REDACTED:");
@@ -780,7 +787,7 @@ describe("K. PII 过滤", () => {
 
   test("K6 /memory redact --pattern=API_KEY <short_id> | frontmatter 加 redacted_at 与 redacted_count", async () => {
     const { cwd, cfg } = sandbox("K6");
-    const path = await recordIndex(cfg, cwd, { firstUserInput: "hello" });
+    const path = (await recordIndex(cfg, cwd, { firstUserInput: "hello" }))!
     const before = readFileSync(path!, "utf8");
     await redactSummary(cfg, path!, "API_KEY");
     const after = readFileSync(path!, "utf8");
@@ -807,21 +814,21 @@ describe("§A. /memory 子命令族", () => {
 
   test("A.forget --dry-run | 只打印，不删", async () => {
     const { cwd, cfg } = sandbox("AFd");
-    const path = await recordIndex(cfg, cwd, { firstUserInput: "x" });
+    const path = (await recordIndex(cfg, cwd, { firstUserInput: "x" }))!
     await forgetDryRun(cfg, [path!]);
     expect(existsSync(path!)).toBe(true);
   });
 
   test("A.forget --yes | 直接删除", async () => {
     const { cwd, cfg } = sandbox("AFy");
-    const path = await recordIndex(cfg, cwd, { firstUserInput: "x" });
+    const path = (await recordIndex(cfg, cwd, { firstUserInput: "x" }))!
     await forgetYes(cfg, [path!]);
     expect(existsSync(path!)).toBe(false);
   });
 
   test("A.reindex <new_cwd> | 旧 cwd 不存在的条目改名为新 sanitized-cwd", async () => {
     const { cwd: oldCwd, cfg } = sandbox("AR");
-    const path = await recordIndex(cfg, oldCwd, { firstUserInput: "x" });
+    const path = (await recordIndex(cfg, oldCwd, { firstUserInput: "x" }))!
     const newCwd = mkdtempSync(join(ROOT, "AR-new-"));
     const out = await reindexImpl(cfg, oldCwd, newCwd);
     expect(out).not.toBeNull();
@@ -829,7 +836,6 @@ describe("§A. /memory 子命令族", () => {
 
   test("A.reindex 未指定 new_cwd | 抛错或返回失败", async () => {
     const { cwd, cfg } = sandbox("ARerr");
-    await recordIndex(cfg, cwd, "");
     await expect(reindexForCwd(cfg, "")).rejects.toBeDefined();
   });
 });
