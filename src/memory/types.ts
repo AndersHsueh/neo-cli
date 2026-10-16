@@ -60,15 +60,28 @@ export interface MemoryEntry {
 /* ProfileSlice — ensureProfile 返回值                                */
 /* ------------------------------------------------------------------ */
 
+/**
+ * 注入到 messages[1] 的 ProfileSlice（PRD §约束 31 + Mike P0 #8 拍）。
+ * - content: 注入块完整文本（含 ## 用户画像 段 + > 来源 行）
+ * - truncatedAt: 截断层级；null = 未截断
+ * - estimatedTokens / bytes: 度量信息
+ * - cwd / timeRange / sourceEntries: 诊断与可解释性元数据
+ */
 export interface ProfileSlice {
   /** 注入到 messages[1] 的完整文本（含 ## 用户画像 段 + > 来源 行）。 */
-  text: string;
+  content: string;
   /** 截断层级：1 / 2 / 3；null 表示没截断。 */
   truncatedAt: 1 | 2 | 3 | null;
-  /** 截断前估算 token 数。 */
+  /** 截断前估算 token 数（去每消息单开销）。 */
   estimatedTokens: number;
-  /** 截断后实际大小（字节）。 */
+  /** content 的 UTF-8 字节数。 */
   bytes: number;
+  /** 当前 cfg.cwd（用于诊断）；profile 本身是用户级共享，跟 cwd 无关。 */
+  cwd: string;
+  /** profile 时间范围（v0.1 留空；后续若有 profile 版本机制再补）。 */
+  timeRange: { from?: string; to?: string };
+  /** 支撑本次内容的 raw 索引条目 shortId 列表（v0.1 留空，profile 不依赖 raw）。 */
+  sourceEntries: string[];
 }
 
 /* ------------------------------------------------------------------ */

@@ -29,6 +29,7 @@ import {
   todayIso,
 } from "./schema.ts";
 import type { MemoryEntry } from "./types.ts";
+import { acquireCwdLock, releaseCwdLock, reapExpiredLocks } from "./locks.ts";
 
 export interface RecordIndexOpts {
   firstUserInput: string;
@@ -56,51 +57,62 @@ export async function recordIndex(
   const rawDir = join(userLevelDir, "raw");
   ensureDirExists(rawDir);
 
+  // 约束 9a-d：启动 / 入口扫过期锁并清（J4）
+  reapExpiredLocks(userLevelDir, m.ingestJournal.retentionHours);
+
   const date = opts.date ?? todayIso();
   const { summary, truncated } = makeSummary(opts.firstUserInput);
   const createdAt = new Date().toISOString();
 
-  // 同 cwd 同日 dedup 路径：扫 rawDir，找 cwd 相同的现存条目
-  const existingPath = findExistingSameCwdDate(rawDir, date, cwd);
-  if (existingPath) {
-    return updateExistingEntry(existingPath, createdAt);
-  }
-
-  // 否则新增：写新文件（B1/B3/B4）
+  // 约束 9a-a：取 cwd 锁（J1）。持锁期间 listdir → 写/更新 → release。
   const sanitized = schemaSanitizeCwd(cwd);
-  const entry: MemoryEntry = {
-    date,
-    cwd,
-    shortId: "",
-    summary,
-    createdAt,
-  };
-  if (opts.topic) entry.topic = opts.topic;
+  let lockDir: string | null = null;
+  try {
+    lockDir = acquireCwdLock(userLevelDir, sanitized);
 
-  // short_id 冲突重试（B9）
-  for (let attempt = 0; attempt < 4; attempt++) {
-    const isFallback = attempt === 3;
-    const id = generateShortId(isFallback ? undefined : undefined);
-    entry.shortId = id;
-    const fileName = buildFileName({ ...entry });
-    const targetPath = join(rawDir, fileName);
-    if (!existsSync(targetPath)) {
-      try {
-        writeIndexEntry(targetPath, entry, truncated);
-        return targetPath;
-      } catch (e) {
-        const code = (e as NodeJS.ErrnoException).code;
-        if (code === "EACCES" || code === "EPERM") {
-          throw new MemoryError("permission_denied", `raw 目录无写权限：${targetPath}`, e);
-        }
-        throw e;
-      }
+    // 同 cwd 同日 dedup 路径：扫 rawDir，找 cwd 相同的现存条目
+    const existingPath = findExistingSameCwdDate(rawDir, date, cwd);
+    if (existingPath) {
+      return updateExistingEntry(existingPath, createdAt);
     }
-    // 文件名冲突：同 cwd 同日会进 update 分支；其他情况重试 id
-    const isSame = findExistingSameCwdDate(rawDir, date, cwd);
-    if (isSame) return updateExistingEntry(isSame, createdAt);
+
+    // 否则新增：写新文件（B1/B3/B4）
+    const entry: MemoryEntry = {
+      date,
+      cwd,
+      shortId: "",
+      summary,
+      createdAt,
+    };
+    if (opts.topic) entry.topic = opts.topic;
+
+    // short_id 冲突重试（B9）
+    for (let attempt = 0; attempt < 4; attempt++) {
+      const isFallback = attempt === 3;
+      const id = generateShortId(isFallback ? undefined : undefined);
+      entry.shortId = id;
+      const fileName = buildFileName({ ...entry });
+      const targetPath = join(rawDir, fileName);
+      if (!existsSync(targetPath)) {
+        try {
+          writeIndexEntry(targetPath, entry, truncated);
+          return targetPath;
+        } catch (e) {
+          const code = (e as NodeJS.ErrnoException).code;
+          if (code === "EACCES" || code === "EPERM") {
+            throw new MemoryError("permission_denied", `raw 目录无写权限：${targetPath}`, e);
+          }
+          throw e;
+        }
+      }
+      // 文件名冲突：同 cwd 同日会进 update 分支；其他情况重试 id
+      const isSame = findExistingSameCwdDate(rawDir, date, cwd);
+      if (isSame) return updateExistingEntry(isSame, createdAt);
+    }
+    throw new MemoryError("raw_concurrent_modify", `short_id 重试 4 次仍冲突（cwd=${cwd}, date=${date}）`);
+  } finally {
+    if (lockDir) releaseCwdLock(lockDir);
   }
-  throw new MemoryError("raw_concurrent_modify", `short_id 重试 4 次仍冲突（cwd=${cwd}, date=${date}）`);
 }
 
 /* ------------------------------------------------------------------ */
@@ -122,12 +134,12 @@ function ensureDirExists(dir: string): void {
 }
 
 function makeSummary(input: string): { summary: string; truncated: boolean } {
-  // 约束 22：summary ≤ 200 字（不拆分 Unicode / grapheme）；超 200 时末尾 `…` 走 body 段。
-  //  - length ≤ 200：summary = input（无 …）
-  //  - length > 200：summary = 前 200 grapheme（Intl.Segmenter，按字素切，不拆中文/emoji）；
-  //                  body 段由 opts.truncated=true 加 → mark
+  // 约束 22：summary 字段 ≤ 200 字符（A6/A8 schema 上限）。
+  //   - length ≤ 200：summary = input（无 …）
+  //   - length > 200：summary = 前 199 grapheme + `…` = 总 200 字符（含 `…`）
+  //     走 Intl.Segmenter grapheme 切，避免拆中文 / emoji。
   if (input.length <= 200) return { summary: input, truncated: false };
-  return { summary: takeGraphemes(input, 200), truncated: true };
+  return { summary: takeGraphemes(input, 199) + "…", truncated: true };
 }
 
 /**
@@ -199,11 +211,11 @@ function updateExistingEntry(existingPath: string, newUpdatedAt: string): string
 }
 
 /**
- * 写新 raw 文件。body 由 renderIndexEntry 渲染。
+ * 写新 raw 文件。body 由 renderIndexEntry 渲染（summary 已含 `…`）。
  * 写用 tmp + rename（约束 9a-c），fsync parent dir。
  */
-function writeIndexEntry(targetPath: string, entry: MemoryEntry, truncated: boolean): void {
-  const content = renderIndexEntry(entry, { truncated });
+function writeIndexEntry(targetPath: string, entry: MemoryEntry, _truncated: boolean): void {
+  const content = renderIndexEntry(entry);
   atomicWrite(targetPath, content);
 }
 

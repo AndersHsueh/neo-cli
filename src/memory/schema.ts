@@ -129,11 +129,9 @@ export function sanitizeCwd(cwd: string, opts?: { platform?: "macos" | "linux" |
  * 把 MemoryEntry 渲染成完整 raw 文件内容。
  * 顺序：--- yaml frontmatter ---\n\n# H1\n\n简短正文
  *
- * 当 opts.truncated=true 时，正文末尾追加 `…` 标记被截断（约束 22）；
- * summary YAML 字段保持原 200 字符**不带** `…`，避免「summary: N 字 + …」
- * 撞到约束 4「summary 1~200 字符」上限。
+ * summary 字段已自带 `…` 截断标记（makeSummary 写入）；这里直接渲染。
  */
-export function renderIndexEntry(entry: MemoryEntry, opts?: { truncated?: boolean }): string {
+export function renderIndexEntry(entry: MemoryEntry): string {
   const lines: string[] = ["---"];
   lines.push(`date: ${entry.date}`);
   lines.push(`cwd: ${entry.cwd}`);
@@ -152,8 +150,7 @@ export function renderIndexEntry(entry: MemoryEntry, opts?: { truncated?: boolea
   lines.push("");
   lines.push(`# ${entry.topic || "记忆条目"}（${entry.date}）`);
   lines.push("");
-  const truncMark = opts?.truncated ? "…" : "";
-  lines.push(`（一句话概要与 summary 字段冗余但保留正文段以便 LLM 检索：${entry.summary}${truncMark}）`);
+  lines.push(`（一句话概要与 summary 字段冗余但保留正文段以便 LLM 检索：${entry.summary}）`);
   lines.push("");
   return lines.join("\n");
 }
