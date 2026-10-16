@@ -145,7 +145,7 @@ export async function ensureProfile(
     const buf = readFileSync(profilePath);
     text = new TextDecoder("utf-8", { fatal: true }).decode(buf);
   } catch (e) {
-    if (e instanceof RangeError || (e as Error).message.includes("fatal")) {
+    if (e instanceof Error && e.name === "TypeError") {
       throw new MemoryError("schema_invalid", "profile.md 非 UTF-8（约束 5.4 schema_invalid）");
     }
     throw e;
@@ -202,12 +202,14 @@ function buildSlice(
   bytes: number,
 ): ProfileSlice {
   const m = cfg.memory;
+  // 约束 31 + H4 spec：H1 「## 用户画像」严格（无括号，跟测试 regex 匹配）；
+  // 来源行用半角逗号。
   const block = [
-    "## 用户画像（来自记忆系统）",
+    "## 用户画像",
     "",
     content,
     "",
-    `> 来源：${m.userLevelDir}/profile.md（${bytes} 字节，${estimatedTokens} tokens）`,
+    `> 来源：${m.userLevelDir}/profile.md（${bytes} 字节,${estimatedTokens} tokens）`,
   ].join("\n");
   return {
     content: block,
@@ -251,8 +253,7 @@ export async function reInjectProfile(
     const existing = messages[1];
     if (existing && (existing as { role?: string }).role === "system" &&
         typeof (existing as { content?: string }).content === "string" &&
-        ((existing as { content: string }).content.startsWith("## 用户画像") ||
-         (existing as { content: string }).content.startsWith("## 用户画像（来自记忆系统）"))) {
+        (existing as { content: string }).content.startsWith("## 用户画像")) {
       const out = messages.slice();
       out.splice(1, 1);
       return out;

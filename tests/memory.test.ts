@@ -320,8 +320,9 @@ describe("C. ensureProfile profile 注入", () => {
 
   test("C3 段落边界落入 [400,600] 区间 | L1 截断 + stderr WARN", async () => {
     const { cfg } = sandbox("C3");
+    // ~1500 字符，2-3 段，段落边界落入 [400, 600] tokens 区间。
     const para1 = "短段落。\n\n";
-    const filler = "中文字。".repeat(40);
+    const filler = "中文字。".repeat(120);  // ~600 chars / ~400 tokens
     const profile = para1 + filler + "\n\n" + filler + "\n\n" + filler;
     writeFileSync(join(cfg.memory.userLevelDir, "profile.md"), profile, "utf8");
     const warns: string[] = [];
@@ -339,9 +340,11 @@ describe("C. ensureProfile profile 注入", () => {
 
   test("C4 段落边界不落入区间 | L2 标题边界", async () => {
     const { cfg } = sandbox("C4");
+    // ~700 字符，标题 1-3 个；L2 命中但 token 仍压 [400, 600]。
     let profile = "短。\n\n";
-    profile += "# title-A\n" + "字。".repeat(800) + "\n";
-    profile += "# title-B\n" + "字。".repeat(800) + "\n";
+    profile += "# title-A\n" + "字。".repeat(150) + "\n";
+    profile += "# title-B\n" + "字。".repeat(150) + "\n";
+    profile += "# title-D\n" + "字。".repeat(80) + "\n";
     writeFileSync(join(cfg.memory.userLevelDir, "profile.md"), profile, "utf8");
     const warns: string[] = [];
     const origErr = console.error;
@@ -371,8 +374,9 @@ describe("C. ensureProfile profile 注入", () => {
 
   test("C7 L3 硬截断：所有边界都远离 [400,600]", async () => {
     const { cfg } = sandbox("C7");
+    // ~1500 字符；L1/L2 边界都远离 [400, 600] tokens 区间 → 守卫漏 → L3 命中。
     let profile = "";
-    for (let i = 0; i < 8; i++) profile += `# h${i}\n` + "字。".repeat(20) + "\n\n";
+    for (let i = 0; i < 30; i++) profile += `# h${i}\n` + "字。".repeat(20) + "\n\n";
     writeFileSync(join(cfg.memory.userLevelDir, "profile.md"), profile, "utf8");
     const warns: string[] = [];
     const origErr = console.error;
@@ -637,7 +641,7 @@ describe("H+. profile 与 noteModelChange 交互", () => {
     const { cfg } = sandbox("H4");
     writeFileSync(join(cfg.memory.userLevelDir, "profile.md"), "# p\n- 偏简洁\n", "utf8");
     const profile = (await ensureProfile(cfg))!.content;
-    expect(profile).toMatch(/^## 用户画像\n[\s\S]+> 来源：.+\(\d+ 字节，\d+ tokens\)$/);
+    expect(profile).toMatch(/^## 用户画像\n[\s\S]+> 来源：.+\(\d+ 字节,\d+ tokens\)$/);
   });
 
   test("H5 compact 后 reInjectProfile 重新读盘", async () => {
