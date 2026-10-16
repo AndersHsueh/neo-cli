@@ -17,18 +17,19 @@ import type {
 import { MemoryError } from "./types.ts";
 
 import { recordIndex as recordIndexImpl, type RecordIndexOpts } from "./recordIndex.ts";
+import { ensureProfile as ensureProfileImpl, reInjectProfile as reInjectProfileImpl } from "./profile.ts";
 export { parseIndexEntry } from "./schema.ts";
-export { sanitizeCwd, generateShortId, buildFileName, renderIndexEntry, parseIndexFile } from "./schema.ts";
+export { sanitizeCwd, generateShortId, buildFileName, renderIndexEntry, parseIndexFile, takeGraphemes } from "./schema.ts";
 
 /* ------------------------------------------------------------------ */
 /* §6.1 公共 API                                                        */
 /* ------------------------------------------------------------------ */
 
 export async function ensureProfile(
-  _cfg: Config,
-  _opts?: { oneShot?: boolean },
+  cfg: Config,
+  opts?: { oneShot?: boolean },
 ): Promise<ProfileSlice | null> {
-  throw new MemoryError("ingest_failed", "ensureProfile: not implemented (stage 1 stub)");
+  return ensureProfileImpl(cfg, opts);
 }
 
 export async function recordIndex(
@@ -40,10 +41,10 @@ export async function recordIndex(
 }
 
 export async function reInjectProfile(
-  _cfg: Config,
+  cfg: Config,
   messages: Array<{ role: string; content: string }>,
 ): Promise<Array<{ role: string; content: string }>> {
-  throw new MemoryError("ingest_failed", "reInjectProfile: not implemented (stage 1 stub)");
+  return reInjectProfileImpl(cfg, messages);
 }
 
 export async function ingestUserLevel(
