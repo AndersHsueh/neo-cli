@@ -16,6 +16,10 @@ import type {
 } from "./types.ts";
 import { MemoryError } from "./types.ts";
 
+import { recordIndex as recordIndexImpl, type RecordIndexOpts } from "./recordIndex.ts";
+export { parseIndexEntry } from "./schema.ts";
+export { sanitizeCwd, generateShortId, buildFileName, renderIndexEntry, parseIndexFile } from "./schema.ts";
+
 /* ------------------------------------------------------------------ */
 /* §6.1 公共 API                                                        */
 /* ------------------------------------------------------------------ */
@@ -27,18 +31,12 @@ export async function ensureProfile(
   throw new MemoryError("ingest_failed", "ensureProfile: not implemented (stage 1 stub)");
 }
 
-export interface RecordIndexOpts {
-  firstUserInput: string;
-  date?: string;
-  topic?: string;
-}
-
 export async function recordIndex(
-  _cfg: Config,
-  _cwd: string,
-  _opts: RecordIndexOpts,
+  cfg: Config,
+  cwd: string,
+  opts: RecordIndexOpts,
 ): Promise<string | null> {
-  throw new MemoryError("schema_invalid", "recordIndex: not implemented (stage 1 stub)");
+  return recordIndexImpl(cfg, cwd, opts);
 }
 
 export async function reInjectProfile(
@@ -100,20 +98,8 @@ export async function listStatus(
 /* 工具（供其它 memory 子模块用）                                          */
 /* ------------------------------------------------------------------ */
 
-export function sanitizeCwd(_cwd: string): string {
-  throw new MemoryError("schema_invalid", "sanitizeCwd: not implemented (stage 1 stub)");
-}
-
 export function estimateProfile(_text: string): number {
   throw new MemoryError("schema_invalid", "estimateProfile: not implemented (stage 1 stub)");
-}
-
-/* ------------------------------------------------------------------ */
-/* §7 schema 解析                                                       */
-/* ------------------------------------------------------------------ */
-
-export function parseIndexEntry(input: Record<string, unknown>): MemoryEntry {
-  throw new MemoryError("schema_invalid", "parseIndexEntry: not implemented (stage 1 stub)");
 }
 
 /* ------------------------------------------------------------------ */
