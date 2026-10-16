@@ -52,6 +52,8 @@ export interface MemoryEntry {
   /** PII 过滤后被替换的位置（redact 计数）；v0.1 用于 /memory redact。 */
   redactedAt?: string;
   redactedCount?: number;
+  /** 原始未脱敏的正文文本（约束 60：raw 正文留 PII 原样）。 */
+  bodySource?: string;
   /** 任意附加字段；schema 校验放过，但 parser 保留。 */
   [extra: string]: unknown;
 }

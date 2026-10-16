@@ -130,6 +130,8 @@ export function sanitizeCwd(cwd: string, opts?: { platform?: "macos" | "linux" |
  * 顺序：--- yaml frontmatter ---\n\n# H1\n\n简短正文
  *
  * summary 字段已自带 `…` 截断标记（makeSummary 写入）；这里直接渲染。
+ * 正文用 ORIGINAL_SUMMARY 字段（无 PII 过滤），保留原文（约束 60）；summary 字段在
+ * frontmatter 中是脱敏版（约束 47）。
  */
 export function renderIndexEntry(entry: MemoryEntry): string {
   const lines: string[] = ["---"];
@@ -143,14 +145,17 @@ export function renderIndexEntry(entry: MemoryEntry): string {
   if (entry.redactedAt) lines.push(`redacted_at: ${entry.redactedAt}`);
   if (typeof entry.redactedCount === "number") lines.push(`redacted_count: ${entry.redactedCount}`);
   for (const [k, v] of Object.entries(entry)) {
-    if (["date", "cwd", "topic", "short_id", "summary", "created_at", "updated_at", "redacted_at", "redacted_count"].includes(k)) continue;
+    if (["date", "cwd", "topic", "short_id", "summary", "created_at", "updated_at", "redacted_at", "redacted_count", "body_source"].includes(k)) continue;
     lines.push(`${k}: ${JSON.stringify(v)}`);
   }
   lines.push("---");
   lines.push("");
   lines.push(`# ${entry.topic || "记忆条目"}（${entry.date}）`);
   lines.push("");
-  lines.push(`（一句话概要与 summary 字段冗余但保留正文段以便 LLM 检索：${entry.summary}）`);
+  // 约束 60：raw 正文留 PII 原样。优先用 body_source（未脱敏截断版），
+  // 否则回退到 summary 字段（脱敏版）。两者文本通常一致，body_source 在长输入时多截 1 字。
+  const bodyText = (entry.bodySource as string | undefined) ?? entry.summary;
+  lines.push(`（一句话概要与 summary 字段冗余但保留正文段以便 LLM 检索：${bodyText}）`);
   lines.push("");
   return lines.join("\n");
 }

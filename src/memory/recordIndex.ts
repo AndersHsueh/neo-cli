@@ -30,6 +30,7 @@ import {
 } from "./schema.ts";
 import type { MemoryEntry } from "./types.ts";
 import { acquireCwdLock, releaseCwdLock, reapExpiredLocks } from "./locks.ts";
+import { redactPII } from "./pii.ts";
 
 export interface RecordIndexOpts {
   firstUserInput: string;
@@ -61,7 +62,7 @@ export async function recordIndex(
   reapExpiredLocks(userLevelDir, m.ingestJournal.retentionHours);
 
   const date = opts.date ?? todayIso();
-  const { summary, truncated } = makeSummary(opts.firstUserInput);
+  const { summary, truncated, bodySource } = makeSummary(opts.firstUserInput);
   const createdAt = new Date().toISOString();
 
   // 约束 9a-a：取 cwd 锁（J1）。持锁期间 listdir → 写/更新 → release。
@@ -85,6 +86,7 @@ export async function recordIndex(
       createdAt,
     };
     if (opts.topic) entry.topic = opts.topic;
+    if (bodySource) entry.bodySource = bodySource;
 
     // short_id 冲突重试（B9）
     for (let attempt = 0; attempt < 4; attempt++) {
@@ -133,13 +135,23 @@ function ensureDirExists(dir: string): void {
   }
 }
 
-function makeSummary(input: string): { summary: string; truncated: boolean } {
+function makeSummary(input: string): { summary: string; truncated: boolean; bodySource: string } {
   // 约束 22：summary 字段 ≤ 200 字符（A6/A8 schema 上限）。
   //   - length ≤ 200：summary = input（无 …）
   //   - length > 200：summary = 前 199 grapheme + `…` = 总 200 字符（含 `…`）
   //     走 Intl.Segmenter grapheme 切，避免拆中文 / emoji。
-  if (input.length <= 200) return { summary: input, truncated: false };
-  return { summary: takeGraphemes(input, 199) + "…", truncated: true };
+  // 约束 45：summary 默认值先过 PII 过滤；命中即替换为 [REDACTED:<mode>]。
+  // 约束 60：raw 正文（body_source）留 PII 原样；只有 frontmatter summary 字段脱敏。
+  if (input.length <= 200) {
+    const r = redactPII(input);
+    if (r.total > 0) console.error(`recordIndex: ${r.total} 处敏感串已脱敏（首条输入）`);
+    return { summary: r.text, truncated: false, bodySource: input };
+  }
+  const r = redactPII(input);
+  const text = takeGraphemes(r.text, 199) + "…";
+  const bodySource = takeGraphemes(input, 199) + "…";
+  if (r.total > 0) console.error(`recordIndex: ${r.total} 处敏感串已脱敏（首条输入）`);
+  return { summary: text, truncated: true, bodySource };
 }
 
 /**

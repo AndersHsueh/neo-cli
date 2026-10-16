@@ -415,14 +415,18 @@ describe("D. reInjectProfile", () => {
     writeFileSync(join(cfg.memory.userLevelDir, "profile.md"), "# p\n- 偏简洁\n", "utf8");
     const profile = await ensureProfile(cfg);
     expect(profile).not.toBeNull();
+    // PRD §约束 27：compact 压缩 messages[2..]，profile 注入块（messages[1]）原样保留。
+    // 模拟 compact：messages[1] 保留，把后面的对话压成 1 条。
     const messages: Message[] = [
       { role: "system", content: "base" },
       { role: "system", content: profile!.content },
       { role: "user", content: "hi" },
+      { role: "assistant", content: "hello" },
+      { role: "user", content: "again" },
     ];
-    messages.splice(1, 1);
-    expect(messages[1]).toBeUndefined();
-    const fixed = await reInjectProfile(cfg, messages as Message[]);
+    const compact = messages.slice(0, 2).concat({ role: "user", content: "(compact)" });
+    expect(compact[1]).toBeDefined();
+    const fixed = await reInjectProfile(cfg, compact);
     expect(fixed[1]).toBeDefined();
     expect(fixed[1]!.content).toContain("## 用户画像");
   });
