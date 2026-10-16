@@ -118,6 +118,57 @@ export interface Config {
    * 否则会读写用户真实的技能库。
    */
   skillsStore: string;
+  /**
+   * 记忆系统配置。PRD docs/memory-prd.md §6.3 + §A 配套。
+   * 实现层用 `cfg.memory.userLevelDir ?? homedir()/.neo/memorys`（§7.3）：
+   * 测试场景下 cfg.memory 总有值；真启动路径下 loadConfig 必填默认。
+   */
+  memory: MemoryConfig;
+}
+
+/**
+ * 记忆系统配置（PRD §6.3 + 扩展字段：cwdRelativeMode / piiFilter / ingestJournal / maxProfileChars）。
+ * 字段顺序按 PRD §6.3 列出的顺序；扩展字段排后面集中，便于 review。
+ */
+export interface MemoryConfig {
+  /** 总开关；false 时所有 memory API 返回 no-op。 */
+  enabled: boolean;
+  /** 用户级目录。NEO_MEMORY_DIR 环境变量可覆盖。 */
+  userLevelDir: string;
+  /** cwd 字段呈现模式。default = 绝对路径；absolute = 同 default；sanitized = 编码后短串。 */
+  cwdRelativeMode: "default" | "absolute" | "sanitized";
+  /** true 时 profile 跟 cwd 走（<cwd>/.neo/wiki/profile.md）；默认 false 走 ~/.neo/~。 */
+  worktreeIsolation: boolean;
+  /** profile 字符数硬上限（L3 fallback 的兜底）；默认 12800。 */
+  maxProfileChars: number;
+  /** profile 注入目标 token 数（PRD §5.4 截断阈值）；默认 500。 */
+  profileTokensLimit: number;
+  /** ingest 配置。provider 不得用 "default" / "balanced"（PRD 约束 36）。 */
+  ingest: {
+    /** 固定 classifier_provider；不接受其它值。 */
+    provider: string;
+    /** null 时取 classifier 的默认模型。 */
+    model: string | null;
+    /** 超时毫秒；默认 2000。 */
+    timeoutMs: number;
+  };
+  /** 索引自动写开关。 */
+  autoWriteIndex: boolean;
+  /** -p 单次模式默认不注入 profile。 */
+  noProfileInOneShot: boolean;
+  /** 平台；auto = 运行时读 process.platform。 */
+  platform: "auto" | "macos" | "linux" | "win32";
+  /** PII 过滤（PRD §5.7）。enabled=false 时 recordIndex 跳过过滤。 */
+  piiFilter: {
+    enabled: boolean;
+    /** 启用的模式名集合；空表示全开。可选：openai-key / github-pat / jwt / aws-key / slack-token / email。 */
+    modes: string[];
+  };
+  /** ingest 失败日志目录 + 孤立条目保留小时数。 */
+  ingestJournal: {
+    dir: string;
+    retentionHours: number;
+  };
 }
 
 type Raw = Record<string, unknown>;
@@ -405,11 +456,80 @@ export function loadConfig(overrides: Partial<Config> = {}): Config {
     cwd: here,
     settingsPath: found,
     skillsStore: str(raw["skills_store"], join(homedir(), ".neo", "skills")),
+    memory: resolveMemoryConfig(raw["memory"] as Raw | undefined),
     ...overrides,
   };
 
   if (overrides.cwd && !isAbsolute(overrides.cwd)) cfg.cwd = resolve(here, overrides.cwd);
   return cfg;
+}
+
+/**
+ * 解析 settings.memory.* 段（PRD §6.3 + 扩展字段）。
+ *
+ * 优先级：环境变量 > settings.json > 内置默认。
+ *  - NEO_MEMORY_DISABLE=1 → enabled=false
+ *  - NEO_MEMORY_DIR=<绝对路径> → userLevelDir（测试用：约束 38）
+ *  - NEO_PLATFORM_OVERRIDE=macos|linux|win32 → platform
+ *  - NEO_PII_FILTER_DISABLE=1 → piiFilter.enabled=false
+ *
+ * 注：本函数不验证 provider 取值（PRD 约束 36 写「不允许 default / balanced」），
+ * 实现 Agent 在 recordIndex / ingestUserLevel 入口再校验，避免 config 模块循环依赖。
+ */
+function resolveMemoryConfig(raw: Raw | undefined): MemoryConfig {
+  const r = raw ?? {};
+  const envDisable = process.env["NEO_MEMORY_DISABLE"] === "1";
+  const envPiiDisable = process.env["NEO_PII_FILTER_DISABLE"] === "1";
+  const envDir = process.env["NEO_MEMORY_DIR"];
+  const envPlatform = process.env["NEO_PLATFORM_OVERRIDE"] as
+    | "macos" | "linux" | "win32" | undefined;
+
+  const userLevelDirRaw = envDir ?? str(r["user_level_dir"], join(homedir(), ".neo", "memorys"));
+  const userLevelDir = isAbsolute(userLevelDirRaw) ? userLevelDirRaw : resolve(userLevelDirRaw);
+
+  const cwdRelativeMode = (str(r["cwd_relative_mode"], "default") as
+    "default" | "absolute" | "sanitized");
+
+  const platform = (envPlatform ?? str(r["platform"], "auto") as
+    "auto" | "macos" | "linux" | "win32");
+
+  const ingestRaw = (r["ingest"] ?? {}) as Raw;
+  const ingest = {
+    provider: str(ingestRaw["provider"], "classifier_provider"),
+    model: ingestRaw["model"] === null || typeof ingestRaw["model"] === "string"
+      ? (ingestRaw["model"] as string | null)
+      : null,
+    timeoutMs: num(ingestRaw["timeout_ms"], num(r["ingest_timeout"], 2000)),
+  };
+
+  const piiRaw = (r["pii_filter"] ?? {}) as Raw;
+  const piiFilter = {
+    enabled: !envPiiDisable && bool(piiRaw["enabled"], true),
+    modes: Array.isArray(piiRaw["modes"])
+      ? (piiRaw["modes"] as unknown[]).filter((x): x is string => typeof x === "string")
+      : [],
+  };
+
+  const journalRaw = (r["ingest_journal"] ?? {}) as Raw;
+  const ingestJournal = {
+    dir: str(journalRaw["dir"], join(userLevelDir, ".ingest-failures")),
+    retentionHours: num(journalRaw["retention_hours"], 24),
+  };
+
+  return {
+    enabled: !envDisable && bool(r["enabled"], true),
+    userLevelDir,
+    cwdRelativeMode,
+    worktreeIsolation: bool(r["worktree_isolation"], false),
+    maxProfileChars: num(r["max_profile_chars"], 12800),
+    profileTokensLimit: num(r["profile_tokens_limit"], 500),
+    ingest,
+    autoWriteIndex: bool(r["auto_write_index"], true),
+    noProfileInOneShot: bool(r["no_profile_in_one_shot"], true),
+    platform,
+    piiFilter,
+    ingestJournal,
+  };
 }
 
 /** 解析某档位在路由表下的实际模型名。route.model 为空则取该 provider 的同名档位。 */
