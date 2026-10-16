@@ -35,7 +35,7 @@ import { toolNames } from "./tools/index.ts";
 import { discoverSkills, isValidSkillName, formatSkillLine, normalizeDescription } from "./skills.ts";
 import { createSession, listSessions, loadSession, saveSession, type SessionMeta } from "./session.ts";
 
-const VERSION = "0.0.3";
+const VERSION = "0.1.0";
 
 /** /auto 列表里各实现的说明。 */
 const DESC: Record<string, string> = {
