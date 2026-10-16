@@ -25,6 +25,7 @@ import {
   parseIndexFile,
   renderIndexEntry,
   sanitizeCwd as schemaSanitizeCwd,
+  takeGraphemes,
   todayIso,
 } from "./schema.ts";
 import type { MemoryEntry } from "./types.ts";
@@ -56,7 +57,7 @@ export async function recordIndex(
   ensureDirExists(rawDir);
 
   const date = opts.date ?? todayIso();
-  const summary = makeSummary(opts.firstUserInput);
+  const { summary, truncated } = makeSummary(opts.firstUserInput);
   const createdAt = new Date().toISOString();
 
   // 同 cwd 同日 dedup 路径：扫 rawDir，找 cwd 相同的现存条目
@@ -85,7 +86,7 @@ export async function recordIndex(
     const targetPath = join(rawDir, fileName);
     if (!existsSync(targetPath)) {
       try {
-        writeIndexEntry(targetPath, entry);
+        writeIndexEntry(targetPath, entry, truncated);
         return targetPath;
       } catch (e) {
         const code = (e as NodeJS.ErrnoException).code;
@@ -120,10 +121,13 @@ function ensureDirExists(dir: string): void {
   }
 }
 
-function makeSummary(input: string): string {
-  // 约束 22：以字符为单位截断前 200；超 200 加 …
-  if (input.length <= 200) return input;
-  return input.slice(0, 200) + "…";
+function makeSummary(input: string): { summary: string; truncated: boolean } {
+  // 约束 22：summary ≤ 200 字（不拆分 Unicode / grapheme）；超 200 时末尾 `…` 走 body 段。
+  //  - length ≤ 200：summary = input（无 …）
+  //  - length > 200：summary = 前 200 grapheme（Intl.Segmenter，按字素切，不拆中文/emoji）；
+  //                  body 段由 opts.truncated=true 加 → mark
+  if (input.length <= 200) return { summary: input, truncated: false };
+  return { summary: takeGraphemes(input, 200), truncated: true };
 }
 
 /**
@@ -198,8 +202,8 @@ function updateExistingEntry(existingPath: string, newUpdatedAt: string): string
  * 写新 raw 文件。body 由 renderIndexEntry 渲染。
  * 写用 tmp + rename（约束 9a-c），fsync parent dir。
  */
-function writeIndexEntry(targetPath: string, entry: MemoryEntry): void {
-  const content = renderIndexEntry(entry);
+function writeIndexEntry(targetPath: string, entry: MemoryEntry, truncated: boolean): void {
+  const content = renderIndexEntry(entry, { truncated });
   atomicWrite(targetPath, content);
 }
 

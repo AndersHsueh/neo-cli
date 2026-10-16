@@ -105,26 +105,19 @@ export function generateShortId(rng: { uuid: () => string; getRandomBytes: (n: n
 /* ------------------------------------------------------------------ */
 
 /**
- * 把绝对 cwd 路径转成文件名安全的短串（约束 8）。
- * 规则：
- *   1. basename + parent 第一级 one-step truncation
- *   2. NFC 规范化（约束 49：macOS 中文/Unicode）
- *   3. 小写
- *   4. 非 [a-z0-9-] 替换为 -
- *   5. 多个 - 合并
- *   6. 截断到 60 字符（默认）；win32 平台 40 字符（约束 49）
- *
- * 注意：encodeURIComponent 这里**不**用 — PRD §约束 49 提到 macOS 中文路径
- * 「用 NFC + encodeURIComponent + 替换 % 为 -」是另一种方案；这里采用更通用的
- * 「非 [a-z0-9-] → -」方案，输出短且 URL 安全，覆盖中文 / 空格 / 拉丁字符。
+ * 按 PRD §约束 49 原方案：NFC 化 + encodeURIComponent + 替换 % 为 -。
+ * basename 取末段后处理（更可读；冲突时 short_id 区分 — 约束 9）。
+ *   例 `/Users/xueyuheng/research/研究/项目` → `项目` → `项目`（NFC）→
+ *       `%E9%A1%B9%E7%9B%AE` → `-E9-A1-B9-E7-9B-AE`
+ *   然后 trim 前后 `-`，截到 60 字符（win32 40）。
  */
 export function sanitizeCwd(cwd: string, opts?: { platform?: "macos" | "linux" | "win32" | "auto"; maxLen?: number }): string {
   const maxLen = opts?.maxLen ?? (opts?.platform === "win32" ? 40 : 60);
-  // 取路径末段（更可读；冲突时再加 short_id 区分）
   const parts = cwd.replace(/\\/g, "/").split("/").filter(Boolean);
   const tail = parts.length > 0 ? parts[parts.length - 1] ?? "root" : "root";
-  const norm = tail.normalize("NFC").toLowerCase();
-  const clean = norm.replace(/[^a-z0-9-]+/g, "-").replace(/-+/g, "-").replace(/^-|-$/g, "");
+  const norm = tail.normalize("NFC");
+  const encoded = encodeURIComponent(norm).replace(/%/g, "-");
+  const clean = encoded.replace(/-+/g, "-").replace(/^-|-$/g, "");
   return (clean || "x").slice(0, maxLen);
 }
 
@@ -135,8 +128,12 @@ export function sanitizeCwd(cwd: string, opts?: { platform?: "macos" | "linux" |
 /**
  * 把 MemoryEntry 渲染成完整 raw 文件内容。
  * 顺序：--- yaml frontmatter ---\n\n# H1\n\n简短正文
+ *
+ * 当 opts.truncated=true 时，正文末尾追加 `…` 标记被截断（约束 22）；
+ * summary YAML 字段保持原 200 字符**不带** `…`，避免「summary: N 字 + …」
+ * 撞到约束 4「summary 1~200 字符」上限。
  */
-export function renderIndexEntry(entry: MemoryEntry): string {
+export function renderIndexEntry(entry: MemoryEntry, opts?: { truncated?: boolean }): string {
   const lines: string[] = ["---"];
   lines.push(`date: ${entry.date}`);
   lines.push(`cwd: ${entry.cwd}`);
@@ -155,9 +152,27 @@ export function renderIndexEntry(entry: MemoryEntry): string {
   lines.push("");
   lines.push(`# ${entry.topic || "记忆条目"}（${entry.date}）`);
   lines.push("");
-  lines.push(`（一句话概要与 summary 字段冗余但保留正文段以便 LLM 检索：${entry.summary}）`);
+  const truncMark = opts?.truncated ? "…" : "";
+  lines.push(`（一句话概要与 summary 字段冗余但保留正文段以便 LLM 检索：${entry.summary}${truncMark}）`);
   lines.push("");
   return lines.join("\n");
+}
+
+/**
+ * 按 grapheme 切字符串前 N 个字素（约束 22「不拆分 Unicode」）。
+ * 用 Intl.Segmenter grapheme granularity（Node 16+ 标准，无新依赖）。
+ * 输入必须为 UTF-8 字符串；输入被拆为 grapheme 簇计数。
+ */
+export function takeGraphemes(text: string, maxCount: number): string {
+  const seg = new Intl.Segmenter("zh", { granularity: "grapheme" });
+  let result = "";
+  let count = 0;
+  for (const { segment } of seg.segment(text)) {
+    if (count >= maxCount) break;
+    result += segment;
+    count++;
+  }
+  return result;
 }
 
 /**
