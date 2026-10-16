@@ -21,6 +21,9 @@ import { recordIndex as recordIndexImpl, type RecordIndexOpts } from "./recordIn
 import { ensureProfile as ensureProfileImpl, reInjectProfile as reInjectProfileImpl, estimateTextTokens } from "./profile.ts";
 import { ingestUserLevel as ingestUserLevelImpl, defaultIngestEngine } from "./ingest.ts";
 import { initProjectLevel as initProjectLevelImpl } from "./init.ts";
+import { forgetDryRun, forgetYes, forgetResume } from "./forget.ts";
+import { reindex as reindexImpl } from "./reindex.ts";
+import { redactSummary as redactSummaryImpl } from "./redact.ts";
 export { defaultIngestEngine };
 export { parseIndexEntry } from "./schema.ts";
 export { sanitizeCwd, generateShortId, buildFileName, renderIndexEntry, parseIndexFile, takeGraphemes } from "./schema.ts";
@@ -70,33 +73,42 @@ export async function initProjectLevel(
 /* ------------------------------------------------------------------ */
 
 export async function redactSummary(
-  _cfg: Config,
-  _path: string,
-  _pattern: string,
+  cfg: Config,
+  path: string,
+  pattern: string,
 ): Promise<void> {
-  throw new MemoryError("schema_invalid", "redactSummary: not implemented (stage 1 stub)");
+  return redactSummaryImpl(cfg, path, pattern);
 }
 
 export async function forgetEntries(
-  _cfg: Config,
-  _shortIds: string[],
-  _opts?: { yes?: boolean; dryRun?: boolean },
+  cfg: Config,
+  shortIds: string[],
+  opts?: { yes?: boolean; dryRun?: boolean },
 ): Promise<{ deleted: string[]; skipped: string[] }> {
-  throw new MemoryError("permission_denied", "forgetEntries: not implemented (stage 1 stub)");
+  const paths = shortIds.map((s) => resolveRawPath(cfg, s));
+  if (opts?.dryRun) {
+    const r = await forgetDryRun(cfg, paths);
+    return { deleted: r.wouldDelete, skipped: Object.keys(r.reasonByPath) };
+  }
+  if (opts?.yes) {
+    return forgetYes(cfg, paths);
+  }
+  // default：y/N 询问（v0.1 占位：自动拒）
+  return { deleted: [], skipped: paths };
 }
 
 export async function reindexForCwd(
-  _cfg: Config,
-  _newCwd: string,
+  cfg: Config,
+  newCwd: string,
 ): Promise<{ renamed: string[]; failed: string[] }> {
-  throw new MemoryError("schema_invalid", "reindexForCwd: not implemented (stage 1 stub)");
+  return reindexImpl(cfg, "", newCwd);
 }
 
 export async function listStatus(
-  _cfg: Config,
-  _opts?: { cwd?: string; date?: string },
+  cfg: Config,
+  opts?: { cwd?: string; date?: string },
 ): Promise<string> {
-  throw new MemoryError("ingest_failed", "listStatus: not implemented (stage 1 stub)");
+  return listStatusImpl(cfg, opts);
 }
 
 /* ------------------------------------------------------------------ */
@@ -135,3 +147,53 @@ export type {
 } from "./types.ts";
 export { MemoryError } from "./types.ts";
 export type { MemoryErrorCode } from "./types.ts";
+/* ------------------------------------------------------------------ */
+/* 内部 helpers                                                          */
+/* ------------------------------------------------------------------ */
+
+import { readdirSync } from "node:fs";
+import { join } from "node:path";
+
+function resolveRawPath(cfg: Config, shortId: string): string {
+  const rawDir = join(cfg.memory.userLevelDir, "raw");
+  // 简单按 shortId 搜：精确文件名匹配 `<date>_*_<shortId>.md`
+  let files: string[];
+  try {
+    files = readdirSync(rawDir);
+  } catch {
+    return join(rawDir, `${shortId}.md`);
+  }
+  for (const f of files) {
+    if (f.endsWith(`_${shortId}.md`)) return join(rawDir, f);
+  }
+  return join(rawDir, `${shortId}.md`);
+}
+
+/**
+ * listStatus 实现（§A /memory status）：按 cwd 列出当前 cwd 在用户级索引里的条目。
+ */
+async function listStatusImpl(cfg: Config, opts?: { cwd?: string; date?: string }): Promise<string> {
+  const rawDir = join(cfg.memory.userLevelDir, "raw");
+  const targetCwd = opts?.cwd ?? cfg.cwd;
+  let files: string[];
+  try {
+    files = readdirSync(rawDir).filter((f) => f.endsWith(".md"));
+  } catch {
+    return `cwd: ${targetCwd}  索引 0 条：`;
+  }
+
+  const lines: string[] = [`cwd: ${targetCwd}  索引 ${files.length} 条：`];
+  for (const f of files) {
+    try {
+      const { parseIndexFile } = await import("./schema.ts");
+      const text = await import("node:fs").then((m) => m.readFileSync(join(rawDir, f), "utf8"));
+      const entry = parseIndexFile(text);
+      if (opts?.cwd && entry.cwd !== opts.cwd) continue;
+      if (opts?.date && entry.date !== opts.date) continue;
+      lines.push(`  - ${entry.date} ${f.replace(/\.md$/, "")} ${entry.summary}`);
+    } catch {
+      continue;
+    }
+  }
+  return lines.join("\n");
+}

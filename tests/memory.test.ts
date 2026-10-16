@@ -16,7 +16,7 @@
  *                   + bun test 红（Cannot find module ../src/memory/...）
  * 推进次序：① Config.memory → tsc 绿；② src/memory/* → bun test 绿。
  */
-import { describe, expect, test, afterAll } from "bun:test";
+import { describe, expect, test, beforeAll, afterAll } from "bun:test";
 import {
   mkdtempSync,
   rmSync,
@@ -321,10 +321,11 @@ describe("C. ensureProfile profile 注入", () => {
 
   test("C3 段落边界落入 [400,600] 区间 | L1 截断 + stderr WARN", async () => {
     const { cfg } = sandbox("C3");
-    // ~1500 字符，2-3 段，段落边界落入 [400, 600] tokens 区间。
-    const para1 = "短段落。\n\n";
-    const filler = "中文字。".repeat(120);  // ~600 chars / ~400 tokens
-    const profile = para1 + filler + "\n\n" + filler + "\n\n" + filler;
+    // 段落 filler ~350-380 字/段（≈ 220–250 tokens）；3 段让段落边界 ~440 / ~660 tokens。
+    // 调块大小到 350/段 → 第一段 ~350, 累计 ~350, ~700, ~1050 chars → tokens ~233/466/700。
+    // 区间 [400,600]：第二段结尾 ~466 tokens（落入）；第一段结尾 ~233（不入）。
+    const filler = "中文字。".repeat(70);  // ~350 chars / ~230 tokens
+    const profile = filler + "\n\n" + filler + "\n\n" + filler;
     writeFileSync(join(cfg.memory.userLevelDir, "profile.md"), profile, "utf8");
     const warns: string[] = [];
     const origErr = console.error;
@@ -563,6 +564,12 @@ describe("F. ingest 失败语义", () => {
 /* ------------------------------------------------------------------ */
 
 describe("G. skills 系统降级", () => {
+  // 模块级 bool 在前面用例已被触发 → 测试体显式 reset
+  beforeAll(async () => {
+    const { _resetKarpathyWikiWarned } = await import("../src/memory/profile.ts");
+    _resetKarpathyWikiWarned();
+  });
+
   test("G1 ~/.neo/skills 不含 karpathy-wiki-* | 启动 WARN 含「缺失」；profile 仍注入；索引仍生效", async () => {
     const { cwd, cfg } = sandbox("G1");
     writeFileSync(join(cfg.memory.userLevelDir, "profile.md"), "# p\n- x\n", "utf8");

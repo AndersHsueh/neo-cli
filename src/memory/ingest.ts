@@ -31,7 +31,13 @@ export class DefaultIngestEngine implements IngestEngine {
   readonly name = "default-classifier-provider";
 
   async ingest(cfg: Config, opts?: IngestOpts): Promise<IngestResult> {
-    // 1. failure 注入（PRD §7.4 #2 测试可注入）
+    // F4 retry：failure 注入也走 retry 壳（PRD §约束 21：网络/超时类 3 attempts）。
+    // 注：429 与 unparseable 实际只跑 1 次（fn 不抛 retry 类失败）。
+    return await ingestWithRetry(() => this.runOnce(cfg, opts), opts);
+  }
+
+  private async runOnce(cfg: Config, opts?: IngestOpts): Promise<IngestResult> {
+    // failure 注入（PRD §7.4 #2 测试可注入）
     if (opts?.failure === "network") {
       throw new MemoryError("ingest_failed", "网络错误（注入）");
     }
@@ -46,10 +52,7 @@ export class DefaultIngestEngine implements IngestEngine {
     if (opts?.failure === "timeout_fast" || opts?.failure === "timeout") {
       throw new MemoryError("ingest_failed", "ingest 超时（注入）");
     }
-
-    // F4 retry：网络/超时类失败（PRD §约束 21）做 500ms × 2 = 3 attempts 总尝试；
-    // 当前默认实现无真网络（happy path 立即成功），但保留 retry 壳便于真实 LLM 接入。
-    return await ingestWithRetry(() => this.runHappyPath(cfg), opts);
+    return await this.runHappyPath(cfg);
   }
 
   private async runHappyPath(cfg: Config): Promise<IngestResult> {
