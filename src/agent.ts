@@ -367,7 +367,7 @@ export class Agent {
           this.opt.console.toolHeader(name, previewArgs(call.function.arguments));
 
           const r = await dispatch(name, call.function.arguments, ctx);
-          this.opt.console.toolResult(r.output, 16);
+          this.opt.console.toolResult(r.output, 2);
           this.opt.onEvent?.({ type: "tool_end", data: { name, ok: r.ok, truncated: r.truncated } });
 
           // 连续失败计数：分类器据此判断当前档位是否撑不住。

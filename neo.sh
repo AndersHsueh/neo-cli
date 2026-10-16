@@ -1,1 +1,1 @@
-bun run src/index.ts --edit --no-reasoning
+bun run src/index.ts --yes --no-reasoning

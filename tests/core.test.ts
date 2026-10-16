@@ -9,7 +9,15 @@ import { readFileSync, writeFileSync, mkdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
-import { TOOLS, toolSpecs, toolNames, globToRegExp, htmlToText, dispatch } from "../src/tools/index.ts";
+import {
+  TOOLS,
+  toolSpecs,
+  toolNames,
+  globToRegExp,
+  htmlToText,
+  rewriteSearchUrl,
+  dispatch,
+} from "../src/tools/index.ts";
 import { estimateTokens } from "../src/llm.ts";
 import { RuleClassifier } from "../src/classifier/rules.ts";
 import { LlmClassifier } from "../src/classifier/llm.ts";
@@ -273,6 +281,38 @@ describe("web_fetch", () => {
     const r = await dispatch("web_fetch", JSON.stringify({ url: "file:///etc/passwd" }), makeCtx());
     expect(r.ok).toBe(false);
     expect(r.output).toContain("http");
+  });
+
+  test("rewriteSearchUrl: google/duckduckgo 搜索页改写到 cn.bing.com", () => {
+    // google 带 q → 改写
+    expect(rewriteSearchUrl("https://www.google.com/search?q=hello+world")).toEqual({
+      url: "https://cn.bing.com/search?q=hello%20world",
+      note: expect.stringContaining("cn.bing.com"),
+    });
+    // duckduckgo 带 q → 改写
+    expect(rewriteSearchUrl("https://duckduckgo.com/?q=neo+cli")).toEqual({
+      url: "https://cn.bing.com/search?q=neo%20cli",
+      note: expect.stringContaining("cn.bing.com"),
+    });
+    // 子域也命中（endsWith(".google.com")）
+    expect(rewriteSearchUrl("https://scholar.google.com/search?q=x").url).toBe(
+      "https://cn.bing.com/search?q=x",
+    );
+  });
+
+  test("rewriteSearchUrl: 非搜索引擎与无 q 的 URL 原样返回", () => {
+    // 普通网页不动
+    expect(rewriteSearchUrl("https://example.com/page")).toEqual({
+      url: "https://example.com/page",
+      note: null,
+    });
+    // google 首页（无 q）不动
+    expect(rewriteSearchUrl("https://www.google.com/")).toEqual({
+      url: "https://www.google.com/",
+      note: null,
+    });
+    // 非法 URL 原样返回
+    expect(rewriteSearchUrl("not a url")).toEqual({ url: "not a url", note: null });
   });
 });
 

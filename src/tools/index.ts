@@ -609,23 +609,67 @@ const shell: ToolImpl = {
 /* web_fetch                                                           */
 /* ------------------------------------------------------------------ */
 
+/**
+ * 把不可达的搜索引擎 URL 改写到国内可达的 cn.bing.com。
+ *
+ * 背景：本机在中国境内，google.com / duckduckgo.com 均连接超时（实测 000）。
+ * 模型可能凭习惯拼出这些 URL，这里兜底改写，避免白跑一次抓取。
+ * 只改「搜索页」URL；普通网页抓取不受影响。
+ */
+export function rewriteSearchUrl(url: string): { url: string; note: string | null } {
+  let u: URL;
+  try {
+    u = new URL(url);
+  } catch {
+    return { url, note: null };
+  }
+  const host = u.hostname.toLowerCase();
+  const isSearchHost =
+    host === "www.google.com" ||
+    host === "google.com" ||
+    host.endsWith(".google.com") ||
+    host === "duckduckgo.com" ||
+    host === "www.duckduckgo.com" ||
+    host === "html.duckduckgo.com" ||
+    host === "lite.duckduckgo.com";
+
+  if (!isSearchHost) return { url, note: null };
+
+  // 提取查询词：google 用 q，duckduckgo 用 q
+  const q = u.searchParams.get("q");
+  if (!q) return { url, note: null };
+
+  const next = `https://cn.bing.com/search?q=${encodeURIComponent(q)}`;
+  return { url: next, note: `已将 ${host} 的搜索改写为 cn.bing.com（原域名在中国境内不可达）` };
+}
+
 const webFetch: ToolImpl = {
   sensitive: false,
   spec: {
     type: "function",
     function: {
       name: "web_fetch",
-      description: "抓取 URL 内容并转为纯文本（去除 HTML 标签）。适合查文档、读网页。",
+      description:
+        "抓取 URL 内容并转为纯文本（去除 HTML 标签）。适合查文档、读网页。\n" +
+        "搜索时用 cn.bing.com：https://cn.bing.com/search?q=<关键词>（关键词需 URL 编码）。\n" +
+        "不要用 google.com / duckduckgo.com——本机在中国境内，这两个域名不可达（已实测连接超时）。",
       parameters: {
         type: "object",
-        properties: { url: { type: "string", description: "完整 URL（http/https）" } },
+        properties: {
+          url: {
+            type: "string",
+            description:
+              "完整 URL（http/https）。搜索用 https://cn.bing.com/search?q=<关键词>",
+          },
+        },
         required: ["url"],
       },
     },
   },
   async execute(args) {
-    const url = String(args["url"] ?? "");
-    if (!/^https?:\/\//i.test(url)) throw new ToolError("url 必须以 http:// 或 https:// 开头");
+    const raw = String(args["url"] ?? "");
+    if (!/^https?:\/\//i.test(raw)) throw new ToolError("url 必须以 http:// 或 https:// 开头");
+    const { url, note } = rewriteSearchUrl(raw);
     const res = await fetch(url, {
       headers: { "User-Agent": "neo-cli/0.1 (+bun)" },
       signal: AbortSignal.timeout(30_000),
@@ -635,7 +679,9 @@ const webFetch: ToolImpl = {
     const body = await res.text();
     const text = ct.includes("html") ? htmlToText(body) : body;
     const title = /<title[^>]*>([\s\S]*?)<\/title>/i.exec(body)?.[1]?.trim();
-    return [`URL: ${url}`, title ? `Title: ${title}` : "", "", text.slice(0, 60_000)].filter((x) => x !== undefined).join("\n");
+    return [note, `URL: ${url}`, title ? `Title: ${title}` : "", "", text.slice(0, 60_000)]
+      .filter((x) => x !== undefined && x !== null && x !== "")
+      .join("\n");
   },
 };
 
