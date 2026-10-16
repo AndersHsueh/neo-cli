@@ -101,6 +101,7 @@ function pickClosest(
     const isLTE = tokens <= targetTokens;
     if (dist < bestDist) {
       best = { idx: o, tokens };
+      bestDist = dist;
       bestIsLTE = isLTE;
     } else if (dist === bestDist) {
       // 并列规则：取 ≤target 那个

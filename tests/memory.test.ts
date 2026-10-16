@@ -321,11 +321,11 @@ describe("C. ensureProfile profile 注入", () => {
 
   test("C3 段落边界落入 [400,600] 区间 | L1 截断 + stderr WARN", async () => {
     const { cfg } = sandbox("C3");
-    // 段落 filler ~350-380 字/段（≈ 220–250 tokens）；3 段让段落边界 ~440 / ~660 tokens。
-    // 调块大小到 350/段 → 第一段 ~350, 累计 ~350, ~700, ~1050 chars → tokens ~233/466/700。
-    // 区间 [400,600]：第二段结尾 ~466 tokens（落入）；第一段结尾 ~233（不入）。
-    const filler = "中文字。".repeat(70);  // ~350 chars / ~230 tokens
-    const profile = filler + "\n\n" + filler + "\n\n" + filler;
+    // ASCII fixture：3 段，每段 1500 chars，token 比例稳定 ~0.4-0.5 token/char（Coco 实测）。
+    // 段 1 末 ~600-750 token 落入 [400,600] 区间上沿；段 2/3 末超出。
+    // L1 选段 1 末（offset 1500）作为最近边界。
+    const para = "a".repeat(1700);
+    const profile = [para, para, para].join("\n\n");
     writeFileSync(join(cfg.memory.userLevelDir, "profile.md"), profile, "utf8");
     const warns: string[] = [];
     const origErr = console.error;
@@ -376,9 +376,9 @@ describe("C. ensureProfile profile 注入", () => {
 
   test("C7 L3 硬截断：所有边界都远离 [400,600]", async () => {
     const { cfg } = sandbox("C7");
-    // ~1500 字符；L1/L2 边界都远离 [400, 600] tokens 区间 → 守卫漏 → L3 命中。
-    let profile = "";
-    for (let i = 0; i < 30; i++) profile += `# h${i}\n` + "字。".repeat(20) + "\n\n";
+    // 单段无 \n\n 边界 + 无 markdown 标题 → L1/L2 都搜不到候选 → 守卫漏 → L3 命中。
+    // 3000 chars ASCII ≈ 750 tokens > 500，且无 paragraph/heading 边界。
+    const profile = "a".repeat(3000);
     writeFileSync(join(cfg.memory.userLevelDir, "profile.md"), profile, "utf8");
     const warns: string[] = [];
     const origErr = console.error;
@@ -866,10 +866,26 @@ describe("§A. /memory 子命令族", () => {
 
   test("A.reindex <new_cwd> | 旧 cwd 不存在的条目改名为新 sanitized-cwd", async () => {
     const { cwd: oldCwd, cfg } = sandbox("AR");
-    const path = (await recordIndex(cfg, oldCwd, { firstUserInput: "x" }))!
+    const path = (await recordIndex(cfg, oldCwd, { firstUserInput: "x" }))!;
+    // 模拟"旧 cwd 改名前后"：把 entry.cwd 重写到不存在的路径，让 reindex 把它绑到 new_cwd。
+    const oldEntryPath = path;
+    const oldContent = readFileSync(oldEntryPath, "utf8");
+    const ghostCwd = "/.neo.missing/never-existed-12345";
+    const ghostContent = oldContent.replace(new RegExp(`cwd: ${oldCwd.replace(/\//g, "\\/")}`), `cwd: ${ghostCwd}`);
+    writeFileSync(oldEntryPath, ghostContent, "utf8");
     const newCwd = mkdtempSync(join(ROOT, "AR-new-"));
     const out = await reindexImpl(cfg, oldCwd, newCwd);
     expect(out).not.toBeNull();
+    // 扫条目数 + 改名前后文件名 + frontmatter.cwd 同步
+    const rawDir = join(cfg.memory.userLevelDir, "raw");
+    const oldFile = basename(path);
+    const filesAfter = readdirSync(rawDir);
+    expect(filesAfter.length).toBe(1);
+    const newFile = filesAfter[0]!;
+    expect(newFile).not.toBe(oldFile);
+    const newContent = readFileSync(join(rawDir, newFile), "utf8");
+    expect(newContent).toContain(`cwd: ${newCwd}`);
+    expect(newContent).not.toContain(`cwd: ${oldCwd}`);
   });
 
   test("A.reindex 未指定 new_cwd | 抛错或返回失败", async () => {
