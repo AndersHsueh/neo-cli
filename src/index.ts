@@ -865,8 +865,14 @@ async function handleCommand(
       mkdirSync(dirname(target), { recursive: true });
       writeFileSync(target, buildMemoryFile(cfg), "utf8");
       ui.success(`已生成 ${target}`);
-      // PRD §约束 14a / §约束 16：额外初始化项目级 wiki 骨架 + 写 AGENTS.md 工作流段。
-      await initProjectLevelImpl(cfg, cfg.cwd);
+      // PRD §约束 14a / §约束 16 / §约束 17：额外初始化项目级 wiki 骨架 + 写 AGENTS.md 工作流段。
+      // 失败按约束 17 不抛 — catch + stderr WARN。
+      try {
+        await initProjectLevelImpl(cfg, cfg.cwd);
+      } catch (e) {
+        const reason = e instanceof Error ? e.message : String(e);
+        console.error(`项目级 wiki 骨架创建失败（${reason}），本次会话不写索引`);
+      }
       break;
     }
 

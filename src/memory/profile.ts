@@ -13,10 +13,12 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { estimateTokens } from "../llm.ts";
+import { discoverSkills } from "../skills.ts";
 import { MemoryError } from "./types.ts";
 import type { ProfileSlice } from "./types.ts";
 import type { Config } from "../config.ts";
 import type { Message } from "../llm.ts";
+import { isWikiSkillComplete } from "./agMd.ts";
 
 /* ------------------------------------------------------------------ */
 /* 工具：估算纯文本 token                                                */
@@ -26,6 +28,29 @@ import type { Message } from "../llm.ts";
 const PER_MESSAGE_OVERHEAD = estimateTokens([{ role: "user", content: "" }], []);
 export function estimateTextTokens(text: string): number {
   return Math.max(0, estimateTokens([{ role: "user", content: text }], []) - PER_MESSAGE_OVERHEAD);
+}
+
+/* ------------------------------------------------------------------ */
+/* 技能缺失警告（约束 40 / §7.1 G1）                                     */
+/* ------------------------------------------------------------------ */
+
+let _karpathyWikiWarned = false;
+
+/**
+ * 检查 karpathy-wiki-* 技能可用性；缺失时 stderr 一行（约束 40）。
+ * 幂等：同一进程只 warn 一次，避免污染 LLM 流（约束 51）。
+ */
+export function warnIfWikiSkillsMissing(cfg: Config): void {
+  if (_karpathyWikiWarned) return;
+  const skills = discoverSkills(cfg);
+  if (isWikiSkillComplete(skills.map((s) => s.name))) return;
+  _karpathyWikiWarned = true;
+  console.error(`记忆系统所需的 karpathy-wiki-* 技能缺失，请安装后再启用记忆功能。详见 docs/memory-prd.md §6.4`);
+}
+
+/** 测试用：重置幂等标记。 */
+export function _resetKarpathyWikiWarned(): void {
+  _karpathyWikiWarned = false;
 }
 
 /* ------------------------------------------------------------------ */
@@ -134,6 +159,9 @@ export async function ensureProfile(
   cfg: Config,
   opts?: EnsureProfileOpts,
 ): Promise<ProfileSlice | null> {
+  // 约束 40 / §7.1 G1：karpathy-wiki-* 技能缺失 stderr WARN（一次幂等）
+  warnIfWikiSkillsMissing(cfg);
+
   const m = cfg.memory;
   if (!m.enabled) return null;
   if (opts?.oneShot && m.noProfileInOneShot) return null;

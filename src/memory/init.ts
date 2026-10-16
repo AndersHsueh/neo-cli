@@ -24,37 +24,39 @@ const WORKFLOW_HEAD = "## 工作流";
 
 /**
  * 懒创建项目级 wiki 骨架 + 写 AGENTS.md。
- * 失败：启动日志 WARN；不抛（约束 17）。
+ * 失败：抛 MemoryError（约束 17 期望调用方吞掉并 WARN；这里按 §7.1 E3 实抛）。
+ * 调用方应在 src/index.ts 钩子处 try/catch 并 stderr WARN，避免阻塞会话。
  */
 export async function initProjectLevel(cfg: Config, cwd: string): Promise<void> {
   const m = cfg.memory;
   if (!m.enabled) return;
 
-  try {
-    ensureWikiDirs(cwd);
-    writeTagsFile(cwd);
-    await writeOrUpdateAgentsContent(cfg, cwd);
+  ensureWikiDirsOrThrow(cwd);
+  writeTagsFile(cwd);
+  await writeOrUpdateAgentsContent(cfg, cwd);
 
-    // 启动日志 INFO（不在失败分支）
-    console.error(`已初始化项目级 wiki 记忆骨架 @ ${cwd}/.neo/wiki/`);
-  } catch (e) {
-    // 约束 17：失败不抛，会话不阻塞
-    const reason = e instanceof Error ? e.message : String(e);
-    console.error(`项目级 wiki 骨架创建失败（${reason}），本次会话不写索引`);
-    return;
-  }
+  // 启动日志 INFO（不在失败分支）
+  console.error(`已初始化项目级 wiki 记忆骨架 @ ${cwd}/.neo/wiki/`);
 }
 
 /* ------------------------------------------------------------------ */
 /* 内部 helpers                                                          */
 /* ------------------------------------------------------------------ */
 
-function ensureWikiDirs(cwd: string): void {
+function ensureWikiDirsOrThrow(cwd: string): void {
   const base = join(cwd, ".neo", "wiki");
   for (const sub of ["raw", "wiki", "outputs"]) {
     const p = join(base, sub);
     if (existsSync(p)) continue;
-    mkdirSync(p, { recursive: true });
+    try {
+      mkdirSync(p, { recursive: true });
+    } catch (e) {
+      const code = (e as NodeJS.ErrnoException).code;
+      if (code === "EACCES" || code === "EPERM") {
+        throw new MemoryError("permission_denied", `项目级 wiki 骨架目录无写权限：${p}`, e);
+      }
+      throw e;
+    }
   }
 }
 
