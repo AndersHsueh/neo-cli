@@ -501,14 +501,14 @@ describe("F. ingest 失败语义", () => {
 
   test("F2 网络错误 | 落 .ingest-failures/<date>_<id>.log；raw 不变", async () => {
     const { cfg } = sandbox("F2");
-    await expect(ingestUserLevel(cfg)).rejects.toBeDefined();
+    await expect(ingestUserLevel(cfg, { failure: "network" })).rejects.toMatchObject({ code: "ingest_failed" });
     const failDir = join(cfg.memory.userLevelDir, ".ingest-failures");
     expect(existsSync(failDir)).toBe(true);
   });
 
   test("F3 LLM 输出无法解析 | 同 F2", async () => {
     const { cfg } = sandbox("F3");
-    await expect(ingestUserLevel(cfg)).rejects.toBeDefined();
+    await expect(ingestUserLevel(cfg, { failure: "unparseable" })).rejects.toMatchObject({ code: "ingest_failed" });
   });
 
   test("F4 ingest 429 配额 | 落 .ingest-failures + stderr WARN 含「配额」", async () => {
@@ -517,7 +517,7 @@ describe("F. ingest 失败语义", () => {
     const origErr = console.error;
     console.error = (...a: unknown[]) => warns.push(a.join(" "));
     try {
-      await expect(ingestUserLevel(cfg)).rejects.toBeDefined();
+      await expect(ingestUserLevel(cfg, { failure: "429" })).rejects.toMatchObject({ code: "ingest_failed" });
       expect(warns.some(w => /配额|429/.test(w))).toBe(true);
     } finally {
       console.error = origErr;
@@ -526,15 +526,14 @@ describe("F. ingest 失败语义", () => {
 
   test("F5 ingest 超时 (>2000ms) | 同 F2 不重试", async () => {
     const { cfg } = sandbox("F5");
-    await expect(ingestUserLevel(cfg)).rejects.toBeDefined();
+    await expect(ingestUserLevel(cfg, { failure: "timeout" })).rejects.toMatchObject({ code: "ingest_failed" });
   });
 
   test("F6 raw 写入 + ingest 失败 → 后续 ingestUserLevel 能扫 .ingest-failures 重试", async () => {
     const { cwd, cfg } = sandbox("F6");
     await recordIndex(cfg, cwd, { firstUserInput: "x" });
-    // 第一次 ingest 失败（占位），第二次成功（占位）。实现期由 IngestEngine 注入器或
-    // NEO_MEMORY_INGEST_FAIL=network|429|unparseable|timeout 环境变量决定。
-    await expect(ingestUserLevel(cfg)).rejects.toBeDefined();
+    // 第一次 ingest 注入失败 → 落 log；第二次 ingest 不注入 → 扫 log 重试成功并 unlink。
+    await expect(ingestUserLevel(cfg, { failure: "network" })).rejects.toMatchObject({ code: "ingest_failed" });
     await ingestUserLevel(cfg);
     const failDir = join(cfg.memory.userLevelDir, ".ingest-failures");
     expect(existsSync(failDir) ? readdirSync(failDir).length : 0).toBe(0);

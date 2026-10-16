@@ -18,6 +18,8 @@ import { MemoryError } from "./types.ts";
 
 import { recordIndex as recordIndexImpl, type RecordIndexOpts } from "./recordIndex.ts";
 import { ensureProfile as ensureProfileImpl, reInjectProfile as reInjectProfileImpl } from "./profile.ts";
+import { ingestUserLevel as ingestUserLevelImpl, defaultIngestEngine } from "./ingest.ts";
+export { defaultIngestEngine };
 export { parseIndexEntry } from "./schema.ts";
 export { sanitizeCwd, generateShortId, buildFileName, renderIndexEntry, parseIndexFile, takeGraphemes } from "./schema.ts";
 
@@ -48,10 +50,10 @@ export async function reInjectProfile(
 }
 
 export async function ingestUserLevel(
-  _cfg: Config,
-  _opts?: IngestOpts,
+  cfg: Config,
+  opts?: IngestOpts,
 ): Promise<IngestResult> {
-  throw new MemoryError("ingest_failed", "ingestUserLevel: not implemented (stage 1 stub)");
+  return ingestUserLevelImpl(cfg, opts);
 }
 
 export async function initProjectLevel(
@@ -106,14 +108,6 @@ export function estimateProfile(_text: string): number {
 /* ------------------------------------------------------------------ */
 /* IngestEngine 注入点（§7.4 #2）                                       */
 /* ------------------------------------------------------------------ */
-
-/** 默认空 IngestEngine：调用即抛错，便于让实现期显式注入。 */
-export const defaultIngestEngine: IngestEngine = {
-  name: "stub-no-engine",
-  async ingest(): Promise<IngestResult> {
-    throw new MemoryError("ingest_failed", "no IngestEngine registered");
-  },
-};
 
 /** 进程内 IngestEngine 注册点；测试可在 beforeAll 里设置。 */
 let _ingestEngine: IngestEngine = defaultIngestEngine;
