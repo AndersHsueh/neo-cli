@@ -42,9 +42,17 @@ export class DefaultIngestEngine implements IngestEngine {
     if (opts?.failure === "unparseable") {
       throw new MemoryError("ingest_failed", "LLM 输出无法解析（注入）");
     }
-    if (opts?.failure === "timeout") {
+    // F5 兼容：失败名 `timeout`（短）与 `timeout_fast`（冗余别名）。
+    if (opts?.failure === "timeout_fast" || opts?.failure === "timeout") {
       throw new MemoryError("ingest_failed", "ingest 超时（注入）");
     }
+
+    // F4 retry：网络/超时类失败（PRD §约束 21）做 500ms × 2 = 3 attempts 总尝试；
+    // 当前默认实现无真网络（happy path 立即成功），但保留 retry 壳便于真实 LLM 接入。
+    return await ingestWithRetry(() => this.runHappyPath(cfg), opts);
+  }
+
+  private async runHappyPath(cfg: Config): Promise<IngestResult> {
 
     // 2. happy path：扫 raw/*.md → wiki/index.md
     const userLevelDir = cfg.memory.userLevelDir;
@@ -186,4 +194,33 @@ function ensureDirExists(dir: string): void {
   } catch {
     // best-effort
   }
+}
+/* ------------------------------------------------------------------ */
+/* 内部 helpers                                                          */
+/* ------------------------------------------------------------------ */
+
+/**
+ * retry 壳（PRD §约束 21）：网络 / 超时类失败做 500ms × 2 = 3 attempts；
+ * 配额（429）/ 解析错误不重试（直接抛）。
+ */
+async function ingestWithRetry(
+  fn: () => Promise<IngestResult>,
+  opts?: IngestOpts,
+): Promise<IngestResult> {
+  const failMode = opts?.failure;
+  const shouldRetry = failMode === "network" || failMode === "timeout" || failMode === "timeout_fast";
+  let lastErr: unknown;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      return await fn();
+    } catch (e) {
+      lastErr = e;
+      if (!shouldRetry) throw e;
+      if (attempt < 2) {
+        console.error(`记忆 ingest 重试 ${attempt + 1}/2`);
+        await new Promise<void>((r) => setTimeout(r, 500));
+      }
+    }
+  }
+  throw lastErr;
 }

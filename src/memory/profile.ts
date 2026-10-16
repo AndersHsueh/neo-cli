@@ -16,6 +16,7 @@ import { estimateTokens } from "../llm.ts";
 import { MemoryError } from "./types.ts";
 import type { ProfileSlice } from "./types.ts";
 import type { Config } from "../config.ts";
+import type { Message } from "../llm.ts";
 
 /* ------------------------------------------------------------------ */
 /* 工具：估算纯文本 token                                                */
@@ -209,7 +210,7 @@ function buildSlice(
     "",
     content,
     "",
-    `> 来源：${m.userLevelDir}/profile.md（${bytes} 字节,${estimatedTokens} tokens）`,
+    `> 来源：${m.userLevelDir}/profile.md(${bytes} 字节,${estimatedTokens} tokens)`,
   ].join("\n");
   return {
     content: block,
@@ -238,9 +239,9 @@ export interface ReInjectProfileOpts {
  */
 export async function reInjectProfile(
   cfg: Config,
-  messages: Array<{ role: string; content: string }>,
+  messages: Message[],
   opts?: ReInjectProfileOpts,
-): Promise<Array<{ role: string; content: string }>> {
+): Promise<Message[]> {
   const m = cfg.memory;
   if (!m.enabled) return messages;
 

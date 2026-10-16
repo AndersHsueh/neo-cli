@@ -30,6 +30,7 @@ import { Console } from "./ui/console.ts";
 import { banner, c, rule } from "./ui/theme.ts";
 import { renderMarkdown } from "./ui/render.ts";
 import { buildMemoryFile, buildSystemPrompt } from "./system-prompt.ts";
+import { ensureProfile as initEnsureProfile, reInjectProfile as initReInjectProfile, recordIndex as initRecordIndex, initProjectLevel as initProjectLevelImpl } from "./memory/index.ts";
 import { listModels, type Message } from "./llm.ts";
 import { toolNames } from "./tools/index.ts";
 import { discoverSkills, isValidSkillName, formatSkillLine, normalizeDescription } from "./skills.ts";
@@ -181,6 +182,7 @@ ${c.bold("交互命令")}
   /tools           工具列表        /mode        权限模式
   /skills          列出可用技能    /skills <名>  查看技能详情
   /init            生成 AGENTS.md  /history     历史统计
+  /memory ...      记忆索引子命令（status/list/forward/reindex/redact）
   /save [path]     导出会话        /sessions    历史会话
   /tier [name]     查看/切档位      /auto [name] 切换分类器（off/rule/llm）
   /fast /balanced /deep            档位快捷方式（等价 /tier）
@@ -339,6 +341,19 @@ async function main(): Promise<number> {
     ui.info(`已加载项目记忆 ${memoryFile}`);
   }
 
+  // PRD §6.2 / 约束 26 / 约束 27：profile 注入到 messages[1]（不追加到 messages[0]）。
+  // ensureProfile 失败 / profile.md 不存在 → no-op，不阻塞主流程。
+  try {
+    const slice = await initEnsureProfile(cfg);
+    if (slice) {
+      agent.messages = await initReInjectProfile(cfg, agent.messages);
+      ui.info(`已注入用户画像（${slice.estimatedTokens} tokens）`);
+    }
+  } catch (e) {
+    const reason = e instanceof Error ? e.message : String(e);
+    console.error(`profile 注入失败 ${reason}（session 不阻塞）`);
+  }
+
   // ---- 单次模式 ----
   if (args.print !== null) {
     const prompt = args.print || args.rest.join(" ");
@@ -416,6 +431,19 @@ async function main(): Promise<number> {
   const queue: string[] = [];
   let draining = false;
 
+  // PRD §6.2 / 约束 22：首次用户输入触发 recordIndex（不写 daily memory 快照，
+// 只把首条输入前 200 字符落 ~/.neo/memorys/raw/）。
+  let firstUserInputCaptured = false;
+  const onFirstUserInput = (line: string): void => {
+    if (firstUserInputCaptured) return;
+    firstUserInputCaptured = true;
+    initRecordIndex(cfg, cfg.cwd, { firstUserInput: line })
+      .catch((e: unknown) => {
+        const reason = e instanceof Error ? e.message : String(e);
+        console.error(`首次输入 recordIndex 失败 ${reason}（session 不阻塞）`);
+      });
+  };
+
   const drain = async (): Promise<void> => {
     if (draining) return;
     draining = true;
@@ -433,6 +461,7 @@ async function main(): Promise<number> {
         continue;
       }
 
+      onFirstUserInput(line);
       ui.blank();
       try {
         const stats = await agent.send(line);
@@ -836,6 +865,22 @@ async function handleCommand(
       mkdirSync(dirname(target), { recursive: true });
       writeFileSync(target, buildMemoryFile(cfg), "utf8");
       ui.success(`已生成 ${target}`);
+      // PRD §约束 14a / §约束 16：额外初始化项目级 wiki 骨架 + 写 AGENTS.md 工作流段。
+      await initProjectLevelImpl(cfg, cfg.cwd);
+      break;
+    }
+
+    case "memory": {
+      // PRD §A：/memory 子命令族（status / list / forget / reindex / redact）分发占位。
+      // 完整实现属 (5) 范围；本单仅落分发骨架 + status 一行。
+      const sub = arg.trim();
+      if (sub === "status") {
+        const { listStatus } = await import("./memory/index.ts");
+        const out = await listStatus(cfg, { cwd: cfg.cwd });
+        ui.info(out);
+      } else {
+        ui.info(`/memory 子命令：status / list / forget / reindex / redact（${sub || "无"} 待 (5) 落地）`);
+      }
       break;
     }
 

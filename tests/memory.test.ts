@@ -34,6 +34,7 @@ import { tmpdir } from "node:os";
 import { join, basename } from "node:path";
 
 import type { Config } from "../src/config.ts";
+import type { Message } from "../src/llm.ts";
 import { MemoryError } from "../src/memory/types.ts";
 import {
   parseIndexEntry,
@@ -413,14 +414,14 @@ describe("D. reInjectProfile", () => {
     writeFileSync(join(cfg.memory.userLevelDir, "profile.md"), "# p\n- 偏简洁\n", "utf8");
     const profile = await ensureProfile(cfg);
     expect(profile).not.toBeNull();
-    const messages: Array<{ role: string; content: string }> = [
+    const messages: Message[] = [
       { role: "system", content: "base" },
       { role: "system", content: profile!.content },
       { role: "user", content: "hi" },
     ];
     messages.splice(1, 1);
     expect(messages[1]).toBeUndefined();
-    const fixed = await reInjectProfile(cfg, messages);
+    const fixed = await reInjectProfile(cfg, messages as Message[]);
     expect(fixed[1]).toBeDefined();
     expect(fixed[1]!.content).toContain("## 用户画像");
   });
@@ -430,9 +431,9 @@ describe("D. reInjectProfile", () => {
     writeFileSync(join(cfg.memory.userLevelDir, "profile.md"), "# p\n- x\n", "utf8");
     const base = (await ensureProfile(cfg))!.content;
     const m1 = [{ role: "system", content: "base" }, { role: "system", content: base }, { role: "user", content: "a" }];
-    const out1 = await reInjectProfile(cfg, m1);
-    const m2 = out1.slice(0, 2).concat({ role: "user", content: "b" });
-    const out2 = await reInjectProfile(cfg, m2);
+    const out1 = await reInjectProfile(cfg, m1 as Message[]);
+    const m2 = out1.slice(0, 2).concat({ role: "user" as const, content: "b" });
+    const out2 = await reInjectProfile(cfg, m2 as Message[]);
     expect(out2[1]!.content).toBe(base);
   });
 });
@@ -528,6 +529,19 @@ describe("F. ingest 失败语义", () => {
     }
   });
 
+  test("F4b ingest 网络 | 重试 500ms × 2 = 3 attempts 后抛 + stderr 两条 retry warn", async () => {
+    const { cfg } = sandbox("F4b");
+    const warns: string[] = [];
+    const origErr = console.error;
+    console.error = (...a: unknown[]) => warns.push(a.join(" "));
+    try {
+      await expect(ingestUserLevel(cfg, { failure: "network" })).rejects.toMatchObject({ code: "ingest_failed" });
+      expect(warns.filter(w => /重试 \d+\/2/.test(w)).length).toBe(2);
+    } finally {
+      console.error = origErr;
+    }
+  });
+
   test("F5 ingest 超时 (>2000ms) | 同 F2 不重试", async () => {
     const { cfg } = sandbox("F5");
     await expect(ingestUserLevel(cfg, { failure: "timeout" })).rejects.toMatchObject({ code: "ingest_failed" });
@@ -597,12 +611,12 @@ describe("H. compact 联动", () => {
     const { cfg } = sandbox("H1");
     writeFileSync(join(cfg.memory.userLevelDir, "profile.md"), "# p\n- 偏简洁\n", "utf8");
     const profile = (await ensureProfile(cfg))!.content;
-    let messages: Array<{ role: string; content: string }> = [
+    let messages: Message[] = [
       { role: "system", content: "base" },
       { role: "system", content: profile },
     ];
     for (let i = 0; i < 5; i++) messages.push({ role: "user", content: `msg-${i}` }, { role: "assistant", content: `rep-${i}` });
-    messages = await reInjectProfile(cfg, messages);
+    messages = await reInjectProfile(cfg, messages as Message[]);
     expect(messages[1]!.content).toBe(profile);
   });
 
@@ -613,7 +627,7 @@ describe("H. compact 联动", () => {
       { role: "system" as const, content: "base" },
       { role: "user" as const, content: "old" },
     ];
-    const fixed = await reInjectProfile(cfg, messages);
+    const fixed = await reInjectProfile(cfg, messages as Message[]);
     expect(fixed[1]!.content).toContain("## 用户画像");
   });
 });
@@ -627,13 +641,14 @@ describe("H+. profile 与 noteModelChange 交互", () => {
     const { cfg } = sandbox("H3");
     writeFileSync(join(cfg.memory.userLevelDir, "profile.md"), "# p\n- 偏简洁\n", "utf8");
     const profile = (await ensureProfile(cfg))!.content;
-    const messages: Array<{ role: string; content: string }> = [
+    const messages: Message[] = [
       { role: "system", content: "base\n- 模型：deep" },
       { role: "system", content: profile },
       { role: "user", content: "hi" },
     ];
     const re = /- 模型：[^\n]*/;
-    messages[0]!.content = messages[0]!.content.replace(re, "- 模型：deep_reasoning");
+    const m0 = messages[0]!;
+    messages[0] = { ...m0, content: m0.content!.replace(re, "- 模型：deep_reasoning") };
     expect(messages[1]!.content).toBe(profile);
   });
 
@@ -647,14 +662,14 @@ describe("H+. profile 与 noteModelChange 交互", () => {
   test("H5 compact 后 reInjectProfile 重新读盘", async () => {
     const { cfg } = sandbox("H5");
     writeFileSync(join(cfg.memory.userLevelDir, "profile.md"), "# p\n- v1\n", "utf8");
-    let messages: Array<{ role: string; content: string }> = [
+    let messages: Message[] = [
       { role: "system", content: "base" },
       { role: "system", content: (await ensureProfile(cfg))!.content },
       { role: "user", content: "x" },
     ];
     messages.splice(1, 1);
     writeFileSync(join(cfg.memory.userLevelDir, "profile.md"), "# p\n- v2\n", "utf8");
-    const fixed = await reInjectProfile(cfg, messages);
+    const fixed = await reInjectProfile(cfg, messages as Message[]);
     expect(fixed[1]!.content).toContain("v2");
   });
 });

@@ -124,7 +124,7 @@ export interface RecallHit {
  */
 export interface IngestOpts {
   /** null = 正常；其余 = 测试期强制某种失败以验证 .ingest-failures 写入。 */
-  failure?: "network" | "429" | "unparseable" | "timeout" | null;
+  failure?: "network" | "429" | "unparseable" | "timeout" | "timeout_fast" | null;
   /** 单测 timeout 上限（毫秒），与 cfg.memory.ingest.timeoutMs 取较小。 */
   timeoutMsOverride?: number;
 }

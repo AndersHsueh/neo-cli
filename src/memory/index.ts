@@ -7,6 +7,7 @@
  */
 
 import type { Config } from "../config.ts";
+import type { Message } from "../llm.ts";
 import type {
   IngestEngine,
   IngestOpts,
@@ -17,8 +18,9 @@ import type {
 import { MemoryError } from "./types.ts";
 
 import { recordIndex as recordIndexImpl, type RecordIndexOpts } from "./recordIndex.ts";
-import { ensureProfile as ensureProfileImpl, reInjectProfile as reInjectProfileImpl } from "./profile.ts";
+import { ensureProfile as ensureProfileImpl, reInjectProfile as reInjectProfileImpl, estimateTextTokens } from "./profile.ts";
 import { ingestUserLevel as ingestUserLevelImpl, defaultIngestEngine } from "./ingest.ts";
+import { initProjectLevel as initProjectLevelImpl } from "./init.ts";
 export { defaultIngestEngine };
 export { parseIndexEntry } from "./schema.ts";
 export { sanitizeCwd, generateShortId, buildFileName, renderIndexEntry, parseIndexFile, takeGraphemes } from "./schema.ts";
@@ -44,8 +46,8 @@ export async function recordIndex(
 
 export async function reInjectProfile(
   cfg: Config,
-  messages: Array<{ role: string; content: string }>,
-): Promise<Array<{ role: string; content: string }>> {
+  messages: Message[],
+): Promise<Message[]> {
   return reInjectProfileImpl(cfg, messages);
 }
 
@@ -57,10 +59,10 @@ export async function ingestUserLevel(
 }
 
 export async function initProjectLevel(
-  _cfg: Config,
-  _cwd: string,
+  cfg: Config,
+  cwd: string,
 ): Promise<void> {
-  throw new MemoryError("permission_denied", "initProjectLevel: not implemented (stage 1 stub)");
+  return initProjectLevelImpl(cfg, cwd);
 }
 
 /* ------------------------------------------------------------------ */
@@ -101,8 +103,8 @@ export async function listStatus(
 /* 工具（供其它 memory 子模块用）                                          */
 /* ------------------------------------------------------------------ */
 
-export function estimateProfile(_text: string): number {
-  throw new MemoryError("schema_invalid", "estimateProfile: not implemented (stage 1 stub)");
+export function estimateProfile(text: string): number {
+  return estimateTextTokens(text);
 }
 
 /* ------------------------------------------------------------------ */
