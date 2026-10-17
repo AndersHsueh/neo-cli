@@ -27,14 +27,14 @@ import {
 import { Classifier, CLASSIFIER_NAMES, isClassifierName, type ClassifierName } from "./classifier/index.ts";
 import { Agent, type PermissionMode } from "./agent.ts";
 import { Console } from "./ui/console.ts";
-import { banner, c, rule } from "./ui/theme.ts";
+import { banner, c, rule, truncate } from "./ui/theme.ts";
 import { renderMarkdown } from "./ui/render.ts";
 import { buildMemoryFile, buildSystemPrompt } from "./system-prompt.ts";
 import { ensureProfile as initEnsureProfile, reInjectProfile as initReInjectProfile, recordIndex as initRecordIndex, initProjectLevel as initProjectLevelImpl } from "./memory/index.ts";
 import { listModels, type Message } from "./llm.ts";
 import { toolNames } from "./tools/index.ts";
 import { discoverSkills, isValidSkillName, formatSkillLine, normalizeDescription } from "./skills.ts";
-import { createSession, listSessions, loadSession, saveSession, type SessionMeta } from "./session.ts";
+import { applyRestored, createSession, listSessions, loadSession, saveSession, type SessionMeta } from "./session.ts";
 
 const VERSION = "0.1.1";
 
@@ -184,6 +184,7 @@ ${c.bold("交互命令")}
   /init            生成 AGENTS.md  /history     历史统计
   /memory ...      记忆索引子命令（status/list/forward/reindex/redact）
   /save [path]     导出会话        /sessions    历史会话
+  /resume [id]     恢复会话（无参进入选择；last = 最近一次）
   /tier [name]     查看/切档位      /auto [name] 切换分类器（off/rule/llm）
   /fast /balanced /deep            档位快捷方式（等价 /tier）
   /why             上次分类判定与理由
@@ -323,8 +324,7 @@ async function main(): Promise<number> {
   });
 
   if (restored && restored.length > 0) {
-    const sys = agent.messages[0];
-    agent.messages = [sys as Message, ...restored.filter((m) => m.role !== "system")];
+    agent.messages = applyRestored(agent.messages[0], restored);
     ui.info(`已恢复会话 ${meta?.id ?? ""}（${restored.length} 条消息）`);
   }
 
@@ -909,6 +909,65 @@ async function handleCommand(
       break;
     }
 
+    case "resume": {
+      // /resume [id] —— 交互中恢复历史会话。无参时列出最近会话供选择。
+      // 恢复 = 替换对话历史 + 把持久化重定向到该会话文件：
+      // 这里的 meta 是 sess.meta 的同一引用，原地改写后 drain() 里的
+      // persist() 会把后续对话写回被恢复的会话，而不是当前会话。
+      let targetId = arg;
+      if (targetId === "last") {
+        const last = listSessions(1)[0];
+        if (!last) {
+          ui.warn("没有可恢复的历史会话。");
+          break;
+        }
+        targetId = last.id;
+      }
+      if (!targetId) {
+        const list = listSessions(8);
+        if (list.length === 0) {
+          ui.info("还没有历史会话。");
+          break;
+        }
+        // 预览取该会话首条用户消息 —— id 是时间戳，辨识度全靠它
+        const options = list.map((s, i) => {
+          const f = loadSession(s.id);
+          const firstUser = f?.messages.find((m) => m.role === "user" && (m.content ?? "").trim());
+          const preview = firstUser?.content
+            ? truncate(firstUser.content.replace(/\s+/g, " ").trim(), 46)
+            : "（无文本预览）";
+          return { key: String(i + 1), label: `${s.id}  ${s.turns}轮 ${s.model}  ${preview}` };
+        });
+        const pick = await ui.choose("恢复哪个会话？（回车取消）", options);
+        const n = Number(pick);
+        const chosen = Number.isInteger(n) && n >= 1 && n <= list.length ? list[n - 1] : null;
+        if (!chosen) {
+          ui.info("已取消。");
+          break;
+        }
+        targetId = chosen.id;
+      }
+      const full = loadSession(targetId);
+      if (!full) {
+        ui.warn(`未找到会话 ${targetId}`);
+        break;
+      }
+      if (full.messages.length === 0) {
+        ui.warn("该会话没有任何消息，无法恢复。");
+        break;
+      }
+      agent.messages = applyRestored(agent.messages[0], full.messages);
+      Object.assign(meta, full.meta, { model: cfg.model });
+      ui.success(`已恢复会话 ${full.meta.id}（${full.messages.length} 条消息）`);
+      const lastUser = [...full.messages]
+        .reverse()
+        .find((m) => m.role === "user" && (m.content ?? "").trim());
+      if (lastUser?.content) {
+        ui.line(c.dim(`  上次输入：${truncate(lastUser.content.replace(/\s+/g, " ").trim(), 60)}`));
+      }
+      break;
+    }
+
     case "sessions":
       printSessions(ui);
       break;
@@ -986,7 +1045,7 @@ function printSessions(ui: Console): void {
         `${c.muted(`${s.turns} 轮`)} ${c.dim(s.model)}`,
     );
   }
-  ui.line(c.dim("  用 neo --resume <id> 恢复"));
+  ui.line(c.dim("  用 /resume <id> 或 neo --resume <id> 恢复"));
   ui.blank();
 }
 

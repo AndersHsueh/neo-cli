@@ -24,6 +24,9 @@ export interface SessionFile {
 }
 
 function sessionsDir(): string {
+  // 测试注入点（与 NEO_MEMORY_DIR 同一惯例）：CI/测试不得读写用户真实会话。
+  const env = process.env["NEO_SESSIONS_DIR"];
+  if (env) return env;
   return join(homedir(), ".neo", "sessions");
 }
 
@@ -102,6 +105,11 @@ export function loadSession(id: string): SessionFile | null {
   } catch {
     return null;
   }
+}
+
+export function applyRestored(system: Message | undefined, restored: Message[]): Message[] {
+  const sys = system?.role === "system" ? system : null;
+  return [...(sys ? [sys] : []), ...restored.filter((m) => m.role !== "system")];
 }
 
 export function saveSession(messages: Message[], meta: SessionMeta): void {

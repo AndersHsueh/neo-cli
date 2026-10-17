@@ -154,7 +154,8 @@ provider 里的 `*_model_name` 表示「**这个 provider** 在各档位上用�
 /model     查看/切模型     /tools     工具列表
 /mode      权限模式        /init      生成 AGENTS.md
 /history   历史统计        /save      导出会话
-/sessions  历史会话        /exit      退出
+/sessions  历史会话        /resume    恢复会话（无参进入选择）
+/exit      退出
 /fast /balanced /deep /deep_reasoning /default   档位快捷方式（等价 /tier）
 !<cmd>     直接执行 shell（受权限模式约束，plan 模式下拒绝）
 ```
