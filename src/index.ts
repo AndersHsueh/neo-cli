@@ -37,6 +37,15 @@ import { toolNames, registerTool } from "./tools/index.ts";
 import { makeTaskTool, runSubagent } from "./tools/task.ts";
 import { registerWikiTools } from "./tools/wiki.ts";
 import { lintWiki, formatLintReport, resolveWikiDir } from "./wiki/lint.ts";
+import {
+  planIngest,
+  buildIngestPrompt,
+  loadIngestTemplate,
+  finishIngest,
+  listRawFiles,
+} from "./wiki/ingest.ts";
+import { resolveWikiLayout } from "./wiki/paths.ts";
+import { appendLog } from "./wiki/write.ts";
 import { discoverSkills, isValidSkillName, formatSkillLine, normalizeDescription } from "./skills.ts";
 import { applyRestored, createSession, listSessions, loadSession, saveSession, type SessionMeta } from "./session.ts";
 
@@ -186,6 +195,7 @@ ${c.bold("交互命令")}
   /tools           工具列表        /mode        权限模式
   /skills          列出可用技能    /skills <名>  查看技能详情
   /wiki-lint       wiki 体检：断链/orphan/摘要/日期戳/链接密度
+  /ingest [f|i]    编译 raw → wiki（无参按 log 判定：超 1 周全量并告知，否则增量）
   /init            生成 AGENTS.md  /history     历史统计
   /memory ...      记忆索引子命令（status/list/forward/reindex/redact）
   /save [path]     导出会话        /sessions    历史会话
@@ -891,6 +901,54 @@ async function handleCommand(
             ` / 摘要 ${s.nosummary} / 日期戳 ${s.nostamp}）`,
         );
       }
+      break;
+    }
+
+    case "ingest": {
+      const layout = resolveWikiLayout(cfg.cwd);
+      if (!layout) {
+        ui.warn(`未找到 wiki 骨架（${join(cfg.cwd, ".neo", "wiki")}）。先跑 /init。`);
+        break;
+      }
+      let plan;
+      try {
+        plan = planIngest(layout, arg);
+      } catch (e) {
+        ui.warn((e as Error).message);
+        break;
+      }
+      if (plan.files.length === 0 && plan.removed.length === 0) {
+        ui.info(`raw/ 无变更，无需编译。`);
+        finishIngest(layout);
+        break;
+      }
+      if (plan.needsAnnounce) {
+        ui.warn(`本次将做全量编译（${plan.reason}），处理 ${plan.files.length} 份 raw。`);
+      } else {
+        ui.info(`${plan.reason}；新增 ${plan.files.length} 份，删除 ${plan.removed.length} 份。`);
+      }
+      const okRun = await ui.confirm("开始编译？");
+      if (!okRun) {
+        ui.info("已取消。");
+        break;
+      }
+
+      // 编译交给 fast 档子代理（机械编译活）；派发前主代理切回当前档，互不影响
+      const prompt = buildIngestPrompt(layout, plan, loadIngestTemplate());
+      ui.startSpinner(`子代理编译中（${plan.mode}）…`);
+      const report = await runSubagent(agent, prompt, "fast", {
+        cfg,
+        approve: async () => true,
+      });
+      ui.stopSpinner();
+      ui.line(report);
+
+      finishIngest(layout);
+      const hadChanges = plan.mode === "full" || plan.files.length > 0;
+      if (hadChanges) {
+        appendLog(layout, "ingest", `${plan.mode} 编译 ${plan.files.length} 份 raw`);
+      }
+      ui.success(`ingest 完成（${plan.mode}）。`);
       break;
     }
 
