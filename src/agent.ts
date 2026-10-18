@@ -42,6 +42,11 @@ export interface AgentOptions {
   onEvent?: (e: AgentEvent) => void;
   /** 分类器。为 undefined 时不做自动分类。 */
   classifier?: Classifier;
+  /**
+   * LLM 流式函数注入点，默认用真实 chatStream。
+   * 测试用：避免 mock.module 全局污染其它测试文件（bun test 单进程共享模块表）。
+   */
+  chatStream?: typeof chatStream;
 }
 
 export interface TurnStats {
@@ -71,6 +76,11 @@ export class Agent {
   constructor(private readonly opt: AgentOptions) {
     this.mode = opt.mode;
     this.messages = [{ role: "system", content: opt.systemPrompt }];
+  }
+
+  /** LLM 流式函数：注入优先，缺省真实实现。 */
+  private get streamFn(): typeof chatStream {
+    return this.opt.chatStream ?? chatStream;
   }
 
   get classifier(): Classifier | undefined {
@@ -223,7 +233,10 @@ export class Agent {
   }
 
   /** 发送一条用户消息并跑完整个 agent 循环。 */
-  async send(userInput: string): Promise<TurnStats> {
+  async send(
+    userInput: string,
+    opts: { rollbackOnAbort?: boolean } = {},
+  ): Promise<TurnStats> {
     const started = Date.now();
     this.abort = new AbortController();
     const signal = this.abort.signal;
@@ -231,6 +244,9 @@ export class Agent {
     // 分类在消息入队之前完成，这样本轮从一开始就用对模型
     const tierSwitch = await this.classifyTurn(userInput);
 
+    // 回滚基线：opts.rollbackOnAbort 时，abort 返回前把历史截回这里，
+    // 本轮（含这条 user 消息）整体作废 —— 面向「输入错了要重来」的场景。
+    const startLen = this.messages.length;
     this.messages.push({ role: "user", content: userInput });
 
     const specs: ToolSpec[] = toolSpecs();
@@ -278,7 +294,7 @@ export class Agent {
       try {
         if (interactive) this.opt.console.startSpinner("连接中…");
 
-        const res = await chatStream(
+        const res = await this.streamFn(
           this.opt.cfg,
           this.messages,
           specs,
@@ -425,6 +441,9 @@ export class Agent {
         if (e instanceof LLMError || (e as Error).name === "AbortError") {
           const err = e as Error;
           if (err.name === "AbortError" || signal.aborted) {
+            if (opts.rollbackOnAbort) {
+              this.messages.length = startLen;
+            }
             this.opt.onEvent?.({ type: "aborted" });
             this.lastStats = {
               durationMs: Date.now() - started,

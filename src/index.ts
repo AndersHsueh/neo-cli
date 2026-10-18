@@ -26,6 +26,7 @@ import {
 } from "./config.ts";
 import { Classifier, CLASSIFIER_NAMES, isClassifierName, type ClassifierName } from "./classifier/index.ts";
 import { Agent, type PermissionMode } from "./agent.ts";
+import { HotkeyRouter, doubleStrike } from "./hotkeys.ts";
 import { Console } from "./ui/console.ts";
 import { banner, c, rule, truncate } from "./ui/theme.ts";
 import { renderMarkdown } from "./ui/render.ts";
@@ -416,13 +417,28 @@ async function main(): Promise<number> {
     process.exit(0);
   };
 
+  // Ctrl+C 双击退出（模仿 Claude Code）：第一次按下闪现橙色提示，
+  // 2 秒内再按才真正退出。挂在 SIGINT 路径而非 keypress ——
+  // 否则运行中一次 Ctrl+C 会同时触发信号与 keypress 两路，提示错乱。
+  // 职责划分：Ctrl+C = 信号语义，其余按键 = HotkeyRouter（keypress 语义）。
+  const exitStrike = doubleStrike(
+    () => shutdown(),
+    {
+      windowMs: 2000,
+      notice: "Press Ctrl+C again to exit",
+      flash: (t, ms) => ui.flashNotice(t, ms),
+    },
+  );
+
   const onSigint = (): void => {
     if (queue.length > 0 || draining) {
       agent.cancel();
-      ui.line(c.warn("^C 已中断当前请求"));
+      // 中断不回滚：跑了几十轮工具的进展不该被一次误按丢掉。
+      // 回滚是 ESC 的语义（输入错了重来）。
+      exitStrike();
       return;
     }
-    shutdown();
+    exitStrike();
   };
   process.on("SIGINT", onSigint);
 
@@ -430,6 +446,14 @@ async function main(): Promise<number> {
   // 用队列 + 单 worker 保证处理顺序与输出不交错。
   const queue: string[] = [];
   let draining = false;
+
+  // ESC 等按键走 keypress 语义。仅运行中响应：取消当前轮并回滚历史。
+  const hotkeys = new HotkeyRouter();
+  hotkeys.attach(rl, process.stdin);
+  hotkeys.on("escape", () => {
+    if (draining) agent.cancel();
+    // 空闲时无操作，留给将来的热键语义
+  });
 
   // PRD §6.2 / 约束 22：首次用户输入触发 recordIndex（不写 daily memory 快照，
 // 只把首条输入前 200 字符落 ~/.neo/memorys/raw/）。
@@ -464,7 +488,8 @@ async function main(): Promise<number> {
       onFirstUserInput(line);
       ui.blank();
       try {
-        const stats = await agent.send(line);
+        // ESC 中止路径开启回滚：本轮（含 user 消息）整体作废，用户直接重输
+        const stats = await agent.send(line, { rollbackOnAbort: true });
         ui.blank();
           ui.blank();
       // 档位切换必须显式告知 —— 静默换模型会让人困惑「为什么这轮答得不一样」

@@ -205,6 +205,26 @@ export class Console {
     this.stopSpinner();
   }
 
+  /**
+   * 底部闪现一条提示（如 Ctrl+C 双击确认），ms 后自动清除。
+   *
+   * 清除用「回车 + 清行 + 重打提示符」而不是清屏：提示符行可能已有用户
+   * 敲到一半的输入，重打 readline 缓冲能恢复显示；窗口极短，轻微错位可接受。
+   */
+  flashNotice(text: string, ms: number): void {
+    if (!process.stdout.isTTY) return;
+    if (this.flashTimer) clearTimeout(this.flashTimer);
+    process.stdout.write(c.warn(text));
+    this.flashTimer = setTimeout(() => {
+      this.flashTimer = null;
+      process.stdout.write("\r\x1b[2K");
+      this.promptEcho("");
+    }, ms);
+    this.flashTimer.unref?.();
+  }
+
+  private flashTimer: Timer | null = null;
+
   // ---------- 审批交互 ----------
 
   /**
