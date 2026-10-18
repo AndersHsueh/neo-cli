@@ -33,7 +33,8 @@ import { renderMarkdown } from "./ui/render.ts";
 import { buildMemoryFile, buildSystemPrompt } from "./system-prompt.ts";
 import { ensureProfile as initEnsureProfile, reInjectProfile as initReInjectProfile, recordIndex as initRecordIndex, initProjectLevel as initProjectLevelImpl } from "./memory/index.ts";
 import { listModels, type Message } from "./llm.ts";
-import { toolNames } from "./tools/index.ts";
+import { toolNames, registerTool } from "./tools/index.ts";
+import { makeTaskTool, runSubagent } from "./tools/task.ts";
 import { discoverSkills, isValidSkillName, formatSkillLine, normalizeDescription } from "./skills.ts";
 import { applyRestored, createSession, listSessions, loadSession, saveSession, type SessionMeta } from "./session.ts";
 
@@ -323,6 +324,13 @@ async function main(): Promise<number> {
     systemPrompt: buildSystemPrompt(cfg),
     classifier,
   });
+
+  // task 工具：派生子代理。必须在首次 send 前注册 —— toolSpecs() 每轮现取，注册后即刻生效。
+  registerTool(
+    makeTaskTool({
+      run: (prompt, tier, ctx) => runSubagent(agent, prompt, tier, ctx),
+    }),
+  );
 
   if (restored && restored.length > 0) {
     agent.messages = applyRestored(agent.messages[0], restored);

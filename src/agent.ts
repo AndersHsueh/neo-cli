@@ -12,14 +12,41 @@ import {
   type Config,
   type ModelTier,
 } from "./config.ts";
-import { Console } from "./ui/console.ts";
 import { StreamFormatter } from "./ui/stream.ts";
 import { renderMarkdown } from "./ui/render.ts";
 import { c, colorEnabled } from "./ui/theme.ts";
 import { Classifier } from "./classifier/index.ts";
-import { dispatch, toolSpecs, toolNames, type ToolCtx } from "./tools/index.ts";
+import { dispatch, toolSpecs, toolNames, TOOL_NAMES_EXCLUDED_FOR_SUBAGENT, type ToolCtx } from "./tools/index.ts";
 
 export type PermissionMode = "ask" | "auto-edit" | "auto-all" | "plan";
+
+/**
+ * Agent 对输出层的最小依赖面。
+ *
+ * 抽成接口而非直接用 Console 类，是为了让子代理能注入静音实现 ——
+ * 子代理的流式输出若直接写终端，会与 readline 管理的光标打架。
+ * TS 结构化类型下 Console 自动满足本接口，Console 本体零改动。
+ */
+export interface AgentIO {
+  line(s?: string): void;
+  blank(): void;
+  info(msg: string): void;
+  warn(msg: string): void;
+  error(msg: string): void;
+  toolHeader(name: string, argsPreview: string): void;
+  toolResult(body: string, maxLines?: number): void;
+  /** 统一缩进（纯格式化，无副作用）。 */
+  indent(body: string, prefix?: string): string;
+  startSpinner(text: string): void;
+  updateSpinner(text: string): void;
+  stopSpinner(finalLine?: string): void;
+  beginStream(kind: "reasoning" | "answer" | "tool-args"): void;
+  writeStream(text: string, kind: "reasoning" | "answer" | "tool-args"): void;
+  endStream(kind: "reasoning" | "answer" | "tool-args"): void;
+  ensureStreamClosed(kind: "reasoning" | "answer" | "tool-args"): void;
+  confirm(question: string): Promise<boolean>;
+  readonly width: number;
+}
 
 export interface AgentEvent {
   type:
@@ -36,7 +63,8 @@ export interface AgentEvent {
 
 export interface AgentOptions {
   cfg: Config;
-  console: Console;
+  /** 输出层。主代理传 Console，子代理输出静音（confirm/warn 可委托主 console）。 */
+  console: AgentIO;
   mode: PermissionMode;
   systemPrompt: string;
   onEvent?: (e: AgentEvent) => void;
@@ -87,6 +115,21 @@ export class Agent {
     return this.opt.classifier;
   }
 
+  /** 当前生效配置。子代理（task 工具）据此派生浅拷贝，避免共享可变状态。 */
+  get config(): Config {
+    return this.opt.cfg;
+  }
+
+  /** 测试注入的流式函数（若有）。子代理透传同一注入点，保证测试可脚本化。 */
+  get injectedStreamFn(): typeof chatStream | undefined {
+    return this.opt.chatStream;
+  }
+
+  /** 输出层。子代理的静音实现把 confirm/warn 委托到这里。 */
+  get io(): AgentIO {
+    return this.opt.console;
+  }
+
   get stats(): TurnStats | null {
     return this.lastStats;
   }
@@ -102,6 +145,16 @@ export class Agent {
   get historyLength(): number {
     // 不含 system
     return Math.max(0, this.messages.length - 1);
+  }
+
+  /**
+   * 本代理可用的工具集。
+   *
+   * 子代理（task 工具）从工具集层面被排除 —— 结构性禁止递归派生，
+   * 深度天然 ≤ 1，不需要任何运行时深度计数。
+   */
+  toolSpecsFor(): ToolSpec[] {
+    return toolSpecs().filter((s) => !TOOL_NAMES_EXCLUDED_FOR_SUBAGENT.includes(s.function.name));
   }
 
   cancel(): void {
@@ -249,7 +302,7 @@ export class Agent {
     const startLen = this.messages.length;
     this.messages.push({ role: "user", content: userInput });
 
-    const specs: ToolSpec[] = toolSpecs();
+    const specs: ToolSpec[] = this.toolSpecsFor();
     const maxIter = this.opt.cfg.maxToolIterations;
     let toolCalls = 0;
     let finishReason: string | null = null;
@@ -535,6 +588,7 @@ export class Agent {
         return ui.confirm(`${tool} — ${detail}`);
       },
       onNotice: (m) => ui.info(m),
+      onProgress: (m) => ui.updateSpinner(m),
     };
   }
 }

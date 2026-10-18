@@ -11,30 +11,12 @@ import { dirname, resolve, join, relative, sep } from "node:path";
 import type { ToolSpec } from "../llm.ts";
 import type { Config } from "../config.ts";
 import { describeSource, insideGlobalSkills, isRealDir, listSkillFiles, resolveSkill } from "../skills.ts";
+import { ToolError, type ToolCtx, type ToolImpl, type DispatchResult } from "./types.ts";
 
-export class ToolError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = "ToolError";
-  }
-}
-
-export interface ToolCtx {
-  cfg: Config;
-  /** 敏感操作审批，返回 true 才执行。 */
-  approve: (tool: string, detail: string) => Promise<boolean>;
-  /** 取消信号（Ctrl+C）。 */
-  signal?: AbortSignal;
-  /** 由 agent 注入，让工具能观察取消。 */
-  onNotice?: (msg: string) => void;
-}
-
-export interface ToolImpl {
-  spec: ToolSpec;
-  /** 是否属于敏感操作（需要审批）。 */
-  sensitive: boolean;
-  execute: (args: Record<string, unknown>, ctx: ToolCtx) => Promise<string> | string;
-}
+// 基础类型与注册表在 ./types.ts（叶子模块，解开 task → agent → tools 循环依赖）。
+// 这里 re-export 保持既有导入路径不变。
+export { ToolError } from "./types.ts";
+export type { ToolCtx, ToolImpl, DispatchResult } from "./types.ts";
 
 /* ------------------------------------------------------------------ */
 /* 路径处理                                                            */
@@ -44,7 +26,6 @@ function abs(ctx: ToolCtx, p: string): string {
   if (!p || typeof p !== "string") throw new ToolError("缺少 path 参数");
   return resolve(ctx.cfg.cwd, p);
 }
-
 function insideCwd(ctx: ToolCtx, p: string): boolean {
   const r = relative(ctx.cfg.cwd, p);
   return r === "" || (!r.startsWith("..") && !r.startsWith(sep + ".."));
@@ -772,18 +753,44 @@ export const TOOLS: ToolImpl[] = [
 
 const registry = new Map(TOOLS.map((t) => [t.spec.function.name, t]));
 
+/**
+ * 运行时注册一个工具（追加到注册表尾部）。
+ *
+ * 供组合根（src/index.ts）装配 task 等依赖 Agent 的工具 —— 它们不能放进
+ * 静态 TOOLS 数组，否则会形成 task → agent → tools 的循环依赖。
+ * 必须在首次 agent.send() 之前调用：toolSpecs() 每轮现取，注册后即刻生效。
+ *
+ * 返回注销函数。测试用它做清理 —— bun test 单进程共享模块表，
+ * 注册不留清理会污染其它测试文件的精确清单断言。
+ */
+export function registerTool(impl: ToolImpl): () => void {
+  const name = impl.spec.function.name;
+  if (registry.has(name)) {
+    throw new Error(`工具 ${name} 已注册，不能重复注册`);
+  }
+  TOOLS.push(impl);
+  registry.set(name, impl);
+  return () => {
+    const i = TOOLS.indexOf(impl);
+    if (i !== -1) TOOLS.splice(i, 1);
+    registry.delete(name);
+  };
+}
+
+/**
+ * 子代理（task 工具）不可用的工具名。
+ *
+ * 目前只有 task 自身：从工具集层面结构性禁止递归派生，深度天然 ≤ 1，
+ * 不需要任何运行时深度计数。若将来要放开多层派生，改这里即可。
+ */
+export const TOOL_NAMES_EXCLUDED_FOR_SUBAGENT: readonly string[] = ["task"];
+
 export function toolSpecs(): ToolSpec[] {
   return TOOLS.map((t) => t.spec);
 }
 
 export function toolNames(): string[] {
   return TOOLS.map((t) => t.spec.function.name);
-}
-
-export interface DispatchResult {
-  ok: boolean;
-  output: string;
-  truncated: boolean;
 }
 
 export async function dispatch(
