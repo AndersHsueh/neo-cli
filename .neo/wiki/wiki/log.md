@@ -203,3 +203,10 @@ grep -E -A3 "^## \[[0-9-]+\] todo \|" wiki/log.md
 - 关键事实速查:当前版本 v0.1.3→v0.1.4,测试基线 277→343 pass / 1 skip;当前状态段补 v0.1.4 双主线(task 子代理 + wiki 技能代码化)与技能退役
 - 技能拓扑页标注「⚠ 历史页:v0.1.4 起技能退役」;来源清单补 2026-10-18 双功能 raw
 - 维护约定新增「版本发布后同步当前版本行」;顶部最后更新戳 2026-10-18
+
+## [2026-10-18] milestone | v0.1.5 发布 — tag 已推 gitee
+
+- commit `3495f83`:wiki 知识库首次入库(raw 5 份 + 主题页 9 个 + INDEX/log,共 19 文件)+ `.gitignore` 死规则修复(`.neo/.wiki/outputs/` → `.neo/wiki/outputs/`);annotated tag `v0.1.5` 已推 gitee
+- release note `docs/release-notes/v0.1.5.md`;版本号双源 bump 0.1.4→0.1.5
+- `.neo/skills/` 与 `.neo/wiki/outputs/` 维持 ignore;AGENTS.md 不入库决定不受影响
+- [[INDEX]] 当前版本行同步 v0.1.5

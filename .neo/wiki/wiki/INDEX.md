@@ -40,7 +40,7 @@
 
 ## ⭐ 关键事实速查
 
-- **当前版本**: v0.1.4(tag 已推 gitee,版本号双源 package.json + src/index.ts) — task 子代理 + wiki 技能代码化,见 `docs/release-notes/v0.1.4.md`
+- **当前版本**: v0.1.5(tag 已推 gitee,版本号双源 package.json + src/index.ts) — wiki 知识库首次入库,见 `docs/release-notes/v0.1.5.md`
 - **测试基线**: bun test 343 通过 / 1 跳过 / 0 失败,tsc --noEmit 零错误 — v0.1.4 发布时实测
 - **工具预算**: 每轮告知模型「第 N 次/上限 80」,≤5 次带具体次数收敛;入口 `budgetMessage()` — 见 `wiki/工具调用预算-v0.1.2+.md`
 - **热键语义**: ESC=中止+回滚,Ctrl+C=双击退出不回滚;按键唯一入口 `HotkeyRouter` — 见 `wiki/热键系统-v0.1.2+.md`
