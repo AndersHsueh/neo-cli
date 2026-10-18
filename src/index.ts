@@ -35,6 +35,7 @@ import { ensureProfile as initEnsureProfile, reInjectProfile as initReInjectProf
 import { listModels, type Message } from "./llm.ts";
 import { toolNames, registerTool } from "./tools/index.ts";
 import { makeTaskTool, runSubagent } from "./tools/task.ts";
+import { lintWiki, formatLintReport, resolveWikiDir } from "./wiki/lint.ts";
 import { discoverSkills, isValidSkillName, formatSkillLine, normalizeDescription } from "./skills.ts";
 import { applyRestored, createSession, listSessions, loadSession, saveSession, type SessionMeta } from "./session.ts";
 
@@ -183,6 +184,7 @@ ${c.bold("交互命令")}
   /provider        切换 provider   /model       查看/切模型
   /tools           工具列表        /mode        权限模式
   /skills          列出可用技能    /skills <名>  查看技能详情
+  /wiki-lint       wiki 体检：断链/orphan/摘要/日期戳/链接密度
   /init            生成 AGENTS.md  /history     历史统计
   /memory ...      记忆索引子命令（status/list/forward/reindex/redact）
   /save [path]     导出会话        /sessions    历史会话
@@ -862,6 +864,29 @@ async function handleCommand(
       ui.blank();
       ui.info("用 /skills <名称> 查看详情，或让模型按需 use_skill。");
       ui.blank();
+      break;
+    }
+
+    case "wiki-lint": {
+      const dir = resolveWikiDir(cfg.cwd);
+      if (!dir) {
+        ui.warn(
+          `未找到 wiki 目录（${join(cfg.cwd, ".neo", "wiki", "wiki")} 或 ${join(cfg.cwd, "wiki")}）。` +
+            `先跑 /init 创建骨架，或确认目录位置。`,
+        );
+        break;
+      }
+      const result = lintWiki(dir);
+      ui.line(formatLintReport(result));
+      const s = result.summary;
+      const total = s.broken + s.orphans + s.lowlinks + s.nosummary + s.nostamp;
+      if (total === 0) ui.success("wiki 体检通过。");
+      else {
+        ui.warn(
+          `共 ${total} 项待处理（断链 ${s.broken} / 孤儿 ${s.orphans} / 密度 ${s.lowlinks}` +
+            ` / 摘要 ${s.nosummary} / 日期戳 ${s.nostamp}）`,
+        );
+      }
       break;
     }
 
