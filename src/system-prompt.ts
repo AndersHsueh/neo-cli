@@ -2,11 +2,12 @@
  * 系统提示词。
  * 目标：让模型的行为接近一个「有工具的工程师」，而不是泛泛的助手。
  */
-import { existsSync, readdirSync, type Dirent } from "node:fs";
+import { existsSync, readdirSync, readFileSync, type Dirent } from "node:fs";
 import { join, relative, sep } from "node:path";
 import type { Config } from "./config.ts";
 import { toolNames } from "./tools/index.ts";
 import { buildSkillIndex, discoverSkills, isRealDir } from "./skills.ts";
+import { resolveWikiLayout } from "./wiki/paths.ts";
 
 const IGNORE_DIRS = new Set([
   "node_modules",
@@ -65,6 +66,10 @@ export function buildSystemPrompt(cfg: Config): string {
   const skills = discoverSkills(cfg);
   const skillText = skills.length > 0 ? `\n${buildSkillIndex(skills)}\n` : "";
 
+  // wiki 索引注入（wiki-turnning-1018.md 问题 2）：让模型看得见库里有什么知识，
+  // 才可能想起来用 wiki_search / wiki_write——可见性靠注入，不靠 prompt 自觉。
+  const wikiText = buildWikiIndexSection(cfg);
+
   return `你是 neo，一个运行在终端里的编程助手。
 
 屏幕另一端的人把你当作团队里的一位同事——有时是结对编程的程序员，有时是拉着产品或测试聊思路的伙伴。你们之间允许直率、分歧和玩笑。
@@ -91,7 +96,7 @@ export function buildSystemPrompt(cfg: Config): string {
 - list_dir / glob / grep：探索代码库。找东西用 grep，找文件用 glob。
 - shell：执行命令。安装依赖、跑测试、git 操作走这里。
 - web_fetch：抓网页转纯文本，查文档用。
-${skillText}
+${skillText}${wikiText}
 ## 如何思考
 
 好的答案来自好的问题。卡住的时候问自己：我原来的判断是什么？这个词到底指什么？依据在哪？能不能找到反例？换个视角会看到什么？
@@ -110,9 +115,50 @@ ${treeText}
 `;
 }
 
+/**
+ * wiki 索引节（wiki-turnning-1018.md 问题 2）。
+ * 注入 INDEX.md 的主题清单（不是全文）：模型看得见库里有什么，才可能想起来查。
+ * 无 wiki / 无主题页时返回空串（不输出该节）。
+ */
+export function buildWikiIndexSection(cfg: Config): string {
+  let layout;
+  try {
+    layout = resolveWikiLayout(cfg.cwd);
+  } catch {
+    return "";
+  }
+  if (!layout) return "";
+  const indexPath = join(layout.pagesDir, "INDEX.md");
+  if (!existsSync(indexPath)) return "";
+
+  let text: string;
+  try {
+    text = readFileSync(indexPath, "utf8");
+  } catch {
+    return "";
+  }
+  // 只取主题目录里的 wiki 链接，去重，最多 40 条（防大库撑爆 system prompt）
+  const seen = new Set<string>();
+  const names: string[] = [];
+  for (const m of text.matchAll(/\[\[([^\]|#]+)\]\]/g)) {
+    const name = (m[1] ?? "").trim();
+    if (!name || seen.has(name)) continue;
+    seen.add(name);
+    names.push(name);
+    if (names.length >= 40) break;
+  }
+  if (names.length === 0) return "";
+
+  return `
+## 项目 wiki 知识库
+
+本项目带记忆 wiki（${layout.pagesDir}），已有主题：${names.join("、")}。
+回忆本项目之前的工作/决策时用 wiki_search 检索；有沉淀价值的结论用 wiki_write 回填（唯一合法写回路径）。
+`;
+}
+
 /** /init 生成的记忆文件内容。 */
-export function buildMemoryFile(cfg: Config): string {
-  const tree = listFiles(cfg.cwd, 3, 400);
+export function buildMemoryFile(cfg: Config): string {  const tree = listFiles(cfg.cwd, 3, 400);
   return `# 项目记忆
 
 > 由 neo 的 /init 自动生成于 ${new Date().toISOString()}
