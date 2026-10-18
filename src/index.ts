@@ -35,6 +35,7 @@ import { ensureProfile as initEnsureProfile, reInjectProfile as initReInjectProf
 import { listModels, type Message } from "./llm.ts";
 import { toolNames, registerTool } from "./tools/index.ts";
 import { makeTaskTool, runSubagent } from "./tools/task.ts";
+import { registerWikiTools } from "./tools/wiki.ts";
 import { lintWiki, formatLintReport, resolveWikiDir } from "./wiki/lint.ts";
 import { discoverSkills, isValidSkillName, formatSkillLine, normalizeDescription } from "./skills.ts";
 import { applyRestored, createSession, listSessions, loadSession, saveSession, type SessionMeta } from "./session.ts";
@@ -333,6 +334,9 @@ async function main(): Promise<number> {
       run: (prompt, tier, ctx) => runSubagent(agent, prompt, tier, ctx),
     }),
   );
+
+  // wiki 工具：检索 + 回填唯一路径（raw 不可改拦截在 write_file/edit_file 内）。
+  registerWikiTools(registerTool);
 
   if (restored && restored.length > 0) {
     agent.messages = applyRestored(agent.messages[0], restored);

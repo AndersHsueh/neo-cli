@@ -11,6 +11,7 @@ import { dirname, resolve, join, relative, sep } from "node:path";
 import type { ToolSpec } from "../llm.ts";
 import type { Config } from "../config.ts";
 import { describeSource, insideGlobalSkills, isRealDir, listSkillFiles, resolveSkill } from "../skills.ts";
+import { insideRawDir } from "../wiki/paths.ts";
 import { ToolError, type ToolCtx, type ToolImpl, type DispatchResult } from "./types.ts";
 
 // 基础类型与注册表在 ./types.ts（叶子模块，解开 task → agent → tools 循环依赖）。
@@ -58,6 +59,25 @@ function assertNotGlobalSkills(ctx: ToolCtx, path: string): void {
     `禁止写入全局技能库。技能是只读资源，` +
       `如需修改，请直接用编辑器打开该技能目录下的 SKILL.md。`,
   );
+}
+
+/**
+ * raw 不可改守卫：raw/ 下的**已存在文件**禁止修改内容。
+ *
+ * 语义（wiki-turnning-1018.md）：raw 可创建、可删除（shell rm）、删除后可重建同名；
+ * 唯独不许改已存在文件的内容。发现源有问题，在对应 wiki 主题页加「> 待澄清:」注记。
+ * 仅拦工具路径，不防 shell 绕过 —— 方案已明确：护栏只防 agent 手滑，不防人有意为之。
+ *
+ * 必须在 ctx.approve() 之前调用 —— 先拒绝，不让用户为注定失败的操作白点一次审批。
+ */
+function assertRawImmutable(ctx: ToolCtx, path: string): void {
+  if (!insideRawDir(ctx.cfg.cwd, path)) return;
+  if (existsSync(path)) {
+    throw new ToolError(
+      `raw 源不可修改：${path} 已存在。raw 可创建/删除，但已存在文件的内容不许改；` +
+        `发现问题请在对应 wiki 主题页加「> 待澄清:」注记。`,
+    );
+  }
 }
 
 function shortArgs(args: Record<string, unknown>, keys: string[]): string {
@@ -137,6 +157,7 @@ const writeFileTool: ToolImpl = {
   async execute(args, ctx) {
     const path = abs(ctx, String(args["path"] ?? ""));
     assertNotGlobalSkills(ctx, path);
+    assertRawImmutable(ctx, path);
     const content = String(args["content"] ?? "");
     const isNew = !existsSync(path);
     const detail = isNew ? `新建文件 ${path}` : `覆盖已有文件 ${path}（${content.length} 字符）`;
@@ -176,6 +197,7 @@ const editFile: ToolImpl = {
   async execute(args, ctx) {
     const path = abs(ctx, String(args["path"] ?? ""));
     assertNotGlobalSkills(ctx, path);
+    assertRawImmutable(ctx, path);
     requireFile(path);
     const oldS = String(args["old_string"] ?? "");
     const newS = String(args["new_string"] ?? "");
