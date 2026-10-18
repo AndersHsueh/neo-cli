@@ -685,6 +685,41 @@ async function handleCommand(
         ui.blank();
         ui.kv("当前", `${c.accent(cfg.providerName)} ${c.dim(`(${cfg.providerType})`)}`);
         ui.blank();
+        // TTY：选择器接入（与 /model 同款）。含全部 provider——未接入的标注在 hint，
+        // 选中后由 switchProvider 给出与显式 /provider <name> 相同的错误，不另设禁用态
+        if (process.stdin.isTTY) {
+          ui.stopSpinner(); // C1
+          ui.blank();
+          const options = cfg.providers.map((x) => ({
+            label: x.name,
+            hint:
+              x.name === cfg.providerName
+                ? `当前 · ${x.type}`
+                : isImplemented(x.type)
+                  ? x.type
+                  : `${x.type} · 未接入`,
+            value: x.name,
+          }));
+          const picked = await select("切换到哪个 provider？", options, {
+            ...selectDeps,
+            initial: Math.max(0, cfg.providers.findIndex((x) => x.name === cfg.providerName)),
+          });
+          if (!picked) {
+            ui.info("已取消。");
+            break;
+          }
+          const r = switchProvider(cfg, picked);
+          if (!r.ok) {
+            ui.warn(r.error);
+            break;
+          }
+          agent.noteModelChange(cfg);
+          ui.success(`provider → ${cfg.providerName}（${cfg.providerType}）`);
+          ui.kv("model", `${cfg.model} ${c.dim(`[${cfg.modelTier}]`)}`);
+          ui.kv("endpoint", cfg.baseUrl);
+          break;
+        }
+        // 非 TTY：维持纯列表（C8）
         for (const x of cfg.providers) {
           const on = x.name === cfg.providerName;
           const usable = isImplemented(x.type);
@@ -739,6 +774,34 @@ async function handleCommand(
         ui.kv("当前档位", c.accent(cfg.modelTier));
         ui.kv("生效路由", `${c.accent(describeRoute(cfg, cfg.modelTier))}`);
         ui.blank();
+        // TTY：选择器接入（与 /model 同款）；hint = 该档位生效路由，initial 定位当前档位
+        if (process.stdin.isTTY) {
+          ui.stopSpinner(); // C1
+          ui.blank();
+          const options = MODEL_TIERS.map((t) => ({
+            label: t,
+            hint: t === cfg.modelTier ? `当前 · ${describeRoute(cfg, t)}` : describeRoute(cfg, t),
+            value: t,
+          }));
+          const picked = await select("切换到哪个档位？", options, {
+            ...selectDeps,
+            initial: Math.max(0, MODEL_TIERS.indexOf(cfg.modelTier)),
+          });
+          if (picked) {
+            const r = applyTier(cfg, picked);
+            if (r.ok) {
+              agent.noteModelChange(cfg);
+              if (r.degraded && r.note) ui.warn(r.note);
+              ui.success(`档位 → ${cfg.modelTier}（${cfg.providerName} / ${cfg.model}）`);
+            } else {
+              ui.warn(r.error);
+            }
+          } else {
+            ui.info("已取消。");
+          }
+          break;
+        }
+        // 非 TTY：维持纯列表（C8）
         for (const tier of MODEL_TIERS) {
           const on = tier === cfg.modelTier;
           ui.line(
@@ -1012,6 +1075,34 @@ async function handleCommand(
       if (!arg) {
         ui.blank();
         ui.kv("当前模式", c.accent(agent.mode));
+        // TTY：选择器接入（与 /model 同款）；hint = 模式说明，initial 定位当前模式
+        if (process.stdin.isTTY) {
+          ui.stopSpinner(); // C1
+          ui.blank();
+          const modeList: Array<{ name: PermissionMode; desc: string }> = [
+            { name: "ask", desc: "写文件/执行命令都需批准" },
+            { name: "auto-edit", desc: "自动批准写文件，命令仍需批准" },
+            { name: "auto-all", desc: "全部自动批准（慎用）" },
+            { name: "plan", desc: "只读，禁止一切写操作" },
+          ];
+          const options = modeList.map((m) => ({
+            label: m.name,
+            hint: m.name === agent.mode ? `当前 · ${m.desc}` : m.desc,
+            value: m.name,
+          }));
+          const picked = await select("切换到哪个权限模式？", options, {
+            ...selectDeps,
+            initial: Math.max(0, modeList.findIndex((m) => m.name === agent.mode)),
+          });
+          if (picked) {
+            agent.mode = picked;
+            ui.success(`权限模式 → ${picked}`);
+          } else {
+            ui.info("已取消。");
+          }
+          break;
+        }
+        // 非 TTY：维持编号列表（C8）
         for (const [k, d] of modes) ui.line(`  ${c.accent(k)}) ${d}`);
         ui.line(c.dim("  用 /mode <1-4> 切换"));
         ui.blank();

@@ -194,13 +194,15 @@ export async function select<T>(
       const isMarked = f.mode === "confirm" ? i === f.index : i === state.cursor;
       const bright = f.mode !== "cancel" && isMarked;
       const avail = w - 2; // "❯ " 前缀占 2 列
-      const hintW = o.hint ? displayWidth(o.hint) + 2 : 0;
+      // hint 截断到半宽：hint 过长会挤压 label、破坏「行不折行」的宽度数学（C6）
+      const hint = o.hint ? truncateW(o.hint, Math.max(4, Math.floor(w / 2))) : undefined;
+      const hintW = hint ? displayWidth(hint) + 2 : 0;
       const labelMax = Math.max(4, avail - hintW);
       const label = truncateW(o.label, labelMax);
       let line = `${bright ? c.accent("❯") : " "} ${bright ? c.bold(label) : c.dim(label)}`;
-      if (o.hint) {
+      if (hint) {
         const pad = Math.max(1, labelMax - displayWidth(label));
-        line += `${" ".repeat(pad)}  ${c.dim(o.hint)}`;
+        line += `${" ".repeat(pad)}  ${c.dim(hint)}`;
       }
       lines.push(line);
     }
