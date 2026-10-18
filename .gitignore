@@ -13,7 +13,7 @@ settings.json
 neo-session.json
 
 # wiki 派生物：能从 wiki 重新生成，不进版本控制
-.neo/.wiki/outputs/
+.neo/wiki/outputs/
 
 # git worktree 工作区（每个都是独立检出，不应被追踪）
 .worktrees/
