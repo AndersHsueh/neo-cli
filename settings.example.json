@@ -35,7 +35,7 @@
   },
 
   "compact_threshold": 0.75,
-  "max_tool_iterations": 40,
+  "max_tool_iterations": 80,
   "tool_output_limit": 30000,
   "theme": "matrix",
   "show_reasoning": true

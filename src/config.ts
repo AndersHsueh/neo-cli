@@ -449,7 +449,7 @@ export function loadConfig(overrides: Partial<Config> = {}): Config {
     contextWindow: picked.contextWindow ?? gCtx,
     globalDefaults: { maxTokens: gMax, temperature: gTemp, contextWindow: gCtx },
     compactThreshold: num(raw["compact_threshold"], num(dflt["compact_threshold"], 0.75)),
-    maxToolIterations: num(raw["max_tool_iterations"], num(dflt["max_tool_iterations"], 40)),
+    maxToolIterations: num(raw["max_tool_iterations"], num(dflt["max_tool_iterations"], 80)),
     toolOutputLimit: num(raw["tool_output_limit"], num(dflt["tool_output_limit"], 30_000)),
     theme: str(raw["theme"], str(dflt["theme"], "matrix")),
     showReasoning: bool(raw["show_reasoning"], bool(dflt["show_reasoning"], true)),

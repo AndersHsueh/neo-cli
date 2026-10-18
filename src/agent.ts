@@ -234,6 +234,7 @@ export class Agent {
     this.messages.push({ role: "user", content: userInput });
 
     const specs: ToolSpec[] = toolSpecs();
+    const maxIter = this.opt.cfg.maxToolIterations;
     let toolCalls = 0;
     let finishReason: string | null = null;
     let iterations = 0;
@@ -242,7 +243,7 @@ export class Agent {
     let reasoningTokens = 0;
     let hadError = false;
 
-    for (let iter = 0; iter < this.opt.cfg.maxToolIterations; iter++) {
+    for (let iter = 0; iter < maxIter; iter++) {
       iterations++;
       if (signal.aborted) break;
 
@@ -252,6 +253,16 @@ export class Agent {
         this.opt.console.info(`上下文使用率 ${(usage * 100).toFixed(0)}%，自动压缩中…`);
         await this.compact();
       }
+
+      // ---- 把本轮预算告知模型 ----
+      // 追加为一条临时 system 消息，请求后立刻移除，不进历史。
+      // 不塞进 tools 数组：那是静态 schema，掺文本会污染 tool_choice 语义，
+      // 部分服务端还会校验 schema。system 是 OpenAI 兼容协议里最稳的旁路。
+      // 计数用 iter+1（第几次 LLM 请求）而非 toolCalls：
+      // parallel_tool_calls=false 下两者相等，但 iter 与硬上限严格对齐，
+      // 不会出现「显示 5/80 而循环已跑到 78」的错位。
+      const budgetMsg = this.budgetMessage(iter + 1, maxIter);
+      this.messages.push(budgetMsg);
 
       // ---- 发起一次流式请求 ----
       // TTY 下逐 chunk 流式；非 TTY（管道 / CI / 重定向）改为块级：
@@ -307,6 +318,9 @@ export class Agent {
           },
           signal,
         );
+
+        // 预算提示只服务于这一次请求，立刻摘掉，避免污染对话历史
+        this.dropBudgetMessage(budgetMsg);
 
         if (!interactive) {
           // 块级：思维链与正文各渲染一次
@@ -387,6 +401,8 @@ export class Agent {
         }
       } catch (e) {
         this.opt.console.stopSpinner();
+        // 请求失败时同样要摘掉预算提示，否则它会作为一条孤立消息留在历史里
+        this.dropBudgetMessage(budgetMsg);
         // 块级模式下，出错也要把已收到的内容吐出来 ——
         // 直接丢掉等于让用户误以为模型什么都没说。
         if (!interactive) {
@@ -432,8 +448,10 @@ export class Agent {
       }
     }
 
-    if (iterations >= this.opt.cfg.maxToolIterations && toolCalls > 0) {
-      this.opt.console.warn(`已达最大工具迭代次数 ${this.opt.cfg.maxToolIterations}，停止。`);
+    if (iterations >= maxIter && toolCalls > 0) {
+      this.opt.console.warn(
+        `已达最大工具迭代次数 ${maxIter}，本轮被截断 —— 上面的回答可能不完整。`,
+      );
     }
 
     this.totalPrompt += promptTokens;
@@ -454,6 +472,32 @@ export class Agent {
     this.opt.onEvent?.({ type: "turn_end", data: this.lastStats });
     void hadError;
     return this.lastStats;
+  }
+
+  /**
+   * 构造本轮预算提示。
+   *
+   * 每次请求前注入、请求后移除，模型因此始终知道「这是第几次、还剩几次」。
+   * 剩余 ≤ 5 时额外给出明确次数并要求收敛 —— 只写「即将耗尽」模型无法判断
+   * 还能做几件事，往往会继续探索，最后被硬截断，用户拿到半截答案。
+   */
+  private budgetMessage(attempt: number, max: number): Message {
+    const remaining = Math.max(0, max - attempt);
+    let text =
+      `本轮工具调用：第 ${attempt} 次 / 上限 ${max}（已用 ${attempt - 1}，剩余 ${remaining}）。`;
+    if (remaining <= 5) {
+      text +=
+        `\n预算即将耗尽，仅剩 ${remaining} 次工具调用机会。` +
+        `请停止继续探索，立即基于已有信息给出最终答案；` +
+        `信息不足就在答案中明确说明缺什么，不要再用工具。`;
+    }
+    return { role: "system", content: text };
+  }
+
+  /** 移除预算提示。按引用比对，避免误删历史里内容相同的消息。 */
+  private dropBudgetMessage(msg: Message): void {
+    const i = this.messages.lastIndexOf(msg);
+    if (i !== -1) this.messages.splice(i, 1);
   }
 
   private makeCtx(signal: AbortSignal): ToolCtx {
