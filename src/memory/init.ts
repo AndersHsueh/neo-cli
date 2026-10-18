@@ -4,8 +4,9 @@
  * initProjectLevel(cfg, cwd):
  *   1. mkdir <cwd>/.neo/wiki/{raw,wiki,outputs}
  *   2. 写 <cwd>/.neo/wiki/raw/tags.md（空占位）
- *   3. AGENTS.md 追加 ## 工作流 段（按 karpathy-wiki-* 完整度切先手/降级支）
- *   4. 启动日志 INFO / WARN（不抛）
+ *   3. mkdir <cwd>/skills/（空目录，用户自建技能入口；wiki 能力已内化为代码，不再软链技能）
+ *   4. AGENTS.md 写 wiki 工作流区块（区块所有权模式，只动 neo:wiki-workflow 标记之间的内容）
+ *   5. 启动日志 INFO / WARN（不抛）
  *
  * worktree 隔离（约束 50）：
  *   - cfg.memory.worktreeIsolation=false（默认）：profile 走 ~/.neo/ 全局
@@ -13,14 +14,11 @@
  *   本单不实现 worktree 隔离路径；留给接口测试备用
  */
 
-import { existsSync, mkdirSync, writeFileSync, readFileSync, appendFileSync } from "node:fs";
+import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { discoverSkills } from "../skills.ts";
 import type { Config } from "../config.ts";
-import { buildAgentsContent, isWikiSkillComplete } from "./agMd.ts";
+import { writeWikiSection } from "./agMd.ts";
 import { MemoryError } from "./types.ts";
-
-const WORKFLOW_HEAD = "## 工作流";
 
 /**
  * 懒创建项目级 wiki 骨架 + 写 AGENTS.md。
@@ -33,7 +31,8 @@ export async function initProjectLevel(cfg: Config, cwd: string): Promise<void> 
 
   ensureWikiDirsOrThrow(cwd);
   writeTagsFile(cwd);
-  await writeOrUpdateAgentsContent(cfg, cwd);
+  ensureSkillsDir(cwd);
+  writeOrUpdateAgentsContent(cfg, cwd);
 
   // 启动日志 INFO（不在失败分支）
   console.error(`已初始化项目级 wiki 记忆骨架 @ ${cwd}/.neo/wiki/`);
@@ -67,28 +66,27 @@ function writeTagsFile(cwd: string): void {
 }
 
 /**
- * AGENTS.md 写入策略（约束 18 幂等）：
- *   - 文件不存在：新建（含 ## 工作流 段）
- *   - 文件存在 + 已含 ## 工作流 段：跳过
- *   - 文件存在 + 不含 ## 工作流 段：append（不覆盖）
+ * 项目技能目录（<cwd>/skills/）。wiki 能力已内化为代码，/init 不再软链任何
+ * karpathy-wiki-* 技能；此目录保留为用户自建技能的入口（skills.ts 扫描它）。
  */
-async function writeOrUpdateAgentsContent(cfg: Config, cwd: string): Promise<void> {
-  const agentsPath = join(cwd, "AGENTS.md");
-  const skills = discoverSkills(cfg);
-  const degraded = !isWikiSkillComplete(skills.map((s) => s.name));
-  const section = buildAgentsContent(degraded);
-
-  if (!existsSync(agentsPath)) {
-    writeFileSync(agentsPath, section, "utf8");
-    return;
+function ensureSkillsDir(cwd: string): void {
+  const p = join(cwd, "skills");
+  if (existsSync(p)) return;
+  try {
+    mkdirSync(p, { recursive: true });
+  } catch {
+    // 技能目录创建失败不阻塞骨架初始化（约束 17：WARN 不抛）
   }
+}
 
-  const existing = readFileSync(agentsPath, "utf8");
-  if (existing.includes(WORKFLOW_HEAD)) {
-    // 约束 18：已含工作流段，跳过
-    return;
-  }
-
-  // 文件存在且无工作流段：追加（约束 15 多 feature 共享）
-  appendFileSync(agentsPath, "\n\n" + section, "utf8");
+/**
+ * AGENTS.md 写入策略（区块所有权模式，wiki-turnning-1018.md）：
+ *   - 文件不存在：新建（含 wiki 工作流区块）
+ *   - 文件存在：只重写 neo:wiki-workflow 标记之间的区块；区块外的手写内容不动
+ *   - 无区块：追加区块（不覆盖）
+ * 幂等：重复调用结果一致。
+ */
+function writeOrUpdateAgentsContent(cfg: Config, cwd: string): void {
+  void cfg;
+  writeWikiSection(cwd);
 }

@@ -1,53 +1,88 @@
 /**
- * agMd.ts — AGENTS.md 路由文案模板（PRD docs/memory-prd.md §约束 14a / §约束 16）。
+ * agMd.ts — AGENTS.md 的 wiki 工作流区块（wiki-turnning-1018.md「区块所有权」）。
  *
- * 按 karpathy-wiki-* 技能可用性，分两支路由：
- *   - 先手支：技能齐全，模型用 `use_skill karpathy-wiki-*` 调用
- *   - 降级支：技能缺失，模型用 `read_file` / `write_file` 直读
+ * AGENTS.md 有两个作者：/init 生成的记忆骨架 + 用户手写的「约定/踩坑」。
+ * 本模块只负责 wiki 工作流区块：
+ *   - 区块用 HTML 注释标记包裹（neo:wiki-workflow:start / end）；
+ *   - 写入策略：无标记 → 追加区块；有标记 → 只重写标记之间的内容；
+ *   - 区块外的内容（用户手写、旧版 /init 生成）一律不碰。
+ *
+ * 旧版按 karpathy-wiki-* 技能可用性分先手/降级两支 —— 技能已退役（能力内化
+ * 为 src/wiki/ 与工具层），两支合并为单一区块。
  */
 
-const AGENTS_HEADER = `# 项目记忆（来自 neo 记忆系统）
+import { existsSync, readFileSync, writeFileSync, appendFileSync } from "node:fs";
+import { join, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
 
-本文档由 \`/init\` 一次性生成；后续手改不会被覆盖。
+export const WIKI_SECTION_START = "<!-- neo:wiki-workflow:start";
+export const WIKI_SECTION_END = "<!-- neo:wiki-workflow:end -->";
+/** 区块标记的完整开头（含说明尾巴），用于识别旧格式标记。 */
+const START_RE = /<!-- neo:wiki-workflow:start[^>]*-->/;
 
-`;
+/** 模板目录（src/wiki/templates/）。用 import.meta 解析，不依赖 cwd。 */
+function templatesDir(): string {
+  const here = dirname(fileURLToPath(import.meta.url));
+  return join(here, "..", "wiki", "templates");
+}
 
-const COMPLETE_ROUTING_SECTION = `## 工作流
-
-wiki 操作由 \`karpathy-wiki-*\` 技能承载。涉及以下场景时**先调对应技能**加载完整规则（如已加载则跳过）：
-
-1. 写入新内容到 \`<cwd>/.neo/wiki/raw/\` → 先 \`use_skill karpathy-wiki-new\`
-2. 写入完成后触发同步编译 → \`use_skill karpathy-wiki-ingest\`
-3. 提交前做健康检查 → \`use_skill karpathy-wiki-lint\`
-4. 用户问「以前做过 XX」→ \`use_skill karpathy-wiki-query\`（跨库查询：用户级 → 项目级）
-
-`;
-
-const DEGRADED_ROUTING_SECTION = `## 工作流（降级支）
-
-karpathy-wiki-* 技能未安装。wiki 操作**直接走文件工具**，不依赖 \`use_skill\`。
-
-1. 写入 \`<cwd>/.neo/wiki/raw/\` → \`write_file\`
-2. 写入完成后**手动触发** ingest（暂无守护进程），或等待下版；在此期间 raw 文件已落盘，不丢记忆
-3. 用户问「以前做过 XX」→ 先 \`read_file ~/.neo/memorys/raw/\` 按 cwd 匹配，再 \`read_file <cwd>/.neo/wiki/\`。**回答必须标注「本回答基于原始记录，wiki 未重编译」**
-4. 技能恢复后，**下一次 \`/init\`** 会重写本段为先手支
-
-`;
-
-const NEEDED_SKILLS = ["karpathy-wiki-new", "karpathy-wiki-ingest", "karpathy-wiki-lint", "karpathy-wiki-query"];
-
-/** 是否所有 karpathy-wiki-* 技能都可用。 */
-export function isWikiSkillComplete(discoveredNames: string[]): boolean {
-  const set = new Set(discoveredNames);
-  return NEEDED_SKILLS.every((n) => set.has(n));
+/** 读 wiki 工作流区块模板。 */
+function loadSectionTemplate(): string {
+  return readFileSync(join(templatesDir(), "agents-wiki-section.md"), "utf8");
 }
 
 /**
- * 拼装 AGENTS.md 全文（先手支 or 降级支）。
+ * 计算 AGENTS.md 应有的最终内容。
+ *
+ *  - 文件不存在 → 头部 + 区块；
+ *  - 有区块 → 区块间内容替换为最新模板，其余原样；
+ *  - 无区块 → 原文 + 空行 + 区块（追加，不覆盖）。
  */
-export function buildAgentsContent(degraded: boolean): string {
-  return [
-    AGENTS_HEADER,
-    degraded ? DEGRADED_ROUTING_SECTION : COMPLETE_ROUTING_SECTION,
-  ].join("\n");
+export function composeAgentsContent(existing: string | null): string {
+  const section = loadSectionTemplate().trimEnd();
+  if (existing === null || existing.trim() === "") {
+    return `${section}\n`;
+  }
+  if (START_RE.test(existing) && existing.includes(WIKI_SECTION_END)) {
+    const start = existing.search(START_RE);
+    const end = existing.indexOf(WIKI_SECTION_END);
+    const endIdx = end + WIKI_SECTION_END.length;
+    return existing.slice(0, start) + section + existing.slice(endIdx);
+  }
+  // 无区块：追加（约束 15 多 feature 共享 / 约束 18 幂等的延续）
+  return `${existing.replace(/\s*$/, "")}\n\n${section}\n`;
+}
+
+/**
+ * 把 wiki 工作流区块写入 <cwd>/AGENTS.md（区块所有权模式）。
+ * 幂等：重复调用结果一致（区块内容 = 最新模板）。
+ */
+export function writeWikiSection(cwd: string): void {
+  const p = join(cwd, "AGENTS.md");
+  const existing = existsSync(p) ? readFileSync(p, "utf8") : null;
+  writeFileSync(p, composeAgentsContent(existing), "utf8");
+}
+
+/**
+ * 旧接口兼容壳。旧签名 buildAgentsContent(degraded: boolean) 的调用方
+ * （memory/init.ts）已迁移；保留导出避免第三方引用炸裂，但 degraded 参数已无意义。
+ */
+export function buildAgentsContent(_degraded = false): string {
+  void _degraded;
+  return composeAgentsContent(null);
+}
+
+/** 追加式写入（仅当文件存在且无区块时用；init.ts 现走 writeWikiSection）。 */
+export function appendAgentsSection(cwd: string): void {
+  const p = join(cwd, "AGENTS.md");
+  if (!existsSync(p)) {
+    writeFileSync(p, composeAgentsContent(null), "utf8");
+    return;
+  }
+  const existing = readFileSync(p, "utf8");
+  if (START_RE.test(existing)) {
+    writeWikiSection(cwd); // 已有区块 → 走重写
+    return;
+  }
+  appendFileSync(p, `\n\n${loadSectionTemplate().trimEnd()}\n`, "utf8");
 }

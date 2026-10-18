@@ -564,47 +564,10 @@ describe("F. ingest 失败语义", () => {
 });
 
 /* ------------------------------------------------------------------ */
-/* G. skills 降级（约束 40）                                              */
+/* G. 记忆系统隔离（原 skills 降级测试随技能退役移除，G3 保留）            */
 /* ------------------------------------------------------------------ */
 
-describe("G. skills 系统降级", () => {
-  // 模块级 bool 在前面用例已被触发 → 测试体显式 reset
-  beforeAll(async () => {
-    const { _resetKarpathyWikiWarned } = await import("../src/memory/profile.ts");
-    _resetKarpathyWikiWarned();
-  });
-
-  test("G1 ~/.neo/skills 不含 karpathy-wiki-* | 启动 WARN 含「缺失」；profile 仍注入；索引仍生效", async () => {
-    const { cwd, cfg } = sandbox("G1");
-    writeFileSync(join(cfg.memory.userLevelDir, "profile.md"), "# p\n- x\n", "utf8");
-    const warns: string[] = [];
-    const origErr = console.error;
-    console.error = (...a: unknown[]) => warns.push(a.join(" "));
-    try {
-      await ensureProfile(cfg);
-      await recordIndex(cfg, cwd, { firstUserInput: "y" });
-      expect(warns.some(w => /karpathy-wiki-/.test(w))).toBe(true);
-    } finally {
-      console.error = origErr;
-    }
-  });
-
-  test("G2 ~/.neo/skills 含 karpathy-wiki-new | 启动无 WARN", async () => {
-    const { cfg } = sandbox("G2");
-    const skillsDir = join(cfg.skillsStore, "karpathy-wiki-new");
-    mkdirSync(skillsDir, { recursive: true });
-    writeFileSync(join(skillsDir, "SKILL.md"), "---\nname: karpathy-wiki-new\n---\n# stub\n", "utf8");
-    const warns: string[] = [];
-    const origErr = console.error;
-    console.error = (...a: unknown[]) => warns.push(a.join(" "));
-    try {
-      await ensureProfile(cfg);
-      expect(warns.some(w => /karpathy-wiki-/.test(w))).toBe(false);
-    } finally {
-      console.error = origErr;
-    }
-  });
-
+describe("G. 记忆系统隔离", () => {
   test("G3 沙箱 userLevelDir 与真 ~/.neo/skills | 互不干扰", async () => {
     const { cwd, cfg } = sandbox("G3");
     const path = (await recordIndex(cfg, cwd, { firstUserInput: "z" }))!
