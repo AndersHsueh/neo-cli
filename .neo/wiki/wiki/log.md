@@ -210,3 +210,7 @@ grep -E -A3 "^## \[[0-9-]+\] todo \|" wiki/log.md
 - release note `docs/release-notes/v0.1.5.md`;版本号双源 bump 0.1.4→0.1.5
 - `.neo/skills/` 与 `.neo/wiki/outputs/` 维持 ignore;AGENTS.md 不入库决定不受影响
 - [[INDEX]] 当前版本行同步 v0.1.5
+## [2026-10-18] deliverable | 选择器组件 select PRD 完成,待 neo 实施
+## [2026-10-18] wiki | select-M0 两轮超时踩坑:单轮动作过多,改为一轮一小步
+## [2026-10-18] milestone | select M0+M1 完成:hotkeys存量bug修复+bun事件顺序分歧+宽限窗
+## [2026-10-18] milestone | select M2 完成:/model可选+C9 SIGINT协调+choose删除

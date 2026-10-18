@@ -1,10 +1,9 @@
 /**
  * 用户按键的唯一入口。
  *
- * readline 在 TTY 上默认 terminal 模式，stdin 本就处于 raw mode，
- * 行编辑是 readline 自己在 raw mode 里解析按键实现的。因此挂
- * readline 的 keypress 事件不存在抢字节流 / 重复回显的问题 ——
- * 那是另开 stdin.on("data") 才会踩的坑（见 ui/console.ts confirm 的注释）。
+ * M0 探针实证（docs/select-component-m0-probes.md §1）：bun 与 node 都把
+ * keypress 事件发在 input 流（stdin）上，而不是 readline 实例上——历史上
+ * 挂在 rl 上导致所有热键从未生效过。因此 attach 监听 input。
  *
  * 职责划分：
  *  - Ctrl+C / Ctrl+D 走 SIGINT/SIGHUP 信号语义，不经这里；
@@ -12,6 +11,7 @@
  */
 import type { Interface as RLInterface } from "node:readline";
 import { emitKeypressEvents } from "node:readline";
+import { EventEmitter } from "node:events";
 
 export type HotkeyKey =
   | "escape"
@@ -31,7 +31,7 @@ interface KeyInfo {
 
 export class HotkeyRouter {
   private handlers = new Map<HotkeyKey, Array<() => void>>();
-  private rl: RLInterface | null = null;
+  private input: NodeJS.ReadableStream | null = null;
   private keypressHandler: ((ch: string, key: KeyInfo | undefined) => void) | null = null;
 
   /** 挂到 readline 实例上。input 为其输入流（通常是 process.stdin）。重复 attach 会先摘掉旧的。 */
@@ -44,15 +44,16 @@ export class HotkeyRouter {
       if (!mapped) return;
       for (const h of this.handlers.get(mapped) ?? []) h();
     };
-    rl.on("keypress", this.keypressHandler);
-    this.rl = rl;
+    // M0 实证：keypress 发在 input 上（readline 内部也是这么干的）
+    (input as EventEmitter).on("keypress", this.keypressHandler);
+    this.input = input;
   }
 
   detach(): void {
-    if (this.rl && this.keypressHandler) {
-      this.rl.off("keypress", this.keypressHandler);
+    if (this.input && this.keypressHandler) {
+      (this.input as EventEmitter).off("keypress", this.keypressHandler);
     }
-    this.rl = null;
+    this.input = null;
     this.keypressHandler = null;
   }
 
@@ -77,7 +78,9 @@ export class HotkeyRouter {
       case "down": return "down";
       case "left": return "left";
       case "right": return "right";
-      case "enter": return "enter";
+      case "enter":
+      case "return": // M0 实证：真实回车的 keypress name 是 "return"（bun/node 一致）
+        return "enter";
       case "tab": return "tab";
       default: return null;
     }

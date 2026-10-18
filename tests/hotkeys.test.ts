@@ -20,12 +20,12 @@ import type { Console } from "../src/ui/console.ts";
 /* HotkeyRouter                                                        */
 /* ------------------------------------------------------------------ */
 
-/** 伪造一个带 input 流的 readline，直接 emit keypress 模拟按键。 */
+/** 伪造一个带 input 流的 readline。M0 实证 keypress 发在 input 上，故 emit 到 input。 */
 function makeFakeRl(): { rl: EventEmitter; input: EventEmitter; emitKey: (k: object) => void } {
   const rl = new EventEmitter() as EventEmitter & { input?: EventEmitter };
   const input = new EventEmitter();
   (rl as { input?: EventEmitter }).input = input;
-  const emitKey = (k: object) => rl.emit("keypress", "", k);
+  const emitKey = (k: object) => input.emit("keypress", "", k);
   return { rl, input, emitKey };
 }
 

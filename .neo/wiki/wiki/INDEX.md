@@ -9,7 +9,7 @@
 
 ## 🧭 当前状态
 
-已编译 5 份 raw,覆盖 9 个主题页。2026-10-18 v0.1.4 发布:task 子代理工具(三层档位决策)+ wiki 技能代码化(`/ingest` `/wiki-lint` + wiki_search/wiki_write 工具),四个 karpathy-wiki-* 技能退役。缺口:memory 系统设计细节(PRD/design v0.2 的两级 karpathy-wiki + 指针召回)尚未单独成页;v0.1.0.md §五的 5 项未决观察待跟踪。
+已编译 5 份 raw,覆盖 10 个主题页。2026-10-18 v0.1.7 发布:选择器组件 select(M0 探针 → M1 组件+/resume → M2 /model+守卫),行内选择器落地,顺带修复热键系统 keypress 挂错对象的存量 bug(ESC 取消此前从未生效)。缺口:memory 系统设计细节(PRD/design v0.2 的两级 karpathy-wiki + 指针召回)尚未单独成页;v0.1.0.md §五的 5 项未决观察待跟踪。
 
 ## 🗂 主题目录
 
@@ -22,6 +22,7 @@
 | neo v0.1.1 | [[neo-v0.1.1]] | web_fetch 搜索 URL 兜底改写 cn.bing.com,极小改动版本 | tag 已推 gitee |
 | 工具调用预算 v0.1.2+ | [[工具调用预算-v0.1.2+]] | 每轮注入临时 system 消息告知「第 N 次/上限 80」,≤5 次带具体次数要求收敛;上限 40→80 | commit `1edc374`,tag v0.1.3 已推 gitee |
 | 热键系统 v0.1.2+ | [[热键系统-v0.1.2+]] | ESC 中止+历史回滚 / Ctrl+C 双击退出(仿 Claude Code);HotkeyRouter 为按键唯一入口 | commit `8c08cdc`,tag v0.1.3 已推 gitee |
+| 选择器组件-select | [[选择器组件-select]] | 输入层组件:行内选择器 `select<T>`(↑↓ 移动/回车确认/esc 取消),`/resume` 与 `/model` 已接入;M0 探针挖出并修复热键 keypress 挂错对象、bun 事件顺序分歧两个运行时级问题 | v0.1.7 已合入 |
 
 ### 流程与基础设施
 

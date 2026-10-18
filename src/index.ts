@@ -27,6 +27,7 @@ import {
 import { Classifier, CLASSIFIER_NAMES, isClassifierName, type ClassifierName } from "./classifier/index.ts";
 import { Agent, type PermissionMode } from "./agent.ts";
 import { HotkeyRouter, doubleStrike } from "./hotkeys.ts";
+import { select, type SelectDeps } from "./ui/select.ts";
 import { Console } from "./ui/console.ts";
 import { banner, c, rule, truncate } from "./ui/theme.ts";
 import { renderMarkdown } from "./ui/render.ts";
@@ -455,6 +456,11 @@ async function main(): Promise<number> {
   );
 
   const onSigint = (): void => {
+    // C9：select 存续期间 Ctrl+C = 取消选择，不武装双击退出
+    if (selectActive && selectCancel) {
+      selectCancel();
+      return;
+    }
     if (queue.length > 0 || draining) {
       agent.cancel();
       // 中断不回滚：跑了几十轮工具的进展不该被一次误按丢掉。
@@ -478,6 +484,27 @@ async function main(): Promise<number> {
     if (draining) agent.cancel();
     // 空闲时无操作，留给将来的热键语义
   });
+
+  // select 组件的依赖（PRD D1 注入惯例）。clearLine 是 M0 §2 手段B：
+  // select 结束时清掉行缓冲残留（↑ 历史召回 / 误触数字），防止污染下一提示符。
+  // C11（M0 §3 实证）：select 存续期间 readline 仍会发 line 事件——
+  // 回车提交的是当时缓冲里的残留（↑ 历史召回 / 误触字符），可能非空。
+  // 置标志让 line 处理器丢弃这些事件，防止残留被当成命令/聊天消息入队。
+  let selectActive = false;
+  let selectCancel: (() => void) | undefined;
+  const selectDeps: SelectDeps = {
+    router: hotkeys,
+    asker: (q: string): Promise<string> =>
+      new Promise<string>((resolve) => rl.question(q, (a) => resolve(a))),
+    clearLine: (): void => {
+      (rl as unknown as { line: string }).line = "";
+      (rl as unknown as { _refreshLine?: () => void })._refreshLine?.();
+    },
+    onActiveChange: (active, cancel): void => {
+      selectActive = active;
+      selectCancel = cancel; // C9：select 期间 Ctrl+C 路由为取消选择
+    },
+  };
 
   // PRD §6.2 / 约束 22：首次用户输入触发 recordIndex（不写 daily memory 快照，
 // 只把首条输入前 200 字符落 ~/.neo/memorys/raw/）。
@@ -505,7 +532,7 @@ async function main(): Promise<number> {
       }
 
       if (line.startsWith("/")) {
-        await handleCommand(line, agent, ui, cfg, classifier, sess.meta, shutdown);
+        await handleCommand(line, agent, ui, cfg, classifier, sess.meta, shutdown, selectDeps);
         continue;
       }
 
@@ -539,6 +566,7 @@ async function main(): Promise<number> {
   };
 
   rl.on("line", (raw) => {
+    if (selectActive) return; // C11：select 存续期间的 line 一律丢弃（残留提交）
     const line = raw.trim();
     if (!line) return;
     queue.push(line);
@@ -607,6 +635,7 @@ async function handleCommand(
   classifier: Classifier,
   meta: SessionMeta,
   shutdown: () => void,
+  selectDeps: SelectDeps,
 ): Promise<void> {
   const [cmdRaw, ...rest] = line.slice(1).split(/\s+/);
   const cmd = (cmdRaw ?? "").toLowerCase();
@@ -792,15 +821,41 @@ async function handleCommand(
       if (!arg) {
         ui.blank();
         ui.kv("当前模型", `${c.accent(cfg.model)} ${c.dim(`(${cfg.modelTier})`)}`);
-        ui.line(c.dim("  用 /model <id> 直接指定模型，或 /tier <档位> 切换档位"));
-        ui.line(c.dim("  服务端可用模型："));
+        // D8：先取列表——失败维持现有错误输出，不进选择器
+        let models: string[] | null = null;
         try {
-          const models = await listModels(cfg);
+          models = await listModels(cfg);
+        } catch (e) {
+          ui.error(`获取模型列表失败: ${(e as Error).message}`);
+        }
+        if (models && models.length > 0 && process.stdin.isTTY) {
+          // TTY：可选。当前模型 hint「当前」+ initial 定位（D8）
+          ui.stopSpinner(); // C1：进入前收尾 spinner
+          ui.blank();
+          const options = models.map((m) => ({
+            label: m,
+            hint: m === cfg.model ? "当前" : undefined,
+            value: m,
+          }));
+          const picked = await select("切换到哪个模型？", options, {
+            ...selectDeps,
+            initial: Math.max(0, models.indexOf(cfg.model)),
+          });
+          if (picked) {
+            // 与显式 /model <id> 同一收尾（F2 缺口补齐）
+            cfg.model = picked;
+            agent.noteModelChange(cfg);
+            ui.success(`模型已切到 ${picked}（本次会话内生效，已绕过档位）。`);
+          } else {
+            ui.info("已取消。");
+          }
+        } else if (models) {
+          // 非 TTY / 空列表：维持现有纯列表展示（C8）
+          ui.line(c.dim("  用 /model <id> 直接指定模型，或 /tier <档位> 切换档位"));
+          ui.line(c.dim("  服务端可用模型："));
           for (const m of models) {
             ui.line(m === cfg.model ? `  ${c.accent("●")} ${c.bright(m)}` : `  ${c.dim("○")} ${c.muted(m)}`);
           }
-        } catch (e) {
-          ui.error(`获取模型列表失败: ${(e as Error).message}`);
         }
         ui.blank();
         break;
@@ -1052,22 +1107,23 @@ async function handleCommand(
           break;
         }
         // 预览取该会话首条用户消息 —— id 是时间戳，辨识度全靠它
-        const options = list.map((s, i) => {
+        const options = list.map((s) => {
           const f = loadSession(s.id);
           const firstUser = f?.messages.find((m) => m.role === "user" && (m.content ?? "").trim());
           const preview = firstUser?.content
             ? truncate(firstUser.content.replace(/\s+/g, " ").trim(), 46)
             : "（无文本预览）";
-          return { key: String(i + 1), label: `${s.id}  ${s.turns}轮 ${s.model}  ${preview}` };
+          return { label: `${s.id}  ${preview}`, hint: `${s.turns}轮 ${s.model}`, value: s.id };
         });
-        const pick = await ui.choose("恢复哪个会话？（回车取消）", options);
-        const n = Number(pick);
-        const chosen = Number.isInteger(n) && n >= 1 && n <= list.length ? list[n - 1] : null;
-        if (!chosen) {
+        // C1：进入前收尾 spinner；select 存续期间不得有其他输出写入
+        ui.stopSpinner();
+        ui.blank();
+        const picked = await select("恢复哪个会话？", options, selectDeps);
+        if (!picked) {
           ui.info("已取消。");
           break;
         }
-        targetId = chosen.id;
+        targetId = picked;
       }
       const full = loadSession(targetId);
       if (!full) {

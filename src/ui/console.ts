@@ -266,17 +266,6 @@ export class Console {
     this.asker = fn;
   }
 
-  /** 简单的单字符选择，用于权限模式切换。 */
-  async choose(question: string, options: Array<{ key: string; label: string }>): Promise<string> {
-    this.stopSpinner();
-    this.blank();
-    this.line(c.bold(question));
-    for (const o of options) this.line(`  ${c.accent(o.key)}) ${c.text(o.label)}`);
-    const asker = this.asker;
-    const a = asker ? await asker(c.dim("❯ ")) : "";
-    this.blank();
-    return a.trim().toLowerCase();
-  }
 }
 
 // ---------- 单行读取 ----------
