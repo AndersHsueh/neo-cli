@@ -674,9 +674,14 @@ async function handleCommand(
     case "default": {
       // /deep 等价于 /tier deep_reasoning；带参数时（如 `/deep 分析这段代码`）
       // 前半段是档位指令，其余作为普通输入继续走 agent。
-      const target = cmd === "deep" ? "deep_reasoning" : cmd;
+      // /tier 的档位名来自**参数**（rest[0]），不是命令名 —— 旧代码永远取 cmd，
+      // 导致 `/tier default` 被解析成档位 "tier"，任何参数都报「未知档位」。
+      // 快捷命令（/fast /balanced /deep…）没有参数概念，档位名就是命令名本身。
+      const target = cmd === "tier" ? (rest[0] ?? "") : cmd === "deep" ? "deep_reasoning" : cmd;
       // /tier 不带参数时是查询操作：列出全部档位的生效路由。
-      if (cmd === "tier" && rest.length === 0) {
+      // 用 target === "" 判断而非 rest.length === 0："/tier "（尾随空格）
+      // split 后 rest = [""]，length 为 1，但语义上仍是查询。
+      if (cmd === "tier" && target === "") {
         ui.blank();
         ui.kv("当前档位", c.accent(cfg.modelTier));
         ui.kv("生效路由", `${c.accent(describeRoute(cfg, cfg.modelTier))}`);
@@ -705,7 +710,9 @@ async function handleCommand(
       if (r.degraded && r.note) ui.warn(r.note);
       ui.success(`档位 → ${cfg.modelTier}（${cfg.providerName} / ${cfg.model}）`);
       // 剩余文本当作下一轮用户输入，不丢内容。
-      if (rest.length > 0) await agent.send(rest.join(" "));
+      // /tier 的 rest[0] 是档位名，已消费掉；快捷命令的 rest 全是剩余文本。
+      const leftover = cmd === "tier" ? rest.slice(1) : rest;
+      if (leftover.length > 0) await agent.send(leftover.join(" "));
       break;
     }
 
