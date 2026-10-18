@@ -927,11 +927,6 @@ async function handleCommand(
       } else {
         ui.info(`${plan.reason}；新增 ${plan.files.length} 份，删除 ${plan.removed.length} 份。`);
       }
-      const okRun = await ui.confirm("开始编译？");
-      if (!okRun) {
-        ui.info("已取消。");
-        break;
-      }
 
       // 编译交给 fast 档子代理（机械编译活）；派发前主代理切回当前档，互不影响
       const prompt = buildIngestPrompt(layout, plan, loadIngestTemplate());
