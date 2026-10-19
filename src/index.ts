@@ -27,6 +27,8 @@ import {
 import { Classifier, CLASSIFIER_NAMES, isClassifierName, type ClassifierName } from "./classifier/index.ts";
 import { Agent, type PermissionMode } from "./agent.ts";
 import { HotkeyRouter, doubleStrike } from "./hotkeys.ts";
+import { PasteCollector, shouldFold, assemblePaste } from "./paste.ts";
+import { makeTextAttachment, bindAttachments, resolveLine, type TextAttachment, type QueuedLine } from "./attachments.ts";
 import { select, type SelectDeps } from "./ui/select.ts";
 import { Console } from "./ui/console.ts";
 import { banner, c, rule, truncate } from "./ui/theme.ts";
@@ -474,8 +476,35 @@ async function main(): Promise<number> {
 
   // 输入串行化：粘贴多行或快速回车时，readline 的 line 事件会并发触发。
   // 用队列 + 单 worker 保证处理顺序与输出不交错。
-  const queue: string[] = [];
+  // M1 粘贴增强（PRD §5.4）：queue 元素升级为 QueuedLine（行文本 + 绑定附件）。
+  const queue: QueuedLine[] = [];
   let draining = false;
+
+  // ---- 粘贴拦截（PRD §5.3 + §7 探针结论）----
+  // readline 不自带 bracketed paste：启用 \x1b[?2004h 后终端才会在粘贴前后
+  // 包裹 200~/201~ 标记，readline 才会发 paste-start/paste-end keypress。
+  // 不支持的终端无标记，行为退化为现状（逐行提交），非回归。
+  if (process.stdin.isTTY) process.stdout.write("\x1b[?2004h");
+  const pasteCollector = new PasteCollector();
+  let pasteTextCounter = 0; // chip 编号会话内递增（PRD §3）
+  /** 待绑定附件：chip 已写入缓冲、随下一次 line 提交绑定入队（PRD §5.4）。 */
+  let pendingAttachments: TextAttachment[] = [];
+
+  // 粘贴期间的 line 一律收集不提交（C11 同款模式）。
+  // 收集态由 paste-end 的 collector.end() 撤销（探针 §7.2：此刻最后一段仍在缓冲，
+  // 由 paste-end 处理器取出组装，之后无 flush）。
+  const origLineHandler = (raw: string): void => {
+    if (selectActive) return; // C11：select 存续期间的 line 一律丢弃（残留提交）
+    if (pasteCollector.consume(raw)) return; // 粘贴期间：收集，不入队
+    const line = raw.trim();
+    if (!line) return;
+    const bound = bindAttachments(line, pendingAttachments);
+    // 绑定即消费：chip 只对本次提交生效，防止后续消息引用同款字样被二次还原
+    if (bound.length > 0) pendingAttachments = pendingAttachments.filter((a) => !bound.includes(a));
+    queue.push({ text: line, attachments: bound });
+    void drain();
+  };
+  rl.on("line", origLineHandler);
 
   // ESC 等按键走 keypress 语义。仅运行中响应：取消当前轮并回滚历史。
   const hotkeys = new HotkeyRouter();
@@ -483,6 +512,37 @@ async function main(): Promise<number> {
   hotkeys.on("escape", () => {
     if (draining) agent.cancel();
     // 空闲时无操作，留给将来的热键语义
+  });
+
+  // ---- 粘贴边界接线（PRD §5.3 + §7 探针结论）----
+  // paste-start：进入收集态。用户先打到一半的字随首行 line 提交天然带上，无需特殊处理。
+  hotkeys.on("paste-start", () => pasteCollector.start());
+
+  // paste-end：组装全文。此刻最后一段仍在 rl.line 缓冲（探针 §7.2），取出参与组装；
+  // 取走后立即清空重绘，防止用户随后的回车把残留再提交一次。
+  hotkeys.on("paste-end", () => {
+    const rlAny = rl as unknown as { line: string; _refreshLine?: () => void; history: string[] };
+    const buf = rlAny.line;
+    rlAny.line = "";
+    rlAny._refreshLine?.();
+    const r = pasteCollector.end(buf);
+    if (!r) return; // 纯空粘贴，缓冲未被拦截过，无需动作
+    const full = assemblePaste(r.lines, r.tail);
+    // history 定向回滚：粘贴期间提交的行已进 rl.history（探针 §7.5，新条目在 index 0）
+    if (r.lines.length > 0 && Array.isArray(rlAny.history)) rlAny.history.splice(0, r.lines.length);
+    // 折叠判定：含 \n 必折叠（readline 行缓冲装不下换行，写回会再次逐行提交）；
+    // 单行超长按 fold_chars 折叠。不折叠 → 原样回填缓冲，用户无感。
+    if (!shouldFold(full, { foldLines: cfg.paste.foldLines, foldChars: cfg.paste.foldChars })) {
+      rlAny.line = full;
+      rlAny._refreshLine?.();
+      return;
+    }
+    pasteTextCounter += 1;
+    const att = makeTextAttachment(pasteTextCounter, full);
+    pendingAttachments.push(att);
+    // chip 走 readline 自己的行缓冲与回显（PRD C2：绝不另开 raw-mode 监听）
+    rlAny.line = att.chip;
+    rlAny._refreshLine?.();
   });
 
   // select 组件的依赖（PRD D1 注入惯例）。clearLine 是 M0 §2 手段B：
@@ -523,7 +583,9 @@ async function main(): Promise<number> {
     if (draining) return;
     draining = true;
     while (queue.length > 0) {
-      const line = queue.shift() ?? "";
+      const q = queue.shift();
+      if (!q) continue;
+      const line = q.text;
       if (!line) continue;
 
       if (line.startsWith("!")) {
@@ -536,11 +598,13 @@ async function main(): Promise<number> {
         continue;
       }
 
-      onFirstUserInput(line);
+      // M1 粘贴增强（PRD §5.4）：chip 还原为原文后才发给模型
+      const resolved = resolveLine(line, q.attachments);
+      onFirstUserInput(resolved);
       ui.blank();
       try {
         // ESC 中止路径开启回滚：本轮（含 user 消息）整体作废，用户直接重输
-        const stats = await agent.send(line, { rollbackOnAbort: true });
+        const stats = await agent.send(resolved, { rollbackOnAbort: true });
         ui.blank();
           ui.blank();
       // 档位切换必须显式告知 —— 静默换模型会让人困惑「为什么这轮答得不一样」
@@ -565,16 +629,9 @@ async function main(): Promise<number> {
     prompt();
   };
 
-  rl.on("line", (raw) => {
-    if (selectActive) return; // C11：select 存续期间的 line 一律丢弃（残留提交）
-    const line = raw.trim();
-    if (!line) return;
-    queue.push(line);
-    void drain();
-  });
-
   rl.on("close", () => {
     process.off("SIGINT", onSigint);
+    if (process.stdin.isTTY) process.stdout.write("\x1b[?2004l"); // 退出还原终端 bracketed paste 模式
   });
 
   prompt();

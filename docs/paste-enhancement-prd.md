@@ -283,6 +283,17 @@ base64 图直接进会话 JSON 会让文件膨胀（一张截图 1~3MB base64）
 
 ## 7. 探针（实现前必须先跑）
 
+> **P1/P3 已完成（2026-10-19，bun + node 双 runtime 实测，伪终端 script + 注入 bracketed paste 序列）。结论如下，与原假设冲突处以本节为准：**
+>
+> 1. **F4 证伪**：粘贴块不是「key===undefined 的整块 keypress」。实际形态：`paste-start` / `paste-end` **命名 keypress 事件**（`name:"paste-start"`，`code:"[200~"`），内容逐字符到达，粘贴内的 `\n` 变成 `name:"enter"` 的 keypress。bun 与 node 行为**完全一致**（R2 解除）。
+> 2. **逐行提交实锤**（R1 成立）：3 行粘贴触发 3 次 `line` 事件逐行提交；`paste-end` 时 readline 还会**冲刷残留缓冲**再发一次 `line`（尾随 `\n` 的粘贴冲刷出空 line）。
+> 3. **手段B（paste-end 清缓冲）无效**：line 提交发生在粘贴**过程中**，paste-end 已太晚；实测清空 `rl.line` 后冲刷 line 照发。
+> 4. **readline 不自带 bracketed paste**：启动输出无 `\x1b[?2004h`。要拿到 paste-start/end 标记，**neo 必须自行启用**（启动写 `2004h`、退出写 `2004l`）；终端不支持该模式时无标记，行为退化为现状（不可修复，非回归）。
+> 5. **历史污染**：粘贴的每一行都会进入 `rl.history`（↑ 召回会翻出粘贴碎片）——需在 paste-end 时回滚 history 长度。
+> 6. **P3 键位**：Ctrl+V → `{name:"v", ctrl:true}`（ch=`\x16`）；Alt+V → `{name:"v", meta:true}`。两者均不进缓冲，可安全拦截。
+> 7. **路线判定**：原路线 A/B 分野失效。正确路线为**「粘贴期间丢弃 + paste-end 重组」**：paste-start 置 `pasteActive` 标志 → line 处理器在标志期间丢弃并入栈（C11 同款模式）→ paste-end 把栈内行 join 成全文 → 按阈值折叠为 chip（`rl.write(chip)`）或原样回填（`rl.write(全文)`，短粘贴有回显闪现，可接受）。
+> 8. P2（剪贴板 JXA）属 M2，未跑。
+
 **P1 readline bracketed paste 行为**（决定 §5.3 路线 A/B）：
 
 ```ts
@@ -366,7 +377,7 @@ rl.on("line", (l) => console.error(`LINE lines=${l.split("\n").length} head=${JS
 
 | 期 | 内容 | 依赖 |
 |---|---|---|
-| M1 | 长文本折叠（路线 A/B 按 P1 定）+ resolveLine + queue 升级 + 配置块 | 探针 P1/P3 |
+| M1 | 长文本折叠（路线 A/B 按 P1 定）+ resolveLine + queue 升级 + 配置块 | 探针 P1/P3 —— **✅ 已完成（2026-10-19）**。路线按 §7 探针改为「粘贴期间丢弃 + paste-end 重组」；交付 `src/paste.ts` + `src/attachments.ts` + hotkeys paste-start/end + queue 升级 QueuedLine + 2004h/l 启停；17 条单测 + 真实 pty E2E（chip 显示/全文送达/无逐行提交/退出还原四判定全过） |
 | M2 | macOS 贴图 + ContentPart 协议 + estimateTokens/compact 适配 + 附件落盘/恢复 | 探针 P2 |
 | M3 | Windows/WSL + Linux 剪贴板 | M2 |
 | M4（可选） | 历史召回重发完整粘贴内容（需把粘贴映射持久化到会话） | M1 |

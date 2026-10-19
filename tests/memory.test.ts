@@ -103,6 +103,7 @@ function sandbox(tag: string): { cwd: string; cfg: Config } {
     toolOutputLimit: 8000,
     theme: "matrix",
     showReasoning: false,
+    paste: { foldLines: 3, foldChars: 300 },
     cwd,
     settingsPath: null,
     skillsStore: join(home, ".neo", "skills"),

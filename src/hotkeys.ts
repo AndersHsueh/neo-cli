@@ -20,7 +20,10 @@ export type HotkeyKey =
   | "left"
   | "right"
   | "enter"
-  | "tab";
+  | "tab"
+  // 粘贴边界（PRD §7 探针：需调用方先启用 \x1b[?2004h，readline 才会发这两个键名）
+  | "paste-start"
+  | "paste-end";
 
 interface KeyInfo {
   name: string;
@@ -82,6 +85,8 @@ export class HotkeyRouter {
       case "return": // M0 实证：真实回车的 keypress name 是 "return"（bun/node 一致）
         return "enter";
       case "tab": return "tab";
+      case "paste-start": return "paste-start";
+      case "paste-end": return "paste-end";
       default: return null;
     }
   }

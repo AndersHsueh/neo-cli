@@ -108,6 +108,8 @@ export interface Config {
   toolOutputLimit: number;
   theme: string;
   showReasoning: boolean;
+  /** 粘贴增强配置（PRD docs/paste-enhancement-prd.md §5.7）。 */
+  paste: PasteConfig;
   /** 透传给服务端的思考开关；不设则不下发该字段，由服务端自行决定。 */
   thinking?: { type: "enabled" | "disabled" };
   cwd: string;
@@ -172,6 +174,27 @@ export interface MemoryConfig {
 }
 
 type Raw = Record<string, unknown>;
+
+/**
+ * 粘贴增强配置（PRD docs/paste-enhancement-prd.md §5.7）。
+ * settings.json 的 paste.* 段；整块缺省 = 功能开启（不做总开关，chip 语义上线后关闭会造成认知分裂）。
+ */
+export interface PasteConfig {
+  /** 行数阈值。M1 结构性不生效（readline 行缓冲装不下 \n，含换行必折叠），为 M2+ 预留。 */
+  foldLines: number;
+  /** 单行字符数阈值：≥ 此值折叠为 chip。 */
+  foldChars: number;
+}
+
+/** paste.* 解析：settings.json > 内置默认（3 行 / 300 字符）。 */
+function resolvePasteConfig(raw: Raw | undefined): PasteConfig {
+  const r = raw ?? {};
+  return {
+    foldLines: num(r["fold_lines"], 3),
+    foldChars: num(r["fold_chars"], 300),
+  };
+}
+
 
 class ConfigError extends Error {
   constructor(message: string) {
@@ -457,6 +480,7 @@ export function loadConfig(overrides: Partial<Config> = {}): Config {
     settingsPath: found,
     skillsStore: str(raw["skills_store"], join(homedir(), ".neo", "skills")),
     memory: resolveMemoryConfig(raw["memory"] as Raw | undefined),
+    paste: resolvePasteConfig(raw["paste"] as Raw | undefined),
     ...overrides,
   };
 
