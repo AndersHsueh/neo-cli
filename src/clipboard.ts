@@ -1,5 +1,5 @@
 /**
- * clipboard.ts —— macOS 剪贴板图片读取（PRD docs/paste-enhancement-prd.md §5.2 D2）。
+ * clipboard.ts —— macOS 剪贴板图片读取（PRD docs/paste-enhancement-prd[done].md §5.2 D2）。
  *
  * P2 探针定案（2026-10-19，PRD §7）：
  *  - JXA run() 返回值永远被追加到 stdout（返回 0 → 尾部多 "0\n"），二进制直出必被污染；

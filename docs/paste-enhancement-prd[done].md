@@ -388,7 +388,7 @@ rl.on("line", (l) => console.error(`LINE lines=${l.split("\n").length} head=${JS
 |---|---|---|
 | M1 | 长文本折叠（路线 A/B 按 P1 定）+ resolveLine + queue 升级 + 配置块 | 探针 P1/P3 —— **✅ 已完成（2026-10-19）**。路线按 §7 探针改为「粘贴期间丢弃 + paste-end 重组」；交付 `src/paste.ts` + `src/attachments.ts` + hotkeys paste-start/end + queue 升级 QueuedLine + 2004h/l 启停；17 条单测 + 真实 pty E2E（chip 显示/全文送达/无逐行提交/退出还原四判定全过） |
 | M2 | macOS 贴图 + ContentPart 协议 + estimateTokens/compact 适配 + 附件落盘/恢复 | 探针 P2 —— **✅ 已完成（2026-10-19）**。`src/clipboard.ts`（JXA 临时文件协议，§7 P2 定案）；hotkeys `paste-image`（Ctrl+V/Alt+V，mapKey 须在 ctrl/meta 守卫**之前**判定——E2E 实证守卫后不可达）；`Message.content` 扩为 `string \| ContentPart[] \| null` + `contentText()` 收口；estimateTokens 图 800 tok/张；附件落盘 `attachments/<sessionId>/img-N.png` + JSON `$ref`（C10 NEO_SESSIONS_DIR 注入）；C1 空闲判定含 questionPending；C6 上限可配置（image_max_bytes）。E2E 六判定全过：chip 显示/已附加提示/JSON 用 $ref 零 base64/附件落盘/模型确认收图（「收到了——是一张深红色的小图」）/resume hydrate 重组。全量 400 pass / 0 fail / 1 skip |
-| M3 | Windows/WSL + Linux 剪贴板 | M2 |
+| M3 | Windows/WSL + Linux 剪贴板 | M2 —— **⛔ 明确不做（2026-10-19 用户拍板：无 Windows 使用计划）**。需要时再启动，届时先补平台探针 |
 | M4（可选） | 历史召回重发完整粘贴内容（需把粘贴映射持久化到会话） | M1 |
 
 每期独立可发布，M1 单独上线即有用户价值。

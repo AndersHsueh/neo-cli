@@ -1,5 +1,5 @@
 /**
- * 粘贴增强 M1 测试（PRD docs/paste-enhancement-prd.md §9 测试 1/2 的 M1 范围）。
+ * 粘贴增强 M1 测试（PRD docs/paste-enhancement-prd[done].md §9 测试 1/2 的 M1 范围）。
  *
  * 覆盖：折叠判定边界值、PasteCollector 生命周期、assemblePaste 组装、
  * chip 生成/绑定/还原（含「手打同款字样不误还原」）。

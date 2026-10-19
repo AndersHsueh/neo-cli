@@ -1,5 +1,5 @@
 /**
- * attachments.ts —— 附件 chip 生成与还原（PRD docs/paste-enhancement-prd.md §5.3/§5.4）。
+ * attachments.ts —— 附件 chip 生成与还原（PRD docs/paste-enhancement-prd[done].md §5.3/§5.4）。
  *
  * chip 语义（PRD §3，与 Claude Code 对齐）：
  *  - 编号 N 会话内递增，图片与文本各自独立计数（调用方持有两个计数器）；

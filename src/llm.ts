@@ -12,7 +12,7 @@ import type { Config } from "./config.ts";
 export type Role = "system" | "user" | "assistant" | "tool";
 
 /**
- * 多模态 content part（PRD docs/paste-enhancement-prd.md §5.5）。
+ * 多模态 content part（PRD docs/paste-enhancement-prd[done].md §5.5）。
  * OpenAI 兼容 /chat/completions 的 user 消息标准形态；仅 user 消息可能携带数组，
  * system/assistant/tool 恒为 string（结构性约束，发送层不做转换）。
  */

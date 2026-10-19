@@ -1,5 +1,5 @@
 /**
- * paste.ts —— 粘贴拦截状态机（PRD docs/paste-enhancement-prd.md §5.3 + §7 探针结论）。
+ * paste.ts —— 粘贴拦截状态机（PRD docs/paste-enhancement-prd[done].md §5.3 + §7 探针结论）。
  *
  * 探针定案（2026-10-19，bun/node 双 runtime 一致）：
  *  - readline 发出 paste-start / paste-end 命名 keypress（code:"[200~"/"[201~"）；
