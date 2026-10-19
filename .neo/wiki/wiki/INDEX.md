@@ -25,6 +25,7 @@
 | 选择器组件-select | [[选择器组件-select]] | 输入层组件:行内选择器 `select<T>`(↑↓ 移动/回车确认/esc 取消),`/resume` `/model` `/tier` `/provider` `/mode` 已接入;M0 探针挖出并修复热键 keypress 挂错对象、bun 事件顺序分歧两个运行时级问题 | v0.1.8 已合入 |
 | docs-完成标记约定 | [[docs-完成标记约定]] | docs/ 下功能类文档（PRD/设计）实现完成后，文件名加 `[done]` 后缀：`原文件名.md` → `原文件名[done].md`。改名用 `git  | |
 | 已实现功能盘点 | [[已实现功能盘点]] | neo 截至 v0.1.8（2026-10-19）全部已实现功能的集中映射：功能 → 代码落点 → 证据（测试/发布说明）→ 文档状态。新建功能文档时对照本页判 | |
+| 空正文自动重试 | [[空正文自动重试]] | 推理模型（glm-5.3-flash 等）偶发只返回 `reasoning_content` 而 `content` 为空的退化响应。neo 在 agent 主 | |
 
 ### 流程与基础设施
 
@@ -43,8 +44,8 @@
 
 ## ⭐ 关键事实速查
 
-- **当前版本**: v0.1.9(tag 已推 gitee,版本号双源 package.json + src/index.ts) — 粘贴增强 M1+M2 + compact_ctx 工具,见 `docs/release-notes/v0.1.9.md`
-- **测试基线**: bun test 400 通过 / 1 跳过 / 0 失败,tsc --noEmit 零错误 — v0.1.9 发布时实测
+- **当前版本**: v0.1.10(版本号双源 package.json + src/index.ts) — 空正文自动重试(推理模型退化响应自愈),见 `docs/release-notes/v0.1.10.md`
+- **测试基线**: bun test 402 通过 / 1 跳过 / 0 失败,tsc --noEmit 零错误 — v0.1.10 发布时实测
 - **工具预算**: 每轮告知模型「第 N 次/上限 80」,≤5 次带具体次数收敛;入口 `budgetMessage()` — 见 `wiki/工具调用预算-v0.1.2+.md`
 - **热键语义**: ESC=中止+回滚,Ctrl+C=双击退出不回滚;按键唯一入口 `HotkeyRouter` — 见 `wiki/热键系统-v0.1.2+.md`
 - **技能唯一实体**: `~/.neo/skills/`,项目 `skills/` 只放软链 — 见 `wiki/karpathy-wiki-技能拓扑.md`
