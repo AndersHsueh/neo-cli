@@ -103,7 +103,7 @@ function sandbox(tag: string): { cwd: string; cfg: Config } {
     toolOutputLimit: 8000,
     theme: "matrix",
     showReasoning: false,
-    paste: { foldLines: 3, foldChars: 300 },
+    paste: { foldLines: 3, foldChars: 300, imageMaxBytes: 8_388_608 },
     cwd,
     settingsPath: null,
     skillsStore: join(home, ".neo", "skills"),
@@ -623,7 +623,9 @@ describe("H+. profile 与 noteModelChange 交互", () => {
     ];
     const re = /- 模型：[^\n]*/;
     const m0 = messages[0]!;
-    messages[0] = { ...m0, content: m0.content!.replace(re, "- 模型：deep_reasoning") };
+    // system 消息恒为 string（M2 类型扩宽后显式收窄）
+    const sysText = typeof m0.content === "string" ? m0.content : "";
+    messages[0] = { ...m0, content: sysText.replace(re, "- 模型：deep_reasoning") };
     expect(messages[1]!.content).toBe(profile);
   });
 

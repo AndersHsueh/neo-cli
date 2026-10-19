@@ -23,7 +23,7 @@ import { decideSubTier, runSubagent, makeTaskTool } from "../src/tools/task.ts";
 import { TOOL_NAMES_EXCLUDED_FOR_SUBAGENT, registerTool } from "../src/tools/index.ts";
 import { ToolError } from "../src/tools/types.ts";
 import type { Config, ModelTier } from "../src/config.ts";
-import type { Message, StreamResult, ToolCall } from "../src/llm.ts";
+import { contentText, type Message, type StreamResult, type ToolCall } from "../src/llm.ts";
 
 /* ------------------------------------------------------------------ */
 /* 脚手架                                                              */
@@ -148,7 +148,7 @@ function fakeStream(
   const calls: FakeCall[] = [];
   let i = 0;
   const fn = (cfg: Config, messages: Message[]): Promise<StreamResult> => {
-    const sys = messages[0]?.content ?? "";
+    const sys = contentText(messages[0]?.content ?? "") ?? "";
     calls.push({
       model: cfg.model,
       tier: cfg.modelTier,
@@ -172,7 +172,7 @@ function fakeStream(
 }
 
 const isSub = (msgs: Message[]): boolean =>
-  (msgs[0]?.content ?? "").startsWith("你是主代理派生的子代理");
+  (contentText(msgs[0]?.content ?? "") ?? "").startsWith("你是主代理派生的子代理");
 
 const taskCtx = { cfg: makeCfg(), approve: async () => true };
 
@@ -198,8 +198,7 @@ afterAll(() => {
 /* decideSubTier：三层档位决策                                          */
 /* ------------------------------------------------------------------ */
 
-describe("task 档位决策", () => {
-  test("主代理声明的档位优先", () => {
+describe("task 档位决策", () => {  test("主代理声明的档位优先", () => {
     const cfg = makeCfg("default");
     expect(decideSubTier("随便什么任务", "fast", cfg)).toEqual({
       tier: "fast",
@@ -449,5 +448,9 @@ describe("task 工具壳", () => {
 
   test("子代理工具集排除表包含 task（结构性禁止递归）", () => {
     expect(TOOL_NAMES_EXCLUDED_FOR_SUBAGENT).toContain("task");
+  });
+
+  test("子代理工具集排除表包含 compact_ctx（宿主闭包绑定主代理）", () => {
+    expect(TOOL_NAMES_EXCLUDED_FOR_SUBAGENT).toContain("compact_ctx");
   });
 });

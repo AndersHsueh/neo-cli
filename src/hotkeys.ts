@@ -23,7 +23,9 @@ export type HotkeyKey =
   | "tab"
   // 粘贴边界（PRD §7 探针：需调用方先启用 \x1b[?2004h，readline 才会发这两个键名）
   | "paste-start"
-  | "paste-end";
+  | "paste-end"
+  // 剪贴板贴图（PRD §5.1：Ctrl+V macOS / Alt+V Win-WSL，mapKey 双绑定）
+  | "paste-image";
 
 interface KeyInfo {
   name: string;
@@ -73,6 +75,9 @@ export class HotkeyRouter {
   }
 
   private mapKey(k: KeyInfo): HotkeyKey | null {
+    // Ctrl+V / Alt+V → 贴图（PRD §5.1 C3）：非信号语义的 ctrl/meta 组合键，
+    // 必须在下方「ctrl/meta 一律忽略」守卫之前判定（E2E 实证：守卫后不可达）
+    if (k.name === "v" && (k.ctrl || k.meta)) return "paste-image";
     // Ctrl 组合键属于信号语义（SIGINT 等），这里只认修饰键为空的方向键与 ESC
     if (k.ctrl || k.meta) return null;
     switch (k.name) {

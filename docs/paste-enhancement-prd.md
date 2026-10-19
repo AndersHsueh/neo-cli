@@ -313,6 +313,15 @@ rl.on("line", (l) => console.error(`LINE lines=${l.split("\n").length} head=${JS
 
 **P2 macOS JXA 剪贴板脚本**：验证 `osascript -l JavaScript` 能否单进程输出 PNG 二进制（含「剪贴板无图」分支的退出码约定）。
 
+> **P2 已完成（2026-10-19，真实剪贴板五场景实测）。结论：PRD §5.2 的「PNG 二进制直出 stdout」路线被证伪，改用临时文件协议：**
+>
+> 1. **stdout 协议死路**：JXA 的 `run()` 返回值**永远被追加到 stdout**（返回 0 → 尾部多 `"0\n"` 两个字节）。二进制直出必被污染，base64 后就是脏数据。实测：70 字节 PNG 输出 72 字节，尾部 `30 0a`。
+> 2. **退出码协议死路**：`return 2` → osascript 仍 exit 0；`$.exit(2)` → exit 1 且 stderr 为空。无法用退出码区分「无图 / 写文件失败 / 其他异常」。
+> 3. **JXA 环境差异**：没有 `console.error`（调用即 TypeError 崩溃）；诊断输出用 `NSFileHandle.fileHandleWithStandardError.writeData()` 实测可达 stderr。
+> 4. **临时文件协议完美**：`NSData.writeToFileAtomically(path, true)` 写 PNG，TS 侧读文件——stdout 0 字节干净、文件与剪贴板原始 PNG **逐字节一致**（cmp 实证）。
+> 5. **TIFF 转换可用**：Cmd+Shift+Ctrl+4 截图进剪贴板的是 TIFF 而非 PNG（PRD 未预见的坑）；`NSBitmapImageRep.imageRepWithData` + `representationUsingTypeProperties(4, …)` 转 PNG，经文件协议输出有效 PNG。
+> 6. **M2 实现协议定案**：JXA 脚本「有图 → 写临时文件 return；无图 → stderr 写 `NO_IMAGE` return」；TS 侧 spawn 后**以临时文件存在性为成功判据**（退出码不可信），stderr 内容做诊断分类（`NO_IMAGE` → C5 静默/info；其他 → warn）。临时文件路径由 TS 传入（`mkdtemp` 沙箱内），用后即删。
+
 **P3 Ctrl+V 键位到达形态**：验证 node readline 下 Ctrl+V 产生 `key={ctrl:true,name:"v"}` 且不插入缓冲；bun runtime 下行为一致（neo 跑在 bun 上，readline 是 node 兼容层，需实测）。
 
 ---
@@ -378,7 +387,7 @@ rl.on("line", (l) => console.error(`LINE lines=${l.split("\n").length} head=${JS
 | 期 | 内容 | 依赖 |
 |---|---|---|
 | M1 | 长文本折叠（路线 A/B 按 P1 定）+ resolveLine + queue 升级 + 配置块 | 探针 P1/P3 —— **✅ 已完成（2026-10-19）**。路线按 §7 探针改为「粘贴期间丢弃 + paste-end 重组」；交付 `src/paste.ts` + `src/attachments.ts` + hotkeys paste-start/end + queue 升级 QueuedLine + 2004h/l 启停；17 条单测 + 真实 pty E2E（chip 显示/全文送达/无逐行提交/退出还原四判定全过） |
-| M2 | macOS 贴图 + ContentPart 协议 + estimateTokens/compact 适配 + 附件落盘/恢复 | 探针 P2 |
+| M2 | macOS 贴图 + ContentPart 协议 + estimateTokens/compact 适配 + 附件落盘/恢复 | 探针 P2 —— **✅ 已完成（2026-10-19）**。`src/clipboard.ts`（JXA 临时文件协议，§7 P2 定案）；hotkeys `paste-image`（Ctrl+V/Alt+V，mapKey 须在 ctrl/meta 守卫**之前**判定——E2E 实证守卫后不可达）；`Message.content` 扩为 `string \| ContentPart[] \| null` + `contentText()` 收口；estimateTokens 图 800 tok/张；附件落盘 `attachments/<sessionId>/img-N.png` + JSON `$ref`（C10 NEO_SESSIONS_DIR 注入）；C1 空闲判定含 questionPending；C6 上限可配置（image_max_bytes）。E2E 六判定全过：chip 显示/已附加提示/JSON 用 $ref 零 base64/附件落盘/模型确认收图（「收到了——是一张深红色的小图」）/resume hydrate 重组。全量 400 pass / 0 fail / 1 skip |
 | M3 | Windows/WSL + Linux 剪贴板 | M2 |
 | M4（可选） | 历史召回重发完整粘贴内容（需把粘贴映射持久化到会话） | M1 |
 

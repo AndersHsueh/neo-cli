@@ -184,14 +184,17 @@ export interface PasteConfig {
   foldLines: number;
   /** 单行字符数阈值：≥ 此值折叠为 chip。 */
   foldChars: number;
+  /** 图片大小上限（字节），超限拒绝（PRD C6）。默认 8MB。 */
+  imageMaxBytes: number;
 }
 
-/** paste.* 解析：settings.json > 内置默认（3 行 / 300 字符）。 */
+/** paste.* 解析：settings.json > 内置默认（3 行 / 300 字符 / 8MB）。 */
 function resolvePasteConfig(raw: Raw | undefined): PasteConfig {
   const r = raw ?? {};
   return {
     foldLines: num(r["fold_lines"], 3),
     foldChars: num(r["fold_chars"], 300),
+    imageMaxBytes: num(r["image_max_bytes"], 8_388_608),
   };
 }
 

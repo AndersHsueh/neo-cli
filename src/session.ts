@@ -5,7 +5,7 @@
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import type { Message } from "./llm.ts";
+import type { ContentPart, Message } from "./llm.ts";
 
 export interface SessionMeta {
   id: string;
@@ -101,7 +101,9 @@ export function loadSession(id: string): SessionFile | null {
   const candidates = readdirSync(dir).filter((f) => f.includes(id) && f.endsWith(".json"));
   if (candidates.length === 0) return null;
   try {
-    return JSON.parse(readFileSync(join(dir, candidates[0] as string), "utf8")) as SessionFile;
+    const f = JSON.parse(readFileSync(join(dir, candidates[0] as string), "utf8")) as SessionFile;
+    // M2（PRD §5.6）：出口统一 hydrate —— $ref 重组回 data URL，附件缺失降级为占位文本
+    return { ...f, messages: hydrateMessages(f.messages) };
   } catch {
     return null;
   }
@@ -115,6 +117,52 @@ export function applyRestored(system: Message | undefined, restored: Message[]):
 export function saveSession(messages: Message[], meta: SessionMeta): void {
   ensureDir();
   meta.updatedAt = new Date().toISOString();
-  const data: SessionFile = { version: 1, meta, messages };
+  // M2 粘贴增强（PRD §5.6）：图片 data URL 不进会话 JSON（一张截图 1~3MB base64），
+  // 落盘到 attachments/<sessionId>/，JSON 里存 $ref 指针；恢复时读文件重组。
+  const attachmentsDir = join(sessionsDir(), "attachments", meta.id);
+  if (messages.some((m) => Array.isArray(m.content) && m.content.some((p) => p.type === "image_url"))) {
+    if (!existsSync(attachmentsDir)) mkdirSync(attachmentsDir, { recursive: true });
+  }
+  const serialized = messages.map((m) => {
+    if (!Array.isArray(m.content)) return m;
+    const parts: (ContentPart | { type: "image_ref"; ref: string })[] = m.content.map((p, i) => {
+      if (p.type !== "image_url") return p;
+      const m2 = /^data:image\/png;base64,(.+)$/.exec(p.image_url.url);
+      if (!m2) return p; // 非 data URL（自定义 URL）原样保留
+      const name = `img-${i}.png`;
+      writeFileSync(join(attachmentsDir, name), Buffer.from(m2[1] ?? "", "base64"));
+      return { type: "image_ref", ref: `attachments/${meta.id}/${name}` };
+    });
+    return { ...m, content: parts };
+  });
+  const data: SessionFile = { version: 1, meta, messages: serialized as Message[] };
   writeFileSync(meta.path, JSON.stringify(data, null, 2), "utf8");
+}
+
+/** 恢复时把 $ref 重组回 data URL；附件文件缺失 → text part「[Image #N 已丢失]」，不阻塞（PRD §5.6）。 */
+export function hydrateMessages(messages: Message[]): Message[] {
+  const dir = sessionsDir();
+  let imgSeq = 0;
+  return messages.map((m) => {
+    if (!Array.isArray(m.content)) return m;
+    const parts: ContentPart[] = m.content.map((p) => {
+      const ref = (p as { type?: string; ref?: string }).ref;
+      if ((p as { type?: string }).type !== "image_ref" || !ref) return p as ContentPart;
+      const file = join(dir, ref);
+      if (!existsSync(file)) {
+        imgSeq += 1;
+        return { type: "text", text: `[Image #${imgSeq} 已丢失]` };
+      }
+      const b64 = readFileSync(file).toString("base64");
+      return { type: "image_url", image_url: { url: `data:image/png;base64,${b64}` } };
+    });
+    return { ...m, content: parts };
+  });
+}
+
+/** 持久化前确保附件目录存在（saveSession 内部调用）。 */
+export function ensureAttachmentsDir(sessionId: string): string {
+  const d = join(sessionsDir(), "attachments", sessionId);
+  if (!existsSync(d)) mkdirSync(d, { recursive: true });
+  return d;
 }

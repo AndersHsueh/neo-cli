@@ -17,10 +17,24 @@ export class ToolError extends Error {
   }
 }
 
+/**
+ * 宿主代理暴露给工具的最小能力面（结构化类型，Agent 隐式满足，无需 import）。
+ * 定义成接口而非直接引用 Agent：types.ts 是叶子模块，
+ * 反向依赖 agent.ts 会复活 task → agent → tools 的循环依赖。
+ */
+export interface CompactHost {
+  /** 登记一次上下文压缩请求；宿主在安全时机（工具循环收口）统一执行。 */
+  requestCompact(): void;
+}
+
 export interface ToolCtx {
   cfg: Config;
   /** 敏感操作审批，返回 true 才执行。 */
   approve: (tool: string, detail: string) => Promise<boolean>;
+  /**
+   * 宿主代理（可选，测试的裸 ctx 可不传）。compact_ctx 用它登记压缩请求。
+   */
+  host?: CompactHost;
   /** 取消信号（Ctrl+C）。 */
   signal?: AbortSignal;
   /** 由 agent 注入，让工具能观察取消。 */

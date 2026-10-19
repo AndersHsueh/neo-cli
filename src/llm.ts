@@ -11,6 +11,15 @@ import type { Config } from "./config.ts";
 
 export type Role = "system" | "user" | "assistant" | "tool";
 
+/**
+ * 多模态 content part（PRD docs/paste-enhancement-prd.md §5.5）。
+ * OpenAI 兼容 /chat/completions 的 user 消息标准形态；仅 user 消息可能携带数组，
+ * system/assistant/tool 恒为 string（结构性约束，发送层不做转换）。
+ */
+export type ContentPart =
+  | { type: "text"; text: string }
+  | { type: "image_url"; image_url: { url: string } };
+
 export interface ToolCall {
   id: string;
   type: "function";
@@ -19,10 +28,25 @@ export interface ToolCall {
 
 export interface Message {
   role: Role;
-  content: string | null;
+  content: string | ContentPart[] | null;
   name?: string;
   tool_call_id?: string;
   tool_calls?: ToolCall[];
+}
+
+/**
+ * 取消息的纯文本视图（C8 适配收口）。
+ * string 原样；数组拼 text parts（image part 不贡献文本）；null → null。
+ * 所有「只关心文本」的消费点（compact/预览/子代理/分类器）一律走这里，
+ * 不许各自 instanceof —— 收口一处，类型扩展时只改这里。
+ */
+export function contentText(content: Message["content"]): string | null {
+  if (content === null) return null;
+  if (typeof content === "string") return content;
+  return content
+    .map((p) => (p.type === "text" ? p.text : ""))
+    .join("")
+    .trim();
 }
 
 export interface ToolSpec {
@@ -306,13 +330,23 @@ export function estimateTokens(messages: Message[], tools: ToolSpec[] = []): num
   // 于是中文被按 4 字符/token 计，低估约 2.7 倍 —— 压缩触发点因此严重偏晚。
   let chars = 0;
   let cjk = 0;
+  let images = 0;
   const eat = (s: string): void => {
     chars += s.length;
     cjk += countCjk(s);
   };
 
   for (const m of messages) {
-    eat(m.content ?? "");
+    if (typeof m.content === "string") {
+      eat(m.content ?? "");
+    } else if (Array.isArray(m.content)) {
+      // 多模态：text part 按原算法；image part 固定 800 tokens/图
+      // （OpenAI detail:low 档量级；各服务端口径不一，粗估即可 —— PRD §5.5）
+      for (const p of m.content) {
+        if (p.type === "text") eat(p.text);
+        else images += 1;
+      }
+    }
     for (const tc of m.tool_calls ?? []) {
       eat(tc.function.arguments);
       eat(tc.function.name);
@@ -322,7 +356,7 @@ export function estimateTokens(messages: Message[], tools: ToolSpec[] = []): num
   eat(JSON.stringify(tools));
 
   const ascii = Math.max(0, chars - cjk);
-  return Math.ceil(ascii / 4 + cjk / 1.5) + messages.length * 4;
+  return Math.ceil(ascii / 4 + cjk / 1.5) + messages.length * 4 + images * 800;
 }
 
 /**

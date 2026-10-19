@@ -14,6 +14,7 @@
  *    下一轮的档位切换污染正在运行的子代理。
  */
 import { Agent, type AgentIO } from "../agent.ts";
+import { contentText } from "../llm.ts";
 import { applyTier, tierAvailable, type Config, type ModelTier } from "../config.ts";
 import { TIER_ORDER } from "../classifier/types.ts";
 import { ToolError, type ToolCtx, type ToolImpl } from "./types.ts";
@@ -219,8 +220,8 @@ export async function runSubagent(
     // 中间轮次的 assistant 消息要么带 tool_calls（内容是给工具的旁白），
     // 要么是空正文 —— 都不该混进报告。
     const body = sub.messages
-      .filter((m) => m.role === "assistant" && (m.content ?? "").trim() !== "" && !m.tool_calls)
-      .map((m) => m.content ?? "")
+      .filter((m) => m.role === "assistant" && (contentText(m.content) ?? "").trim() !== "" && !m.tool_calls)
+      .map((m) => contentText(m.content) ?? "")
       .pop();
     const report = (body ?? "").trim();
     const usage =

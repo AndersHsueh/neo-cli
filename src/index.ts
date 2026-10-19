@@ -28,14 +28,15 @@ import { Classifier, CLASSIFIER_NAMES, isClassifierName, type ClassifierName } f
 import { Agent, type PermissionMode } from "./agent.ts";
 import { HotkeyRouter, doubleStrike } from "./hotkeys.ts";
 import { PasteCollector, shouldFold, assemblePaste } from "./paste.ts";
-import { makeTextAttachment, bindAttachments, resolveLine, type TextAttachment, type QueuedLine } from "./attachments.ts";
+import { makeTextAttachment, makeImageAttachment, bindAttachments, resolveLine, type Attachment, type QueuedLine } from "./attachments.ts";
+import { readClipboardImage } from "./clipboard.ts";
 import { select, type SelectDeps } from "./ui/select.ts";
 import { Console } from "./ui/console.ts";
 import { banner, c, rule, truncate } from "./ui/theme.ts";
 import { renderMarkdown } from "./ui/render.ts";
 import { buildMemoryFile, buildSystemPrompt } from "./system-prompt.ts";
 import { ensureProfile as initEnsureProfile, reInjectProfile as initReInjectProfile, recordIndex as initRecordIndex, initProjectLevel as initProjectLevelImpl } from "./memory/index.ts";
-import { listModels, type Message } from "./llm.ts";
+import { listModels, contentText, type Message } from "./llm.ts";
 import { toolNames, registerTool } from "./tools/index.ts";
 import { makeTaskTool, runSubagent } from "./tools/task.ts";
 import { registerWikiTools } from "./tools/wiki.ts";
@@ -52,7 +53,7 @@ import { appendLog } from "./wiki/write.ts";
 import { discoverSkills, isValidSkillName, formatSkillLine, normalizeDescription } from "./skills.ts";
 import { applyRestored, createSession, listSessions, loadSession, saveSession, type SessionMeta } from "./session.ts";
 
-const VERSION = "0.1.5";
+const VERSION = "0.1.9";
 
 /** /auto 列表里各实现的说明。 */
 const DESC: Record<string, string> = {
@@ -433,8 +434,16 @@ async function main(): Promise<number> {
    * 审批问句统一走 readline.question。
    * 关键：不要另开 raw-mode stdin 监听，否则 readline 会重复回显输入。
    * question 会自动挂起/恢复 line 事件，因此外层队列不会被问句污染。
+   * questionPending 供粘贴热键 C1 判定：问句中 rl.write(chip) 会污染问句缓冲。
    */
-  ui.setAsker((q: string) => new Promise<string>((resolve) => rl.question(q, (a) => resolve(a))));
+  let questionPending = false;
+  ui.setAsker((q: string) => new Promise<string>((resolve) => {
+    questionPending = true;
+    rl.question(q, (a) => {
+      questionPending = false;
+      resolve(a);
+    });
+  }));
 
   const shutdown = (): void => {
     persist(agent.messages, sess.meta);
@@ -486,9 +495,10 @@ async function main(): Promise<number> {
   // 不支持的终端无标记，行为退化为现状（逐行提交），非回归。
   if (process.stdin.isTTY) process.stdout.write("\x1b[?2004h");
   const pasteCollector = new PasteCollector();
-  let pasteTextCounter = 0; // chip 编号会话内递增（PRD §3）
+  let pasteTextCounter = 0; // chip 编号会话内递增（PRD §3），图片/文本各自独立
+  let pasteImageCounter = 0;
   /** 待绑定附件：chip 已写入缓冲、随下一次 line 提交绑定入队（PRD §5.4）。 */
-  let pendingAttachments: TextAttachment[] = [];
+  let pendingAttachments: Attachment[] = [];
 
   // 粘贴期间的 line 一律收集不提交（C11 同款模式）。
   // 收集态由 paste-end 的 collector.end() 撤销（探针 §7.2：此刻最后一段仍在缓冲，
@@ -517,6 +527,42 @@ async function main(): Promise<number> {
   // ---- 粘贴边界接线（PRD §5.3 + §7 探针结论）----
   // paste-start：进入收集态。用户先打到一半的字随首行 line 提交天然带上，无需特殊处理。
   hotkeys.on("paste-start", () => pasteCollector.start());
+
+  // ---- 图片粘贴热键（PRD §5.1 D1 + §5.2 D2）----
+  // C1：仅在输入空闲时响应——readline 问句中 rl.write 会污染问句缓冲（console.ts 同源结论）。
+  // C3：Ctrl+V（macOS 主键位）与 Alt+V（Win/WSL）同时绑定。
+  // C4：异步读取，等待期间输入框可用；结果到达后 chip 追加到当前缓冲尾部。
+  // C5：无图 → info 一行，不报错（用户可能只是想贴文本）。C6：8MB 上限。
+  const onPasteImage = (): void => {
+    if (draining || queue.length > 0 || selectActive || questionPending) return; // C1
+    void (async (): Promise<void> => {
+      let img: Awaited<ReturnType<typeof readClipboardImage>> = null;
+      let err: string | null = null;
+      try {
+        img = await readClipboardImage();
+      } catch (e) {
+        err = (e as Error).message;
+      }
+      if (err) {
+        ui.warn(err); // C9 关联：读取失败一行说明原因
+        return;
+      }
+      if (!img) {
+        ui.line(c.dim("· 剪贴板里没有图片")); // C5
+        return;
+      }
+      if (img.data.length > cfg.paste.imageMaxBytes) {
+        ui.warn(`图片超过 ${(cfg.paste.imageMaxBytes / 1024 / 1024).toFixed(0)}MB 上限（${(img.data.length / 1024 / 1024).toFixed(1)}MB），已放弃`); // C6
+        return;
+      }
+      pasteImageCounter += 1;
+      const att = makeImageAttachment(pasteImageCounter, img.data);
+      pendingAttachments.push(att);
+      (rl as unknown as { write(b: string): void }).write(att.chip); // C2：只走 rl.write
+      ui.line(c.dim(`· 已附加 ${att.chip} (${(att.bytes / 1024).toFixed(0)}KB)`));
+    })();
+  };
+  hotkeys.on("paste-image", onPasteImage);
 
   // paste-end：组装全文。此刻最后一段仍在 rl.line 缓冲（探针 §7.2），取出参与组装；
   // 取走后立即清空重绘，防止用户随后的回车把残留再提交一次。
@@ -598,13 +644,21 @@ async function main(): Promise<number> {
         continue;
       }
 
-      // M1 粘贴增强（PRD §5.4）：chip 还原为原文后才发给模型
+      // M1/M2 粘贴增强（PRD §5.4）：chip 还原后才发给模型——文本 chip 还原原文，
+      // 图片 chip 收集为 data URL 列表交给 agent.send 组装多模态 content。
       const resolved = resolveLine(line, q.attachments);
-      onFirstUserInput(resolved);
+      if (resolved.images.length > 0) {
+        // PRD §5.8：用户对「发出去了什么」有知情权（图片可能含敏感信息）
+        ui.line(c.dim(`· 已发送图片 ×${resolved.images.length}`));
+      }
+      onFirstUserInput(resolved.text);
       ui.blank();
       try {
         // ESC 中止路径开启回滚：本轮（含 user 消息）整体作废，用户直接重输
-        const stats = await agent.send(resolved, { rollbackOnAbort: true });
+        const stats = await agent.send(
+          resolved.images.length > 0 ? { text: resolved.text, images: resolved.images } : resolved.text,
+          { rollbackOnAbort: true },
+        );
         ui.blank();
           ui.blank();
       // 档位切换必须显式告知 —— 静默换模型会让人困惑「为什么这轮答得不一样」
@@ -621,6 +675,9 @@ async function main(): Promise<number> {
       showStats(ui, agent, cfg, stats);
       } catch (e) {
         ui.error(`未捕获异常: ${(e as Error).message}`);
+        // C9：本轮带图且请求失败 → 追加一行软提示（无法可靠区分「服务端拒绝图片」
+        // 与其他 4xx，用软提示近似 PRD 要求，不误导为确定结论）
+        if (resolved.images.length > 0) ui.line(c.dim("  当前 provider 可能不支持图片输入"));
         if (process.env["NEO_DEBUG"]) console.error(e);
       }
       persist(agent.messages, sess.meta);
@@ -1257,9 +1314,9 @@ async function handleCommand(
         // 预览取该会话首条用户消息 —— id 是时间戳，辨识度全靠它
         const options = list.map((s) => {
           const f = loadSession(s.id);
-          const firstUser = f?.messages.find((m) => m.role === "user" && (m.content ?? "").trim());
+          const firstUser = f?.messages.find((m) => m.role === "user" && (contentText(m.content) ?? "").trim());
           const preview = firstUser?.content
-            ? truncate(firstUser.content.replace(/\s+/g, " ").trim(), 46)
+            ? truncate((contentText(firstUser.content) ?? "").replace(/\s+/g, " ").trim(), 46)
             : "（无文本预览）";
           return { label: `${s.id}  ${preview}`, hint: `${s.turns}轮 ${s.model}`, value: s.id };
         });
@@ -1287,9 +1344,9 @@ async function handleCommand(
       ui.success(`已恢复会话 ${full.meta.id}（${full.messages.length} 条消息）`);
       const lastUser = [...full.messages]
         .reverse()
-        .find((m) => m.role === "user" && (m.content ?? "").trim());
+        .find((m) => m.role === "user" && (contentText(m.content) ?? "").trim());
       if (lastUser?.content) {
-        ui.line(c.dim(`  上次输入：${truncate(lastUser.content.replace(/\s+/g, " ").trim(), 60)}`));
+        ui.line(c.dim(`  上次输入：${truncate((contentText(lastUser.content) ?? "").replace(/\s+/g, " ").trim(), 60)}`));
       }
       break;
     }

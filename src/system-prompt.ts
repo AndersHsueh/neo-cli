@@ -96,6 +96,7 @@ export function buildSystemPrompt(cfg: Config): string {
 - list_dir / glob / grep：探索代码库。找东西用 grep，找文件用 glob。
 - shell：执行命令。安装依赖、跑测试、git 操作走这里。
 - web_fetch：抓网页转纯文本，查文档用。
+- compact_ctx：请求压缩对话上下文（历史→结构化摘要）。大范围探索完成、进入下一阶段前可主动调用；实际压缩在当前工具批次结束后执行。
 ${skillText}${wikiText}
 ## 如何思考
 

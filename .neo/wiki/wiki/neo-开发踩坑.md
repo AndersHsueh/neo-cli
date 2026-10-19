@@ -71,6 +71,13 @@ neo 开发过程中沉淀的教训清单,持续追加。当前八条:zsh 变量�
 
 ## 推理与依据
 
+## 2026-10-19 JXA（osascript -l JavaScript）三坑：stdout 污染 / 退出码不可控 / 无 console.error
+
+- 现象：P2 探针验证 PRD §5.2 原设计「JXA 读剪贴板 PNG 二进制直出 stdout」，输出比原始 PNG 多 2 字节；想用退出码区分「无图/异常」分支，全部失效。
+- 根因：① JXA 的 `run()` 返回值**永远被序列化追加到 stdout**（返回 0 → 尾部 `"0\n"`，二进制通道被污染，`file` 命令只认头部发现不了）；② `return 2` → osascript exit 0；`$.exit(2)` → exit 1 且 stderr 空——退出码无法承载自定义语义；③ JXA 环境没有 `console.error`（调用即 TypeError 崩溃）。
+- 对策：二进制走**临时文件协议**（`NSData.writeToFileAtomically`，实测与原始逐字节一致），TS 侧以文件存在性为成功判据，诊断走 `NSFileHandle.fileHandleWithStandardError`（实测可达 stderr）；退出码一律不信任。
+- 教训：凡是「进程间传二进制」，先探针验证通道纯净性（`cmp` 逐字节比对），不能只看 `file` 认头部——PRD 阶段的「stdout 直出」设想在 macOS scripting 桥接层不成立，探针一次就省掉一整条脏数据链路。
+
 ## 2026-10-19 K6/K9 测试断言死路径：gitignore 修复后测试未联动
 
 - 现象：`bun test` 长期 2 fail（K6/K9，gitignore-rules.test.ts），干净基线也挂，困扰多轮会话。

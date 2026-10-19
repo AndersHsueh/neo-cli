@@ -7,7 +7,7 @@
  */
 import { describe, expect, test } from "bun:test";
 import { PasteCollector, shouldFold, assemblePaste } from "../src/paste.ts";
-import { makeTextAttachment, makeTextChip, bindAttachments, resolveLine } from "../src/attachments.ts";
+import { makeTextAttachment, makeImageAttachment, makeTextChip, bindAttachments, resolveLine } from "../src/attachments.ts";
 
 const T = { foldLines: 3, foldChars: 300 };
 
@@ -96,24 +96,43 @@ describe("chip 生成与还原", () => {
 
   test("resolveLine：chip 在行内 → 还原原文", () => {
     const att = makeTextAttachment(1, "line1\nline2\nline3");
-    expect(resolveLine(`看这个 ${att.chip} 谢谢`, [att])).toBe("看这个 line1\nline2\nline3 谢谢");
+    expect(resolveLine(`看这个 ${att.chip} 谢谢`, [att])).toEqual({
+      text: "看这个 line1\nline2\nline3 谢谢",
+      images: [],
+    });
   });
 
   test("resolveLine：chip 被用户删除 → 静默丢弃，不还原", () => {
     const att = makeTextAttachment(1, "secret content");
-    expect(resolveLine("chip 已经删了", [att])).toBe("chip 已经删了");
+    expect(resolveLine("chip 已经删了", [att])).toEqual({ text: "chip 已经删了", images: [] });
   });
 
   test("resolveLine：手打同款字样（不在 pending 里）不被误还原（PRD 测试 2）", () => {
-    expect(resolveLine("我就是要打 [Pasted text #1 +3 lines] 这几个字", [])).toBe(
-      "我就是要打 [Pasted text #1 +3 lines] 这几个字",
-    );
+    expect(resolveLine("我就是要打 [Pasted text #1 +3 lines] 这几个字", [])).toEqual({
+      text: "我就是要打 [Pasted text #1 +3 lines] 这几个字",
+      images: [],
+    });
   });
 
   test("resolveLine：多个附件混合还原", () => {
     const a1 = makeTextAttachment(1, "AAA");
     const a2 = makeTextAttachment(2, "BBB");
-    expect(resolveLine(`${a1.chip} 中间 ${a2.chip}`, [a1, a2])).toBe("AAA 中间 BBB");
+    expect(resolveLine(`${a1.chip} 中间 ${a2.chip}`, [a1, a2])).toEqual({
+      text: "AAA 中间 BBB",
+      images: [],
+    });
+  });
+
+  test("resolveLine：图片 chip → 收集 data URL 并从文本中剔除", () => {
+    const img = makeImageAttachment(1, Buffer.from("fakepng"));
+    const r = resolveLine(`看图 ${img.chip}`, [img]);
+    expect(r.text.trim()).toBe("看图");
+    expect(r.images).toEqual([img.dataUrl]);
+  });
+
+  test("resolveLine：图片 chip 被删 → 不进 images", () => {
+    const img = makeImageAttachment(1, Buffer.from("fakepng"));
+    expect(resolveLine("图删了", [img])).toEqual({ text: "图删了", images: [] });
   });
 
   test("bindAttachments：只绑定 chip 仍在本行内的附件", () => {

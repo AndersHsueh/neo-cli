@@ -67,6 +67,18 @@ describe("HotkeyRouter", () => {
     expect(hits).toBe(0);
   });
 
+  test("Ctrl+V / Alt+V 映射 paste-image（E2E 实证：mapKey 守卫后判定不可达，须在 ctrl/meta 守卫前）", () => {
+    const { rl, input, emitKey } = makeFakeRl();
+    const router = new HotkeyRouter();
+    router.attach(rl as never, input as never);
+    let hits = 0;
+    router.on("paste-image", () => hits++);
+    emitKey({ name: "v", ctrl: true, meta: false, shift: false }); // Ctrl+V（macOS）
+    emitKey({ name: "v", ctrl: false, meta: true, shift: false }); // Alt+V（Win/WSL）
+    emitKey({ name: "v", ctrl: false, meta: false, shift: false }); // 裸 v：普通字符，不触发
+    expect(hits).toBe(2);
+  });
+
   test("未注册的键不触发任何 handler", () => {
     const { rl, input, emitKey } = makeFakeRl();
     const router = new HotkeyRouter();

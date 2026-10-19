@@ -5,7 +5,7 @@
  *  - 每轮前估算 token，超阈值触发 /compact（把旧消息总结成一条 system 摘要）。
  *  - reasoning_content 不入历史，避免思维链污染后续轮次。
  */
-import { chatStream, estimateTokens, LLMError, type Message, type ToolSpec } from "./llm.ts";
+import { chatStream, estimateTokens, contentText, LLMError, type Message, type ToolSpec } from "./llm.ts";
 import {
   applyTier,
   isImplemented,
@@ -17,6 +17,7 @@ import { renderMarkdown } from "./ui/render.ts";
 import { c, colorEnabled } from "./ui/theme.ts";
 import { Classifier } from "./classifier/index.ts";
 import { dispatch, toolSpecs, toolNames, TOOL_NAMES_EXCLUDED_FOR_SUBAGENT, type ToolCtx } from "./tools/index.ts";
+import { ToolError } from "./tools/types.ts";
 
 export type PermissionMode = "ask" | "auto-edit" | "auto-all" | "plan";
 
@@ -95,6 +96,12 @@ export class Agent {
   mode: PermissionMode;
   /** 连续工具失败计数。分类器用它判断当前档位是否撑不住。 */
   private consecutiveFailures = 0;
+  /**
+   * compact_ctx 工具登记的压缩请求。
+   * 工具执行点不是安全切点（assistant(tool_calls) 与 tool 结果尚未配对完），
+   * 只能置标记，等工具循环收口后由 runCompactIfRequested() 统一执行。
+   */
+  private compactRequested = false;
   private abort: AbortController | null = null;
   private totalPrompt = 0;
   private totalCompletion = 0;
@@ -161,6 +168,35 @@ export class Agent {
     this.abort?.abort();
   }
 
+  /** compact_ctx 工具经 ctx.host 调用：只登记，不执行。 */
+  requestCompact(): void {
+    this.compactRequested = true;
+  }
+
+  /**
+   * 消费压缩标记。在安全切点调用（工具循环收口、下一轮请求之前）。
+   * 返回压缩结果；未登记过请求时返回 null。
+   */
+  private async runCompactIfRequested(): Promise<{ beforeTokens: number; afterTokens: number } | null> {
+    if (!this.compactRequested) return null;
+    this.compactRequested = false;
+    try {
+      const r = await this.compactNow();
+      this.opt.console.info(
+        `已按模型请求压缩上下文（${r.beforeTokens} → ${r.afterTokens} tokens 估算）`,
+      );
+      return r;
+    } catch (e) {
+      // 压缩失败不终止本轮：如实告知模型，它可自行决定是否重试或放弃。
+      this.opt.console.warn(`compact_ctx 执行失败：${(e as Error).message}`);
+      this.messages.push({
+        role: "system",
+        content: `compact_ctx 执行失败：${(e as Error).message}`,
+      });
+      return null;
+    }
+  }
+
   /**
    * 模型 / provider 切换后同步系统提示词里的「模型」那一行。
    * 不更新的话，模型看到的仍是启动时的旧模型名 —— 那会直接影响它的行为判断
@@ -169,7 +205,8 @@ export class Agent {
   noteModelChange(cfg: Config): void {
     const sys = this.messages[0];
     if (!sys || sys.role !== "system") return;
-    const current = sys.content ?? "";
+    // system 消息恒为 string（结构性约束）；类型扩宽后此处显式收窄
+    const current = typeof sys.content === "string" ? sys.content : "";
     const line =
       `- 模型：${cfg.model}（provider ${cfg.providerName}，档位 ${cfg.modelTier}；` +
       `这是推理模型，你的思维链会先于正文输出，这是正常的）`;
@@ -185,10 +222,19 @@ export class Agent {
     this.messages = keepSystem && sys?.role === "system" ? [sys] : [];
   }
 
-  /** 把当前非 system 消息替换为一段摘要。 */
-  async compact(): Promise<boolean> {
+  /**
+   * 压缩核心。把当前非 system 消息替换为一段摘要，原地重写 this.messages。
+   *
+   * 约束：只能在「历史处于安全切点」时调用 —— 消息序列满足
+   * assistant(tool_calls) 与 tool 结果严格配对（如轮次边界、/compact 命令）。
+   * 工具循环中途调用会拆散配对，下一轮请求会被服务端以协议错误拒绝。
+   * 抛错式：失败向上传，由调用方决定如何呈现。
+   */
+  async compactNow(): Promise<{ beforeTokens: number; afterTokens: number }> {
     const convo = this.messages.slice(1);
-    if (convo.length < 4) return false;
+    if (convo.length < 4) {
+      throw new ToolError("对话太短，压缩不划算（非 system 消息不足 4 条）");
+    }
 
     const convoText = convo
       .map((m) => {
@@ -198,36 +244,49 @@ export class Agent {
             .join("; ");
           return `assistant(tool_call): ${calls}`;
         }
-        if (m.role === "tool") return `tool(${m.name ?? ""}): ${truncateArgs(m.content ?? "")}`;
-        return `${m.role}: ${truncateArgs(m.content ?? "")}`;
+        if (m.role === "tool") return `tool(${m.name ?? ""}): ${truncateArgs(contentText(m.content) ?? "")}`;
+        return `${m.role}: ${truncateArgs(contentText(m.content) ?? "")}`;
       })
       .join("\n");
 
     const convoTokens = estimateTokens(convo);
-    const budget = Math.min(12_000, Math.floor(this.opt.cfg.contextWindow * 0.2));    const prompt =
+    const budget = Math.min(12_000, Math.floor(this.opt.cfg.contextWindow * 0.2));
+    const prompt =
       `请把下面的对话历史压缩成一份结构化摘要，供后续继续工作使用。\n` +
       `必须保留：用户的目标与明确要求、已确定的事实与结论、已改动的文件路径、关键代码片段、待办事项与未解决问题。\n` +
       `丢弃：寒暄、重复内容、冗长的工具原始输出。\n` +
       `输出纯文本摘要，不要加前言。\n\n【对话历史】\n${convoText}`;
 
-    try {
-      const res = await chatStream(
-        { ...this.opt.cfg, maxTokens: budget, temperature: 0.2 },
-        [
-          { role: "system", content: "你是压缩器，只输出结构化摘要。" },
-          { role: "user", content: prompt },
-        ],
-        [],
-        {},
-      );
-      if (!res.content.trim()) return false;
+    const res = await this.streamFn(
+      { ...this.opt.cfg, maxTokens: budget, temperature: 0.2 },
+      [
+        { role: "system", content: "你是压缩器，只输出结构化摘要。" },
+        { role: "user", content: prompt },
+      ],
+      [],
+      {},
+    );
+    if (!res.content.trim()) {
+      throw new ToolError("压缩器返回了空摘要");
+    }
 
-      const sys = this.messages[0];
-      this.messages = [
-        ...(sys ? [sys] : []),
-        { role: "user", content: `<对话摘要>\n${res.content.trim()}\n</对话摘要>` },
-      ];
-      this.opt.onEvent?.({ type: "compact", data: { beforeTokens: convoTokens, afterTokens: estimateTokens(this.messages) } });
+    const sys = this.messages[0];
+    this.messages = [
+      ...(sys ? [sys] : []),
+      { role: "user", content: `<对话摘要>\n${res.content.trim()}\n</对话摘要>` },
+    ];
+    const afterTokens = estimateTokens(this.messages);
+    this.opt.onEvent?.({ type: "compact", data: { beforeTokens: convoTokens, afterTokens } });
+    return { beforeTokens: convoTokens, afterTokens };
+  }
+
+  /**
+   * 压缩入口（薄壳，保持旧契约）：太短或失败返回 false，不抛错。
+   * /compact 命令与自动压缩走这里；工具触发的压缩走 compactNow + 标记收口。
+   */
+  async compact(): Promise<boolean> {
+    try {
+      await this.compactNow();
       return true;
     } catch {
       return false;
@@ -285,22 +344,40 @@ export class Agent {
     };
   }
 
-  /** 发送一条用户消息并跑完整个 agent 循环。 */
+  /**
+   * 发送一条用户消息并跑完整个 agent 循环。
+   * 多模态输入（PRD §5.4）：{text, images} → content 组装为 ContentPart[]
+   * （text part 在前，image_url parts 随后）；纯文本退化为 string，不破坏现有 provider。
+   * 分类器只吃文本（PRD §5.5：图片结构性排除）。
+   */
   async send(
-    userInput: string,
+    userInput: string | { text: string; images: string[] },
     opts: { rollbackOnAbort?: boolean } = {},
   ): Promise<TurnStats> {
     const started = Date.now();
     this.abort = new AbortController();
     const signal = this.abort.signal;
 
+    const text = typeof userInput === "string" ? userInput : userInput.text;
+    const images = typeof userInput === "string" ? [] : userInput.images;
+
     // 分类在消息入队之前完成，这样本轮从一开始就用对模型
-    const tierSwitch = await this.classifyTurn(userInput);
+    const tierSwitch = await this.classifyTurn(text);
 
     // 回滚基线：opts.rollbackOnAbort 时，abort 返回前把历史截回这里，
     // 本轮（含这条 user 消息）整体作废 —— 面向「输入错了要重来」的场景。
     const startLen = this.messages.length;
-    this.messages.push({ role: "user", content: userInput });
+    this.messages.push(
+      images.length > 0
+        ? {
+            role: "user",
+            content: [
+              { type: "text", text },
+              ...images.map((url) => ({ type: "image_url" as const, image_url: { url } })),
+            ],
+          }
+        : { role: "user", content: text },
+    );
 
     const specs: ToolSpec[] = this.toolSpecsFor();
     const maxIter = this.opt.cfg.maxToolIterations;
@@ -468,6 +545,11 @@ export class Agent {
             content: r.output,
           });
         }
+
+        // ---- 工具循环收口：安全切点，处理 compact_ctx 登记的压缩请求 ----
+        // 必须等全部 tool 结果回填完毕（assistant(tool_calls) 配对完整）才能压缩，
+        // 否则下一轮请求会因消息序列不完整被服务端拒绝。
+        await this.runCompactIfRequested();
       } catch (e) {
         this.opt.console.stopSpinner();
         // 请求失败时同样要摘掉预算提示，否则它会作为一条孤立消息留在历史里
@@ -578,6 +660,7 @@ export class Agent {
     return {
       cfg: this.opt.cfg,
       signal,
+      host: this,
       approve: async (tool, detail) => {
         if (mode === "auto-all") return true;
         if (mode === "auto-edit" && tool !== "shell") return true;

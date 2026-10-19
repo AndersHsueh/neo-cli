@@ -1,7 +1,7 @@
 /**
  * 核心逻辑单元测试。
  *
- * 覆盖 PRD 4.1 F1（9 个工具 spec 正确）与本次修复的回归点。
+ * 覆盖 PRD 4.1 F1（10 个工具 spec 正确）与本次修复的回归点。
  * 运行：bun test
  */
 import { describe, expect, test } from "bun:test";
@@ -52,7 +52,7 @@ function cleanup(): void {
 }
 
 /* ------------------------------------------------------------------ */
-/* F1：9 个工具的 spec 与敏感标记                                      */
+/* F1：10 个工具的 spec 与敏感标记                                     */
 /* ------------------------------------------------------------------ */
 
 describe("F1 工具集完整性", () => {
@@ -66,9 +66,10 @@ describe("F1 工具集完整性", () => {
     ["shell", true],
     ["web_fetch", false],
     ["use_skill", false],
+    ["compact_ctx", false],
   ] as const;
 
-  test("恰好 9 个工具，名称与顺序符合 PRD 2.1", () => {
+  test("恰好 10 个工具，名称与顺序符合 PRD 2.1", () => {
     expect(toolNames()).toEqual(EXPECTED.map(([n]) => n));
   });
 
@@ -87,7 +88,10 @@ describe("F1 工具集完整性", () => {
       const params = s.function.parameters as { type?: string; required?: string[] };
       expect(params.type).toBe("object");
       expect(Array.isArray(params.required)).toBe(true);
-      expect((params.required ?? []).length).toBeGreaterThan(0);
+      // compact_ctx 的 reason 是可选说明，不设必填；其余工具至少一个必填参数。
+      if (s.function.name !== "compact_ctx") {
+        expect((params.required ?? []).length).toBeGreaterThan(0);
+      }
     }
   });
 

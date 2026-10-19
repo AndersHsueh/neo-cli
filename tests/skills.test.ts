@@ -485,12 +485,13 @@ describe("D. buildSkillIndex", () => {
 /* ------------------------------------------------------------------ */
 
 describe("E. use_skill 工具", () => {
-  test("E1 工具已注册，共 9 个，use_skill 在 web_fetch 之后", () => {
+  test("E1 工具已注册，共 10 个，use_skill 在 web_fetch 之后", () => {
     const names = toolNames();
     expect(names).toContain("use_skill");
-    expect(names).toHaveLength(9);
-    expect(new Set(names).size).toBe(9);
-    expect(names[names.length - 1]).toBe("use_skill");
+    expect(names).toHaveLength(10);
+    expect(new Set(names).size).toBe(10);
+    expect(names[names.length - 2]).toBe("use_skill");
+    expect(names[names.length - 1]).toBe("compact_ctx");
   });
 
   test("E2 标记为非敏感", () => {
