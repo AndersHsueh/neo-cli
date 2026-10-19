@@ -4,7 +4,7 @@
 >
 > **页面定位**:v0.1.0 release node 架构总览 — 跨仓事实 + 关键模块拓扑 + 何时动哪里
 >
-> **不是**:详细 PRD 规格(走 `docs/skills-prd.md` / `docs/memory-prd.md`)/ 实施代码细节(走 `neo/src/`)
+> **不是**:详细 PRD 规格(走 `docs/skills-prd[done].md` / `docs/memory-prd.md`)/ 实施代码细节(走 `neo/src/`)
 
 ## §1 仓库拓扑
 
@@ -13,13 +13,13 @@ neo/                  ← 平台主干(repository, `gitee.com/andershsueh/neo-ag
 ├── src/              ← 工具、CLI、skills 模块
 ├── tests/            ← 单元 + 集成测试(189 pass / 0 fail baseline)
 ├── docs/             ← 主仓文档
-│   ├── skills-prd.md        (已 ship v0.1.0)
+│   ├── skills-prd[done].md  (已 ship v0.1.0)
 │   ├── memory-prd.md        (已 ship,但会从 main 删,见 §3)
 │   ├── memory-design.md     (已 ship,但会从 main 删,见 §3)
 │   ├── release-notes/
 │   │   ├── v0.1.0.md        (stage 1,PM 出,110 行)
 │   │   └── v0.1.0-FINAL.md  (待 Samuel 出,user-facing)
-│   ├── v0.1.0-prd.md        (待 Mike push,主 PRD 整合,296 行)
+│   ├── v0.1.0-prd[done].md  (待 Mike push,主 PRD 整合,296 行)
 │   ├── evidence/            (测试证据归档)
 │   └── architecture.md      (本页)
 ├── worktree:  ../neo-memory/   ← 记忆特性独立 repo,worktree 共享 .git

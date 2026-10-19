@@ -23,7 +23,7 @@
  * 覆盖的约束：
  *   约束 14 —— `.neo/skills/` 一条即可（目录被忽略后无法被负向规则重新包含，
  *              写 `.neo/skills/` 会连带全部内容一起忽略，无需逐条加 `!`）
- *   约束 15 —— raw 与 wiki 不加规则（`.neo/.wiki/raw/`、`.neo/.wiki/` 必须在版本控制内）
+ *   约束 15 —— raw 与 wiki 不加规则（`.neo/wiki/raw/`、`.neo/wiki/` 必须在版本控制内）
  *   决策 4  —— 项目私有技能（`skills/<name>/` 真目录）**必须**进 git，
  *              只有 `skills/<name>` 软链才该被忽略，而 gitignore 无法区分二者
  *              —— 这正是**不能写裸 `skills/`** 的原因。
@@ -228,22 +228,22 @@ describe("K. .gitignore 约束（PRD §6.5）", () => {
   /* 约束 15：raw 与 wiki 不加规则，必须在版本控制内                 */
   /* ---------------------------------------------------------------- */
 
-  test("K5 约束 15：`.neo/.wiki/raw/` 与 `.neo/.wiki/` 均未被忽略", () => {
+  test("K5 约束 15：`.neo/wiki/raw/` 与 `.neo/wiki/` 均未被忽略", () => {
     assertWorktreeHealthy();
     for (const p of [
-      ".neo/.wiki/",
-      ".neo/.wiki/raw/",
-      ".neo/.wiki/raw/某模板原文.md",
-      ".neo/.wiki/知识图谱.md",
+      ".neo/wiki/",
+      ".neo/wiki/raw/",
+      ".neo/wiki/raw/某模板原文.md",
+      ".neo/wiki/知识图谱.md",
     ]) {
       expect(`${p}=${isIgnored(p)}`).toBe(`${p}=false`);
     }
   });
 
-  test("K6 约束 15：`.neo/.wiki/outputs/` 被忽略（派生物不进版本控制）", () => {
+  test("K6 约束 15：`.neo/wiki/outputs/` 被忽略（派生物不进版本控制）", () => {
     assertWorktreeHealthy();
-    expect(isIgnored(".neo/.wiki/outputs/")).toBe(true);
-    expect(isIgnored(".neo/.wiki/outputs/生成物.md")).toBe(true);
+    expect(isIgnored(".neo/wiki/outputs/")).toBe(true);
+    expect(isIgnored(".neo/wiki/outputs/生成物.md")).toBe(true);
   });
 
   /* ---------------------------------------------------------------- */
@@ -278,7 +278,7 @@ describe("K. .gitignore 约束（PRD §6.5）", () => {
       "src/system-prompt.ts",
       "tests/skills.test.ts",
       "tests/core.test.ts",
-      "docs/skills-prd.md",
+      "docs/skills-prd[done].md",
       "package.json",
       "README.md",
     ]) {
@@ -297,7 +297,7 @@ describe("K. .gitignore 约束（PRD §6.5）", () => {
     const dir = realpathSync(mkdtempSync(join(tmpdir(), "neo-ignore-")));
     // git 默认会对非 ASCII 路径做八进制转义（如 "模板.md" → "\346\250\241..."），
     // 所以这里统一用 ASCII 文件名，避免断言被转义干扰。
-    const UNIGNORED = [".gitignore", "skills/project-private/SKILL.md", "src/skills.ts", ".neo/.wiki/raw/tpl.md"];
+    const UNIGNORED = [".gitignore", "skills/project-private/SKILL.md", "src/skills.ts", ".neo/wiki/raw/tpl.md"];
     try {
       execFileSync("git", ["init", "-q"], { cwd: dir, stdio: "ignore" });
       writeFileSync(join(dir, ".gitignore"), readFileSync(join(ROOT, ".gitignore"), "utf8"), "utf8");
@@ -305,8 +305,8 @@ describe("K. .gitignore 约束（PRD §6.5）", () => {
       for (const p of [
         ".neo/skills/pdf/SKILL.md", // 期望忽略
         "skills/project-private/SKILL.md", // 期望保留
-        ".neo/.wiki/raw/tpl.md", // 期望保留
-        ".neo/.wiki/outputs/x.md", // 期望忽略
+        ".neo/wiki/raw/tpl.md", // 期望保留
+        ".neo/wiki/outputs/x.md", // 期望忽略
         "src/skills.ts", // 期望保留
       ]) {
         const full = join(dir, p);
@@ -317,21 +317,21 @@ describe("K. .gitignore 约束（PRD §6.5）", () => {
       const local = (p: string) => isIgnored(p, dir);
       expect(`.neo/skills=${local(".neo/skills/pdf/SKILL.md")}`).toBe(".neo/skills=true");
       expect(`私有技能=${local("skills/project-private/SKILL.md")}`).toBe("私有技能=false");
-      expect(`wiki/raw=${local(".neo/.wiki/raw/tpl.md")}`).toBe("wiki/raw=false");
-      expect(`wiki/outputs=${local(".neo/.wiki/outputs/x.md")}`).toBe("wiki/outputs=true");
+      expect(`wiki/raw=${local(".neo/wiki/raw/tpl.md")}`).toBe("wiki/raw=false");
+      expect(`wiki/outputs=${local(".neo/wiki/outputs/x.md")}`).toBe("wiki/outputs=true");
       expect(`src=${local("src/skills.ts")}`).toBe("src=false");
 
       // git status 只应看到未被忽略的文件。
       // 必须用 -uall：默认会把未跟踪目录折叠成 `.neo/`、`skills/` 一行，
-      // 那样既看不出 skills/ 里有东西、也看不出 .neo/.wiki/raw/ 被保留了。
+      // 那样既看不出 skills/ 里有东西、也看不出 .neo/wiki/raw/ 被保留了。
       const status = execFileSync("git", ["status", "--porcelain", "-uall"], { cwd: dir, encoding: "utf8" });
       const seen = status
         .split("\n")
         .filter(Boolean)
         .map((l) => l.slice(3))
         .sort();
-      // .neo/ 仍在（因为 .neo/.wiki/raw/ 保留），skills/ 与 src/ 保留，
-      // 而 .neo/skills/ 与 .neo/.wiki/outputs/ 必须消失
+      // .neo/ 仍在（因为 .neo/wiki/raw/ 保留），skills/ 与 src/ 保留，
+      // 而 .neo/skills/ 与 .neo/wiki/outputs/ 必须消失
       expect(seen).toEqual([...UNIGNORED].sort());
     } finally {
       rmSync(dir, { recursive: true, force: true });

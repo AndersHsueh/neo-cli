@@ -1,6 +1,6 @@
 # neo 版本时间线
 
-> 最后更新:2026-10-16
+> 最后更新:2026-10-19
 
 ## 摘要
 
@@ -39,3 +39,21 @@ neo 自 2026-10-16 起的完整版本演进线,全部经 git tag 实证。主线
 
 - `raw/2026-10-16_neo-v0.0.x-早期历史.md` §一
 - git log --reverse 全时间线(实测)
+
+## 推理与依据
+
+## 2026-10-19 时间线补全：v0.1.2 → v0.1.8（tag 实证）
+
+正文 tag 表停在 v0.1.1，以下经 `git tag` + `git log` 实证补全：
+
+| tag/commit | 内容 | 发布说明 |
+|---|---|---|
+| v0.1.2 | /resume 交互恢复 + NEO_SESSIONS_DIR | docs/release-notes/v0.1.2.md |
+| v0.1.3 | 工具调用预算 + 热键系统（ESC 回滚 / Ctrl+C 双击） | docs/release-notes/v0.1.3.md |
+| v0.1.4 | task 子代理 + wiki 技能代码化（四技能退役） | docs/release-notes/v0.1.4.md |
+| v0.1.5 | .neo/wiki/ 入库 + gitignore 死规则修复 | docs/release-notes/v0.1.5.md |
+| v0.1.6 | **跳号**（无 release commit、无 tag；paste PRD 占号未实现） | — |
+| v0.1.7 | `9a8497c` select 组件 + /resume /model 接入 | docs/release-notes/v0.1.8.md（合并覆盖） |
+| v0.1.8 | `8e1950c` /tier /provider /mode 接入选择器 | docs/release-notes/v0.1.8.md |
+
+当前 `package.json` version = 0.1.8。v0.1.6 跳号为推断（基于 commit 历史与 tag 缺失），非文档明示。

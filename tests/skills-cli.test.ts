@@ -1,5 +1,5 @@
 /**
- * `/skills` 斜杠命令端到端测试（PRD skills-prd.md §6.6 + 约束 16）。
+ * `/skills` 斜杠命令端到端测试（PRD skills-prd[done].md §6.6 + 约束 16）。
  *
  * ## 为什么用子进程而不是 import
  *

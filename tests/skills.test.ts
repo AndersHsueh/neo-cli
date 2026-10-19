@@ -1,5 +1,5 @@
 /**
- * 技能管理测试（PRD skills-prd.md §7）。
+ * 技能管理测试（PRD skills-prd[done].md §7）。
  *
  * 隔离原则（PRD §7.3 强制）：
  *  - 全部路径基于 mkdtempSync 沙箱

@@ -236,7 +236,7 @@ export function reduce(
 
 ## 6. 探针（实现前必须先跑）
 
-> **M0 已完成（2026-10-18）**。四组探针结论全文见 `docs/select-component-m0-probes.md`（含 hotkeys.ts 存量 bug 的发现与证据）。本节保留探针设计原文，结论以该文件为准，冲突处以该文件为准。
+> **M0 已完成（2026-10-18）**。四组探针结论全文见 `docs/select-component-m0-probes[done].md`（含 hotkeys.ts 存量 bug 的发现与证据）。本节保留探针设计原文，结论以该文件为准，冲突处以该文件为准。
 
 **P1 行缓冲污染与清理**（决定 C4/C5 的最终形态）：
 
@@ -266,7 +266,7 @@ export function reduce(
 | `src/ui/select.ts` | **新增**。SelectOption/SelectDeps/select() + 纯状态机 reduce()（导出供测试） |
 | `src/index.ts` | `/resume` 选择块换 select（D7）；`/model` 无参分支可选化（D8）；SIGINT 处理器加 selectActive 协调（C9）；P2 结论落点（C11） |
 | `src/ui/console.ts` | choose() 删除或委托 select（C14）；asker 暴露给 select 的回退路径 |
-| `src/hotkeys.ts` | ~~零改动~~ **M0 证伪，小改**：attach 改监听 input 流、mapKey 认 `"return"`（依据 `docs/select-component-m0-probes.md` §1） |
+| `src/hotkeys.ts` | ~~零改动~~ **M0 证伪，小改**：attach 改监听 input 流、mapKey 认 `"return"`（依据 `docs/select-component-m0-probes[done].md` §1） |
 | `tests/select.test.ts` | **新增**。见 §8 |
 | `docs/release-notes/v0.1.7.md` | 发布说明（版本号随发布顺延调整） |
 
@@ -311,7 +311,7 @@ export function reduce(
 
 | 期 | 内容 | 依赖 |
 |---|---|---|
-| M0 | 探针 P1-P4，产出结论写入本文档 §6 下方 | 无（**已完成**，结论在 `docs/select-component-m0-probes.md`） |
+| M0 | 探针 P1-P4，产出结论写入本文档 §6 下方 | 无（**已完成**，结论在 `docs/select-component-m0-probes[done].md`） |
 | M1 | select.ts + reduce 测试 + `/resume` 接入 + 非 TTY 回退 | M0 |
 | M2 | `/model` 接入 + C9/C10/C13 守卫 + choose() 迁移收尾（C14） | M1 |
 | M3（可选） | 数字直选（P1 通过为前提）、wrap 循环、viewport 动态高度 | M1 + P1 |

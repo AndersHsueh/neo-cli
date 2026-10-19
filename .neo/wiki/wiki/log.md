@@ -214,3 +214,10 @@ grep -E -A3 "^## \[[0-9-]+\] todo \|" wiki/log.md
 ## [2026-10-18] wiki | select-M0 两轮超时踩坑:单轮动作过多,改为一轮一小步
 ## [2026-10-18] milestone | select M0+M1 完成:hotkeys存量bug修复+bun事件顺序分歧+宽限窗
 ## [2026-10-18] milestone | select M2 完成:/model可选+C9 SIGINT协调+choose删除
+## [2026-10-19] wiki | docs 功能文档加 [done] 后缀约定，首批 6 份改名并同步引用
+## [2026-10-19] milestone | select 组件 ship 确认：v0.1.7+v0.1.8 交付，PRD 已加 [done] 后缀
+## [2026-10-19] wiki | 版本时间线补全 v0.1.2-v0.1.8：tag 实证 + v0.1.6 跳号确认
+## [2026-10-19] deliverable | 已实现功能盘点：功能→代码→证据→文档映射，含未实现 PRD 与存量问题
+## [2026-10-19] wiki | K6/K9 死路径断言修复：gitignore 联动教训 + 恒真断言盲区入库
+## [2026-10-19] wiki | 已实现功能盘点：K6/K9 存量问题闭环，全量测试归绿
+## [2026-10-19] wiki | memory-prd 引用悬空澄清：跨仓真相源指针，存量问题清零

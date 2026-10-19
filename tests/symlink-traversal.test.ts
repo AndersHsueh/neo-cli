@@ -1,5 +1,5 @@
 /**
- * symlink 遍历回归 —— PRD docs/skills-prd.md §5（前置必修）/ §7.1 F 组。
+ * symlink 遍历回归 —— PRD docs/skills-prd[done].md §5（前置必修）/ §7.1 F 组。
  *
  * 运行：bun test
  *

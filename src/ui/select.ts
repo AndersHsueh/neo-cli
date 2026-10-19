@@ -1,5 +1,5 @@
 /**
- * select<T> —— 行内选择组件（PRD: docs/select-component-prd.md）
+ * select<T> —— 行内选择组件（PRD: docs/select-component-prd[done].md）
  *
  * 分层：纯状态机 reduce()（bun test 直测的文本 oracle）
  *       → 渲染 select()（有界行内重绘，只碰自己的块，不违反 append-only）
@@ -9,7 +9,7 @@
  *  - enter/esc 不进 reducer —— 终止事件，由 select() 的 Promise 直接 resolve；
  *  - 终态定格不擦除：确认 ❯ 留在所选项、取消全变暗，会话记录可读。
  *
- * M0 探针结论（docs/select-component-m0-probes.md）落点：
+ * M0 探针结论（docs/select-component-m0-probes[done].md）落点：
  *  - C5 清理用手段B（rl.line 赋空 + _refreshLine），经 deps.clearLine 注入，select 不直接摸 readline；
  *  - keypress 实际发在 stdin 上（hotkeys.ts 存量 bug），修复在 hotkeys.ts，本文件照常消费 router。
  */

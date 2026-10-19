@@ -14,7 +14,7 @@
 
 我按任务书写完 `tests/skills.test.ts` 与 `tests/symlink-traversal.test.ts`、跑出全红后，
 另一个 agent 在同一工作区**重写了我负责的 `tests/skills.test.ts`**，并**直接开始写实现代码**
-（新建 `src/skills.ts`、改 `src/config.ts`、改 `docs/skills-prd.md`、改 `.gitignore`）。
+（新建 `src/skills.ts`、改 `src/config.ts`、改 `docs/skills-prd[done].md`、改 `.gitignore`）。
 
 时间线（文件 mtime 可证）：
 

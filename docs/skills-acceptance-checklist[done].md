@@ -1,6 +1,6 @@
 # 实现前自检清单（产品专员产出）
 
-> 依据：`docs/skills-prd.md` v0.1.0 全文 916 行 + worktree `feature/skills` 源码逐行核对
+> 依据：`docs/skills-prd[done].md` v0.1.0 全文 916 行 + worktree `feature/skills` 源码逐行核对
 > 核对时间：2026-10-15
 > 基线实测：`bun test` **46 pass / 0 fail**、`bunx tsc --noEmit` **0 error**（已亲自跑过，非引用 PRD）
 

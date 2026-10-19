@@ -1,7 +1,7 @@
 /**
  * 用户按键的唯一入口。
  *
- * M0 探针实证（docs/select-component-m0-probes.md §1）：bun 与 node 都把
+ * M0 探针实证（docs/select-component-m0-probes[done].md §1）：bun 与 node 都把
  * keypress 事件发在 input 流（stdin）上，而不是 readline 实例上——历史上
  * 挂在 rl 上导致所有热键从未生效过。因此 attach 监听 input。
  *

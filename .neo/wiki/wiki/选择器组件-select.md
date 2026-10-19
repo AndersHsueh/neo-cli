@@ -1,6 +1,6 @@
 # 选择器组件 select
 
-> 最后更新:2026-10-18
+> 最后更新:2026-10-19
 
 ## 摘要
 
@@ -28,6 +28,14 @@ PRD 已完成(2026-10-20),待 neo 按 M0 探针 → M1 组件+/resume → M2 /mo
 - 2026-10-20 会话:终端崩溃事故 + /resume 体验讨论
 
 ## 推理与依据
+
+## 2026-10-19 ship 确认：v0.1.7 + v0.1.8 双 commit，select 全量交付
+
+- **v0.1.7**（commit `9a8497c`）：select 组件 + /resume /model 接入（M0 探针 → M1 组件 → M2 守卫全链路）。
+- **v0.1.8**（commit `8e1950c`，tag `v0.1.8` 已打）：/tier /provider /mode 三命令接入选择器 + hint 截断。PRD §0「后续一行调用的事」预言兑现。
+- 发布说明：`docs/release-notes/v0.1.8.md`（一份覆盖 v0.1.7+v0.1.8 两段交付）。
+- 文档状态：PRD 与 M0 探针已改名 `docs/select-component-prd[done].md`、`docs/select-component-m0-probes[done].md`（2026-10-19 [done] 约定，见 [[docs-完成标记约定]]）。
+- 正文「状态」段写于 PRD 阶段（「待实施」），已过时——以本段为准：**已 ship**，测试基线 364 pass / 1 skip / 2 fail（K6/K9 为 gitignore 存量问题，与本组件无关）。
 
 ## 2026-10-18 M2 完成：/model 可选、C9 SIGINT 协调、choose() 删除——feature 代码面收尾
 
