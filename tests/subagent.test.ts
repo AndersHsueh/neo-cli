@@ -383,6 +383,12 @@ describe("task 子代理端到端", () => {
         // 子代理只返回思维链没有正文（推理模型退化场景）
         return { content: "", reasoning: "想了想，没啥可说", toolCalls: [] };
       },
+      (_cfg, msgs) => {
+        if (!isSub(msgs)) throw new Error("step2 应为子代理调用");
+        // 第 2 次调用应携带自动重试提示（system + user + nudge + 预算提示 = 4 条）
+        if (msgs.length !== 4) throw new Error(`step2 应带重试提示，实际 ${msgs.length} 条`);
+        return { content: "", reasoning: "还是没啥可说", toolCalls: [] };
+      },
     ]);
     const main = new Agent({
       cfg,
@@ -395,6 +401,89 @@ describe("task 子代理端到端", () => {
     const out = await runSubagent(main, "随便看看", undefined, taskCtx);
     expect(out).toContain("子代理未产出任何报告");
     expect(out).toContain("子代理用量");
+  });
+});
+
+/* ------------------------------------------------------------------ */
+/* 空正文自动重试（推理模型退化场景）                                     */
+/* ------------------------------------------------------------------ */
+
+describe("空正文自动重试", () => {
+  test("首次空正文 → 自动重试一次 → 成功后提示被摘除", async () => {
+    const cfg = makeCfg("default");
+    const fake = fakeStream([
+      (_cfg, msgs) => {
+        if (isSub(msgs)) throw new Error("step1 应为主代理调用");
+        return { content: "", reasoning: "只在思维链里想了", toolCalls: [] };
+      },
+      (_cfg, msgs) => {
+        if (isSub(msgs)) throw new Error("step2 应为主代理调用");
+        // system + user + 重试提示 + 本轮预算提示 = 4 条（预算提示请求前注入）
+        if (msgs.length !== 4) throw new Error(`step2 应为 4 条消息，实际 ${msgs.length}`);
+        const nudge = msgs[2]!;
+        if (nudge.role !== "user" || !String(nudge.content).includes("正文")) {
+          throw new Error("第 3 条应为重试提示");
+        }
+        return { content: "这是正文答案", toolCalls: [] };
+      },
+    ]);
+    const main = new Agent({
+      cfg,
+      console: spyConsole(),
+      mode: "auto-all",
+      systemPrompt: "main",
+      chatStream: fake.fn,
+    });
+    currentMain = main;
+    const stats = await main.send("你好");
+    expect(stats.iterations).toBe(2);
+    // 重试提示已摘除，历史干净：system + user + assistant
+    expect(main.messages.length).toBe(3);
+    expect(main.messages[2]!.role).toBe("assistant");
+    expect(contentText(main.messages[2]!.content)).toContain("正文答案");
+  });
+
+  test("重试仍空正文 → 放弃并警告，历史不留空消息与提示", async () => {
+    const cfg = makeCfg("default");
+    const warns: string[] = [];
+    const fake = fakeStream([
+      () => ({ content: "", reasoning: "想了", toolCalls: [] }),
+      () => ({ content: "", reasoning: "又想了", toolCalls: [] }),
+    ]);
+    const main = new Agent({
+      cfg,
+      console: spyConsole({ warn: (m: string) => warns.push(m) }),
+      mode: "auto-all",
+      systemPrompt: "main",
+      chatStream: fake.fn,
+    });
+    currentMain = main;
+    await main.send("你好");
+    expect(warns.some((w) => w.includes("重试后模型仍未产出正文"))).toBe(true);
+    // 历史回到失败交换之前：system + user，无空 assistant、无重试提示
+    expect(main.messages.length).toBe(2);
+    expect(main.messages[1]!.role).toBe("user");
+  });
+
+  test("finishReason=length 时给出预算耗尽的针对性提示", async () => {
+    const cfg = makeCfg("default");
+    const infos: string[] = [];
+    const fake = fakeStream([
+      () => ({ content: "", reasoning: "思维链很长", toolCalls: [], finishReason: "length" }),
+      () => ({ content: "补交的正文", toolCalls: [] }),
+    ]);
+    const main = new Agent({
+      cfg,
+      console: spyConsole({ info: (m: string) => infos.push(m) }),
+      mode: "auto-all",
+      systemPrompt: "main",
+      chatStream: fake.fn,
+    });
+    currentMain = main;
+    await main.send("你好");
+    expect(infos.some((m) => m.includes("预算被思维链耗尽"))).toBe(true);
+    // 重试成功，历史干净
+    expect(main.messages.length).toBe(3);
   });
 });
 

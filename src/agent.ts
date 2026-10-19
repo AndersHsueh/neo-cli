@@ -388,6 +388,11 @@ export class Agent {
     let completionTokens = 0;
     let reasoningTokens = 0;
     let hadError = false;
+    /**
+     * 空正文自动重试的 user 提示；非 null 表示本轮已重试过一次（至多一次，
+     * 防止「模型持续空回复」变成死循环）。成功或放弃后都从历史摘除。
+     */
+    let nudgeMsg: Message | null = null;
 
     for (let iter = 0; iter < maxIter; iter++) {
       iterations++;
@@ -466,7 +471,7 @@ export class Agent {
         );
 
         // 预算提示只服务于这一次请求，立刻摘掉，避免污染对话历史
-        this.dropBudgetMessage(budgetMsg);
+        this.dropTransientMessage(budgetMsg);
 
         if (!interactive) {
           // 块级：思维链与正文各渲染一次
@@ -499,16 +504,47 @@ export class Agent {
 
         // ---- 无工具调用 → 本轮结束 ----
         if (res.toolCalls.length === 0) {
-          if (res.content.trim() === "" && res.reasoning.trim() !== "") {
-            this.opt.console.info("模型只返回了思维链，没有正文。");
-          }
-          // 若模型产出了 reasoning 但没有 content，且没有工具调用，不写入空消息
           const hasBody = res.content.trim().length > 0;
-          this.messages.push({
-            role: "assistant",
-            content: hasBody ? res.content : "",
-          });
-          break;
+          if (hasBody) {
+            // 重试成功：摘掉重试提示，别让它作为噪音留在后续轮次的历史里
+            if (nudgeMsg) this.dropTransientMessage(nudgeMsg);
+            this.messages.push({ role: "assistant", content: res.content });
+            break;
+          }
+
+          // 正文为空的两种退化场景：
+          //  - finishReason=length：输出预算被思维链吃光，正文还没轮到就被截断；
+          //  - 其余（通常 stop）：推理模型把答案全写进思维链通道，content 通道为空。
+          // 自动重试一次：追加 user 提示，明确要求把最终答案作为正文输出；
+          // 仍失败则放弃并摘掉提示，历史回到本次失败交换之前的状态。
+          // 不写入空 assistant 消息 —— 空回复留在历史里，部分服务端会拒绝
+          // 该消息序列，对模型自身也是错误示范。
+          const truncated = res.finishReason === "length";
+          if (nudgeMsg) {
+            this.dropTransientMessage(nudgeMsg);
+            this.opt.console.warn(
+              truncated
+                ? "重试后仍未产出正文（输出预算仍被思维链耗尽）。可调大 max_tokens 后重发。"
+                : "重试后模型仍未产出正文，本轮放弃。",
+            );
+            break;
+          }
+          if (res.reasoning.trim() !== "") {
+            this.opt.console.info(
+              truncated
+                ? "输出预算被思维链耗尽，正文未开始 —— 自动重试一次。"
+                : "模型只返回了思维链，没有正文 —— 自动重试一次。",
+            );
+          } else {
+            this.opt.console.info("模型返回了空响应 —— 自动重试一次。");
+          }
+          nudgeMsg = {
+            role: "user",
+            content:
+              "（系统提示）你上一轮没有输出正文。请把最终答案作为正文（content）直接输出，不要只留在思维链里。",
+          };
+          this.messages.push(nudgeMsg);
+          continue;
         }
 
         // ---- 有工具调用 ----
@@ -553,7 +589,7 @@ export class Agent {
       } catch (e) {
         this.opt.console.stopSpinner();
         // 请求失败时同样要摘掉预算提示，否则它会作为一条孤立消息留在历史里
-        this.dropBudgetMessage(budgetMsg);
+        this.dropTransientMessage(budgetMsg);
         // 块级模式下，出错也要把已收到的内容吐出来 ——
         // 直接丢掉等于让用户误以为模型什么都没说。
         if (!interactive) {
@@ -648,8 +684,8 @@ export class Agent {
     return { role: "system", content: text };
   }
 
-  /** 移除预算提示。按引用比对，避免误删历史里内容相同的消息。 */
-  private dropBudgetMessage(msg: Message): void {
+  /** 移除临时消息（预算提示 / 重试提示）。按引用比对，避免误删历史里内容相同的消息。 */
+  private dropTransientMessage(msg: Message): void {
     const i = this.messages.lastIndexOf(msg);
     if (i !== -1) this.messages.splice(i, 1);
   }

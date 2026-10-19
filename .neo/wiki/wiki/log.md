@@ -224,3 +224,4 @@ grep -E -A3 "^## \[[0-9-]+\] todo \|" wiki/log.md
 ## [2026-10-19] milestone | 粘贴增强 M1 完成：多行粘贴逐行提交 bug 修复，chip 折叠上线
 ## [2026-10-19] wiki | JXA 三坑入库：stdout 污染/退出码失效/无 console.error，二进制走临时文件
 ## [2026-10-19] milestone | 粘贴增强 M2 完成：macOS 贴图全链路 + mapKey 守卫顺序 bug 修复
+## [2026-10-19] milestone | 空正文自动重试机制落地：区分 length/stop 原因，重试一次不写空消息
