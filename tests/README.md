@@ -6,10 +6,10 @@
 
 ```bash
 bunx tsc --noEmit     # exit 0（strict + noUncheckedIndexedAccess）
-bun test              # 523 pass / 0 fail（26 个测试文件，约 3.6s）
+bun test              # 530 pass / 0 fail（27 个测试文件，约 3.6s）
 ```
 
-v0.2.1 hotfix 后的基线：**523 pass / 0 fail**。
+v0.2.2 工具调用紧凑显示后的基线：**530 pass / 0 fail**。
 改功能前先在干净树上跑一遍，数字对位后再动手。
 
 ## §2 测试即规格
@@ -29,7 +29,7 @@ v0.2.1 hotfix 后的基线：**523 pass / 0 fail**。
 | 工具注册 | `registerTool` 会改全局注册表：测试必须拿返回的注销函数清理 |
 | 子进程 | 跨进程锁用 `Bun.spawnSync` 真子进程验证，不用同进程 `Promise.all` 冒充 |
 
-## §4 测试文件清单（26 个）
+## §4 测试文件清单（27 个）
 
 | 文件 | 覆盖 |
 |---|---|
@@ -52,7 +52,8 @@ v0.2.1 hotfix 后的基线：**523 pass / 0 fail**。
 | `mailbox.test.ts` | 跨会话收发：按名字/片段/id 解析、限流/去重/队列上限、hold/release、`reply_to`/`exec`、watchdog 编排 |
 | `mailbox-state.test.ts` | 状态机转移、effective state、stuck、receipts、委派台账、watchdog 纯判定矩阵、命名/改键/TTL |
 | `mailbox-inbound.test.ts` | 入站三态 + 权限档判定、消息/通知框架、两个工具、prompt/config 接线 |
-| `mailbox-agent.test.ts` | P1 注入点协议合法性（tool→user→budget 序列）、无工具 turn 不注入、轮询失败不击穿主循环 |
+| `mailbox-agent.test.ts` | P1 注入点协议合法性（tool→user→budget 序列）、无工具 turn 不注入、轮询失败不击穿主循环、主代理运行时工具可见性 |
+| `toolcall-display.test.ts` | 紧凑工具行格式化（点号循环/✓✗/CJK 宽度收敛）、`toolcall_info_details` 默认值与别名 |
 
 ## §5 记忆子系统的特殊约定
 

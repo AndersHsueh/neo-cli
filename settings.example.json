@@ -39,6 +39,7 @@
   "tool_output_limit": 30000,
   "theme": "matrix",
   "show_reasoning": true,
+  "toolcall_info_details": false,
 
   "cross_session_inbound": "auto",
   "cross_session_auto_turn_limit": 20,

@@ -9,7 +9,7 @@
 
 ## 🧭 当前状态
 
-已编译 5 份 raw,覆盖 16 个主题页。2026-10-20 v0.2.0 发布:跨会话消息 —— 文件信箱(~/.neo/mailbox/<session-id>/)+ 会话状态机(state.json: idle/working/waiting_input/exiting + 心跳 + outstanding)+ 委派 watchdog(120s)+ send_message/list_peers + P1 工具间隙注入 / P2 空闲 tick + 人工接管(ESC 裁决 A);对等组网、无固定 leader,支持多跳协作;全量用例 445→519(+74,26 文件),tsc 零错误。同日 v0.2.1 hotfix:真实双会话验证暴露 ① 主代理运行时工具被 `TOOL_NAMES_EXCLUDED_FOR_SUBAGENT` 误过滤、② 长 turn 心跳不刷新导致 watchdog 误报 dead;修复后用例 519→523,并补充工具可见性/心跳回归测试。前一版 v0.1.12:记忆旧件清理 —— 删除 8 个零调用模块、861 行旧测试与死配置,用例 497→445。缺口:supervisor/后台会话/attach/agent view/跨机留 v0.3;多跳环检测与 reply_to 兜底待实测;协调消息是否静默记忆捕获待评估。
+已编译 5 份 raw,覆盖 17 个主题页。2026-10-20 v0.2.0 发布:跨会话消息 —— 文件信箱(~/.neo/mailbox/<session-id>/)+ 会话状态机(state.json: idle/working/waiting_input/exiting + 心跳 + outstanding)+ 委派 watchdog(120s)+ send_message/list_peers + P1 工具间隙注入 / P2 空闲 tick + 人工接管(ESC 裁决 A);对等组网、无固定 leader,支持多跳协作;全量用例 445→519(+74,26 文件),tsc 零错误。同日 v0.2.1 hotfix:真实双会话验证暴露 ① 主代理运行时工具被 `TOOL_NAMES_EXCLUDED_FOR_SUBAGENT` 误过滤、② 长 turn 心跳不刷新导致 watchdog 误报 dead;修复后用例 519→523。v0.2.2 界面优化:工具调用默认紧凑单行(`⚡ name args .` 原地更新/下一个覆盖/✓✗),`toolcall_info_details` 可恢复旧版详情;用例 523→530(27 文件)。前一版 v0.1.12:记忆旧件清理 —— 删除 8 个零调用模块、861 行旧测试与死配置,用例 497→445。缺口:supervisor/后台会话/attach/agent view/跨机留 v0.3;多跳环检测与 reply_to 兜底待实测;协调消息是否静默记忆捕获待评估。
 
 ## 🗂 主题目录
 
@@ -29,6 +29,7 @@
 | 记忆激活-v0.1.11 | [[记忆激活-v0.1.11]] | v0.1.11 把记忆系统从「只写不读」接通为双作用域闭环：项目级 `.neo/wiki` 沉淀决策/踩坑/进度，用户级 `~/.neo/wiki` 沉淀画像/ | |
 | 清理-v0.1.12 | [[清理-v0.1.12]] | v0.1.12 清理 v0.1.0 时代遗留的「空转实现」：删除 recordIndex/profile/ingest/forget/reindex/redac | |
 | 跨会话消息-v0.2.0 | [[跨会话消息-v0.2.0]] | v0.2.0 交付 neo 的跨会话消息：多个前台交互式进程通过 `~/.neo/mailbox/` 文件信箱互发纯文本消息，支持任意会话派活/回信/多跳协作， | v0.2.0 已交付 |
+| 工具调用紧凑显示-v0.2.2 | [[工具调用紧凑显示-v0.2.2]] | v0.2.2 工具调用默认单行原地更新（点号动画/下一条覆盖/✓✗），`toolcall_info_details` 可恢复旧版详情；非 TTY 保留详情 | v0.2.2 已交付 |
 
 ### 流程与基础设施
 
@@ -47,8 +48,8 @@
 
 ## ⭐ 关键事实速查
 
-- **当前版本**: v0.2.1(版本号双源 package.json + src/index.ts) — 跨会话消息 hotfix,见 `docs/release-notes/v0.2.1.md`;v0.2.0 功能见 `docs/release-notes/v0.2.0.md` 与 [[跨会话消息-v0.2.0]]
-- **测试基线**: bun test 523 通过 / 0 失败(26 文件),tsc --noEmit 零错误 — v0.2.1 发布时实测
+- **当前版本**: v0.2.2(版本号双源 package.json + src/index.ts) — 工具调用紧凑显示,见 `docs/release-notes/v0.2.2.md`;v0.2.1 hotfix 与 v0.2.0 功能见对应 release notes 与 [[跨会话消息-v0.2.0]]
+- **测试基线**: bun test 530 通过 / 0 失败(27 文件),tsc --noEmit 零错误 — v0.2.2 发布时实测
 - **工具预算**: 每轮告知模型「第 N 次/上限 80」,≤5 次带具体次数收敛;入口 `budgetMessage()` — 见 `wiki/工具调用预算-v0.1.2+.md`
 - **热键语义**: ESC=中止+回滚,Ctrl+C=双击退出不回滚;按键唯一入口 `HotkeyRouter` — 见 `wiki/热键系统-v0.1.2+.md`
 - **技能唯一实体**: `~/.neo/skills/`,项目 `skills/` 只放软链 — 见 `wiki/karpathy-wiki-技能拓扑.md`

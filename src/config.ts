@@ -115,6 +115,11 @@ export interface Config {
   toolOutputLimit: number;
   theme: string;
   showReasoning: boolean;
+  /**
+   * 工具调用详情显示。false（默认）= 交互模式下紧凑单行（. / .. / ... 动画，下一个调用覆盖）；
+   * true = 旧版 header + 缩进结果块。
+   */
+  toolcallInfoDetails: boolean;
   /** 粘贴增强配置（PRD docs/paste-enhancement-prd[done].md §5.7）。 */
   paste: PasteConfig;
   /** 跨会话消息配置（docs/cross-session-messaging-prd[done].md v1.2 §4.6 / §4.10）。 */
@@ -512,6 +517,11 @@ export function loadConfig(overrides: Partial<Config> = {}): Config {
     toolOutputLimit: num(raw["tool_output_limit"], num(dflt["tool_output_limit"], 30_000)),
     theme: str(raw["theme"], str(dflt["theme"], "matrix")),
     showReasoning: bool(raw["show_reasoning"], bool(dflt["show_reasoning"], true)),
+    // 兼容用户手写的连字符键名；项目惯例仍是 snake_case。
+    toolcallInfoDetails: bool(
+      raw["toolcall_info_details"],
+      bool(raw["toolcall-info-details"], false),
+    ),
     cwd: here,
     settingsPath: found,
     skillsStore: str(raw["skills_store"], join(homedir(), ".neo", "skills")),

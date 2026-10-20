@@ -5,6 +5,7 @@
  * 使 readline 的内部行缓冲回到一致状态。
  */
 import { c, displayWidth, padEndW, truncate, glyph } from "./theme.ts";
+import { nextDots, toolLineSegments, type ToolLineStatus } from "./toolLine.ts";
 
 const FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 const MATRIX_FRAMES = ["ﾐ", "ﾋ", "ﾉ", "ﾘ", "ﾔ", "ｶ", "ﾁ", "ﾈ"];
@@ -18,6 +19,15 @@ export class Console {
   private spinnerLineActive = false;
   private streaming = false;
   private asker: ((prompt: string) => Promise<string>) | null = null;
+  /** 紧凑工具行模式（默认；toolcall_info_details=true 时走旧版详情块）。 */
+  private readonly toolCompact: boolean;
+  private toolLineActive = false;
+  private toolLineTimer: Timer | null = null;
+  private toolName = "";
+  private toolArgs = "";
+  private toolDots = 0;
+  private toolStatus: ToolLineStatus = "running";
+  private toolError = "";
   /**
    * 终端宽度。某些环境（PTY 未设置 winsize、CI）下 columns 为 0 或 undefined，
    * 直接参与算术会让 truncate 收到负数宽度 —— 必须夹到合理下限。
@@ -40,7 +50,60 @@ export class Console {
       .join("\n");
   }
 
-  constructor(private readonly useMatrixSpinner = true) {}
+  constructor(
+    private readonly useMatrixSpinner = true,
+    toolcallInfoDetails = true,
+  ) {
+    // 紧凑模式只在 TTY 生效：非 TTY（管道 / -p / CI）保留逐行详情，避免动画控制符污染日志。
+    this.toolCompact = !toolcallInfoDetails && process.stdout.isTTY === true;
+  }
+
+  // ---------- 紧凑工具行 ----------
+
+  private renderToolLine(): void {
+    if (!this.toolLineActive) return;
+    const seg = toolLineSegments({
+      name: this.toolName,
+      args: this.toolArgs,
+      width: this.cols(),
+      dots: this.toolDots,
+      status: this.toolStatus,
+      errorText: this.toolError,
+    });
+    const tail =
+      this.toolStatus === "ok"
+        ? c.ok(seg.tail)
+        : this.toolStatus === "error"
+          ? c.err(seg.tail)
+          : c.accent(seg.tail);
+    const text =
+      ` ${c.tool("⚡")} ${c.bright(seg.name)}` +
+      (seg.args ? ` ${c.dim(seg.args)}` : "") +
+      ` ${tail}`;
+    process.stdout.write(`\r\x1b[2K${text}`);
+  }
+
+  /** 清掉当前工具行（下一个工具调用覆盖同一行时用，不留换行）。 */
+  private clearToolLine(): void {
+    if (!this.toolLineActive) return;
+    if (this.toolLineTimer) {
+      clearInterval(this.toolLineTimer);
+      this.toolLineTimer = null;
+    }
+    this.toolLineActive = false;
+    process.stdout.write("\r\x1b[2K");
+  }
+
+  /** 结束当前工具行（保留已显示内容并换行）；其它输出前调用。 */
+  private finishToolLine(): void {
+    if (!this.toolLineActive) return;
+    if (this.toolLineTimer) {
+      clearInterval(this.toolLineTimer);
+      this.toolLineTimer = null;
+    }
+    this.toolLineActive = false;
+    process.stdout.write("\n");
+  }
 
   // ---------- 基础写入 ----------
 
@@ -82,6 +145,13 @@ export class Console {
   }
 
   stopSpinner(finalLine?: string): void {
+    // 任何 spinner 停止都意味着要让出输出行：紧凑工具行先收尾（换行保留）。
+    this.finishToolLine();
+    this.stopSpinnerOnly(finalLine);
+  }
+
+  /** 只停 spinner，不动紧凑工具行（工具行原地更新时用）。 */
+  private stopSpinnerOnly(finalLine?: string): void {
     if (this.spinnerTimer) {
       clearInterval(this.spinnerTimer);
       this.spinnerTimer = null;
@@ -135,28 +205,81 @@ export class Console {
 
   // ---------- 结构化区块 ----------
 
-  /** 大标题块，例如工具调用。 */
+  /** 大标题块，例如工具调用。紧凑模式下只维护一行并用 . / .. / ... 动画。 */
   toolHeader(name: string, argsPreview: string): void {
-    this.stopSpinner();
-    const w = this.cols();
-    const head = ` ${c.tool("⚡")} ${c.bright(name)}`;
-    const room = w - displayWidth(name) - 6;
-    const tail = room > 12 ? c.dim(truncate(argsPreview, room)) : "";
-    this.line(head + (tail ? " " + tail : ""));
+    if (!this.toolCompact) {
+      this.stopSpinner();
+      const w = this.cols();
+      const head = ` ${c.tool("⚡")} ${c.bright(name)}`;
+      const room = w - displayWidth(name) - 6;
+      const tail = room > 12 ? c.dim(truncate(argsPreview, room)) : "";
+      this.line(head + (tail ? " " + tail : ""));
+      return;
+    }
+
+    // 下一个工具调用覆盖同一行：先清掉上一行（不留换行），再停 spinner。
+    this.clearToolLine();
+    this.stopSpinnerOnly();
+    this.toolName = name;
+    this.toolArgs = argsPreview;
+    this.toolDots = 0;
+    this.toolStatus = "running";
+    this.toolError = "";
+    this.toolLineActive = true;
+    this.renderToolLine();
+    this.toolLineTimer = setInterval(() => {
+      if (!this.toolLineActive || this.toolStatus !== "running") return;
+      this.toolDots = nextDots(this.toolDots);
+      this.renderToolLine();
+    }, 350);
+    this.toolLineTimer.unref?.();
   }
 
-  /** 工具结果块（缩进、限高）。 */
-  toolResult(body: string, maxLines = 18): void {
-    this.stopSpinner();
-    const w = this.cols();
-    const lines = body.replace(/\t/g, "  ").split("\n");
-    const shown = lines.length > maxLines ? lines.slice(0, maxLines) : lines;
-    const indent = c.dim("│ ");
-    const room = Math.max(20, w - 6);
-    for (const l of shown) this.line(indent + c.muted(truncate(l, room)));
-    if (lines.length > maxLines) {
-      this.line(indent + c.dim(`… 还有 ${lines.length - maxLines} 行未显示`));
+  /**
+   * 工具结果块（缩进、限高）。
+   * 紧凑模式：不打印正文，只把当前行尾标改成 ✓ / ✗（失败附首行摘要）；
+   * 下一个工具调用会覆盖这一行。
+   */
+  toolResult(body: string, maxLines = 18, ok = true): void {
+    if (!this.toolCompact) {
+      this.stopSpinner();
+      const w = this.cols();
+      const lines = body.replace(/\t/g, "  ").split("\n");
+      const shown = lines.length > maxLines ? lines.slice(0, maxLines) : lines;
+      const indent = c.dim("│ ");
+      const room = Math.max(20, w - 6);
+      for (const l of shown) this.line(indent + c.muted(truncate(l, room)));
+      if (lines.length > maxLines) {
+        this.line(indent + c.dim(`… 还有 ${lines.length - maxLines} 行未显示`));
+      }
+      return;
     }
+
+    // 紧凑模式：原地把当前行尾标改成 ✓/✗，不能先 finish（那会多出一行）。
+    this.stopSpinnerOnly();
+
+    this.toolStatus = ok ? "ok" : "error";
+    this.toolError = ok ? "" : (body.split("\n")[0] ?? "");
+    if (this.toolLineActive) {
+      if (this.toolLineTimer) {
+        clearInterval(this.toolLineTimer);
+        this.toolLineTimer = null;
+      }
+      this.renderToolLine();
+      return;
+    }
+    // 行已被其它输出收尾（例如审批问句）：用独立一行显示最终状态。
+    const seg = toolLineSegments({
+      name: this.toolName,
+      args: this.toolArgs,
+      width: this.cols(),
+      status: this.toolStatus,
+      errorText: this.toolError,
+    });
+    const tail = ok ? c.ok(seg.tail) : c.err(seg.tail);
+    const text =
+      ` ${c.tool("⚡")} ${c.bright(seg.name)}` + (seg.args ? ` ${c.dim(seg.args)}` : "") + ` ${tail}`;
+    this.line(text);
   }
 
   /** 键值对，例如 usage 统计。 */
@@ -202,6 +325,7 @@ export class Console {
 
   /** 让出一行给外部（readline）使用。 */
   flush(): void {
+    this.finishToolLine();
     this.stopSpinner();
   }
 

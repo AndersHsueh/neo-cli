@@ -72,6 +72,7 @@ bun run src/index.ts -p "用 glob 找出所有 .ts 文件"   # 单次模式
 | `max_tool_iterations` | 单轮内最多工具调用轮数 |
 | `tool_output_limit` | 单个工具结果的最大字符数 |
 | `show_reasoning` | 是否显示模型思维链 |
+| `toolcall_info_details` | 工具调用详情：`false`（默认）紧凑单行 + 动画；`true` 旧版 header + 缩进结果块（非 TTY 环境始终显示详情） |
 | `theme` | 配色主题 |
 
 ### model_routes —— 档位与 provider 是两个正交轴
@@ -173,7 +174,7 @@ provider 里的 `*_model_name` 表示「**这个 provider** 在各档位上用�
 
 ```bash
 bun run check   # tsc --noEmit，strict + noUncheckedIndexedAccess
-bun test        # 单元测试，523 pass（26 个测试文件）
+bun test        # 单元测试，530 pass（27 个测试文件）
 ```
 
 ## 分类器
@@ -280,6 +281,8 @@ neo 支持多个**前台交互式**会话互相发纯文本消息，用于「一
 
 **行级流式渲染。** 跨 chunk 的 `**粗体**` 若逐片段着色会被截成乱码。`StreamFormatter` 按完整行着色，代码围栏检测也必须在行级做 —— 因为 ```` ``` ```` 和它的语言标注可能分处两个 chunk。
 
+**工具调用默认只占一行。** 连续工具调用不再逐条打印 header + 结果块（7 次 `list_dir` 会冲散关键信息）。默认在 TTY 下用一行 `⚡ name args .` 原地更新，`.`/`..`/`...` 每 350ms 循环表示运行中；下一个工具调用覆盖同一行；完成后尾标变 `✓`/`✗`。原始结果仍完整交给模型，只是不占屏幕。想恢复旧版详情：settings.json 设 `"toolcall_info_details": true`。非 TTY（`-p` / 管道 / CI）保留逐行详情，避免动画控制符污染日志。
+
 **上下文压缩。** 每轮前估算 token（ASCII 按 4 字符/token，CJK 按 1.5），超过 `compact_threshold` 自动把历史压成一条结构化摘要。`/compact` 可手动触发。
 
 **审批走 readline。** 问句用 `rl.question()` 而非另开 raw-mode stdin 监听，否则两者同时消费输入会导致回显两遍。
@@ -321,6 +324,7 @@ neo/
     │   └── mailbox.ts      # 跨会话工具 send_message / list_peers
     └── ui/
         ├── theme.ts        # Matrix 调色板、数字雨、横幅
+        ├── toolLine.ts     # 紧凑工具调用行格式化（单行 / 点号动画 / ✓✗）
         ├── console.ts      # 输出、spinner、审批、状态栏
         ├── stream.ts       # 流式 Markdown 渲染
         └── render.ts       # 块级 Markdown 渲染

@@ -36,7 +36,7 @@ export interface AgentIO {
   warn(msg: string): void;
   error(msg: string): void;
   toolHeader(name: string, argsPreview: string): void;
-  toolResult(body: string, maxLines?: number): void;
+  toolResult(body: string, maxLines?: number, ok?: boolean): void;
   /** 统一缩进（纯格式化，无副作用）。 */
   indent(body: string, prefix?: string): string;
   startSpinner(text: string): void;
@@ -632,7 +632,7 @@ export class Agent {
           this.opt.console.toolHeader(name, previewArgs(call.function.arguments));
 
           const r = await dispatch(name, call.function.arguments, ctx);
-          this.opt.console.toolResult(r.output, 2);
+          this.opt.console.toolResult(r.output, 2, r.ok);
           this.opt.onEvent?.({ type: "tool_end", data: { name, ok: r.ok, truncated: r.truncated } });
 
           // 连续失败计数：分类器据此判断当前档位是否撑不住。

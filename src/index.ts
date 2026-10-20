@@ -62,7 +62,7 @@ import { makeListPeersTool, makeSendMessageTool } from "./tools/mailbox.ts";
 import type { Envelope } from "./mailbox/types.ts";
 import type { ToolCtx } from "./tools/types.ts";
 
-const VERSION = "0.2.1";
+const VERSION = "0.2.2";
 
 /** /auto 列表里各实现的说明。 */
 const DESC: Record<string, string> = {
@@ -302,7 +302,7 @@ async function main(): Promise<number> {
     return 2;
   }
 
-  const ui = new Console(cfg.theme === "matrix");
+  const ui = new Console(cfg.theme === "matrix", cfg.toolcallInfoDetails);
 
   // default_provider 指向未接入的协议时，必须在启动就拦下。
   // 放过的话会一路走到 fetch，得到的错误跟配置问题无关，排查方向完全被带偏。
