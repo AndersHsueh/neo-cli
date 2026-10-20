@@ -9,7 +9,7 @@
 
 ## 🧭 当前状态
 
-已编译 5 份 raw,覆盖 15 个主题页。2026-10-20 v0.1.12 发布:记忆旧件清理 —— 删除 recordIndex/profile/ingest/forget/reindex/redact/schema/memory-index 八个零调用模块、861 行旧测试、4 个无引用模板与陈旧工作流页,MemoryConfig 删 10 个死字段;用例 497→445、运行时间 7.2s→3.0s,删除项均可经 git(tag v0.1.11) 回逆。前一版 v0.1.11:记忆激活 —— 双作用域存储(项目级 .neo/wiki + 用户级 ~/.neo/wiki)、轮末自动归纳、项目优先召回注入、-p 单次模式只用项目级、/memory 命令族与 /remember;同时修复记忆锁互斥失效与 append 不同步 INDEX 两处存量缺陷。缺口:memory 基础层(§7.11 旧件)仍有部分 deprecated 实现待下一个大版本清理。
+已编译 5 份 raw,覆盖 16 个主题页。2026-10-20 v0.2.0 发布:跨会话消息 —— 文件信箱(~/.neo/mailbox/<session-id>/)+ 会话状态机(state.json: idle/working/waiting_input/exiting + 心跳 + outstanding)+ 委派 watchdog(120s)+ send_message/list_peers + P1 工具间隙注入 / P2 空闲 tick + 人工接管(ESC 裁决 A);对等组网、无固定 leader,支持多跳协作;全量用例 445→519(+72,26 文件),tsc 零错误。前一版 v0.1.12:记忆旧件清理 —— 删除 8 个零调用模块、861 行旧测试与死配置,用例 497→445。缺口:supervisor/后台会话/attach/agent view/跨机留 v0.3;多跳环检测与 reply_to 兜底待实测。
 
 ## 🗂 主题目录
 
@@ -28,6 +28,7 @@
 | 空正文自动重试 | [[空正文自动重试]] | 推理模型（glm-5.3-flash 等）偶发只返回 `reasoning_content` 而 `content` 为空的退化响应。neo 在 agent 主 | |
 | 记忆激活-v0.1.11 | [[记忆激活-v0.1.11]] | v0.1.11 把记忆系统从「只写不读」接通为双作用域闭环：项目级 `.neo/wiki` 沉淀决策/踩坑/进度，用户级 `~/.neo/wiki` 沉淀画像/ | |
 | 清理-v0.1.12 | [[清理-v0.1.12]] | v0.1.12 清理 v0.1.0 时代遗留的「空转实现」：删除 recordIndex/profile/ingest/forget/reindex/redac | |
+| 跨会话消息-v0.2.0 | [[跨会话消息-v0.2.0]] | v0.2.0 跨会话消息：文件信箱 + 会话状态机 + 120s 委派 watchdog + send_message/list_peers + P1/P2 注入 + 人工接管；对等组网、无固定 leader、多跳协作 | v0.2.0 已交付 |
 
 ### 流程与基础设施
 
@@ -46,8 +47,8 @@
 
 ## ⭐ 关键事实速查
 
-- **当前版本**: v0.1.12(版本号双源 package.json + src/index.ts) — 记忆旧件清理,见 `docs/release-notes/v0.1.12.md` 与 [[清理-v0.1.12]]
-- **测试基线**: bun test 445 通过 / 0 失败(22 文件),tsc --noEmit 零错误 — v0.1.12 发布时实测
+- **当前版本**: v0.2.0(版本号双源 package.json + src/index.ts) — 跨会话消息,见 `docs/release-notes/v0.2.0.md` 与 [[跨会话消息-v0.2.0]]
+- **测试基线**: bun test 519 通过 / 0 失败(26 文件),tsc --noEmit 零错误 — v0.2.0 发布时实测
 - **工具预算**: 每轮告知模型「第 N 次/上限 80」,≤5 次带具体次数收敛;入口 `budgetMessage()` — 见 `wiki/工具调用预算-v0.1.2+.md`
 - **热键语义**: ESC=中止+回滚,Ctrl+C=双击退出不回滚;按键唯一入口 `HotkeyRouter` — 见 `wiki/热键系统-v0.1.2+.md`
 - **技能唯一实体**: `~/.neo/skills/`,项目 `skills/` 只放软链 — 见 `wiki/karpathy-wiki-技能拓扑.md`

@@ -82,6 +82,12 @@ export interface AgentOptions {
    * 记忆是增强项：任何调用失败都不得影响主流程。
    */
   memory?: MemoryPort;
+  /**
+   * 跨会话消息注入点（PRD v1.2 §4.4 P1）。
+   * 只在「本轮已有工具批次结束」的下一次迭代、自动 compact 之后调用；
+   * 返回已框架化的 user 内容。回调由组合根注入，agent.ts 不 import 信箱模块。
+   */
+  pollInbox?: () => string[];
 }
 
 export interface TurnStats {
@@ -438,6 +444,23 @@ export class Agent {
       if (usage > this.opt.cfg.compactThreshold && this.messages.length > 6) {
         this.opt.console.info(`上下文使用率 ${(usage * 100).toFixed(0)}%，自动压缩中…`);
         await this.compact();
+      }
+
+      // ---- P1 跨会话消息注入（PRD v1.2 §4.4）----
+      // 安全切点：本批 tool 结果已全部回填（上一轮迭代的工具循环已收口），
+      // 且自动 compact 已处理完 —— 此时插入 user 消息不会拆散
+      // assistant(tool_calls) → tool×N 的配对，也不会被 compact 摘要吞掉。
+      // 首轮（toolCalls === 0）不注入：P1 只服务「活跃 turn 中的工具间隙」。
+      if (this.opt.pollInbox && toolCalls > 0) {
+        try {
+          const incoming = this.opt.pollInbox();
+          for (const text of incoming) {
+            this.messages.push({ role: "user", content: text });
+          }
+        } catch (e) {
+          // 信箱轮询失败不得击穿主循环：跨会话是增强项，本轮按无消息继续。
+          this.opt.console.warn(`跨会话信箱轮询失败：${(e as Error).message}`);
+        }
       }
 
       // ---- 把本轮预算告知模型 ----

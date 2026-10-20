@@ -54,8 +54,15 @@ import { resolveWikiLayout } from "./wiki/paths.ts";
 import { appendLog } from "./wiki/write.ts";
 import { discoverSkills, isValidSkillName, formatSkillLine, normalizeDescription } from "./skills.ts";
 import { applyRestored, createSession, listSessions, loadSession, saveSession, type SessionMeta } from "./session.ts";
+import { Mailbox } from "./mailbox/store.ts";
+import { createIdentity, releaseAlive, renameSession, sweepSessions } from "./mailbox/identity.ts";
+import * as mailboxState from "./mailbox/state.ts";
+import { decideInbound, formatIncomingFrame, formatNotice, formatNoticePreview, formatPreview } from "./mailbox/inbound.ts";
+import { makeListPeersTool, makeSendMessageTool } from "./tools/mailbox.ts";
+import type { Envelope } from "./mailbox/types.ts";
+import type { ToolCtx } from "./tools/types.ts";
 
-const VERSION = "0.1.12";
+const VERSION = "0.2.0";
 
 /** /auto 列表里各实现的说明。 */
 const DESC: Record<string, string> = {
@@ -77,6 +84,7 @@ interface Args {
   cwd: string | null;
   mode: PermissionMode;
   resume: string | null;
+  name: string | null;
   listSessions: boolean;
   noReasoning: boolean;
   continueLast: boolean;
@@ -95,6 +103,7 @@ function parseArgs(argv: string[]): Args {
     cwd: null,
     mode: "ask",
     resume: null,
+    name: null,
     listSessions: false,
     noReasoning: false,
     continueLast: false,
@@ -149,6 +158,9 @@ function parseArgs(argv: string[]): Args {
       case "--resume":
         a.resume = argv[++i] ?? "last";
         break;
+      case "--name":
+        a.name = argv[++i] ?? null;
+        break;
       case "-c":
       case "--continue":
         a.continueLast = true;
@@ -191,6 +203,7 @@ ${c.bold("选项")}
       --resume [id]     恢复会话（默认 last）
       --sessions        列出历史会话
       --no-reasoning    不显示思维链
+      --name <n>        设置本会话名字（跨会话寻址用）
   -h, --help            显示帮助
   -v, --version         显示版本
 
@@ -199,6 +212,9 @@ ${c.bold("交互命令")}
   /compact         压缩上下文      /cost        token 统计
   /provider        切换 provider   /model       查看/切模型
   /tools           工具列表        /mode        权限模式
+  /peers [name]    跨会话状态：列出存活会话 / 查单个
+  /inbox           查看 held 消息；/inbox release <id> 放行一条
+  /rename <name>   设置本会话名字（跨会话寻址；撞名自动加后缀）
   /skills          列出可用技能    /skills <名>  查看技能详情
   /wiki-lint       wiki 体检：断链/orphan/摘要/日期戳/链接密度
   /ingest [f|i]    编译 raw → wiki（无参按 log 判定：超 1 周全量并告知，否则增量）
@@ -357,13 +373,96 @@ async function main(): Promise<number> {
     onNotice: (m) => ui.info(m),
   });
 
+  // ---- 跨会话信箱（PRD v1.2）----
+  // -p / 非交互模式不启用（D7 裁决）：不建目录、不注册工具、不跑 tick / watchdog。
+  const mailboxEnabled = memoryMode === "interactive";
+  let mailbox: Mailbox | null = null;
+  if (mailboxEnabled) {
+    try {
+      mailbox = new Mailbox({ sessionId: sess.meta.id, config: cfg.mailbox });
+      createIdentity({
+        root: mailbox.root,
+        sessionId: sess.meta.id,
+        cwd: cfg.cwd,
+        mode: args.mode,
+        name: args.name,
+      });
+      sweepSessions(mailbox.root, { ttlMs: cfg.mailbox.sessionTtlMs });
+    } catch (e) {
+      // 信箱是增强项：初始化失败（双开 / 权限）只降级，不阻塞会话启动
+      ui.warn(`跨会话信箱未启用：${(e as Error).message}`);
+      mailbox = null;
+    }
+  }
+
+  /** 最近一次入站：对端 session → 消息 id；send_message 缺省 reply_to 时自动补任务号。 */
+  const inboundRefs = new Map<string, string>();
+
+  let mailboxTick: ReturnType<typeof setInterval> | null = null;
+  let mailboxClosed = false;
+  /** 上次 watchdog 检查时间（P1 与 idle tick 共用）。 */
+  let lastWatchdogAt = Date.now();
+  /** 清理信箱资源（幂等）：停 tick、删 .alive。 */
+  function closeMailbox(): void {
+    if (mailboxClosed) return;
+    mailboxClosed = true;
+    if (mailboxTick) {
+      clearInterval(mailboxTick);
+      mailboxTick = null;
+    }
+    if (mailbox) releaseAlive(mailbox.root, mailbox.sessionId);
+  }
+
+  /** 轮询 inbox、按入站三态裁决，返回 accept 的消息并打印预览。limit 留空=不限。 */
+  function collectInbound(limit?: number): Envelope[] {
+    if (!mailbox) return [];
+    const mb = mailbox;
+    const envs = mb.poll((env) => decideInbound(cfg.crossSessionInbound, agent.mode, env.from.mode), limit);
+    for (const env of envs) {
+      inboundRefs.set(env.from.session, env.id);
+      ui.line(c.dim(formatPreview(env)));
+    }
+    return envs;
+  }
+
   const agent = new Agent({
     cfg,
     console: ui,
     mode: args.mode,
-    systemPrompt: buildSystemPrompt(cfg),
+    systemPrompt: buildSystemPrompt(cfg, { mailbox: mailboxEnabled }),
     classifier,
     memory,
+    pollInbox: mailbox
+      ? () => {
+          const mb = mailbox;
+          if (!mb) return [];
+          const frames = collectInbound().map(formatIncomingFrame);
+          // P1 也按 watchdog 周期检查委派台账（长时间忙碌时不必等回 idle）。
+          const now = Date.now();
+          if (now - lastWatchdogAt >= cfg.mailbox.watchdogIntervalS * 1000) {
+            lastWatchdogAt = now;
+            try {
+              for (const n of mb.watchdog()) {
+                ui.line(c.dim(formatNoticePreview(n)));
+                frames.push(formatNotice(n));
+              }
+            } catch {
+              // watchdog 失败不影响主循环
+            }
+          }
+          return frames;
+        }
+      : undefined,
+    onEvent: (e) => {
+      // 工具结果回填 = 有进展：watchdog 的 stuck 判定依据（PRD §4.10.3）
+      if (e.type === "tool_end" && mailbox) {
+        try {
+          mailboxState.touchProgress(mailbox.root, mailbox.sessionId);
+        } catch {
+          // 状态写入失败不影响主流程
+        }
+      }
+    },
   });
 
   // task 工具：派生子代理。必须在首次 send 前注册 —— toolSpecs() 每轮现取，注册后即刻生效。
@@ -378,6 +477,31 @@ async function main(): Promise<number> {
 
   // 记忆工具：模型显式写入（与自动归纳共用同一合并管线；子代理不可见）。
   registerTool(makeRememberTool({ remember: (body, scope) => memory.remember(body, scope) }));
+
+  // 跨会话工具：send_message / list_peers（只有启用信箱的交互式会话注册）。
+  if (mailbox) {
+    const mb = mailbox;
+    registerTool(
+      makeSendMessageTool({
+        mailbox: mb,
+        replyHint: (target) => {
+          if (!activeTurnFrom) return undefined; // 人类输入的 turn 不自动补 reply_to
+          try {
+            const p = mb.resolvePeer(target, { requireAlive: true });
+            if (p.session !== activeTurnFrom) return undefined;
+            return inboundRefs.get(p.session);
+          } catch {
+            return undefined;
+          }
+        },
+        onSent: (env, replyTo) => {
+          // 回信成功后消费 hint，防止下一条消息误引用同一任务号
+          if (replyTo && inboundRefs.get(env.to) === replyTo) inboundRefs.delete(env.to);
+        },
+      }),
+    );
+    registerTool(makeListPeersTool({ mailbox: mb }));
+  }
 
   if (restored && restored.length > 0) {
     agent.messages = applyRestored(agent.messages[0], restored);
@@ -482,6 +606,7 @@ async function main(): Promise<number> {
     } catch {
       // 记忆失败不阻止退出
     }
+    closeMailbox();
     persist(agent.messages, sess.meta);
     ui.blank();
     ui.line(c.dim("再见。"));
@@ -524,8 +649,21 @@ async function main(): Promise<number> {
   // 输入串行化：粘贴多行或快速回车时，readline 的 line 事件会并发触发。
   // 用队列 + 单 worker 保证处理顺序与输出不交错。
   // M1 粘贴增强（PRD §5.4）：queue 元素升级为 QueuedLine（行文本 + 绑定附件）。
-  const queue: QueuedLine[] = [];
+  // 跨会话消息（PRD v1.2 §4.4 P2）：合成行带 origin，与用户行共享同一队列。
+  type QueueOrigin = "user" | "mailbox" | "notice";
+  interface QueueItem extends QueuedLine {
+    origin: QueueOrigin;
+    /** mailbox/notice 的来源 session（状态机 turn.from）。 */
+    from?: string;
+  }
+  const queue: QueueItem[] = [];
   let draining = false;
+  /** 会话内 turn 序号（状态机审计用）。 */
+  let turnSeq = 0;
+  /** 连续自动 turn 计数（PRD §4.4 链条上限）；用户输入重置。 */
+  let autoTurnChain = 0;
+  /** 当前 turn 的 mailbox 触发者；只有它才允许 send_message 自动补 reply_to。 */
+  let activeTurnFrom: string | null = null;
 
   // ---- 粘贴拦截（PRD §5.3 + §7 探针结论）----
   // readline 不自带 bracketed paste：启用 \x1b[?2004h 后终端才会在粘贴前后
@@ -549,7 +687,8 @@ async function main(): Promise<number> {
     const bound = bindAttachments(line, pendingAttachments);
     // 绑定即消费：chip 只对本次提交生效，防止后续消息引用同款字样被二次还原
     if (bound.length > 0) pendingAttachments = pendingAttachments.filter((a) => !bound.includes(a));
-    queue.push({ text: line, attachments: bound });
+    autoTurnChain = 0; // 人类输入重置自动 turn 链
+    queue.push({ text: line, attachments: bound, origin: "user" });
     void drain();
   };
   rl.on("line", origLineHandler);
@@ -662,51 +801,107 @@ async function main(): Promise<number> {
       if (!q) continue;
       const line = q.text;
       if (!line) continue;
+      const origin = q.origin;
 
-      if (line.startsWith("!")) {
-        await runShell(line.slice(1), cfg, ui, agent.mode);
-        continue;
+      if (origin === "user") {
+        if (line.startsWith("!")) {
+          await runShell(line.slice(1), cfg, ui, agent.mode);
+          continue;
+        }
+        if (line.startsWith("/")) {
+          await handleCommand(
+            line,
+            agent,
+            ui,
+            cfg,
+            memory,
+            classifier,
+            sess.meta,
+            shutdown,
+            selectDeps,
+            mailbox,
+            (env) => {
+              ui.line(c.dim(formatPreview(env)));
+              queue.push({ text: formatIncomingFrame(env), attachments: [], origin: "mailbox", from: env.from.session });
+            },
+            () => inboundRefs.clear(),
+          );
+          continue;
+        }
+        autoTurnChain = 0;
+        if (mailbox) {
+          try {
+            mailboxState.noteHumanInput(mailbox.root, mailbox.sessionId);
+          } catch {
+            // 状态写入失败不阻塞交互
+          }
+        }
+      } else {
+        autoTurnChain++;
       }
 
-      if (line.startsWith("/")) {
-        await handleCommand(line, agent, ui, cfg, memory, classifier, sess.meta, shutdown, selectDeps);
-        continue;
-      }
-
-      // M1/M2 粘贴增强（PRD §5.4）：chip 还原后才发给模型——文本 chip 还原原文，
-      // 图片 chip 收集为 data URL 列表交给 agent.send 组装多模态 content。
-      const resolved = resolveLine(line, q.attachments);
+      // 合成行（mailbox/notice）文本已经是 frame 后的内容，不经命令分发、不做 chip 还原。
+      const resolved =
+        origin === "user" ? resolveLine(line, q.attachments) : { text: line, images: [] as string[] };
       if (resolved.images.length > 0) {
         // PRD §5.8：用户对「发出去了什么」有知情权（图片可能含敏感信息）
         ui.line(c.dim(`· 已发送图片 ×${resolved.images.length}`));
       }
       ui.blank();
+      let outcome: "ok" | "aborted" | "error" = "ok";
+      activeTurnFrom = origin === "user" ? null : (q.from ?? null);
+      if (mailbox) {
+        try {
+          mailboxState.beginTurn(mailbox.root, mailbox.sessionId, {
+            seq: ++turnSeq,
+            source: origin === "user" ? "user" : "mailbox",
+            from: origin === "user" ? null : (q.from ?? null),
+          });
+        } catch {
+          // 状态机失败不阻塞 turn
+        }
+      }
       try {
-        // ESC 中止路径开启回滚：本轮（含 user 消息）整体作废，用户直接重输
+        // ESC 回滚语义（PRD §4.11 裁决 A）：人类输入的 turn 保留回滚；
+        // 由 mailbox / 状态通知触发的自动 turn 只停不删（否则会连任务消息与已完成结果一起抹掉）。
         const stats = await agent.send(
           resolved.images.length > 0 ? { text: resolved.text, images: resolved.images } : resolved.text,
-          { rollbackOnAbort: true },
+          { rollbackOnAbort: origin === "user" },
         );
+        if (stats.aborted) outcome = "aborted";
         ui.blank();
+        ui.blank();
+        // 档位切换必须显式告知 —— 静默换模型会让人困惑「为什么这轮答得不一样」
+        if (stats.tierSwitch) {
+          const ts = stats.tierSwitch;
+          ui.line(
+            `${c.accent("⇅")} 档位 ${c.dim(ts.from)} → ${c.accent(ts.to)} ` +
+              `${c.dim(`(${cfg.providerName}/${cfg.model})`)}`,
+          );
+          ui.line(`  ${c.dim("理由:")} ${c.muted(ts.reason)}`);
+          if (ts.degraded) ui.line(`  ${c.warn("降级:")} ${c.warn(ts.degraded)}`);
           ui.blank();
-      // 档位切换必须显式告知 —— 静默换模型会让人困惑「为什么这轮答得不一样」
-      if (stats.tierSwitch) {
-        const ts = stats.tierSwitch;
-        ui.line(
-          `${c.accent("⇅")} 档位 ${c.dim(ts.from)} → ${c.accent(ts.to)} ` +
-            `${c.dim(`(${cfg.providerName}/${cfg.model})`)}`,
-        );
-        ui.line(`  ${c.dim("理由:")} ${c.muted(ts.reason)}`);
-        if (ts.degraded) ui.line(`  ${c.warn("降级:")} ${c.warn(ts.degraded)}`);
-        ui.blank();
-      }
-      showStats(ui, agent, cfg, stats);
+        }
+        showStats(ui, agent, cfg, stats);
       } catch (e) {
+        outcome = "error";
         ui.error(`未捕获异常: ${(e as Error).message}`);
         // C9：本轮带图且请求失败 → 追加一行软提示（无法可靠区分「服务端拒绝图片」
         // 与其他 4xx，用软提示近似 PRD 要求，不误导为确定结论）
         if (resolved.images.length > 0) ui.line(c.dim("  当前 provider 可能不支持图片输入"));
         if (process.env["NEO_DEBUG"]) console.error(e);
+      } finally {
+        activeTurnFrom = null;
+        if (mailbox) {
+          try {
+            mailboxState.endTurn(mailbox.root, mailbox.sessionId, {
+              outcome,
+              abortSource: outcome === "aborted" ? "human" : outcome === "error" ? "error" : null,
+            });
+          } catch {
+            // 状态机失败不阻塞交互
+          }
+        }
       }
       persist(agent.messages, sess.meta);
     }
@@ -714,14 +909,57 @@ async function main(): Promise<number> {
     prompt();
   };
 
+  /**
+   * P2 空闲 tick（PRD §4.4）：
+   *  - 只在 draining=false && queue 空 && !questionPending && !selectActive 时工作；
+   *  - inbox 每 1s 检查一次（消息落盘后静坐也能收到）；
+   *  - 委派 watchdog 每 cross_session_watchdog_interval_s（默认 120s）检查一次；
+   *  - 自动 turn 链超过上限时暂停拉取（用户输入会重置）。
+   */
+  const runIdleTick = (): void => {
+    if (!mailbox) return;
+    if (draining || queue.length > 0 || selectActive || questionPending) return;
+    if (autoTurnChain >= cfg.mailbox.autoTurnLimit) return;
+
+    const now = Date.now();
+    const remaining = cfg.mailbox.autoTurnLimit - autoTurnChain;
+    if (remaining <= 0) return;
+    if (now - lastWatchdogAt >= cfg.mailbox.watchdogIntervalS * 1000) {
+      lastWatchdogAt = now;
+      try {
+        for (const n of mailbox.watchdog()) {
+          if (queue.length >= remaining) break;
+          ui.line(c.dim(formatNoticePreview(n)));
+          queue.push({ text: formatNotice(n), attachments: [], origin: "notice", from: n.target_id });
+        }
+      } catch {
+        // watchdog 失败不阻塞交互
+      }
+    }
+    if (queue.length === 0) {
+      for (const env of collectInbound(remaining)) {
+        queue.push({ text: formatIncomingFrame(env), attachments: [], origin: "mailbox", from: env.from.session });
+      }
+    }
+    if (queue.length > 0) void drain();
+  };
+
+  if (mailbox) {
+    mailboxTick = setInterval(runIdleTick, 1000);
+    // 不让 tick 阻止进程退出（Bun / Node 定时器都有 unref）
+    (mailboxTick as unknown as { unref?: () => void }).unref?.();
+  }
+
   rl.on("close", () => {
     process.off("SIGINT", onSigint);
+    closeMailbox();
     if (process.stdin.isTTY) process.stdout.write("\x1b[?2004l"); // 退出还原终端 bracketed paste 模式
   });
 
   prompt();
 
   await new Promise<void>((resolve) => rl.on("close", () => resolve()));
+  closeMailbox();
   // 终端关闭（Ctrl+D 等）同样冲刷记忆写队列
   try {
     await memory.flush(2000);
@@ -785,6 +1023,9 @@ async function handleCommand(
   meta: SessionMeta,
   shutdown: () => void | Promise<void>,
   selectDeps: SelectDeps,
+  mailbox: Mailbox | null,
+  injectMailbox?: (env: Envelope) => void,
+  onMailboxRekey?: () => void,
 ): Promise<void> {
   const [cmdRaw, ...rest] = line.slice(1).split(/\s+/);
   const cmd = (cmdRaw ?? "").toLowerCase();
@@ -1085,6 +1326,89 @@ async function handleCommand(
       ui.blank();
       break;
 
+    case "peers": {
+      if (!mailbox) {
+        ui.warn("跨会话信箱未启用（-p / 非交互模式不参与协作）");
+        break;
+      }
+      const out = await makeListPeersTool({ mailbox }).execute(arg ? { target: arg } : {}, {} as ToolCtx);
+      ui.line(out);
+      break;
+    }
+
+    case "inbox": {
+      if (!mailbox) {
+        ui.warn("跨会话信箱未启用（-p / 非交互模式不参与协作）");
+        break;
+      }
+      const [subRaw, ...subRest] = arg.split(/\s+/).filter(Boolean);
+      const sub = (subRaw ?? "").toLowerCase();
+      if (sub === "release") {
+        const id = subRest.join(" ").trim();
+        if (!id) {
+          ui.warn("用法：/inbox release <消息 id>");
+          break;
+        }
+        const env = mailbox.release(id);
+        if (!env) {
+          ui.warn(`未找到 held 消息 ${id}`);
+          break;
+        }
+        ui.success(`已放行 ${id}`);
+        // 放行等价于一次正常投递：补记回执 / last_inbound / 消账，保证回信 exec 与状态机一致
+        try {
+          mailboxState.recordReceipt(
+            mailbox.root,
+            mailbox.sessionId,
+            { message_id: env.id, from: env.from.session, received_at: new Date().toISOString() },
+            cfg.mailbox.receiptMax,
+          );
+          mailboxState.noteInbound(mailbox.root, mailbox.sessionId, {
+            from: env.from.session,
+            message_id: env.id,
+          });
+          mailboxState.resolveDelegation(mailbox.root, mailbox.sessionId, {
+            reply_to: env.reply_to ?? null,
+            from: env.from.session,
+          });
+        } catch {
+          // 状态记录失败不影响放行
+        }
+        injectMailbox?.(env);
+        break;
+      }
+      const held = mailbox.heldIds();
+      ui.blank();
+      if (held.length === 0) {
+        ui.info("没有 held 消息。");
+        ui.blank();
+        break;
+      }
+      ui.kv("held 消息", String(held.length));
+      for (const id of held) ui.line(`  ${c.accent(id)} ${c.dim(`（/inbox release ${id}）`)}`);
+      ui.blank();
+      break;
+    }
+
+    case "rename": {
+      if (!mailbox) {
+        ui.warn("跨会话信箱未启用（-p / 非交互模式不参与协作）");
+        break;
+      }
+      const name = arg.trim();
+      if (!name) {
+        ui.warn("用法：/rename <name>");
+        break;
+      }
+      try {
+        const p = renameSession(mailbox.root, mailbox.sessionId, name);
+        ui.success(`本会话名字 → ${p.name}`);
+      } catch (e) {
+        ui.warn(`改名字失败：${(e as Error).message}`);
+      }
+      break;
+    }
+
     case "skills": {
       const skills = discoverSkills(cfg);
       if (arg) {
@@ -1245,6 +1569,11 @@ async function handleCommand(
           });
           if (picked) {
             agent.mode = picked;
+            try {
+              mailbox?.setMode(picked);
+            } catch {
+              // 状态同步失败不影响模式切换
+            }
             ui.success(`权限模式 → ${picked}`);
           } else {
             ui.info("已取消。");
@@ -1266,6 +1595,11 @@ async function handleCommand(
         break;
       }
       agent.mode = m;
+      try {
+        mailbox?.setMode(m);
+      } catch {
+        // 状态同步失败不影响模式切换
+      }
       ui.success(`权限模式 → ${m}`);
       break;
     }
@@ -1440,6 +1774,16 @@ async function handleCommand(
       }
       agent.messages = applyRestored(agent.messages[0], full.messages);
       Object.assign(meta, full.meta, { model: cfg.model });
+      // 身份 = 当前 session-id（PRD v1.2 裁决）：/resume 换 id 时信箱目录/锁/state 同步改键。
+      if (mailbox) {
+        try {
+          mailbox.rekey(meta.id);
+          onMailboxRekey?.();
+          ui.info(`跨会话信箱身份已迁移 → ${meta.id}`);
+        } catch (e) {
+          ui.warn(`跨会话信箱身份未迁移：${(e as Error).message}（本会话继续以旧 session-id 参与协作）`);
+        }
+      }
       ui.success(`已恢复会话 ${full.meta.id}（${full.messages.length} 条消息）`);
       const lastUser = [...full.messages]
         .reverse()

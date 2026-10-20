@@ -143,6 +143,7 @@ provider 里的 `*_model_name` 表示「**这个 provider** 在各档位上用�
 | `--resume [id]` | 恢复指定会话，默认最近一次 |
 | `--sessions` | 列出历史会话 |
 | `--no-reasoning` | 不显示思维链 |
+| `--name <n>` | 设置本会话名字（跨会话寻址用） |
 
 ## 交互命令
 
@@ -153,6 +154,9 @@ provider 里的 `*_model_name` 表示「**这个 provider** 在各档位上用�
 /provider  切换 provider   /tier      切换档位（显示生效路由）
 /model     查看/切模型     /tools     工具列表
 /mode      权限模式        /init      生成 AGENTS.md
+/peers [name]  跨会话状态：列出存活会话 / 查单个
+/inbox     查看 held 消息；/inbox release <id> 放行一条
+/rename <name> 设置本会话名字（跨会话寻址；撞名自动加后缀）
 /history   历史统计        /save      导出会话
 /sessions  历史会话        /resume    恢复会话（无参进入选择）
 /skills    技能列表与详情  /ingest    编译 raw → wiki
@@ -169,7 +173,7 @@ provider 里的 `*_model_name` 表示「**这个 provider** 在各档位上用�
 
 ```bash
 bun run check   # tsc --noEmit，strict + noUncheckedIndexedAccess
-bun test        # 单元测试，445 pass（22 个测试文件）
+bun test        # 单元测试，519 pass（26 个测试文件）
 ```
 
 ## 分类器
@@ -230,6 +234,8 @@ bun test        # 单元测试，445 pass（22 个测试文件）
 | `wiki_write` | 否 | 回填记忆 wiki 的唯一合法路径（强制摘要/日期戳/INDEX/log） |
 | `remember` | 否 | 显式写入长期记忆（异步提炼落页，子代理不可见） |
 | `compact_ctx` | 否 | 模型主动请求压缩上下文（工具批次结束后执行） |
+| `send_message` | 否 | 给另一个存活会话投递纯文本消息（可选 `reply_to`=任务号）；子代理不可见 |
+| `list_peers` | 否 | 列出存活会话的状态机摘要；带 `target` 查单个；子代理不可见 |
 
 ## 权限模式
 
@@ -239,6 +245,20 @@ bun test        # 单元测试，445 pass（22 个测试文件）
 - `plan`：只读，一切写操作被拒绝
 
 非交互环境（管道、CI、`-p` 重定向）下无法征求批准，一律拒绝并提示改用 `-y`。
+
+## 跨会话消息
+
+neo 支持多个**前台交互式**会话互相发纯文本消息，用于「一个会话编排、多个会话执行」的多终端协作。**没有固定 leader**：任何会话都能发任务、接任务、多跳协作；`leader` 只是人给终端起的名字。
+
+- **启用**：交互式 `neo` 启动即启用（`-p` / 非交互不参与）。每个终端 `/rename <name>` 起名，或启动加 `--name <n>`；名字撞名自动加 `-2` 后缀。
+- **工具**：模型可用 `send_message(target, body, reply_to?)` 与 `list_peers(target?)`；人可直接用 `/peers [name]`、`/inbox`、`/rename <name>`。
+- **投递**：发送方写入 `~/.neo/mailbox/<session-id>/inbox/`；接收方在工具间隙（P1）或空闲 tick（P2）收到并自动开 turn。进程退出即不可达，v1 不排队、不离线补投。
+- **状态机**：每个会话维护 `state.json`（idle/working/waiting_input/exiting + 心跳 + `outstanding` 委派 + 最近 in/outbound）。发起方每 120s 检查接活方，发现死亡 / 停滞 / 跑完不回信时注入 `<跨会话状态通知>`；B 在等 C 时不会被误报。
+- **人工接管**：任意终端可随时 ESC 叫停、补话、继续；自动 turn 被 ESC 中止时不回滚历史，人类自己输入的 turn 保留回滚。
+- **权限与信任**：消息永远不是用户的同意。默认信任档：`auto-all` 接收方默认 hold 来自非 auto-all 的消息；提示类接收方默认 accept。承接方建议用 `--edit`（自动批文件写、shell 仍审批），或显式在 settings 配 `cross_session_inbound: "accept"`。
+- **配置**（settings.json 顶层，snake_case）：`cross_session_inbound` / `cross_session_auto_turn_limit` / `cross_session_heartbeat_ms` / `cross_session_dead_after_ms` / `cross_session_progress_timeout_ms` / `cross_session_watchdog_interval_s`。
+- **边界**：不做 supervisor / 后台会话 / attach / agent view / 跨机（v0.3）；投递 at-most-once，进程崩溃可能丢一条消息（接受）；多跳环由每会话自动 turn 上限 20 + 限流 + 去重兜底。
+- **规格**：`docs/cross-session-messaging-prd[done].md`。
 
 ## 设计要点
 
@@ -289,13 +309,16 @@ neo/
     ├── clipboard.ts        # macOS 剪贴板图片读取（JXA）
     ├── hotkeys.ts          # 按键路由（ESC/Ctrl+C/粘贴边界）
     ├── memory/             # 记忆：双作用域布局/召回/提炼/合并/捕获/桥
+    ├── mailbox/            # 跨会话消息：类型/状态机/身份/文件信箱/入站框架
     ├── wiki/               # wiki 知识库：回填校验/lint/检索/ingest
     ├── classifier/         # 档位分类器
     │   ├── types.ts        # TierClassifier 接口
     │   ├── rules.ts        # 规则实现（默认）
     │   ├── llm.ts          # LLM 实现（可选）
     │   └── index.ts        # 注册表与选择
-    ├── tools/index.ts      # 工具实现与调度
+    ├── tools/
+    │   ├── index.ts        # 工具实现与调度
+    │   └── mailbox.ts      # 跨会话工具 send_message / list_peers
     └── ui/
         ├── theme.ts        # Matrix 调色板、数字雨、横幅
         ├── console.ts      # 输出、spinner、审批、状态栏

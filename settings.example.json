@@ -40,6 +40,13 @@
   "theme": "matrix",
   "show_reasoning": true,
 
+  "cross_session_inbound": "auto",
+  "cross_session_auto_turn_limit": 20,
+  "cross_session_heartbeat_ms": 15000,
+  "cross_session_dead_after_ms": 120000,
+  "cross_session_progress_timeout_ms": 300000,
+  "cross_session_watchdog_interval_s": 120,
+
   "memory": {
     "enabled": true,
     "user_wiki_dir": "~/.neo/wiki",

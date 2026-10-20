@@ -846,8 +846,16 @@ export function registerTool(impl: ToolImpl): () => void {
  *  - compact_ctx：宿主闭包绑定的是主代理 —— 子代理调用它会错误压缩主代理的
  *    对话历史（子代理自己烧完上下文就结束了，没有压缩价值）。若将来要放开
  *    多层派生或给子代理配独立宿主，改这里即可。
+ *  - send_message / list_peers（v0.2 跨会话消息）：子代理与父会话共享同一进程与
+ *    信箱身份，让子代理发消息会产生「消息代表谁」的归属混乱（PRD v1.2 §4.8）。
  */
-export const TOOL_NAMES_EXCLUDED_FOR_SUBAGENT: readonly string[] = ["task", "compact_ctx", "remember"];
+export const TOOL_NAMES_EXCLUDED_FOR_SUBAGENT: readonly string[] = [
+  "task",
+  "compact_ctx",
+  "remember",
+  "send_message",
+  "list_peers",
+];
 
 export function toolSpecs(): ToolSpec[] {
   return TOOLS.map((t) => t.spec);

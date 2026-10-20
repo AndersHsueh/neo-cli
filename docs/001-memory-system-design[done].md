@@ -218,7 +218,7 @@ neo 当前的持久化能力非常薄:
 - 向量检索 / embedding（零依赖原则；`recall.ts` 保留接口，将来可换）。
 - 后台 daemon / supervisor / 跨进程常驻。
 - 自动改写 `AGENTS.md`（人工维护区，只读不写）。
-- 跨会话消息 / mailbox（仍属 v0.2.0 的 cross-session-messaging PRD）。
+- 跨会话消息 / mailbox（v0.2.0 已交付，见 `docs/cross-session-messaging-prd[done].md`；supervisor / 后台会话仍留 v0.3）。
 - 用 LLM 做冲突二次仲裁（先 `supersedes` 机制 + 人工查看）。
 - 自动 git commit（记忆页会出现在 `git status`，由人决定何时提交）。
 

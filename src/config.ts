@@ -17,6 +17,13 @@ import { existsSync, readFileSync } from "node:fs";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { homedir } from "node:os";
 
+import {
+  DEFAULT_MAILBOX_CONFIG,
+  resolveMailboxConfig,
+  type InboundPolicy,
+  type MailboxConfig,
+} from "./mailbox/types.ts";
+
 /**
  * 已实现的 provider 协议类型。
  *
@@ -110,6 +117,10 @@ export interface Config {
   showReasoning: boolean;
   /** 粘贴增强配置（PRD docs/paste-enhancement-prd[done].md §5.7）。 */
   paste: PasteConfig;
+  /** 跨会话消息配置（docs/cross-session-messaging-prd[done].md v1.2 §4.6 / §4.10）。 */
+  mailbox: MailboxConfig;
+  /** 入站策略；"auto" = 按接收方权限档自动判定。 */
+  crossSessionInbound: InboundPolicy | "auto";
   /** 透传给服务端的思考开关；不设则不下发该字段，由服务端自行决定。 */
   thinking?: { type: "enabled" | "disabled" };
   cwd: string;
@@ -200,6 +211,24 @@ function resolvePasteConfig(raw: Raw | undefined): PasteConfig {
     foldChars: num(r["fold_chars"], 300),
     imageMaxBytes: num(r["image_max_bytes"], 8_388_608),
   };
+}
+
+/**
+ * 跨会话消息配置（PRD v1.2 §4.6）。settings.json 顶层 snake_case 键；
+ * 未配置项取 PRD 裁决默认值（watchdog 120s / 心跳 120s 判死 / 自动 turn 20）。
+ */
+function resolveMailboxSettings(raw: Raw): MailboxConfig {
+  return resolveMailboxConfig({
+    autoTurnLimit: num(raw["cross_session_auto_turn_limit"], DEFAULT_MAILBOX_CONFIG.autoTurnLimit),
+    heartbeatMs: num(raw["cross_session_heartbeat_ms"], DEFAULT_MAILBOX_CONFIG.heartbeatMs),
+    deadAfterMs: num(raw["cross_session_dead_after_ms"], DEFAULT_MAILBOX_CONFIG.deadAfterMs),
+    progressTimeoutMs: num(raw["cross_session_progress_timeout_ms"], DEFAULT_MAILBOX_CONFIG.progressTimeoutMs),
+    watchdogIntervalS: num(raw["cross_session_watchdog_interval_s"], DEFAULT_MAILBOX_CONFIG.watchdogIntervalS),
+  });
+}
+
+function resolveInboundPolicy(raw: unknown): InboundPolicy | "auto" {
+  return raw === "accept" || raw === "hold" || raw === "refuse" ? raw : "auto";
 }
 
 
@@ -488,6 +517,8 @@ export function loadConfig(overrides: Partial<Config> = {}): Config {
     skillsStore: str(raw["skills_store"], join(homedir(), ".neo", "skills")),
     memory: resolveMemoryConfig(raw["memory"] as Raw | undefined),
     paste: resolvePasteConfig(raw["paste"] as Raw | undefined),
+    mailbox: resolveMailboxSettings(raw),
+    crossSessionInbound: resolveInboundPolicy(raw["cross_session_inbound"]),
     ...overrides,
   };
 
