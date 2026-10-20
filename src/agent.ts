@@ -18,6 +18,7 @@ import { c, colorEnabled } from "./ui/theme.ts";
 import { Classifier } from "./classifier/index.ts";
 import { dispatch, toolSpecs, toolNames, TOOL_NAMES_EXCLUDED_FOR_SUBAGENT, type ToolCtx } from "./tools/index.ts";
 import { ToolError } from "./tools/types.ts";
+import { isRecallMessage, type MemoryPort } from "./memory/port.ts";
 
 export type PermissionMode = "ask" | "auto-edit" | "auto-all" | "plan";
 
@@ -76,6 +77,11 @@ export interface AgentOptions {
    * 测试用：避免 mock.module 全局污染其它测试文件（bun test 单进程共享模块表）。
    */
   chatStream?: typeof chatStream;
+  /**
+   * 记忆端口（v0.2 记忆激活 §7.8.1）。不传 = 无记忆（子代理/task 默认如此）。
+   * 记忆是增强项：任何调用失败都不得影响主流程。
+   */
+  memory?: MemoryPort;
 }
 
 export interface TurnStats {
@@ -107,6 +113,8 @@ export class Agent {
   private totalCompletion = 0;
   private totalReasoning = 0;
   private lastStats: TurnStats | null = null;
+  /** 轮次序号：记忆捕获的审计键（会话内递增，不跨会话）。 */
+  private turnSeq = 0;
 
   constructor(private readonly opt: AgentOptions) {
     this.mode = opt.mode;
@@ -231,7 +239,8 @@ export class Agent {
    * 抛错式：失败向上传，由调用方决定如何呈现。
    */
   async compactNow(): Promise<{ beforeTokens: number; afterTokens: number }> {
-    const convo = this.messages.slice(1);
+    // 召回临时消息不是历史的一部分：压缩输入与压缩后的历史都不应包含它
+    const convo = this.messages.slice(1).filter((m) => !isRecallMessage(m));
     if (convo.length < 4) {
       throw new ToolError("对话太短，压缩不划算（非 system 消息不足 4 条）");
     }
@@ -268,6 +277,15 @@ export class Agent {
     );
     if (!res.content.trim()) {
       throw new ToolError("压缩器返回了空摘要");
+    }
+
+    // v0.2 记忆激活 §7.6.1 T2：压缩前捕获摘要 —— 历史即将被替换，
+    // 这轮对话的信息价值最高（决策/踩坑很可能只在这一轮里出现过）。
+    this.turnSeq += 1;
+    try {
+      this.opt.memory?.captureCompact(res.content.trim(), this.turnSeq);
+    } catch {
+      // 记忆失败不影响压缩
     }
 
     const sys = this.messages[0];
@@ -364,9 +382,26 @@ export class Agent {
     // 分类在消息入队之前完成，这样本轮从一开始就用对模型
     const tierSwitch = await this.classifyTurn(text);
 
-    // 回滚基线：opts.rollbackOnAbort 时，abort 返回前把历史截回这里，
-    // 本轮（含这条 user 消息）整体作废 —— 面向「输入错了要重来」的场景。
-    const startLen = this.messages.length;
+    // v0.2 记忆激活 §7.7.2：本轮开始前自动召回（临时 system 消息，轮末摘除）。
+    // 放在 user 消息之前：既是协议上最稳的位置，也让模型先看到历史再读问题。
+    // 失败静默降级为「无记忆」—— 记忆是增强项，不是依赖项。
+    const turnStart = this.messages.length;
+    let recallMsg: Message | null = null;
+    if (this.opt.memory) {
+      try {
+        const recalled = await this.opt.memory.recall(text);
+        if (recalled) {
+          this.messages.push(recalled.message);
+          recallMsg = recalled.message;
+        }
+      } catch {
+        // 召回不可用：按无记忆继续
+      }
+    }
+
+    // 回滚基线：opts.rollbackOnAbort 时，abort 返回前把历史截回 turnStart，
+    // 本轮（含召回临时消息与 user 消息）整体作废 —— 面向「输入错了要重来」的场景。
+    const startLen = turnStart;
     this.messages.push(
       images.length > 0
         ? {
@@ -615,7 +650,9 @@ export class Agent {
             if (opts.rollbackOnAbort) {
               this.messages.length = startLen;
             }
+            if (recallMsg) this.dropTransientMessage(recallMsg);
             this.opt.onEvent?.({ type: "aborted" });
+            this.emitMemoryCapture(turnStart, "aborted");
             this.lastStats = {
               durationMs: Date.now() - started,
               promptTokens,
@@ -634,6 +671,7 @@ export class Agent {
           this.opt.onEvent?.({ type: "error", data: err.message });
           break;
         }
+        if (recallMsg) this.dropTransientMessage(recallMsg);
         throw e;
       }
     }
@@ -659,9 +697,43 @@ export class Agent {
       aborted: false,
       tierSwitch,
     };
+
+    // 临时召回消息只服务于本轮：轮末摘除，不进历史、不污染后续轮次
+    if (recallMsg) this.dropTransientMessage(recallMsg);
+
     this.opt.onEvent?.({ type: "turn_end", data: this.lastStats });
+    this.emitMemoryCapture(turnStart, "turn");
     void hadError;
     return this.lastStats;
+  }
+
+  /**
+   * 轮末捕获入口（§7.6.1 T1 / abort）。
+   * fire-and-forget：捕获内部有队列与失败降级，绝不允许异常冒泡到主循环。
+   */
+  private emitMemoryCapture(turnStart: number, kind: "turn" | "aborted"): void {
+    const mem = this.opt.memory;
+    if (!mem) return;
+    this.turnSeq += 1;
+    try {
+      mem.capture({
+        kind,
+        messages: this.messages.slice(turnStart),
+        turn: this.turnSeq,
+        ...(this.lastStats
+          ? {
+              stats: {
+                toolCalls: this.lastStats.toolCalls,
+                iterations: this.lastStats.iterations,
+                aborted: this.lastStats.aborted,
+                finishReason: this.lastStats.finishReason,
+              },
+            }
+          : {}),
+      });
+    } catch {
+      // 捕获失败静默：记忆不是主流程的一部分
+    }
   }
 
   /**

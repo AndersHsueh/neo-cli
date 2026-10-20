@@ -35,7 +35,9 @@ import { Console } from "./ui/console.ts";
 import { banner, c, rule, truncate } from "./ui/theme.ts";
 import { renderMarkdown } from "./ui/render.ts";
 import { buildMemoryFile, buildSystemPrompt } from "./system-prompt.ts";
-import { ensureProfile as initEnsureProfile, reInjectProfile as initReInjectProfile, recordIndex as initRecordIndex, initProjectLevel as initProjectLevelImpl } from "./memory/index.ts";
+import { initProjectLevel as initProjectLevelImpl } from "./memory/index.ts";
+import { createMemoryBridge, type MemoryBridge } from "./memory/bridge.ts";
+import { makeRememberTool } from "./tools/memory.ts";
 import { listModels, contentText, type Message } from "./llm.ts";
 import { toolNames, registerTool } from "./tools/index.ts";
 import { makeTaskTool, runSubagent } from "./tools/task.ts";
@@ -201,7 +203,8 @@ ${c.bold("交互命令")}
   /wiki-lint       wiki 体检：断链/orphan/摘要/日期戳/链接密度
   /ingest [f|i]    编译 raw → wiki（无参按 log 判定：超 1 周全量并告知，否则增量）
   /init            生成 AGENTS.md  /history     历史统计
-  /memory ...      记忆索引子命令（status/list/forward/reindex/redact）
+  /memory ...      记忆：status / list / recall / why / flush / forget / migrate / lint / on|off
+  /remember <文本> 显式记忆（--user 写用户级；-p 模式仅项目级）
   /save [path]     导出会话        /sessions    历史会话
   /resume [id]     恢复会话（无参进入选择；last = 最近一次）
   /tier [name]     查看/切档位      /auto [name] 切换分类器（off/rule/llm）
@@ -334,12 +337,33 @@ async function main(): Promise<number> {
 
   // 分类器。默认规则版；用 --auto 可换成 off 或 llm。
   const classifier = new Classifier(cfg, (args.auto ?? "rule") as ClassifierName);
+
+  // 会话文件先建：记忆桥需要 sessionId 作为审计键，必须在 Agent 构造前就位。
+  const sess = createSession(cfg.model, cfg.cwd);
+
+  // 记忆桥（v0.2 记忆激活）：
+  //  - -p / 非交互 = oneshot：只用项目级记忆（服务器脚本场景，不混入操作员个人记忆）；
+  //  - plan 模式禁写（captureEnabled=false），召回仍可用。
+  const memoryMode: "interactive" | "oneshot" =
+    args.print !== null || (args.rest.length > 0 && !process.stdin.isTTY) ? "oneshot" : "interactive";
+  // -p / 非交互：全局作用域降为 project（工具、系统提示、捕获都遵守）
+  if (memoryMode === "oneshot") cfg.memory.scopeMode = "project";
+  const memory: MemoryBridge = createMemoryBridge({
+    cfg,
+    cwd: cfg.cwd,
+    sessionId: sess.meta.id,
+    mode: memoryMode,
+    captureEnabled: args.mode !== "plan",
+    onNotice: (m) => ui.info(m),
+  });
+
   const agent = new Agent({
     cfg,
     console: ui,
     mode: args.mode,
     systemPrompt: buildSystemPrompt(cfg),
     classifier,
+    memory,
   });
 
   // task 工具：派生子代理。必须在首次 send 前注册 —— toolSpecs() 每轮现取，注册后即刻生效。
@@ -352,12 +376,13 @@ async function main(): Promise<number> {
   // wiki 工具：检索 + 回填唯一路径（raw 不可改拦截在 write_file/edit_file 内）。
   registerWikiTools(registerTool);
 
+  // 记忆工具：模型显式写入（与自动归纳共用同一合并管线；子代理不可见）。
+  registerTool(makeRememberTool({ remember: (body, scope) => memory.remember(body, scope) }));
+
   if (restored && restored.length > 0) {
     agent.messages = applyRestored(agent.messages[0], restored);
     ui.info(`已恢复会话 ${meta?.id ?? ""}（${restored.length} 条消息）`);
   }
-
-  const sess = createSession(cfg.model, cfg.cwd);
 
   // 覆盖系统提示：注入项目记忆文件（若存在）
   const memoryFile = ["AGENTS.md", "NEO.md", ".neo.md"]
@@ -370,18 +395,20 @@ async function main(): Promise<number> {
     ui.info(`已加载项目记忆 ${memoryFile}`);
   }
 
-  // PRD §6.2 / 约束 26 / 约束 27：profile 注入到 messages[1]（不追加到 messages[0]）。
-  // ensureProfile 失败 / profile.md 不存在 → no-op，不阻塞主流程。
+  // v0.2 记忆激活 §7.7.1 R0：用户画像摘要注入 messages[1]（不追加到 messages[0]）。
+  // -p 单次模式启动注入恒为 null（只用项目级记忆）；失败不阻塞会话。
   try {
-    const slice = await initEnsureProfile(cfg);
+    const slice = await memory.startup();
     if (slice) {
-      agent.messages = await initReInjectProfile(cfg, agent.messages);
-      ui.info(`已注入用户画像（${slice.estimatedTokens} tokens）`);
+      agent.messages.splice(1, 0, slice.message);
+      ui.info(`已注入用户画像（${slice.tokens} tokens）`);
     }
   } catch (e) {
     const reason = e instanceof Error ? e.message : String(e);
-    console.error(`profile 注入失败 ${reason}（session 不阻塞）`);
+    console.error(`用户画像注入失败 ${reason}（session 不阻塞）`);
   }
+  // 上次进程遗留的 journal：启动时有界恢复（不阻塞主流程）
+  memory.recoverPending();
 
   // ---- 单次模式 ----
   if (args.print !== null) {
@@ -392,6 +419,8 @@ async function main(): Promise<number> {
     }
     const stats = await agent.send(prompt);
     persist(agent.messages, sess.meta);
+    // 单次模式：把记忆写队列在退出前冲刷掉（仅项目级；带超时，不阻塞关闭）
+    await memory.flush();
     if (!stats.aborted) {
       ui.blank();
       if (stats.tierSwitch) {
@@ -412,6 +441,7 @@ async function main(): Promise<number> {
   if (args.rest.length > 0 && !process.stdin.isTTY) {
     await agent.send(args.rest.join(" "));
     persist(agent.messages, sess.meta);
+    await memory.flush();
     return 0;
   }
 
@@ -445,7 +475,13 @@ async function main(): Promise<number> {
     });
   }));
 
-  const shutdown = (): void => {
+  const shutdown = async (): Promise<void> => {
+    // 退出前冲刷记忆写队列：提炼是后台异步的，直接退出会丢掉最后几轮的记忆
+    try {
+      await memory.flush();
+    } catch {
+      // 记忆失败不阻止退出
+    }
     persist(agent.messages, sess.meta);
     ui.blank();
     ui.line(c.dim("再见。"));
@@ -458,7 +494,9 @@ async function main(): Promise<number> {
   // 否则运行中一次 Ctrl+C 会同时触发信号与 keypress 两路，提示错乱。
   // 职责划分：Ctrl+C = 信号语义，其余按键 = HotkeyRouter（keypress 语义）。
   const exitStrike = doubleStrike(
-    () => shutdown(),
+    () => {
+      void shutdown();
+    },
     {
       windowMs: 2000,
       notice: "Press Ctrl+C again to exit",
@@ -612,18 +650,9 @@ async function main(): Promise<number> {
     },
   };
 
-  // PRD §6.2 / 约束 22：首次用户输入触发 recordIndex（不写 daily memory 快照，
-// 只把首条输入前 200 字符落 ~/.neo/memorys/raw/）。
-  let firstUserInputCaptured = false;
-  const onFirstUserInput = (line: string): void => {
-    if (firstUserInputCaptured) return;
-    firstUserInputCaptured = true;
-    initRecordIndex(cfg, cfg.cwd, { firstUserInput: line })
-      .catch((e: unknown) => {
-        const reason = e instanceof Error ? e.message : String(e);
-        console.error(`首次输入 recordIndex 失败 ${reason}（session 不阻塞）`);
-      });
-  };
+  // v0.2 记忆激活：旧的「首条输入 → ~/.neo/memorys/raw」钩子已移除。
+  // 它只记录首行截断（实测 7 条全是 exit 这类噪音），信噪比过低；
+  // 由轮末 TurnRecord（含工具/文件/结论）取代，见 src/memory/capture.ts。
 
   const drain = async (): Promise<void> => {
     if (draining) return;
@@ -640,7 +669,7 @@ async function main(): Promise<number> {
       }
 
       if (line.startsWith("/")) {
-        await handleCommand(line, agent, ui, cfg, classifier, sess.meta, shutdown, selectDeps);
+        await handleCommand(line, agent, ui, cfg, memory, classifier, sess.meta, shutdown, selectDeps);
         continue;
       }
 
@@ -651,7 +680,6 @@ async function main(): Promise<number> {
         // PRD §5.8：用户对「发出去了什么」有知情权（图片可能含敏感信息）
         ui.line(c.dim(`· 已发送图片 ×${resolved.images.length}`));
       }
-      onFirstUserInput(resolved.text);
       ui.blank();
       try {
         // ESC 中止路径开启回滚：本轮（含 user 消息）整体作废，用户直接重输
@@ -694,6 +722,12 @@ async function main(): Promise<number> {
   prompt();
 
   await new Promise<void>((resolve) => rl.on("close", () => resolve()));
+  // 终端关闭（Ctrl+D 等）同样冲刷记忆写队列
+  try {
+    await memory.flush(2000);
+  } catch {
+    // 记忆失败不阻止退出
+  }
   return 0;
 }
 
@@ -746,9 +780,10 @@ async function handleCommand(
   agent: Agent,
   ui: Console,
   cfg: Config,
+  memory: MemoryBridge,
   classifier: Classifier,
   meta: SessionMeta,
-  shutdown: () => void,
+  shutdown: () => void | Promise<void>,
   selectDeps: SelectDeps,
 ): Promise<void> {
   const [cmdRaw, ...rest] = line.slice(1).split(/\s+/);
@@ -1259,16 +1294,80 @@ async function handleCommand(
     }
 
     case "memory": {
-      // PRD §A：/memory 子命令族（status / list / forget / reindex / redact）分发占位。
-      // 完整实现属 (5) 范围；本单仅落分发骨架 + status 一行。
-      const sub = arg.trim();
-      if (sub === "status") {
-        const { listStatus } = await import("./memory/index.ts");
-        const out = await listStatus(cfg, { cwd: cfg.cwd });
-        ui.info(out);
-      } else {
-        ui.info(`/memory 子命令：status / list / forget / reindex / redact（${sub || "无"} 待 (5) 落地）`);
+      // v0.2 记忆激活：完整子命令族（规格 §7.10）。
+      const [subRaw, ...subRest] = arg.split(/\s+/).filter(Boolean);
+      const sub = (subRaw ?? "").toLowerCase();
+      const subArg = subRest.join(" ").trim();
+      switch (sub) {
+        case "":
+        case "status":
+          ui.line(memory.status());
+          break;
+        case "list": {
+          const scope = subArg === "user" || subArg === "project" ? subArg : "all";
+          ui.line(memory.list(scope));
+          break;
+        }
+        case "recall":
+          if (!subArg) {
+            ui.warn("用法：/memory recall <关键词>");
+            break;
+          }
+          ui.line(memory.recallForHuman(subArg));
+          break;
+        case "why":
+          ui.line(memory.why());
+          break;
+        case "flush":
+          ui.info("冲刷记忆写队列…");
+          await memory.flush(10_000);
+          ui.success("记忆写队列已处理。");
+          break;
+        case "forget": {
+          const m = /^(project|user)[/:](.+\.md)$/.exec(subArg);
+          if (!m) {
+            ui.warn("用法：/memory forget <project|user>/<页面.md>");
+            break;
+          }
+          const ok = await ui.confirm(`确定删除 ${m[1]}/${m[2]}？此操作不可撤销。`);
+          if (!ok) {
+            ui.info("已取消。");
+            break;
+          }
+          ui.line(memory.forget(m[1] as "project" | "user", m[2] ?? ""));
+          break;
+        }
+        case "migrate":
+          ui.line(memory.migrate());
+          break;
+        case "lint":
+          ui.line(memory.lint());
+          break;
+        case "on":
+        case "off":
+          cfg.memory.enabled = sub === "on";
+          ui.success(`记忆已${sub === "on" ? "开启" : "关闭"}（仅本会话，不改配置文件）`);
+          break;
+        default:
+          ui.warn(
+            `未知 /memory 子命令：${subRaw}。可用：status / list [project|user] / recall <q> / why / flush / forget <scope>/<page> / migrate / lint / on|off`,
+          );
       }
+      break;
+    }
+
+    case "remember": {
+      // 显式记忆：/remember <内容> [--user|--project]
+      const flag = /\s*--(user|project)\s*$/.exec(arg);
+      const body = (flag ? arg.slice(0, flag.index) : arg).trim();
+      if (!body) {
+        ui.warn("用法：/remember <要记住的内容> [--user|--project]");
+        break;
+      }
+      const scope = flag?.[1] as "user" | "project" | undefined;
+      ui.line(memory.remember(body, scope));
+      await memory.flush(10_000);
+      ui.success("记忆已处理。");
       break;
     }
 
@@ -1357,7 +1456,7 @@ async function handleCommand(
 
     case "exit":
     case "quit":
-      shutdown();
+      void shutdown();
       break;
 
     default:

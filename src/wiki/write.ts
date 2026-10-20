@@ -13,8 +13,8 @@
  *  - 页面必备：`## 摘要`（或 Summary）+ 日期戳 `> 最后更新:YYYY-MM-DD`（或 Last updated）；
  *  - 主题页可以改写（当前最优综述），只有 raw 不可改、log 只追加。
  */
-import { existsSync, readFileSync, writeFileSync, appendFileSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync, mkdirSync, readFileSync, writeFileSync, appendFileSync, renameSync, unlinkSync } from "node:fs";
+import { dirname, join } from "node:path";
 import type { WikiLayout } from "./paths.ts";
 
 /* ------------------------------------------------------------------ */
@@ -82,6 +82,29 @@ export function todayStamp(): string {
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
 }
 
+/**
+ * 原子写：同目录 tmp 文件 + rename。
+ *
+ * 为什么需要：记忆页会被「自动归纳」与「人工回填」从两个进程并发写，
+ * 直接 writeFileSync 在崩溃/并发下可能留下半截文件。rename 在同一文件系统
+ * 内是原子的 —— 读者要么看到旧内容、要么看到完整新内容。
+ */
+export function writeAtomic(path: string, content: string): void {
+  mkdirSync(dirname(path), { recursive: true });
+  const tmp = `${path}.tmp-${process.pid}-${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
+  writeFileSync(tmp, content, "utf8");
+  try {
+    renameSync(tmp, path);
+  } catch (e) {
+    try {
+      unlinkSync(tmp);
+    } catch {
+      // best-effort 清理：tmp 残留不影响正确性
+    }
+    throw e;
+  }
+}
+
 /** 追加一条 log（append-only）。title 里不允许换行，防止破坏 grep 友好格式。 */
 export function appendLog(layout: WikiLayout, type: LogType, title: string): void {
   if (!LOG_TYPES.includes(type)) {
@@ -130,7 +153,7 @@ export function syncIndex(layout: WikiLayout, pageName: string, summary: string)
       "|------|------|-----------|--------|",
       indexRow(pageName, summary),
     ].join("\n");
-    writeFileSync(p, skeleton + "\n", "utf8");
+    writeAtomic(p, skeleton + "\n");
     return;
   }
 
@@ -149,7 +172,7 @@ export function syncIndex(layout: WikiLayout, pageName: string, summary: string)
     } else {
       lines[idx] = indexRow(pageName, summary);
     }
-    writeFileSync(p, lines.join("\n"), "utf8");
+    writeAtomic(p, lines.join("\n"));
     return;
   }
 
@@ -170,7 +193,28 @@ export function syncIndex(layout: WikiLayout, pageName: string, summary: string)
       ? l.replace(/(最后更新|Last updated)(：|:)\s*\d{4}-\d{2}-\d{2}/, `$1:${todayStamp()}`)
       : l,
   );
-  writeFileSync(p, stamped.join("\n"), "utf8");
+  writeAtomic(p, stamped.join("\n"));
+}
+
+/**
+ * 从 INDEX 主题目录删除某页的行（/memory forget 用）。
+ * 返回是否真的删了一行；INDEX 不存在或没有该行时返回 false（不报错）。
+ */
+export function removeIndexRow(layout: WikiLayout, pageName: string): boolean {
+  const p = join(layout.pagesDir, "INDEX.md");
+  if (!existsSync(p)) return false;
+  const lines = readFileSync(p, "utf8").split("\n");
+  const rowRe = new RegExp(`^\\|.*\\[\\[${escapeRe(pageName)}\\]\\]`);
+  const idx = lines.findIndex((l) => rowRe.test(l));
+  if (idx === -1) return false;
+  lines.splice(idx, 1);
+  const stamped = lines.map((l) =>
+    /(最后更新|Last updated)(：|:)\s*\d{4}-\d{2}-\d{2}/.test(l)
+      ? l.replace(/(最后更新|Last updated)(：|:)\s*\d{4}-\d{2}-\d{2}/, `$1:${todayStamp()}`)
+      : l,
+  );
+  writeAtomic(p, stamped.join("\n"));
+  return true;
 }
 
 function indexRow(pageName: string, summary: string): string {
@@ -227,7 +271,7 @@ export function writeBack(
     if (missing.length > 0) {
       throw new WikiWriteError(`页面缺少必备结构：${missing.join("、")}`);
     }
-    writeFileSync(target, opts.content.endsWith("\n") ? opts.content : opts.content + "\n", "utf8");
+    writeAtomic(target, opts.content.endsWith("\n") ? opts.content : opts.content + "\n");
     syncIndex(layout, name.replace(/\.md$/, ""), extractFirstSummary(opts.content));
     appendLog(layout, opts.logType ?? "query", opts.logTitle);
     return { action: "create", page: name, indexSynced: true, logged: true };
@@ -240,10 +284,20 @@ export function writeBack(
   const src = readFileSync(target, "utf8");
   const section = opts.content.trim();
   const anchor = /^## 推理与依据\s*$/m;
+  const m = anchor.exec(src);
   let out: string;
-  if (anchor.test(src)) {
-    // 已有推理段：续写到该段末尾（下一个 ## 之前）
-    out = src.replace(anchor, `## 推理与依据\n\n${section}\n`);
+  if (m) {
+    // 已有推理段：真正续写到该段末尾（下一个 ## 标题之前），而不是插到段首。
+    // 旧实现用 replace(anchor, header+section) 会把新内容塞到旧内容前面，顺序反了。
+    const start = m.index + m[0].length;
+    const rest = src.slice(start);
+    const next = /^## /m.exec(rest);
+    if (next) {
+      const insertAt = start + next.index;
+      out = `${src.slice(0, insertAt).replace(/\s*$/, "")}\n\n${section}\n\n${src.slice(insertAt)}`;
+    } else {
+      out = `${src.replace(/\s*$/, "")}\n\n${section}\n`;
+    }
   } else {
     out = `${src.replace(/\s*$/, "")}\n\n## 推理与依据\n\n${section}\n`;
   }
@@ -252,13 +306,16 @@ export function writeBack(
     /(最后更新|Last updated)(：|:)\s*\d{4}-\d{2}-\d{2}/,
     `$1:${todayStamp()}`,
   );
-  writeFileSync(target, out, "utf8");
+  writeAtomic(target, out);
+  // v0.2 记忆激活（§7.5.6）：append 也要同步 INDEX 摘要 —— 否则自动沉淀的页面
+  // 在 INDEX 里永远停着创建时的旧摘要，召回与人都看到过时信息。
+  syncIndex(layout, name.replace(/\.md$/, ""), extractFirstSummary(out));
   appendLog(layout, opts.logType ?? "query", opts.logTitle);
-  return { action: "append", page: name, indexSynced: false, logged: true };
+  return { action: "append", page: name, indexSynced: true, logged: true };
 }
 
 /** 从页面内容提取摘要段的第一行非空文本，供 INDEX 一句话摘要用。 */
-function extractFirstSummary(content: string): string {
+export function extractFirstSummary(content: string): string {
   const m = /^## (?:摘要|Summary)\s*\n+([\s\S]*?)(?=\n## |\n> |$)/m.exec(content);
   const first = (m?.[1] ?? "").split("\n").map((l) => l.trim()).find((l) => l !== "");
   return first ?? "";

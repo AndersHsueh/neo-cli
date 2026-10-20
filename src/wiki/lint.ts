@@ -68,7 +68,13 @@ export interface LintOptions {
 /* ------------------------------------------------------------------ */
 
 /** 豁免文件：不参与 orphan / 摘要 / 戳 / 密度检查（与 sh 版 EXEMPT_FILES 一致）。 */
-const EXEMPT_FILES = new Set(["INDEX.md", "index.md", "log.md", "工作流-ingest-query-lint.md"]);
+const EXEMPT_FILES = new Set([
+  "INDEX.md",
+  "index.md",
+  "log.md",
+  "AGENTS.md",
+  "工作流-ingest-query-lint.md",
+]);
 
 /** 断链允许集里的固定页名（与 sh 版一致）。 */
 const ALWAYS_ALLOWED = new Set(["INDEX", "index", "log", "AGENTS"]);

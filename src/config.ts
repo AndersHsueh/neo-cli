@@ -171,6 +171,40 @@ export interface MemoryConfig {
     dir: string;
     retentionHours: number;
   };
+
+  /* ---- v0.2 记忆激活（docs/001-memory-system-design[done].md §7.9） ---- */
+
+  /** 用户级 wiki 根目录（NEO_USER_WIKI_DIR 可覆盖）。 */
+  userWikiDir: string;
+  /** 运行 journal 目录（NEO_MEMORY_JOURNAL_DIR 可覆盖）。 */
+  journalDir: string;
+  /** 每轮开始前的自动召回（R1）。 */
+  autoRecall: {
+    enabled: boolean;
+    maxTokens: number;
+    projectPages: number;
+    userPages: number;
+  };
+  /** 轮末自动捕获（T1/T2）。 */
+  autoCapture: {
+    enabled: boolean;
+    mode: "off" | "boundary" | "every_turn";
+    modelTier: string;
+    maxOpsPerTurn: number;
+    maxPagesPerSession: number;
+    minConfidence: number;
+    minInferredConfidence: number;
+    journalRetentionDays: number;
+    flushTimeoutMs: number;
+  };
+  /** 静默模式：不打印「记忆 +N」提示。 */
+  quiet: boolean;
+  /**
+   * 运行时会话的记忆作用域（不落配置文件）。
+   * -p 单次模式由组合根置为 "project"：只读写项目级记忆，
+   * 避免服务器脚本场景混入操作员个人记忆。
+   */
+  scopeMode?: "both" | "project";
 }
 
 type Raw = Record<string, unknown>;
@@ -543,6 +577,38 @@ function resolveMemoryConfig(raw: Raw | undefined): MemoryConfig {
     retentionHours: num(journalRaw["retention_hours"], 24),
   };
 
+  // v0.2 记忆激活：user wiki / journal 路径 + 召回/捕获策略
+  const envUserWiki = process.env["NEO_USER_WIKI_DIR"];
+  const envJournal = process.env["NEO_MEMORY_JOURNAL_DIR"];
+  const userWikiRaw = envUserWiki ?? str(r["user_wiki_dir"], join(homedir(), ".neo", "wiki"));
+  const userWikiDir = isAbsolute(userWikiRaw) ? userWikiRaw : resolve(userWikiRaw);
+  const memJournalRaw = envJournal ?? str(r["journal_dir"], join(homedir(), ".neo", "memory", "journal"));
+  const journalDir = isAbsolute(memJournalRaw) ? memJournalRaw : resolve(memJournalRaw);
+
+  const recallRaw = (r["auto_recall"] ?? {}) as Raw;
+  const autoRecall = {
+    enabled: bool(recallRaw["enabled"], true),
+    maxTokens: num(recallRaw["max_tokens"], 900),
+    projectPages: num(recallRaw["project_pages"], 2),
+    userPages: num(recallRaw["user_pages"], 1),
+  };
+
+  const captureRaw = (r["auto_capture"] ?? {}) as Raw;
+  const modeRaw = str(captureRaw["mode"], "boundary");
+  const mode: "off" | "boundary" | "every_turn" =
+    modeRaw === "off" || modeRaw === "every_turn" ? modeRaw : "boundary";
+  const autoCapture = {
+    enabled: bool(captureRaw["enabled"], true),
+    mode,
+    modelTier: str(captureRaw["model_tier"], "fast"),
+    maxOpsPerTurn: num(captureRaw["max_ops_per_turn"], 2),
+    maxPagesPerSession: num(captureRaw["max_pages_per_session"], 8),
+    minConfidence: num(captureRaw["min_confidence"], 0.65),
+    minInferredConfidence: num(captureRaw["min_inferred_confidence"], 0.75),
+    journalRetentionDays: num(captureRaw["journal_retention_days"], 7),
+    flushTimeoutMs: num(captureRaw["flush_timeout_ms"], 3000),
+  };
+
   return {
     enabled: !envDisable && bool(r["enabled"], true),
     userLevelDir,
@@ -556,6 +622,11 @@ function resolveMemoryConfig(raw: Raw | undefined): MemoryConfig {
     platform,
     piiFilter,
     ingestJournal,
+    userWikiDir,
+    journalDir,
+    autoRecall,
+    autoCapture,
+    quiet: bool(r["quiet"], false),
   };
 }
 

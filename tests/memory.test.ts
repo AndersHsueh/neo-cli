@@ -121,6 +121,21 @@ function sandbox(tag: string): { cwd: string; cfg: Config } {
       platform: "auto" as const,
       piiFilter: { enabled: true, modes: [] },
       ingestJournal: { dir: join(userLevelDir, ".ingest-failures"), retentionHours: 24 },
+      userWikiDir: join(home, ".neo", "wiki"),
+      journalDir: join(home, ".neo", "memory", "journal"),
+      autoRecall: { enabled: true, maxTokens: 900, projectPages: 2, userPages: 1 },
+      autoCapture: {
+        enabled: true,
+        mode: "boundary",
+        modelTier: "fast",
+        maxOpsPerTurn: 2,
+        maxPagesPerSession: 8,
+        minConfidence: 0.65,
+        minInferredConfidence: 0.75,
+        journalRetentionDays: 7,
+        flushTimeoutMs: 3000,
+      },
+      quiet: true,
     },
   };
   return { cwd, cfg };

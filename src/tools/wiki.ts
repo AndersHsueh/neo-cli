@@ -4,19 +4,25 @@
  * 薄壳：校验与同步逻辑在 src/wiki/write.ts、src/wiki/search.ts（可单测），
  * 这里只做参数解析、布局解析与输出格式化。
  *
- * wiki_write 不设 sensitive：它写的是 .neo/wiki/ 内部（项目记忆），不是用户代码；
- * 且工具内部已强制命名/结构校验与 log 同步。raw 的不可改语义由 write_file/edit_file
- * 的统一拦截保证（见 tools/index.ts 的 assertRawImmutable），不在这里重复设防。
+ * v0.2 记忆激活：两个工具都支持双作用域（scope）：
+ *  - project（默认/原有行为）：<cwd>/.neo/wiki
+ *  - user：~/.neo/wiki（跨项目个人记忆）
+ * 检索严格遵守「先项目级、后用户级」；写入 user 作用域需显式指定，且走同一套
+ * 命名/摘要/日期戳/INDEX/log 校验。
  */
 import { join } from "node:path";
-import { resolveWikiLayout } from "../wiki/paths.ts";
+import type { WikiLayout } from "../wiki/paths.ts";
+import { resolveUserWikiLayout, resolveWikiLayout } from "../wiki/paths.ts";
 import { writeBack, WikiWriteError, type LogType, LOG_TYPES } from "../wiki/write.ts";
 import { searchWiki, formatSearchResults, wikiIsEmpty } from "../wiki/search.ts";
-import { ToolError, type ToolCtx, type ToolImpl } from "./types.ts";
+import { ensureScopeLayout } from "../memory/layout.ts";
+import { ToolError, type ToolImpl } from "./types.ts";
 import type { Config } from "../config.ts";
 
-/** 解析布局；失败抛带可行动提示的 ToolError。 */
-function requireLayout(cfg: Config): NonNullable<ReturnType<typeof resolveWikiLayout>> {
+type Scope = "project" | "user";
+
+/** 解析项目布局；失败抛带可行动提示的 ToolError。 */
+function requireProjectLayout(cfg: Config): WikiLayout {
   const layout = resolveWikiLayout(cfg.cwd);
   if (!layout) {
     throw new ToolError(
@@ -25,6 +31,24 @@ function requireLayout(cfg: Config): NonNullable<ReturnType<typeof resolveWikiLa
     );
   }
   return layout;
+}
+
+/** 用户级根目录（测试用部分 Config 可能没有 memory 段）。 */
+function userRoot(cfg: Config): string | undefined {
+  return cfg.memory?.userWikiDir;
+}
+
+/** 解析用户级布局（只读）；不存在/未配置返回 null。 */
+function optionalUserLayout(cfg: Config): WikiLayout | null {
+  const root = userRoot(cfg);
+  return root ? resolveUserWikiLayout(root) : null;
+}
+
+/** 写路径用：确保用户级骨架存在。 */
+function ensureUserLayout(cfg: Config): WikiLayout {
+  const root = userRoot(cfg);
+  if (!root) throw new ToolError("记忆配置缺少 user_wiki_dir，无法写用户级记忆。");
+  return ensureScopeLayout("user", cfg.cwd, root);
 }
 
 /* ------------------------------------------------------------------ */
@@ -38,28 +62,71 @@ export const wikiSearchTool: ToolImpl = {
     function: {
       name: "wiki_search",
       description:
-        "在项目 wiki 知识库中检索主题页。多词 AND 匹配，按相关度排序，返回页面与命中行。" +
-        "适用：回忆这个项目之前做过什么、某个决策的沿革、某主题已有哪些结论。" +
-        "小规模先看 INDEX.md（会话开始时已注入清单）；页面多或关键词明确时用本工具。",
+        "在记忆 wiki 中检索主题页。多词 AND 匹配，按相关度排序，返回页面与命中行。" +
+        "scope=auto（默认）先查项目级、再查用户级；项目级是本项目具体事实，用户级是跨项目个人背景。" +
+        "适用：回忆这个项目之前做过什么、某个决策的沿革、用户的长期偏好。",
       parameters: {
         type: "object",
         properties: {
           query: { type: "string", description: "关键词，空格分隔多个词（AND 语义）" },
-          limit: { type: "integer", description: "最多返回条数，默认 10" },
+          limit: { type: "integer", description: "每库最多返回条数，默认 10" },
+          scope: {
+            type: "string",
+            enum: ["auto", "project", "user", "both"],
+            description: "auto=项目优先合并；project/user=只查单库；both=两库合并",
+          },
         },
         required: ["query"],
       },
     },
   },
   execute(args, ctx) {
-    const layout = requireLayout(ctx.cfg);
     const query = String(args["query"] ?? "").trim();
     if (!query) throw new ToolError("query 不能为空");
-    if (wikiIsEmpty(layout)) {
-      return "wiki 库为空。把素材写入 .neo/wiki/raw/ 后跑 /ingest 即可开始积累。";
-    }
     const limit = Math.max(1, Math.min(50, Number(args["limit"] ?? 10) || 10));
-    return formatSearchResults(query, searchWiki(layout, query, limit));
+    const scope = String(args["scope"] ?? "auto");
+    if (!["auto", "project", "user", "both"].includes(scope)) {
+      throw new ToolError(`scope 必须是 auto/project/user/both，当前：${scope}`);
+    }
+
+    const userAllowed = ctx.cfg.memory?.scopeMode !== "project";
+    if (!userAllowed && (scope === "user" || scope === "both")) {
+      throw new ToolError("单次模式（-p）只用项目级记忆：不能检索用户级记忆。");
+    }
+    const wantProject = scope === "auto" || scope === "project" || scope === "both";
+    const wantUser = userAllowed && (scope === "auto" || scope === "user" || scope === "both");
+
+    const project = wantProject ? resolveWikiLayout(ctx.cfg.cwd) : null;
+    const user = wantUser ? optionalUserLayout(ctx.cfg) : null;
+
+    if (scope === "project" && !project) {
+      throw new ToolError(`未找到项目 wiki 目录（${ctx.cfg.cwd}/.neo/wiki/wiki）。先跑 /init。`);
+    }
+    if (scope === "user" && !user) {
+      throw new ToolError(
+        `用户记忆库尚未创建（${userRoot(ctx.cfg) ?? ""}）。首次记忆写入或 /memory migrate 会创建它。`,
+      );
+    }
+    if (!project && !user) {
+      throw new ToolError(
+        `当前目录不是 wiki 知识库（找不到 ${join(ctx.cfg.cwd, ".neo", "wiki", "wiki")} 或 ${join(ctx.cfg.cwd, "wiki")}），` +
+          `用户记忆库也未创建。先跑 /init 创建项目骨架，或 /memory migrate 创建用户库。`,
+      );
+    }
+
+    const projectHits = project && !wikiIsEmpty(project) ? searchWiki(project, query, limit) : [];
+    const userHits = user && !wikiIsEmpty(user) ? searchWiki(user, query, limit) : [];
+
+    // 只有一库可查时保持原输出形态（兼容既有行为与测试）
+    if (scope === "project") return formatSearchResults(query, projectHits);
+    if (scope === "user") return formatSearchResults(query, userHits);
+    if (!project || !user) return formatSearchResults(query, projectHits.length > 0 ? projectHits : userHits);
+
+    const lines: string[] = [];
+    if (projectHits.length > 0) lines.push(`[项目] ${formatSearchResults(query, projectHits)}`);
+    if (userHits.length > 0) lines.push(`[用户] ${formatSearchResults(query, userHits)}`);
+    if (lines.length === 0) return `无命中: ${query}（项目级 / 用户级均未命中）`;
+    return lines.join("\n\n");
   },
 };
 
@@ -74,9 +141,10 @@ export const wikiWriteTool: ToolImpl = {
     function: {
       name: "wiki_write",
       description:
-        "向项目 wiki 回填内容的唯一合法路径。自动强制：命名前缀校验、页面必备结构（## 摘要 + 日期戳）、" +
+        "向记忆 wiki 回填内容的唯一合法路径。自动强制：命名前缀校验、页面必备结构（## 摘要 + 日期戳）、" +
         "INDEX.md 同步、log.md 登记。action=create 新建页（内容必须自带摘要与日期戳）；" +
         "action=append 往已有页追加「## 推理与依据」段并更新其日期戳。" +
+        "scope=project（默认）写项目记忆；scope=user 写跨项目用户记忆（需显式指定）。" +
         "raw/ 的写入不经过本工具（raw 可创建/删除，不可改已有文件）。",
       parameters: {
         type: "object",
@@ -88,11 +156,17 @@ export const wikiWriteTool: ToolImpl = {
           },
           page: {
             type: "string",
-            description: "页面名（含 .md）。命名前缀必须来自登记表：待澄清- / 盘点-<YYYY-MM-DD>- / 对比-<A>-与-<B> / 汇总- / <事件类型>-<MMDD>，或无前缀中文短语",
+            description:
+              "页面名（含 .md）。中文短语或登记前缀：待澄清- / 盘点-<YYYY-MM-DD>- / 对比- / 汇总- / <事件类型>-<MMDD>",
           },
           content: {
             type: "string",
             description: "create=完整页面内容（必须含 ## 摘要 与日期戳）；append=要追加的段落正文",
+          },
+          scope: {
+            type: "string",
+            enum: ["project", "user"],
+            description: "project=项目记忆（默认）；user=跨项目用户记忆",
           },
           log_type: {
             type: "string",
@@ -106,15 +180,25 @@ export const wikiWriteTool: ToolImpl = {
     },
   },
   execute(args, ctx) {
-    const layout = requireLayout(ctx.cfg);
     const action = String(args["action"] ?? "");
     if (action !== "create" && action !== "append") {
       throw new ToolError(`action 必须是 create 或 append，当前：${action || "（空）"}`);
     }
+    const scopeRaw = String(args["scope"] ?? "project");
+    if (scopeRaw !== "project" && scopeRaw !== "user") {
+      throw new ToolError(`scope 必须是 project 或 user，当前：${scopeRaw}`);
+    }
+    const scope = scopeRaw as Scope;
+    if (scope === "user" && ctx.cfg.memory?.scopeMode === "project") {
+      throw new ToolError("单次模式（-p）只用项目级记忆：不能写用户级记忆。");
+    }
+
     const logType = args["log_type"] as LogType | undefined;
     if (logType !== undefined && !LOG_TYPES.includes(logType)) {
       throw new ToolError(`log_type 必须是 ${LOG_TYPES.join(", ")} 之一`);
     }
+
+    const layout = scope === "user" ? ensureUserLayout(ctx.cfg) : requireProjectLayout(ctx.cfg);
     try {
       const r = writeBack(layout, {
         action,
@@ -123,7 +207,8 @@ export const wikiWriteTool: ToolImpl = {
         logType,
         logTitle: String(args["log_title"] ?? ""),
       });
-      const parts = [`已${r.action === "create" ? "新建" : "追加"} ${r.page}`];
+      const where = scope === "user" ? "用户记忆" : "项目记忆";
+      const parts = [`已${r.action === "create" ? "新建" : "追加"} ${where}页 ${r.page}`];
       parts.push(r.indexSynced ? "INDEX.md 已同步" : "INDEX.md 无需变更");
       parts.push("log.md 已登记");
       return parts.join("；");

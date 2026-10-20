@@ -38,5 +38,29 @@
   "max_tool_iterations": 80,
   "tool_output_limit": 30000,
   "theme": "matrix",
-  "show_reasoning": true
+  "show_reasoning": true,
+
+  "memory": {
+    "enabled": true,
+    "user_wiki_dir": "~/.neo/wiki",
+    "journal_dir": "~/.neo/memory/journal",
+    "auto_recall": {
+      "enabled": true,
+      "max_tokens": 900,
+      "project_pages": 2,
+      "user_pages": 1
+    },
+    "auto_capture": {
+      "enabled": true,
+      "mode": "boundary",
+      "model_tier": "fast",
+      "max_ops_per_turn": 2,
+      "max_pages_per_session": 8,
+      "min_confidence": 0.65,
+      "min_inferred_confidence": 0.75,
+      "journal_retention_days": 7,
+      "flush_timeout_ms": 3000
+    },
+    "quiet": false
+  }
 }

@@ -847,7 +847,7 @@ export function registerTool(impl: ToolImpl): () => void {
  *    对话历史（子代理自己烧完上下文就结束了，没有压缩价值）。若将来要放开
  *    多层派生或给子代理配独立宿主，改这里即可。
  */
-export const TOOL_NAMES_EXCLUDED_FOR_SUBAGENT: readonly string[] = ["task", "compact_ctx"];
+export const TOOL_NAMES_EXCLUDED_FOR_SUBAGENT: readonly string[] = ["task", "compact_ctx", "remember"];
 
 export function toolSpecs(): ToolSpec[] {
   return TOOLS.map((t) => t.spec);

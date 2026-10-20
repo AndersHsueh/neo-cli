@@ -155,7 +155,9 @@ provider 里的 `*_model_name` 表示「**这个 provider** 在各档位上用�
 /mode      权限模式        /init      生成 AGENTS.md
 /history   历史统计        /save      导出会话
 /sessions  历史会话        /resume    恢复会话（无参进入选择）
-/exit      退出
+/skills    技能列表与详情  /ingest    编译 raw → wiki
+/wiki-lint wiki 体检        /memory    记忆子命令族
+/remember  显式记忆         /exit      退出
 /fast /balanced /deep /deep_reasoning /default   档位快捷方式（等价 /tier）
 !<cmd>     直接执行 shell（受权限模式约束，plan 模式下拒绝）
 ```
@@ -167,7 +169,7 @@ provider 里的 `*_model_name` 表示「**这个 provider** 在各档位上用�
 
 ```bash
 bun run check   # tsc --noEmit，strict + noUncheckedIndexedAccess
-bun test        # 单元测试，46 个用例
+bun test        # 单元测试，496 pass / 1 skip（22 个测试文件）
 ```
 
 ## 分类器
@@ -222,6 +224,12 @@ bun test        # 单元测试，46 个用例
 | `grep` | 否 | 正则搜内容，`path` 可传目录或单文件 |
 | `shell` | 是 | 执行命令，带超时与退出码 |
 | `web_fetch` | 否 | 抓网页转纯文本 |
+| `use_skill` | 否 | 按需加载技能正文（三层渐进披露） |
+| `task` | 否 | 派生子代理跑隔离子任务（深度结构性 ≤1） |
+| `wiki_search` | 否 | 检索记忆 wiki；`scope=auto` 先项目级、后用户级 |
+| `wiki_write` | 否 | 回填记忆 wiki 的唯一合法路径（强制摘要/日期戳/INDEX/log） |
+| `remember` | 否 | 显式写入长期记忆（异步提炼落页，子代理不可见） |
+| `compact_ctx` | 否 | 模型主动请求压缩上下文（工具批次结束后执行） |
 
 ## 权限模式
 
@@ -256,6 +264,12 @@ bun test        # 单元测试，46 个用例
 
 **审批走 readline。** 问句用 `rl.question()` 而非另开 raw-mode stdin 监听，否则两者同时消费输入会导致回显两遍。
 
+**记忆是双作用域 + 编译产物。** 项目级记忆跟仓库走（`.neo/wiki/`），用户级记忆跨项目共享（`~/.neo/wiki/`），两者同构复用 wiki 校验。一轮问答结束后由 fast 档提炼器归纳成「决策/踩坑/偏好」等页面；下一轮开始前**先查项目级、再查用户级**注入。原始对话只进 `~/.neo/memory/journal/`（运行日志），不进 wiki —— wiki 永远只是当前最优综述。推断出的用户画像必须带 `[推断]` 标记，召回时只作背景。
+
+**`-p` 单次模式只用项目级记忆。** 该模式多用于服务器脚本，混入操作员个人记忆会造成混乱；因此系统提示、召回、工具三处同时降级为 project-only。
+
+**记忆写入绝不阻塞主流程。** 先落 journal 再调 LLM 提炼；失败只降级、不抛错；会话退出前 flush 有超时，未完成的记录下次启动自动恢复。完整规格见 `docs/001-memory-system-design[done].md` §7。
+
 ## 项目结构
 
 ```
@@ -269,6 +283,13 @@ neo/
     ├── config.ts           # provider 解析、档位路由、降级、旧格式迁移
     ├── system-prompt.ts    # 系统提示词与 /init 记忆文件
     ├── session.ts          # 会话持久化（~/.neo/sessions）
+    ├── skills.ts           # 技能发现/索引/软链（三层渐进披露）
+    ├── paste.ts            # 长文本粘贴折叠
+    ├── attachments.ts      # 粘贴附件（文本/图片）chip 绑定与还原
+    ├── clipboard.ts        # macOS 剪贴板图片读取（JXA）
+    ├── hotkeys.ts          # 按键路由（ESC/Ctrl+C/粘贴边界）
+    ├── memory/             # 记忆：双作用域布局/召回/提炼/合并/捕获/桥
+    ├── wiki/               # wiki 知识库：回填校验/lint/检索/ingest
     ├── classifier/         # 档位分类器
     │   ├── types.ts        # TierClassifier 接口
     │   ├── rules.ts        # 规则实现（默认）

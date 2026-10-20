@@ -7,7 +7,7 @@ import { join, relative, sep } from "node:path";
 import type { Config } from "./config.ts";
 import { toolNames } from "./tools/index.ts";
 import { buildSkillIndex, discoverSkills, isRealDir } from "./skills.ts";
-import { resolveWikiLayout } from "./wiki/paths.ts";
+import { resolveUserWikiLayout, resolveWikiLayout } from "./wiki/paths.ts";
 
 const IGNORE_DIRS = new Set([
   "node_modules",
@@ -96,6 +96,11 @@ export function buildSystemPrompt(cfg: Config): string {
 - list_dir / glob / grep：探索代码库。找东西用 grep，找文件用 glob。
 - shell：执行命令。安装依赖、跑测试、git 操作走这里。
 - web_fetch：抓网页转纯文本，查文档用。
+- use_skill：按需加载技能正文（技能索引见下方「技能」节）。
+- task：派生隔离子代理跑探索/多文件改动，返回结论与用量；子代理不能用 task 递归派生。
+- wiki_search：检索记忆 wiki（scope=auto 时先项目级、后用户级）。
+- wiki_write：回填项目 wiki 的唯一合法路径（强制摘要/日期戳/INDEX/log）。
+- remember：把长期有价值的结论/用户偏好写入记忆（自动判断项目级或用户级）。
 - compact_ctx：请求压缩对话上下文（历史→结构化摘要）。大范围探索完成、进入下一阶段前可主动调用；实际压缩在当前工具批次结束后执行。
 ${skillText}${wikiText}
 ## 如何思考
@@ -117,28 +122,54 @@ ${treeText}
 }
 
 /**
- * wiki 索引节（wiki-turnning-1018.md 问题 2）。
- * 注入 INDEX.md 的主题清单（不是全文）：模型看得见库里有什么，才可能想起来查。
- * 无 wiki / 无主题页时返回空串（不输出该节）。
+ * 记忆库索引节（v0.2 记忆激活 §7.7.1 R0）。
+ *
+ * 注入双库主题清单（不是全文）：
+ *  - 项目级：<cwd>/.neo/wiki/wiki/INDEX.md，最多 40 条；
+ *  - 用户级：~/.neo/wiki/wiki/INDEX.md，最多 20 条。
+ * 两库都不存在时返回空串（不输出该节）。零 LLM、纯文件读。
  */
 export function buildWikiIndexSection(cfg: Config): string {
-  let layout;
-  try {
-    layout = resolveWikiLayout(cfg.cwd);
-  } catch {
-    return "";
-  }
-  if (!layout) return "";
-  const indexPath = join(layout.pagesDir, "INDEX.md");
-  if (!existsSync(indexPath)) return "";
+  const project = readTopics(resolveWikiLayout(cfg.cwd), 40);
+  // 兼容测试里的部分 Config（无 memory 段）：无配置即视为无用户库
+  const userRoot = cfg.memory?.scopeMode === "project" ? undefined : cfg.memory?.userWikiDir;
+  const user = userRoot ? readTopics(resolveUserWikiLayout(userRoot), 20) : null;
+  if (!project && !user) return "";
 
+  const lines: string[] = ["", "## 记忆库", ""];
+  if (project) {
+    lines.push(
+      `- 项目记忆（${project.dir}，已有主题 ${project.names.length} 个）：${project.names.join("、")}`,
+    );
+  }
+  if (user) {
+    lines.push(
+      `- 用户记忆（${user.dir}，已有主题 ${user.names.length} 个）：${user.names.join("、")}`,
+    );
+  }
+  lines.push(
+    "",
+    "检索纪律：回忆时**先查项目级**（本项目具体事实），**再查用户级**（跨项目个人背景）。",
+    "项目级内容与本项目强相关，用户级内容仅作背景；用户级中的推断内容以 [推断] 标注，不得当作硬性要求。",
+    "需要细节时用 wiki_search 检索、read_file 读页面全文；有长期价值的结论用 remember 或 wiki_write 回填。",
+  );
+  return lines.join("\n") + "\n";
+}
+
+/** 读某布局 INDEX.md 的 [[主题]] 清单；布局不存在或无 INDEX 返回 null。 */
+function readTopics(
+  layout: { pagesDir: string } | null,
+  limit: number,
+): { dir: string; names: string[] } | null {
+  if (!layout) return null;
+  const indexPath = join(layout.pagesDir, "INDEX.md");
+  if (!existsSync(indexPath)) return null;
   let text: string;
   try {
     text = readFileSync(indexPath, "utf8");
   } catch {
-    return "";
+    return null;
   }
-  // 只取主题目录里的 wiki 链接，去重，最多 40 条（防大库撑爆 system prompt）
   const seen = new Set<string>();
   const names: string[] = [];
   for (const m of text.matchAll(/\[\[([^\]|#]+)\]\]/g)) {
@@ -146,16 +177,10 @@ export function buildWikiIndexSection(cfg: Config): string {
     if (!name || seen.has(name)) continue;
     seen.add(name);
     names.push(name);
-    if (names.length >= 40) break;
+    if (names.length >= limit) break;
   }
-  if (names.length === 0) return "";
-
-  return `
-## 项目 wiki 知识库
-
-本项目带记忆 wiki（${layout.pagesDir}），已有主题：${names.join("、")}。
-回忆本项目之前的工作/决策时用 wiki_search 检索；有沉淀价值的结论用 wiki_write 回填（唯一合法写回路径）。
-`;
+  if (names.length === 0) return null;
+  return { dir: layout.pagesDir, names };
 }
 
 /** /init 生成的记忆文件内容。 */

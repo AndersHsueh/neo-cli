@@ -67,6 +67,7 @@ describe("wiki 布局解析", () => {
       pagesDir: PAGES,
       rawDir: RAW,
       kind: "neo",
+      scope: "project",
     });
   });
 
