@@ -1,7 +1,7 @@
 /**
  * wiki lint —— 断链 / Orphan / 摘要 / 日期戳 / 链接密度检查。
  *
- * 由 skills/karpathy-wiki-lint/references/lint-scripts.sh 重写而来（方案见
+ * 由旧 karpathy-wiki 技能脚本重写而来（技能已退役，实现内化；方案见
  * wiki-turnning-1018.md 问题 4）：sh 版只能整脚本跑、断言靠 grep 输出；
  * TS 版导出纯函数，测试直接 import 各检查逻辑。
  *
@@ -68,13 +68,7 @@ export interface LintOptions {
 /* ------------------------------------------------------------------ */
 
 /** 豁免文件：不参与 orphan / 摘要 / 戳 / 密度检查（与 sh 版 EXEMPT_FILES 一致）。 */
-const EXEMPT_FILES = new Set([
-  "INDEX.md",
-  "index.md",
-  "log.md",
-  "AGENTS.md",
-  "工作流-ingest-query-lint.md",
-]);
+const EXEMPT_FILES = new Set(["INDEX.md", "index.md", "log.md", "AGENTS.md"]);
 
 /** 断链允许集里的固定页名（与 sh 版一致）。 */
 const ALWAYS_ALLOWED = new Set(["INDEX", "index", "log", "AGENTS"]);

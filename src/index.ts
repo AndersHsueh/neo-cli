@@ -35,7 +35,7 @@ import { Console } from "./ui/console.ts";
 import { banner, c, rule, truncate } from "./ui/theme.ts";
 import { renderMarkdown } from "./ui/render.ts";
 import { buildMemoryFile, buildSystemPrompt } from "./system-prompt.ts";
-import { initProjectLevel as initProjectLevelImpl } from "./memory/index.ts";
+import { initProjectLevel as initProjectLevelImpl } from "./memory/init.ts";
 import { createMemoryBridge, type MemoryBridge } from "./memory/bridge.ts";
 import { makeRememberTool } from "./tools/memory.ts";
 import { listModels, contentText, type Message } from "./llm.ts";

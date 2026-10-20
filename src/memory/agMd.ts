@@ -11,7 +11,7 @@
  * 为 src/wiki/ 与工具层），两支合并为单一区块。
  */
 
-import { existsSync, readFileSync, writeFileSync, appendFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -61,28 +61,4 @@ export function writeWikiSection(cwd: string): void {
   const p = join(cwd, "AGENTS.md");
   const existing = existsSync(p) ? readFileSync(p, "utf8") : null;
   writeFileSync(p, composeAgentsContent(existing), "utf8");
-}
-
-/**
- * 旧接口兼容壳。旧签名 buildAgentsContent(degraded: boolean) 的调用方
- * （memory/init.ts）已迁移；保留导出避免第三方引用炸裂，但 degraded 参数已无意义。
- */
-export function buildAgentsContent(_degraded = false): string {
-  void _degraded;
-  return composeAgentsContent(null);
-}
-
-/** 追加式写入（仅当文件存在且无区块时用；init.ts 现走 writeWikiSection）。 */
-export function appendAgentsSection(cwd: string): void {
-  const p = join(cwd, "AGENTS.md");
-  if (!existsSync(p)) {
-    writeFileSync(p, composeAgentsContent(null), "utf8");
-    return;
-  }
-  const existing = readFileSync(p, "utf8");
-  if (START_RE.test(existing)) {
-    writeWikiSection(cwd); // 已有区块 → 走重写
-    return;
-  }
-  appendFileSync(p, `\n\n${loadSectionTemplate().trimEnd()}\n`, "utf8");
 }

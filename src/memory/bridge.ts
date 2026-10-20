@@ -24,7 +24,6 @@ import {
   resolveScopeLayout,
 } from "./layout.ts";
 import { readAudit } from "./journal.ts";
-import { MemoryError } from "./types.ts";
 import { USER_FACT_HEADING, USER_INFER_HEADING } from "./merge.ts";
 
 export type MemorySessionMode = "interactive" | "oneshot";
@@ -258,7 +257,10 @@ export class MemoryBridge implements MemoryPort {
     }
   }
 
-  /** 旧用户级记忆（~/.neo/memorys + profile.md）迁移到用户 wiki（幂等、非破坏）。 */
+  /**
+   * 旧用户级记忆（~/.neo/memorys + profile.md）迁移到用户 wiki（幂等、非破坏）。
+   * v0.1.12 清理后旧实现已删除，仅保留这条数据迁移路径。
+   */
   migrate(): string {
     if (!this.writeAllowed()) return "plan 模式禁止迁移。";
     const mem = this.opts.cfg.memory;
@@ -423,7 +425,8 @@ export class MemoryBridge implements MemoryPort {
 
   /** 把画像页渲染为注入块：摘要 + 事实要点，token 预算 ≤200。 */
   private renderProfile(content: string, path: string): string {
-    const budget = Math.min(this.opts.cfg.memory.profileTokensLimit, 200);
+    // 画像常驻注入的硬预算：200 token（PRD §7.7.1；与旧 profileTokensLimit 无关）
+    const budget = 200;
     const sections: string[] = [];
     const summary = extractPageSummary(content);
     if (summary) sections.push(summary);
@@ -464,4 +467,3 @@ export function createMemoryBridge(opts: MemoryBridgeOptions): MemoryBridge {
   return new MemoryBridge(opts);
 }
 
-export { MemoryError };

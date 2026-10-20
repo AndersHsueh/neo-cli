@@ -1,50 +1,17 @@
 /**
- * locks.ts — 锁原语（PRD docs/memory-prd.md 约束 9a）。
+ * locks.ts — 记忆写入的互斥锁原语（v0.2 记忆激活 §7.5.7）。
  *
- * 提供两件事：
- *   1. acquireCwdLock — 同 cwd 并发写互斥（J1）
- *   2. scanExpiredLocks + unlink 残留 — 启动 / recordIndex 入口自愈（J4 / 约束 9a-d）
+ * 只提供通用目录锁：先递归建父目录，再对锁目录本身做**非递归** mkdir。
+ * 这是刻意为之：旧实现用 `mkdirSync(lockDir,{recursive:true})`，Node 对已存在目录
+ * 不抛 EEXIST，互斥从未生效（v0.2 探针实测两次 mkdir 均成功）。
  *
- * 锁键：sha256(sanitized_cwd)[:16]，与 PRD §约束 9a 一致。
+ * EEXIST 才表示「他方持锁」。持锁方崩溃留下的残留锁由 staleMs 自愈。
  */
-
-import { mkdirSync, readdirSync, rmSync, statSync, utimesSync } from "node:fs";
-import { dirname, join } from "node:path";
-import { createHash } from "node:crypto";
+import { mkdirSync, rmSync, statSync } from "node:fs";
+import { dirname } from "node:path";
 import { MemoryError } from "./types.ts";
 
-/* ------------------------------------------------------------------ */
-/* 锁键                                                                  */
-/* ------------------------------------------------------------------ */
-
-export function cwdLockKey(sanitizedCwd: string): string {
-  return createHash("sha256").update(sanitizedCwd, "utf8").digest("hex").slice(0, 16);
-}
-
-/* ------------------------------------------------------------------ */
-/* acquireCwdLock                                                        */
-/* ------------------------------------------------------------------ */
-
-/**
- * 取 cwd 锁：mkdir `<userLevelDir>/.locks/<key>` 持锁。
- * 失败语义：
- *   - mkdir EEXIST → 持锁方为他人（或自身持有） → throw raw_concurrent_modify
- *   - mkdir 其他 errno → throw 同 code 错误
- *   - mkdir 成功 → 返回锁目录路径；调用方负责 release（rmSync）
- */
-export function acquireCwdLock(userLevelDir: string, sanitizedCwd: string): string {
-  const locksDir = join(userLevelDir, ".locks");
-  const key = cwdLockKey(sanitizedCwd);
-  return acquireLock(join(locksDir, key));
-}
-
-/**
- * 通用目录锁原语（v0.2 记忆激活，§7.5.7）。
- *
- * 关键修复：旧实现用 `mkdirSync(lockDir, {recursive:true})` —— Node 对已存在目录
- * **不抛 EEXIST**，互斥从未生效（探针实测两次 mkdir 均成功）。这里先递归建父目录，
- * 再对锁目录本身做**非递归** mkdir：EEXIST 才是「他方持锁」。
- */
+/** 取锁（严格）：被占用抛 MemoryError(raw_concurrent_modify)。 */
 export function acquireLock(lockDir: string): string {
   mkdirSync(dirname(lockDir), { recursive: true });
   try {
@@ -67,7 +34,7 @@ export function acquireLock(lockDir: string): string {
  *
  * staleMs：锁目录 mtime 超过该值视为残留（持锁进程崩溃/退出未释放），先删再抢。
  * 记忆提炼是后台任务，进程随时可能被 Ctrl+C / exit 杀掉，没有这层自愈就会
- * 永久卡死后续所有捕获（E2E 实测踩到过）。
+ * 永久卡死后续所有捕获（真实 E2E 踩到过）。
  */
 export function tryAcquireLock(lockDir: string, opts: { staleMs?: number } = {}): string | null {
   for (let attempt = 0; attempt < 2; attempt++) {
@@ -88,7 +55,7 @@ export function tryAcquireLock(lockDir: string, opts: { staleMs?: number } = {})
   return null;
 }
 
-/** 锁目录是否残留（mtime 早于 now - staleMs）。stat 失败视为不可判定（保守返回 false）。 */
+/** 锁目录是否残留（mtime 早于 now - staleMs）。stat 失败视为不可判定（保守 false）。 */
 export function isStaleLock(lockDir: string, staleMs: number): boolean {
   try {
     return Date.now() - statSync(lockDir).mtimeMs > staleMs;
@@ -102,7 +69,7 @@ export function releaseLock(lockDir: string | null): void {
   try {
     rmSync(lockDir, { recursive: true, force: true });
   } catch {
-    // best-effort；残留下次入口扫过期锁清掉
+    // best-effort：残留锁由下一次 tryAcquireLock 的 staleMs 自愈
   }
 }
 
@@ -115,7 +82,6 @@ export async function withLock<T>(
   const timeoutMs = opts.timeoutMs ?? 2_000;
   const retryMs = opts.retryMs ?? 25;
   const deadline = Date.now() + timeoutMs;
-  let waited = false;
   for (;;) {
     const lock = tryAcquireLock(lockDir);
     if (lock) {
@@ -128,75 +94,6 @@ export async function withLock<T>(
     if (Date.now() >= deadline) {
       throw new MemoryError("raw_concurrent_modify", `等待锁超时：${lockDir}`);
     }
-    waited = true;
     await new Promise((r) => setTimeout(r, retryMs));
   }
-  // 保持 TS 的完整分支（deadline 分支必抛，这里不可达）
-  void waited;
-}
-
-export function releaseCwdLock(lockDir: string): void {
-  try {
-    rmSync(lockDir, { recursive: true, force: true });
-  } catch {
-    // best-effort；残留下次 recordIndex 入口扫过期锁清掉（J4）
-  }
-}
-
-/* ------------------------------------------------------------------ */
-/* scanExpiredLocks — 约束 9a-d 残留锁自愈                                  */
-/* ------------------------------------------------------------------ */
-
-/**
- * 扫 `<userLevelDir>/.locks/` 下 mtime ≥ ttlHours 的锁目录，返回路径列表。
- * 不删；调用方按需 unlink。
- */
-export function scanExpiredLocks(userLevelDir: string, ttlHours: number = 24): string[] {
-  const locksDir = join(userLevelDir, ".locks");
-  let entries: string[];
-  try {
-    entries = readdirSync(locksDir);
-  } catch {
-    return [];
-  }
-  const cutoff = Date.now() - ttlHours * 3600 * 1000;
-  const expired: string[] = [];
-  for (const name of entries) {
-    const full = join(locksDir, name);
-    let st;
-    try {
-      st = statSync(full);
-    } catch {
-      continue;
-    }
-    if (st.mtimeMs >= cutoff) continue;
-    expired.push(full);
-  }
-  return expired;
-}
-
-/**
- * 扫过期锁并 unlink；调用方在 recordIndex 入口调用。
- * mtime 通过 utimesSync 模拟「旧锁」用于测试。
- */
-export function reapExpiredLocks(userLevelDir: string, ttlHours: number = 24): number {
-  const paths = scanExpiredLocks(userLevelDir, ttlHours);
-  for (const p of paths) {
-    try {
-      rmSync(p, { recursive: true, force: true });
-    } catch {
-      // best-effort
-    }
-  }
-  return paths.length;
-}
-
-/* ------------------------------------------------------------------ */
-/* 工具（测试用）                                                         */
-/* ------------------------------------------------------------------ */
-
-/** 强制把某锁目录的 mtime 改成「现在 - ttlHours * 3600s」，用于测试。 */
-export function ageLock(lockDir: string, ttlHours: number): void {
-  const mtime = new Date(Date.now() - ttlHours * 3600 * 1000);
-  utimesSync(lockDir, mtime, mtime);
 }

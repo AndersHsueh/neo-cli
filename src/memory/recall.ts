@@ -83,11 +83,6 @@ export function extractTerms(text: string, max = 12): string[] {
   return out.slice(0, max);
 }
 
-/** 文本是否含中文（用于决定是否需要 bigram 兜底）。 */
-export function hasCJK(text: string): boolean {
-  return CJK_RE.test(text);
-}
-
 /* ------------------------------------------------------------------ */
 /* 单库检索                                                            */
 /* ------------------------------------------------------------------ */

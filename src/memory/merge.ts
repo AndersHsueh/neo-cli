@@ -14,7 +14,6 @@ import { join } from "node:path";
 import type { WikiLayout } from "../wiki/paths.ts";
 import {
   appendLog,
-  extractFirstSummary,
   syncIndex,
   todayStamp,
   writeAtomic,

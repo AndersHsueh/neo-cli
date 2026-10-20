@@ -75,7 +75,25 @@ function makeCfg(): Config {
     cwd: SANDBOX,
     settingsPath: null,
     skillsStore: join(SANDBOX, "skills"),
-    memory: { enabled: false, userLevelDir: join(SANDBOX, "mem"), cwdRelativeMode: "default" },
+    memory: {
+      enabled: false,
+      userLevelDir: join(SANDBOX, "mem"),
+      userWikiDir: join(SANDBOX, "wiki"),
+      journalDir: join(SANDBOX, "journal"),
+      autoRecall: { enabled: false, maxTokens: 900, projectPages: 2, userPages: 1 },
+      autoCapture: {
+        enabled: false,
+        mode: "off" as const,
+        modelTier: "fast",
+        maxOpsPerTurn: 2,
+        maxPagesPerSession: 8,
+        minConfidence: 0.65,
+        minInferredConfidence: 0.75,
+        journalRetentionDays: 7,
+        flushTimeoutMs: 3000,
+      },
+      quiet: true,
+    },
   } as Config;
 }
 

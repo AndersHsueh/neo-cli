@@ -60,4 +60,4 @@ export function redactPII(text: string, opts?: { modes?: PIIMode[] }): RedactRes
 }
 
 /** 已知模式名集合（供 UI 列举 / 测试断言）。 */
-export const PII_MODE_NAMES: readonly PIIMode[] = PII_PATTERNS.map((p) => p.name as PIIMode);
+// v0.1.12 清理：PII_MODE_NAMES 随旧 redact 实现一并删除（无消费者）
