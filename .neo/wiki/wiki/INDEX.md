@@ -9,7 +9,7 @@
 
 ## 🧭 当前状态
 
-已编译 5 份 raw,覆盖 17 个主题页。2026-10-20 v0.2.0 发布:跨会话消息 —— 文件信箱(~/.neo/mailbox/<session-id>/)+ 会话状态机(state.json: idle/working/waiting_input/exiting + 心跳 + outstanding)+ 委派 watchdog(120s)+ send_message/list_peers + P1 工具间隙注入 / P2 空闲 tick + 人工接管(ESC 裁决 A);对等组网、无固定 leader,支持多跳协作;全量用例 445→519(+74,26 文件),tsc 零错误。同日 v0.2.1 hotfix:真实双会话验证暴露 ① 主代理运行时工具被 `TOOL_NAMES_EXCLUDED_FOR_SUBAGENT` 误过滤、② 长 turn 心跳不刷新导致 watchdog 误报 dead;修复后用例 519→523。v0.2.2 界面优化:工具调用默认紧凑单行(`⚡ name args .` 原地更新/下一个覆盖/✓✗),`toolcall_info_details` 可恢复旧版详情;用例 523→530(27 文件)。前一版 v0.1.12:记忆旧件清理 —— 删除 8 个零调用模块、861 行旧测试与死配置,用例 497→445。缺口:supervisor/后台会话/attach/agent view/跨机留 v0.3;多跳环检测与 reply_to 兜底待实测;协调消息是否静默记忆捕获待评估。
+已编译 5 份 raw,覆盖 18 个主题页。2026-10-20 v0.2.0 发布:跨会话消息 —— 文件信箱(~/.neo/mailbox/<session-id>/)+ 会话状态机(state.json: idle/working/waiting_input/exiting + 心跳 + outstanding)+ 委派 watchdog(120s)+ send_message/list_peers + P1 工具间隙注入 / P2 空闲 tick + 人工接管(ESC 裁决 A);对等组网、无固定 leader,支持多跳协作;全量用例 445→519(+74,26 文件),tsc 零错误。同日 v0.2.1 hotfix:真实双会话验证暴露 ① 主代理运行时工具被 `TOOL_NAMES_EXCLUDED_FOR_SUBAGENT` 误过滤、② 长 turn 心跳不刷新导致 watchdog 误报 dead;修复后用例 519→523。v0.2.2 界面优化:工具调用默认紧凑单行(`⚡ name args .` 原地更新/下一个覆盖/✓✗),`toolcall_info_details` 可恢复旧版详情;用例 523→530(27 文件)。当晚 anders↔huan 两个真实前台进程完成双向验收(消息 id/reply_to/13s/紧凑工具行),详见 [[里程碑-1020]]。前一版 v0.1.12:记忆旧件清理 —— 删除 8 个零调用模块、861 行旧测试与死配置,用例 497→445。缺口:supervisor/后台会话/attach/agent view/跨机留 v0.3;多跳环检测与 reply_to 兜底待实测;协调消息是否静默记忆捕获待评估。
 
 ## 🗂 主题目录
 
@@ -30,6 +30,7 @@
 | 清理-v0.1.12 | [[清理-v0.1.12]] | v0.1.12 清理 v0.1.0 时代遗留的「空转实现」：删除 recordIndex/profile/ingest/forget/reindex/redac | |
 | 跨会话消息-v0.2.0 | [[跨会话消息-v0.2.0]] | v0.2.0 交付 neo 的跨会话消息：多个前台交互式进程通过 `~/.neo/mailbox/` 文件信箱互发纯文本消息，支持任意会话派活/回信/多跳协作， | v0.2.0 已交付 |
 | 工具调用紧凑显示-v0.2.2 | [[工具调用紧凑显示-v0.2.2]] | v0.2.2 工具调用默认单行原地更新（点号动画/下一条覆盖/✓✗），`toolcall_info_details` 可恢复旧版详情；非 TTY 保留详情 | v0.2.2 已交付 |
+| 里程碑-1020 | [[里程碑-1020]] | 2026-10-20 v0.2.0~v0.2.2 三连发 + anders↔huan 真实双会话验收通过；当日经验（工具可见性/心跳/watchdog/紧凑显示/reply_to 对账） | 3 个 tag 已推 gitee |
 
 ### 流程与基础设施
 

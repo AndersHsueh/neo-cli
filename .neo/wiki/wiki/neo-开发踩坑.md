@@ -4,7 +4,7 @@
 
 ## 摘要
 
-neo 开发过程中沉淀的教训清单,持续追加。当前九条:zsh 变量不分词、gitignore 无法区分软链与真目录、google 国别域不命中搜索改写、fast 路由模型池判死、本地配置不进 git 的同步义务、bun test 单进程共享模块表导致 mock.module 泄漏、AbortSignal 上没有 abort()、双源版本号 bump 漏改一处、运行时工具被「子代理排除表」误过滤出主代理工具清单。每条按「现象 / 根因 / 教训」记录。
+neo 开发过程中沉淀的教训清单,持续追加。当前十条:zsh 变量不分词、gitignore 无法区分软链与真目录、google 国别域不命中搜索改写、fast 路由模型池判死、本地配置不进 git 的同步义务、bun test 单进程共享模块表导致 mock.module 泄漏、AbortSignal 上没有 abort()、双源版本号 bump 漏改一处、运行时工具被「子代理排除表」误过滤出主代理工具清单、watchdog 心跳不能挂在空闲 tick 上。每条按「现象 / 根因 / 教训」记录。
 
 ## 一、zsh 变量不分词
 
@@ -80,6 +80,14 @@ neo 开发过程中沉淀的教训清单,持续追加。当前九条:zsh 变量�
 根因：`Agent.toolSpecsFor()` 把 `TOOL_NAMES_EXCLUDED_FOR_SUBAGENT`（子代理排除表）无条件套在了所有 Agent 上，运行时注册的工具全被主代理过滤。v0.2.0 之前就存在，只是跨会话功能把它显性暴露了。
 
 修法（v0.2.1）：`AgentOptions` 增加 `isSubagent`；只有子代理应用排除表，主代理拿全量工具。回归测试断言主代理含 `compact_ctx` / `send_message` / `list_peers`，`isSubagent=true` 才排除。排查同款问题的入口：`Agent.toolSpecsFor()` + `tests/mailbox-agent.test.ts` 的「运行时工具可见性」用例。
+
+- 2026-10-20（session 20261020-205621-mbd4fb）：第十条：watchdog 心跳不能挂在空闲 tick 上（v0.2.1 已修）。
+
+现象：两个真实会话中，huan 在 150s 的长 LLM turn 里被 anders 的 watchdog 报 `dead`（心跳停约 234s），但 `ps -p` 进程存活、state 里 `phase: "working"`。
+
+根因：15s 心跳只在 REPL 空闲 tick 里刷新；turn 进行中 tick 被 `draining` 挡住，心跳停止。watchdog 只看 `heartbeat_at` 就判死。
+
+修法（v0.2.1）：心跳拆成独立 `setInterval`（turn 中照常刷）；流式输出按 30s 节流计入 `last_progress_at`；`PeerObservation.pid_alive` 用 `process.kill(pid,0)` 做第二道保险，心跳超时但进程存活时降级 `stale` 而非 `dead`。教训：**liveness 信号必须独立于业务忙闲**，不能用「没在处理输入」推断「进程死了」。
 
 ## 2026-10-19 JXA（osascript -l JavaScript）三坑：stdout 污染 / 退出码不可控 / 无 console.error
 
