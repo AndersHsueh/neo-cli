@@ -243,6 +243,8 @@ export interface PeerObservation {
   mode: PermissionMode;
   exists: boolean;
   alive: boolean;
+  /** profile.pid 对应进程是否仍存在（watchdog 误报 dead 的第二道保险）。 */
+  pid_alive: boolean;
   effective: EffectiveState;
   state: SessionState | null;
   /** 该 peer 的 inbox / .held 里仍存在的消息 id（判断 undelivered 用）。 */

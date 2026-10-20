@@ -113,8 +113,14 @@ export function digitalRain(rows = 6, cols = 78, seed = 0): string {
   return out.join("\n");
 }
 
-/** 启动横幅。 */
-export function banner(model: string, baseUrl: string, providerName?: string, modelTier?: string): string {
+/** 启动横幅。toolsText 由组合根传入当前实际注册工具（含运行时工具）。 */
+export function banner(
+  model: string,
+  baseUrl: string,
+  providerName?: string,
+  modelTier?: string,
+  toolsText = "read_file write_file edit_file list_dir glob grep shell fetch",
+): string {
   const title = "N E O";
   const sub = "wake up, neo... the matrix has you.";
   const host = hostOf(baseUrl);
@@ -129,7 +135,7 @@ export function banner(model: string, baseUrl: string, providerName?: string, mo
     providerLine,
     c.dim("  model  ") + c.accent(model),
     c.dim("  endpoint ") + c.muted(host),
-    c.dim("  tools  ") + c.muted("read_file write_file edit_file list_dir glob grep shell fetch"),
+    c.dim("  tools  ") + c.muted(toolsText),
     rule(76),
   ];
   return lines.filter((l) => l !== "").join("\n");

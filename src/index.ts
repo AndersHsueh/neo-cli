@@ -62,7 +62,7 @@ import { makeListPeersTool, makeSendMessageTool } from "./tools/mailbox.ts";
 import type { Envelope } from "./mailbox/types.ts";
 import type { ToolCtx } from "./tools/types.ts";
 
-const VERSION = "0.2.0";
+const VERSION = "0.2.1";
 
 /** /auto 列表里各实现的说明。 */
 const DESC: Record<string, string> = {
@@ -399,9 +399,12 @@ async function main(): Promise<number> {
   const inboundRefs = new Map<string, string>();
 
   let mailboxTick: ReturnType<typeof setInterval> | null = null;
+  let heartbeatTick: ReturnType<typeof setInterval> | null = null;
   let mailboxClosed = false;
   /** 上次 watchdog 检查时间（P1 与 idle tick 共用）。 */
   let lastWatchdogAt = Date.now();
+  /** 上次因流式输出刷新 last_progress_at 的时间（节流，避免每个 chunk 写盘）。 */
+  let lastStreamProgressAt = 0;
   /** 清理信箱资源（幂等）：停 tick、删 .alive。 */
   function closeMailbox(): void {
     if (mailboxClosed) return;
@@ -410,7 +413,25 @@ async function main(): Promise<number> {
       clearInterval(mailboxTick);
       mailboxTick = null;
     }
+    if (heartbeatTick) {
+      clearInterval(heartbeatTick);
+      heartbeatTick = null;
+    }
     if (mailbox) releaseAlive(mailbox.root, mailbox.sessionId);
+  }
+
+  // 心跳必须独立于空闲 tick：turn 进行中（长 LLM 调用）也要每 15s 刷新，
+  // 否则别的会话的 watchdog 会看到心跳停 120s+，把正在干活的活进程误报成 dead。
+  if (mailbox) {
+    const hb = mailbox;
+    heartbeatTick = setInterval(() => {
+      try {
+        mailboxState.touchHeartbeat(hb.root, hb.sessionId);
+      } catch {
+        // 心跳写失败不阻塞主流程
+      }
+    }, cfg.mailbox.heartbeatMs);
+    (heartbeatTick as unknown as { unref?: () => void }).unref?.();
   }
 
   /** 轮询 inbox、按入站三态裁决，返回 accept 的消息并打印预览。limit 留空=不限。 */
@@ -454,13 +475,23 @@ async function main(): Promise<number> {
         }
       : undefined,
     onEvent: (e) => {
-      // 工具结果回填 = 有进展：watchdog 的 stuck 判定依据（PRD §4.10.3）
-      if (e.type === "tool_end" && mailbox) {
-        try {
-          mailboxState.touchProgress(mailbox.root, mailbox.sessionId);
-        } catch {
-          // 状态写入失败不影响主流程
+      if (!mailbox) return;
+      const mb = mailbox;
+      try {
+        if (e.type === "tool_end") {
+          // 工具结果回填 = 有进展：watchdog 的 stuck 判定依据（PRD §4.10.3）
+          lastStreamProgressAt = Date.now();
+          mailboxState.touchProgress(mb.root, mb.sessionId);
+        } else if (e.type === "text" || e.type === "reasoning") {
+          // 长 LLM 流式输出也是进展：节流 30s 刷一次，避免每个 chunk 写盘。
+          const now = Date.now();
+          if (now - lastStreamProgressAt >= 30_000) {
+            lastStreamProgressAt = now;
+            mailboxState.touchProgress(mb.root, mb.sessionId);
+          }
         }
+      } catch {
+        // 状态写入失败不影响主流程
       }
     },
   });
@@ -501,6 +532,13 @@ async function main(): Promise<number> {
       }),
     );
     registerTool(makeListPeersTool({ mailbox: mb }));
+  }
+
+  // 运行时工具注册完成后再刷新系统提示：`可用工具` 行由 toolNames() 现取，
+  // 首次构造时运行时工具（task/wiki/remember/send_message/list_peers）尚未注册。
+  {
+    const sys0 = agent.messages[0];
+    if (sys0) sys0.content = buildSystemPrompt(cfg, { mailbox: mailboxEnabled });
   }
 
   if (restored && restored.length > 0) {
@@ -571,7 +609,7 @@ async function main(): Promise<number> {
 
   // ---- 交互模式 ----
   if (process.stdin.isTTY) {
-    ui.line(banner(cfg.model, cfg.baseUrl, cfg.providerName, cfg.modelTier));
+    ui.line(banner(cfg.model, cfg.baseUrl, cfg.providerName, cfg.modelTier, toolNames().join(" ")));
   }
 
   const rl = createInterface({

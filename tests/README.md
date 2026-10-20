@@ -6,10 +6,10 @@
 
 ```bash
 bunx tsc --noEmit     # exit 0（strict + noUncheckedIndexedAccess）
-bun test              # 519 pass / 0 fail（26 个测试文件，约 3.6s）
+bun test              # 523 pass / 0 fail（26 个测试文件，约 3.6s）
 ```
 
-v0.2.0 跨会话消息交付后的基线：**519 pass / 0 fail**。
+v0.2.1 hotfix 后的基线：**523 pass / 0 fail**。
 改功能前先在干净树上跑一遍，数字对位后再动手。
 
 ## §2 测试即规格

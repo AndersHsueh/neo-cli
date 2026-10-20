@@ -173,7 +173,7 @@ provider 里的 `*_model_name` 表示「**这个 provider** 在各档位上用�
 
 ```bash
 bun run check   # tsc --noEmit，strict + noUncheckedIndexedAccess
-bun test        # 单元测试，519 pass（26 个测试文件）
+bun test        # 单元测试，523 pass（26 个测试文件）
 ```
 
 ## 分类器

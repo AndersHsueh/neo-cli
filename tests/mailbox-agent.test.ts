@@ -14,6 +14,10 @@ import { Agent, type AgentIO } from "../src/agent.ts";
 import type { Config } from "../src/config.ts";
 import type { Message, StreamResult, ToolCall } from "../src/llm.ts";
 import { DEFAULT_MAILBOX_CONFIG } from "../src/mailbox/types.ts";
+import * as identity from "../src/mailbox/identity.ts";
+import { Mailbox } from "../src/mailbox/store.ts";
+import { registerTool } from "../src/tools/index.ts";
+import { makeListPeersTool, makeSendMessageTool } from "../src/tools/mailbox.ts";
 
 let SANDBOX = "";
 beforeAll(() => {
@@ -232,5 +236,45 @@ describe("P1 注入点", () => {
     expect(stats.aborted).toBe(false);
     expect(callNo).toBe(2);
     expect(warnings.join("\n")).toContain("跨会话信箱轮询失败");
+  });
+});
+
+describe("运行时工具可见性", () => {
+  test("主代理 toolSpecsFor 含 send_message/list_peers；isSubagent=true 被排除", () => {
+    const root = mkdtempSync(join(SANDBOX, "vis-"));
+    const sid = "20261020-100000-visxxx";
+    identity.createIdentity({ root, sessionId: sid, cwd: SANDBOX, name: "vis", mode: "ask", nowMs: Date.now() });
+    const mb = new Mailbox({ root, sessionId: sid });
+    const offSend = registerTool(makeSendMessageTool({ mailbox: mb }));
+    const offPeers = registerTool(makeListPeersTool({ mailbox: mb }));
+    try {
+      const main = new Agent({
+        cfg: makeCfg(),
+        console: silentConsole(),
+        mode: "ask",
+        systemPrompt: "sys",
+      });
+      const sub = new Agent({
+        cfg: makeCfg(),
+        console: silentConsole(),
+        mode: "ask",
+        systemPrompt: "sys",
+        isSubagent: true,
+      });
+      const mainNames = main.toolSpecsFor().map((s) => s.function.name);
+      expect(mainNames).toContain("send_message");
+      expect(mainNames).toContain("list_peers");
+      expect(mainNames).toContain("compact_ctx");
+
+      const subNames = sub.toolSpecsFor().map((s) => s.function.name);
+      expect(subNames).not.toContain("send_message");
+      expect(subNames).not.toContain("list_peers");
+      expect(subNames).not.toContain("compact_ctx");
+    } finally {
+      offPeers();
+      offSend();
+      identity.releaseAlive(root, sid);
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });

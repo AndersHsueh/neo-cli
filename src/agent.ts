@@ -88,6 +88,12 @@ export interface AgentOptions {
    * 返回已框架化的 user 内容。回调由组合根注入，agent.ts 不 import 信箱模块。
    */
   pollInbox?: () => string[];
+  /**
+   * 是否为 task 工具派生的子代理。
+   * 只有子代理才应用 TOOL_NAMES_EXCLUDED_FOR_SUBAGENT 过滤；
+   * 主代理必须能看到全部运行时注册工具（task / wiki_* / remember / send_message / list_peers）。
+   */
+  isSubagent?: boolean;
 }
 
 export interface TurnStats {
@@ -171,11 +177,16 @@ export class Agent {
   /**
    * 本代理可用的工具集。
    *
-   * 子代理（task 工具）从工具集层面被排除 —— 结构性禁止递归派生，
-   * 深度天然 ≤ 1，不需要任何运行时深度计数。
+   * 只有子代理（task 工具，isSubagent=true）才应用排除表：
+   * task 结构性禁止递归派生；compact_ctx / remember / send_message / list_peers
+   * 绑定主代理宿主的闭包或信箱身份，子代理调用会产生归属混乱。
+   * 主代理必须拿到全量工具 —— v0.2.0 曾把排除表误用于主代理，导致运行时
+   * 注册的工具（task/wiki/remember/send_message/list_peers）从未出现在模型工具清单里。
    */
   toolSpecsFor(): ToolSpec[] {
-    return toolSpecs().filter((s) => !TOOL_NAMES_EXCLUDED_FOR_SUBAGENT.includes(s.function.name));
+    const all = toolSpecs();
+    if (!this.opt.isSubagent) return all;
+    return all.filter((s) => !TOOL_NAMES_EXCLUDED_FOR_SUBAGENT.includes(s.function.name));
   }
 
   cancel(): void {

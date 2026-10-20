@@ -386,12 +386,24 @@ describe("compact_ctx 端到端", () => {
 /* ------------------------------------------------------------------ */
 
 describe("子代理排除", () => {
-  test("toolSpecsFor 不含 compact_ctx 与 task", () => {
+  test("主代理 toolSpecsFor 含 compact_ctx（运行时工具对主代理可见）", () => {
     const agent = new Agent({
       cfg: makeCfg(),
       console: spyConsole(),
       mode: "auto-all",
       systemPrompt: "sys",
+    });
+    const names = agent.toolSpecsFor().map((s) => s.function.name);
+    expect(names).toContain("compact_ctx");
+  });
+
+  test("isSubagent=true 时排除 task 与 compact_ctx", () => {
+    const agent = new Agent({
+      cfg: makeCfg(),
+      console: spyConsole(),
+      mode: "auto-all",
+      systemPrompt: "sys",
+      isSubagent: true,
     });
     const names = agent.toolSpecsFor().map((s) => s.function.name);
     expect(names).not.toContain("compact_ctx");

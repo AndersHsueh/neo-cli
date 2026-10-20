@@ -1,10 +1,10 @@
 # neo 开发踩坑
 
-> 最后更新:2026-10-19
+> 最后更新:2026-10-20
 
 ## 摘要
 
-neo 开发过程中沉淀的教训清单,持续追加。当前八条:zsh 变量不分词、gitignore 无法区分软链与真目录、google 国别域不命中搜索改写、fast 路由模型池判死、本地配置不进 git 的同步义务、bun test 单进程共享模块表导致 mock.module 泄漏、AbortSignal 上没有 abort()、双源版本号 bump 漏改一处。每条按「现象 / 根因 / 教训」记录。
+neo 开发过程中沉淀的教训清单,持续追加。当前九条:zsh 变量不分词、gitignore 无法区分软链与真目录、google 国别域不命中搜索改写、fast 路由模型池判死、本地配置不进 git 的同步义务、bun test 单进程共享模块表导致 mock.module 泄漏、AbortSignal 上没有 abort()、双源版本号 bump 漏改一处、运行时工具被「子代理排除表」误过滤出主代理工具清单。每条按「现象 / 根因 / 教训」记录。
 
 ## 一、zsh 变量不分词
 
@@ -72,6 +72,14 @@ neo 开发过程中沉淀的教训清单,持续追加。当前八条:zsh 变量�
 ## 推理与依据
 
 - **发布时先 tag 后 rebase 会让 tag 指向孤儿 commit**（2026-10-19，v0.1.10）：推送被拒（远程有网页端直加的 LICENSE commit）→ 本地 rebase 后 tag 仍指向 rebase 前的旧 release commit，远程 tag 脱离 main 历史。正确顺序：先 `git fetch` 处理分叉、rebase 完成，**最后**打 tag 再推。验证方法：`git ls-remote origin refs/tags/<tag> refs/heads/main` 两者应同 hash。另：gitee 网页端直改（如加 LICENSE）会造成本地推送被拒，发布前先 fetch 是必要动作。
+
+- 2026-10-20（session 20261020-205625-7otggv）：第九条：运行时注册的工具不一定出现在主代理工具清单里（v0.2.1 已修）。
+
+现象：验证跨会话消息时，`send_message` 是运行时注册的工具，系统提示里也写着有，但主代理的实际工具清单里没有，无法像普通工具那样调用；同一轮里 `task` / `wiki_*` / `remember` 也被悄悄过滤。
+
+根因：`Agent.toolSpecsFor()` 把 `TOOL_NAMES_EXCLUDED_FOR_SUBAGENT`（子代理排除表）无条件套在了所有 Agent 上，运行时注册的工具全被主代理过滤。v0.2.0 之前就存在，只是跨会话功能把它显性暴露了。
+
+修法（v0.2.1）：`AgentOptions` 增加 `isSubagent`；只有子代理应用排除表，主代理拿全量工具。回归测试断言主代理含 `compact_ctx` / `send_message` / `list_peers`，`isSubagent=true` 才排除。排查同款问题的入口：`Agent.toolSpecsFor()` + `tests/mailbox-agent.test.ts` 的「运行时工具可见性」用例。
 
 ## 2026-10-19 JXA（osascript -l JavaScript）三坑：stdout 污染 / 退出码不可控 / 无 console.error
 

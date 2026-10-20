@@ -233,3 +233,8 @@ grep -E -A3 "^## \[[0-9-]+\] todo \|" wiki/log.md
 ## [2026-10-20] milestone | v0.2.0 跨会话消息交付：文件信箱 + 状态机 + 120s watchdog + send_message/list_peers + P1/P2 注入 + 人工接管，用例 445→517
 ## [2026-10-20] wiki | 新建 [[跨会话消息-v0.2.0]] 主题页，INDEX 当前状态/版本行/主题目录同步
 ## [2026-10-20] wiki | /resume 信箱身份改键接线（dead 接管 / 活进程拒绝），补 2 例；基线 517→519
+## [2026-10-20] wiki | 自动记忆：project/跨会话消息-v0.2.0.md（append）
+## [2026-10-20] wiki | 自动记忆：project/跨会话消息-v0.2.0.md（append）
+## [2026-10-20] wiki | 自动记忆：project/neo-开发踩坑.md（append）
+## [2026-10-20] milestone | v0.2.1 hotfix：主代理工具可见性（isSubagent）+ 长 turn 独立心跳/pid 兜底，用例 519→523
+## [2026-10-20] wiki | 修正 [[neo-开发踩坑]] 第九条根因与 [[跨会话消息-v0.2.0]] 修复记录，INDEX 版本行同步 v0.2.1

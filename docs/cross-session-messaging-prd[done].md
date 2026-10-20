@@ -670,3 +670,7 @@ neo 的投递点本来就是 turn 边界（P1/P2），**事件驱动的低延迟
   6. **状态机适配组网**：§4.10 增加 `outstanding` 字段与 `waiting_on_peers` 判定，避免把「B 在等 C」误报为「B 不回信」；watchdog 多跳不上报最上游。
   7. **§9 重构为「已裁决 D1-D8 + 仍开放」**，§10 审阅指引、§7 多跳 E2E 验收同步更新。
 - **2026-10-20（交付）**：v0.2.0 实现完成。新增 `src/mailbox/{types,state,identity,store,inbound}.ts` 与 `src/tools/mailbox.ts`；P1 注入点、P2 空闲 tick、状态机、委派 watchdog、`send_message` / `list_peers`、`/peers` / `/inbox` / `/rename`、`--name`、入站三态、交互 `/resume` 信箱改键（dead 接管 / 活进程拒绝）均落地。测试 **519 pass / 0 fail（26 文件）**，`bunx tsc --noEmit` 零错误；交互式 PTY smoke 与 fake-LLM 双端 E2E 通过（P2 自动收信 → LLM turn；`send_message` 实际投递到对端 inbox；state 落盘；用户新任务不会被误标为回信；退出清理 `.alive`；`reply_to`/`exec` 自动填充由单测覆盖）。未实现项与 §9.2 一致：supervisor / 后台会话 / attach / agent view / 跨机留 v0.3。
+- **2026-10-20（v0.2.1 hotfix）**：真实双会话验证暴露并修复两个问题 ——
+  ① **主代理工具可见性**：`Agent.toolSpecsFor()` 曾把 `TOOL_NAMES_EXCLUDED_FOR_SUBAGENT` 无条件套在所有 Agent 上，`task`/`compact_ctx`/`remember`/`send_message`/`list_peers` 被主代理过滤；改为 `AgentOptions.isSubagent`，只有子代理应用排除表，主代理拿全量工具（system prompt「可用工具」与启动横幅同步）。
+  ② **长 turn 心跳 / watchdog 误报**：心跳从空闲 tick 中拆成独立 interval（turn 中照常刷新）；流式输出按 30s 节流计入 `last_progress_at`；`PeerObservation` 增加 `pid_alive`，心跳超时但 pid 存活时降级 `stale`，不再报 `dead`。
+  测试 519→523，fake-LLM E2E 验证请求 tools 含 send_message/list_peers、3s 长 turn 中 heartbeat > turn.started_at；发布说明 `docs/release-notes/v0.2.1.md`。

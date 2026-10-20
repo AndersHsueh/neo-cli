@@ -400,6 +400,17 @@ export interface ObserveOpts {
   cfg: Pick<MailboxConfig, "deadAfterMs" | "staleAfterMs">;
 }
 
+/** profile.pid 对应进程是否仍存在。ESRCH=不存在；EPERM=存在但无权限（视为活）。 */
+export function isProcessAlive(pid: number): boolean {
+  if (!Number.isInteger(pid) || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (e) {
+    return (e as NodeJS.ErrnoException).code === "EPERM";
+  }
+}
+
 /** 单个 peer 的只读观察快照（不存在也返回 exists:false，供 watchdog 判 dead）。 */
 export function observePeer(root: string, sessionId: string, opts: ObserveOpts): PeerObservation {
   const nowMs = opts.nowMs ?? Date.now();
@@ -407,7 +418,11 @@ export function observePeer(root: string, sessionId: string, opts: ObserveOpts):
   const profile = exists ? readProfile(root, sessionId) : null;
   const state = exists ? readState(root, sessionId) : null;
   const alive = exists && isAlive(root, sessionId);
-  const { effective } = deriveEffective(state, { alive, nowMs, cfg: opts.cfg });
+  const pidAlive = isProcessAlive(profile?.pid ?? 0);
+  const derived = deriveEffective(state, { alive, nowMs, cfg: opts.cfg });
+  // 心跳超时但进程仍活着（长 turn / event loop 卡顿）→ 降级为 stale，
+  // 避免 watchdog 把「正在干活的活进程」误报成 dead。
+  const effective = derived.effective === "dead" && alive && pidAlive ? "stale" : derived.effective;
   return {
     session: sessionId,
     name: profile?.name ?? state?.name ?? null,
@@ -415,6 +430,7 @@ export function observePeer(root: string, sessionId: string, opts: ObserveOpts):
     mode: profile?.mode ?? state?.mode ?? "ask",
     exists,
     alive,
+    pid_alive: pidAlive,
     effective,
     state,
     inbox_message_ids: exists ? inboxMessageIds(root, sessionId) : new Set<string>(),

@@ -205,6 +205,7 @@ export async function runSubagent(
     mode: main.mode,
     systemPrompt: subSystemPrompt(trimmed),
     chatStream: main.injectedStreamFn,
+    isSubagent: true,
     // 不传 classifier：子代理任务短，内部切档收益趋近于零，
     // 且分类器依赖连续失败计数等主循环状态，子代理里没有意义。
   });

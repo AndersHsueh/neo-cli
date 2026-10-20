@@ -70,6 +70,7 @@ function mkObs(over: Partial<PeerObservation> = {}): PeerObservation {
     mode: "ask",
     exists: true,
     alive: true,
+    pid_alive: true,
     effective: "alive",
     state: null,
     inbox_message_ids: new Set<string>(),
@@ -269,10 +270,10 @@ describe("E watchdog 判定矩阵", () => {
     return st.classifyDelegations(SELF, [delegation], map, T0 + 200_000, cfg)[0]!.verdict;
   }
 
-  test("E1 目标不存在 / 不 alive / effective=dead → dead", () => {
+  test("E1 目标不存在 / 不 alive / effective=dead 且 pid 已死 → dead", () => {
     expect(verdict(undefined)).toBe("dead");
-    expect(verdict(mkObs({ alive: false, effective: "dead" }))).toBe("dead");
-    expect(verdict(mkObs({ effective: "dead" }))).toBe("dead");
+    expect(verdict(mkObs({ alive: false, effective: "dead", pid_alive: false }))).toBe("dead");
+    expect(verdict(mkObs({ effective: "dead", pid_alive: false }))).toBe("dead");
   });
 
   test("E2 消息仍在 inbox/.held → undelivered（优先于其它）", () => {
@@ -327,6 +328,10 @@ describe("E watchdog 判定矩阵", () => {
 
   test("E9 活着但 state 缺失 → healthy（不误报）", () => {
     expect(verdict(mkObs({ state: null }))).toBe("healthy");
+  });
+
+  test("E10 心跳超时但 pid 仍活（长 turn）→ 不报 dead，按 phase 判 healthy", () => {
+    expect(verdict(mkObs({ effective: "stale", pid_alive: true, state: workingState() }))).toBe("healthy");
   });
 });
 
@@ -418,6 +423,22 @@ describe("F 身份与清理", () => {
     seedSession(root, "20261020-100000-bbbbbb");
     expect(() => identity.rekeySession(root, SELF, "20261020-100000-bbbbbb", T0 + 5_000)).toThrow(/活进程/);
     expect(identity.sessionExists(root, SELF)).toBe(true);
+  });
+
+  test("F8 心跳超时但 pid 仍活 → observePeer 降级为 stale，不误报 dead", () => {
+    const root = freshRoot();
+    seedSession(root, SELF);
+    st.mutateState(root, SELF, (s) => {
+      s.heartbeat_at = new Date(T0).toISOString();
+      s.phase = "working";
+      s.last_progress_at = new Date(T0).toISOString();
+    }, T0);
+    const obs = identity.observePeer(root, SELF, {
+      nowMs: T0 + 200_000,
+      cfg: { deadAfterMs: 120_000, staleAfterMs: 30_000 },
+    });
+    expect(obs.pid_alive).toBe(true);
+    expect(obs.effective).toBe("stale");
   });
 });
 

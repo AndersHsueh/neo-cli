@@ -499,7 +499,9 @@ function classifyOne(
   cfg: Pick<MailboxConfig, "progressTimeoutMs">,
 ): WatchdogVerdict {
   if (!obs || !obs.exists) return "dead";
-  if (!obs.alive || obs.effective === "dead") return "dead";
+  if (!obs.alive) return "dead";
+  // 心跳超时但进程仍在（长 turn / event loop 卡顿）不算 dead；继续按 phase 判。
+  if (obs.effective === "dead" && !obs.pid_alive) return "dead";
   if (obs.inbox_message_ids.has(d.message_id)) return "undelivered";
 
   const st = obs.state;
