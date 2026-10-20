@@ -174,6 +174,7 @@ neo 当前的持久化能力非常薄:
 | 2026-10-20 | 追加 §7「v0.2 记忆激活」完整规格（双作用域存储、自动归纳、项目优先召回、旧记忆迁移、回滚方案） | v0.1.x 记忆系统只写不读、用户级 wiki 从未创建；需要把「记录→提炼→召回→注入」闭环接通 |
 | 2026-10-20 | 拍板 D1–D7（见 §7.3） | 仓库作者确认；其中 -p 只用项目级记忆，避免服务器脚本混入操作员个人记忆 |
 | 2026-10-20 | 实现 M0–M4 并交付 v0.1.11 | 见 §7.17、`docs/release-notes/v0.1.11.md` |
+| 2026-10-20 | 清理 deprecated 旧件并交付 v0.1.12：删除 recordIndex/profile/ingest/forget/reindex/redact/schema/memory-index 八个模块与其测试；删除 4 个未使用模板与陈旧 wiki 工作流页；MemoryConfig 删除 10 个从未被消费的字段 | 无用且过期代码必须尽早清理；删除项全部有 git 历史可回逆。见 §7.11、`docs/release-notes/v0.1.12.md` |
 
 ### 7.0 一句话定位
 
@@ -188,7 +189,7 @@ neo 当前的持久化能力非常薄:
 |---|---|---|
 | 1 | 用户级 wiki `~/.neo/wiki/` **不存在**（从未创建） | `find ~/.neo -maxdepth 3 -type d` |
 | 2 | 用户级 raw 索引只有 7 条，内容为 `exit` 这类首条输入截断，信噪比极低 | `~/.neo/memorys/raw/2026-10-16_ai-info_a5c7b88e.md` |
-| 3 | `profile.md` **全仓无写入者**，启动注入恒为空 | `grep -rn "profile\.md" src/` 只有读路径 |
+| 3 | `profile.md` **全仓无写入者**，启动注入恒为空 | `grep -rn "profile\.md" src/` 只有读路径（v0.1.12 清理后仅剩迁移读取） |
 | 4 | `ingestUserLevel` **零生产调用点**，`wiki/index.md` 从未生成 | `grep -rn "ingestUserLevel" src/` |
 | 5 | 记忆互斥锁**从未生效**：`mkdirSync(recursive:true)` 对已存在目录不抛 EEXIST | 探针实测：第二次 mkdir 静默成功；非递归则抛 EEXIST |
 | 6 | `wiki_write append` **不同步 INDEX**（返回 `indexSynced:false`），且 log 类型默认 `query` | 探针实测输出 |
@@ -590,7 +591,7 @@ export interface MemoryBridge {
 | `src/wiki/search.ts` | 新增 `searchScored(layout, terms)`（OR + 词频 + 标题加权）；保留 `searchWiki` |
 | `src/wiki/write.ts:203` | append 同步 INDEX 摘要；`writeAtomic`；log 类型参数显式化 |
 | `.gitignore` | 增加 `.neo/wiki/.locks/`（项目级锁目录） |
-| `src/memory/index.ts` | 旧导出保留一版（deprecated 注释）；新增 v2 公共 API 导出 |
+| `src/memory/index.ts` | v0.1.11 为旧门面；**v0.1.12 已删除**（组合根直接 import `memory/init.ts`） |
 
 ### 7.9 配置规格
 
@@ -617,15 +618,15 @@ export interface MemoryBridge {
     "journal_retention_days": 7,
     "flush_timeout_ms": 3000
   },
-  "pii_filter": { "enabled": true },
   "quiet": false
 }
 ```
 
 - `mode`: `off | boundary | every_turn`；默认 `boundary`（D1）。
-- 环境变量覆盖：`NEO_USER_WIKI_DIR`、`NEO_MEMORY_JOURNAL_DIR`、`NEO_MEMORY_DISABLE`（沿用）。
-- 旧键（`user_level_dir` / `profile_tokens_limit` / `auto_write_index` / `ingest*`）保留解析、标 deprecated；
-  `user_level_dir` 仅在 `/memory migrate` 时使用。
+- 环境变量覆盖：`NEO_USER_WIKI_DIR`、`NEO_MEMORY_JOURNAL_DIR`、`NEO_MEMORY_DISABLE`、`NEO_MEMORY_DIR`（旧目录，仅迁移用）。
+- **v0.1.12 清理**：`cwd_relative_mode` / `worktree_isolation` / `max_profile_chars` / `profile_tokens_limit` /
+  `ingest` / `auto_write_index` / `no_profile_in_one_shot` / `platform` / `pii_filter` / `ingest_journal`
+  十个从未被消费的字段已从类型与解析器中删除；旧 settings.json 里的这些键会被静默忽略。
 
 ### 7.10 命令与工具面
 
@@ -647,14 +648,20 @@ export interface MemoryBridge {
 
 ### 7.11 旧件处置与迁移
 
-| 旧件 | 处置 |
-|---|---|
-| `recordIndex`（首条输入→raw） | **停用并从启动路径移除**（实测 7 条全是 `exit` 类首行噪音）；函数保留导出 1 个版本，`/memory migrate` 归档旧结果 |
-| `ensureProfile` / `reInjectProfile`（profile.md） | 启动调用移除；profile.md 若存在，迁移为 `用户画像.md` |
-| `ingestUserLevel`（桩） | 调用链删除；保留接口 deprecated（wiki 编译仍走人工 `/ingest`） |
-| `redact` / `forget` / `reindex` | 保留并修缺陷：redact 不破坏正文、forget 同步删 INDEX 引用、reindex 不丢正文 |
-| `locks.ts` | 修互斥 bug，复用为记忆写锁 |
-| `~/.neo/memorys/` | 迁移后只读归档；不再写入 |
+| 旧件 | v0.1.11 处置 | v0.1.12 最终状态 |
+|---|---|---|
+| `recordIndex`（首条输入→raw） | 停用并从启动路径移除（实测 7 条全是 `exit` 类首行噪音） | **已删除文件**；`/memory migrate` 归档历史数据 |
+| `ensureProfile` / `reInjectProfile`（profile.md） | 启动调用移除；改为用户 wiki 画像页 | **已删除文件**；仅保留旧 `profile.md` 的迁移读取（bridge） |
+| `ingestUserLevel`（桩引擎，无生产调用点） | 调用链删除 | **已删除文件** |
+| `redactSummary` / `forgetDryRun` 等 | 未被 `/memory` v2 使用 | **已删除文件**；页面删除由 `bridge.forget` 取代 |
+| `reindex` | 未被使用 | **已删除文件** |
+| `schema.ts`（`MemoryEntry` frontmatter 解析） | 仅被上述旧件引用 | **已删除文件** |
+| `memory/index.ts` 旧门面 | 仅导出旧 API | **已删除文件**；组合根直接 import `memory/init.ts` |
+| `locks.ts` 旧 cwd 锁 API | 互斥 bug 修复后仅通用锁被使用 | **已删除旧 API**（`acquireCwdLock`/`reapExpiredLocks` 等），保留 `acquireLock`/`tryAcquireLock`/`withLock` |
+| `~/.neo/memorys/` | 迁移后只读归档；不再写入 | 不变（数据保留，代码不再依赖除迁移外） |
+
+**清理验证（v0.1.12）**：`tests/memory-core.test.ts` 的「清理守卫」用例断言八个文件不得复活；
+全量测试从 497 例降至 445 例（删除 861 行旧测试，新增 13 例核心/清理守卫），运行时间 7.2s → 3.0s。
 
 `/memory migrate` 步骤（幂等）：
 
@@ -706,7 +713,8 @@ export interface MemoryBridge {
 | `tests/memory-journal.test.ts` | 追加/扫描/崩溃残留恢复/processed 标记/保留期清理 |
 | `tests/memory-queue.test.ts` | 两进程并发写同页（子进程真实锁）互斥、不丢数据 |
 | `tests/memory-commands.test.ts` | `/memory` 全部子命令、`/remember` |
-| `tests/memory-e2e.test.ts` | 临时 HOME：会话 A 捕获 → 会话 B 召回；跨 cwd 用户级可见、项目级不可见；abort 回滚不残留召回消息 |
+| `tests/memory-core.test.ts` | 清理后核心面：配置默认/环境变量、PII、/init 骨架幂等、MemoryError、deprecated 文件清理守卫 |
+| `tests/memory-bridge.test.ts`（E2E 组） | 临时 HOME：会话 A 捕获 → 会话 B 召回；跨 cwd 用户级可见、项目级不可见；abort 回滚不残留召回消息 |
 | `tests/wiki-scope.test.ts` | `wiki_search scope` 排序与标注；`wiki_write scope=user`；append 后 INDEX 同步 |
 
 回归要求：现有 402 用例全绿；新增 ≥45 例；`bunx tsc --noEmit` 零错误。
@@ -787,5 +795,5 @@ export interface MemoryBridge {
 | 本文件 §3.3 遗忘机制 | 以「推断淘汰 + `/memory forget` + journal 保留期 + 页面软上限」实现 |
 | 本文件 §4 与 compact 合并 | **不采纳**合并为一次调用：compact 有独立语义，记忆提炼放在压缩前后独立调用，失败互不影响 |
 | 本文件 §5 M1–M4 路线 | 由 §7.17 里程碑替代 |
-| `../neo-memory/docs/memory-prd.md`（v0.1 真相源） | 其已实现部分（schema/recordIndex/profile）保留/废弃见 §7.11；本轮升级以本文件 §7 为准 |
+| `../neo-memory/docs/memory-prd.md`（v0.1 真相源） | 其已实现部分（schema/recordIndex/profile 等）已于 v0.1.12 删除，见 §7.11；本轮升级以本文件 §7 为准 |
 
