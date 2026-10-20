@@ -71,6 +71,8 @@ neo 开发过程中沉淀的教训清单,持续追加。当前八条:zsh 变量�
 
 ## 推理与依据
 
+- **发布时先 tag 后 rebase 会让 tag 指向孤儿 commit**（2026-10-19，v0.1.10）：推送被拒（远程有网页端直加的 LICENSE commit）→ 本地 rebase 后 tag 仍指向 rebase 前的旧 release commit，远程 tag 脱离 main 历史。正确顺序：先 `git fetch` 处理分叉、rebase 完成，**最后**打 tag 再推。验证方法：`git ls-remote origin refs/tags/<tag> refs/heads/main` 两者应同 hash。另：gitee 网页端直改（如加 LICENSE）会造成本地推送被拒，发布前先 fetch 是必要动作。
+
 ## 2026-10-19 JXA（osascript -l JavaScript）三坑：stdout 污染 / 退出码不可控 / 无 console.error
 
 - 现象：P2 探针验证 PRD §5.2 原设计「JXA 读剪贴板 PNG 二进制直出 stdout」，输出比原始 PNG 多 2 字节；想用退出码区分「无图/异常」分支，全部失效。
@@ -91,3 +93,9 @@ neo 开发过程中沉淀的教训清单,持续追加。当前八条:zsh 变量�
 - 根因：单轮塞的动作太多。两轮的共同模式 = 长链推理 + 并行多工具调用（shell + read_file 同发）+ 大文件写入（150+ 行探针脚本）挤在同一轮；思维链越长、工具越多，超时概率越高。
 - 对策（自本轮起执行的规划方式）：一轮只做一个小动作——要么一次工具调用，要么一次小编辑；大文件拆多次写；探针/实现拆成多轮，每轮结束即落盘中间结论，中断可续。
 - 附带教训：探针结论要尽早写回 PRD（§6），不要攒在对话里——对话一断，未落盘的结论就悬空。
+
+## 2026-10-20 记忆激活三坑：mkdir recursive 吞 EEXIST / 后台提炼退出留锁 / append 不同步 INDEX
+
+- **`mkdirSync(dir,{recursive:true})` 不抛 EEXIST**：记忆互斥锁沿用它，导致「第二次加锁」静默成功，互斥从未生效（探针实测两次均成功）。正确做法：先递归建父目录，再对锁目录本身做**非递归** mkdir，EEXIST 才表示他方持锁。
+- **后台提炼进程被杀会留下锁**：`-p` 模式 flush 超时后主进程退出，提炼仍在飞，`finally` 没机会释放锁 —— 实测留下 `.write.lock` 卡死后续捕获。两层修复：锁目录 mtime 超 2 分钟自动清理（`tryAcquireLock(lockDir,{staleMs})`）+ 先落 journal 后提炼，未完成的下次启动恢复。
+- **`wiki_write append` 不同步 INDEX**：返回 `indexSynced:false`，自动沉淀的页面在 INDEX 里永远停着创建时的旧摘要。修复：append 后用更新后正文重算摘要并 `syncIndex`；顺带修了 append 段内容插到旧内容之前的顺序 bug。

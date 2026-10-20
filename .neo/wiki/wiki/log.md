@@ -225,3 +225,6 @@ grep -E -A3 "^## \[[0-9-]+\] todo \|" wiki/log.md
 ## [2026-10-19] wiki | JXA 三坑入库：stdout 污染/退出码失效/无 console.error，二进制走临时文件
 ## [2026-10-19] milestone | 粘贴增强 M2 完成：macOS 贴图全链路 + mapKey 守卫顺序 bug 修复
 ## [2026-10-19] milestone | 空正文自动重试机制落地：区分 length/stop 原因，重试一次不写空消息
+## [2026-10-19] wiki | 发布踩坑：先 tag 后 rebase 致 tag 指向孤儿 commit，v0.1.10 重打
+## [2026-10-20] milestone | v0.1.11 记忆激活交付：双作用域存储 + 自动归纳 + 项目优先召回
+## [2026-10-20] wiki | 新建 [[记忆激活-v0.1.11]] 主题页（规格 §7 实现交付）
