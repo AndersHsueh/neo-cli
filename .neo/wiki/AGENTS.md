@@ -2,7 +2,7 @@
 
 > 本文件是这个知识库的 **schema** —— Karpathy "LLM Wiki" 三层架构里的第三层。
 > 它不是一次写死的说明书,而是**由你和 LLM 共同演化**的活文档(见文末「🔄 schema 演化」)。
-> `/karpathy-wiki-new` 在建库时会引导你填好「📖 知识库概述」与「核心约束」;若当时跳过了,随时可以让 LLM 帮你补齐。
+> `/init` 只会创建骨架;「📖 知识库概述」与「核心约束」由人按需补齐、LLM 提议、你确认后更新。
 
 This file provides guidance to the LLM (neo) when working with this knowledge base.
 
@@ -14,6 +14,7 @@ This file provides guidance to the LLM (neo) when working with this knowledge ba
 > 模式原文: <https://gist.github.com/karpathy/442a6bf555914893e9891c11519de94f>
 >
 > 核心信念:知识是被**编译一次然后持续维护**的,不是每次提问重新推导。每一次 ingest 和每一次查询回填,都在给这个库复利。
+> v0.1.11 起新增「记忆自动归纳」:轮末由 fast 档提炼器产出候选事实,经 `wiki_write` 同一路径回填(命名/摘要/日期戳/INDEX/log 照常强制)。
 
 ### 核心约束
 
@@ -42,7 +43,7 @@ This file provides guidance to the LLM (neo) when working with this knowledge ba
 - **每主题一文件** —— 每个独立主题一个 `.md` 文件,文件名用中文短语(避免空格;英文名仅限约定俗成者)
 - **每页摘要** —— 每个 wiki 页面开头必须有 `## 摘要` 段落,用 3-5 句浓缩这一页讲什么。**中英两套等价**:`## 摘要` 与 `## Summary`,lint 默认都认(整库统一用一种即可)
 - **互链格式** —— 用 `[[主题名]]` 互相链接,可带节锚 `[[主题名#子标题]]`,可带别名 `[[主题名|显示文字]]`
-- **链接密度(建议项)** —— 除 `INDEX.md` / `log.md` / 工作流页外,建议每个主题页至少 3 条出链(阈值即 lint 的 `MIN_LINKS`,默认 3);不足只是提示这一页还没接进知识网络,不要为了凑数去链无关页面,更不要制造指向不存在页面的断链。**主题页总数不足 8 页的小库,这一项一律忽略** —— 页少的时候链不满是物理事实,不是质量问题
+- **链接密度(建议项)** —— 除 `INDEX.md` / `log.md` / `AGENTS.md` 外,建议每个主题页至少 3 条出链(阈值即 lint 的 `MIN_LINKS`,默认 3);不足只是提示这一页还没接进知识网络,不要为了凑数去链无关页面,更不要制造指向不存在页面的断链。**主题页总数不足 8 页的小库,这一项一律忽略** —— 页少的时候链不满是物理事实,不是质量问题
 - **跨域引用** —— 指向 `raw/`、`outputs/`、`../AGENTS.md` 的链接照写,它们不算断链
 - **索引维护** —— 新增 / 重命名 / 删除 wiki 页面后,必须同步更新 `wiki/INDEX.md`(主题清单 + 关联图 + 关键事实速查)
 
@@ -55,7 +56,7 @@ This file provides guidance to the LLM (neo) when working with this knowledge ba
 
 #### 注记标记表(全库唯一定义)
 
-需要在页面上留一条显式注记时,只用下面这四个标记,不要自创写法。工作流页与各技能一律引用本表。
+需要在页面上留一条显式注记时,只用下面这四个标记,不要自创写法。本表是全库唯一定义。
 
 | 标记 | 适用场景 |
 |------|----------|
@@ -82,15 +83,15 @@ This file provides guidance to the LLM (neo) when working with this knowledge ba
 
 ### 三类操作工作流
 
-Karpathy 模式的三大操作,每一类都有对应技能和可执行 checklist:
+Karpathy 模式的三大操作,入口已全部内化为代码（技能已退役）：
 
-| 操作 | 技能 | 一句话 |
-|------|------|--------|
-| **Ingest** | `/karpathy-wiki-ingest` | 新源入仓 → log 登记 → 影响范围决策 → wiki 变更 → log wiki 条目 → 自检 |
-| **Query** | `/karpathy-wiki-query`(硬闭环;普通提问直接问即可,见工作流页 §二) | 提问 → 定位与阅读 → **带引用回答** → 回填决策 → 执行回填 → 自检 |
-| **Lint** | `/karpathy-wiki-lint` | 周期体检:断链 / orphan / 矛盾 / 摘要戳与链接密度 → 修复 → log lint 条目 |
+| 操作 | 入口 | 说明 |
+|------|------|------|
+| **Ingest** | `/ingest [full\|incremental]` | raw/ 新源 → fast 档子代理编译为 wiki 页面；无变更时不重复编译 |
+| **Query** | `wiki_search`（检索）+ `wiki_write`（回填） | 先检索候选页 → 带引用回答 → 有长期价值时回填；命名/摘要/日期戳/INDEX/log 由工具强制 |
+| **Lint** | `/wiki-lint` | 断链 / orphan / 摘要与日期戳 / 链接密度 → 修复后结论登 log |
 
-三类操作的完整 checklist 见 [[工作流-ingest-query-lint]](§一 Ingest / §二 Query / §三 Lint)。
+记忆自动归纳（`remember` / 轮末提炼）与人工回填走**同一写回路径**，因此同样受本 schema 约束。
 
 > **Query 的复利机制**:好答案要回填成新页面。Karpathy 原文 —— *"good answers can be filed back into the wiki as new pages... your explorations compound in the knowledge base just like ingested sources do."*
 
@@ -139,7 +140,6 @@ Karpathy 模式的三大操作,每一类都有对应技能和可执行 checklist
 |------|------|------|
 | `wiki/INDEX.md` | 内容导向的目录:主题清单 / 关联图 / 关键事实速查 | 页面增删改名后必须同步 |
 | `wiki/log.md` | 时间导向、append-only 的流水账 | 条目格式固定,便于 grep |
-| `wiki/工作流-ingest-query-lint.md` | 三类操作的可执行 checklist | 与本文件互为约束 |
 | `raw/<最重要的源>` | 这个库最核心的原始素材 | 上手时先读它 |
 | `outputs/<最常更新的产物>` | 最常对外输出的产物 | 每次更新登 `deliverable` |
 

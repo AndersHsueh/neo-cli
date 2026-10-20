@@ -55,7 +55,7 @@ import { appendLog } from "./wiki/write.ts";
 import { discoverSkills, isValidSkillName, formatSkillLine, normalizeDescription } from "./skills.ts";
 import { applyRestored, createSession, listSessions, loadSession, saveSession, type SessionMeta } from "./session.ts";
 
-const VERSION = "0.1.11";
+const VERSION = "0.1.12";
 
 /** /auto 列表里各实现的说明。 */
 const DESC: Record<string, string> = {
