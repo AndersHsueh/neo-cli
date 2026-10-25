@@ -7,7 +7,7 @@
  */
 import { createInterface } from "node:readline";
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
-import { dirname, resolve, join } from "node:path";
+import { basename, dirname, resolve, join } from "node:path";
 import { homedir } from "node:os";
 
 import {
@@ -32,6 +32,10 @@ import { makeTextAttachment, makeImageAttachment, bindAttachments, resolveLine, 
 import { readClipboardImage } from "./clipboard.ts";
 import { select, type SelectDeps } from "./ui/select.ts";
 import { Console } from "./ui/console.ts";
+import { Composer, type ComposerStatus } from "./tui/composer.ts";
+import { TranscriptDock, type DockHost } from "./tui/dock.ts";
+import { formatTokens } from "./tui/status.ts";
+import { getBranch } from "./git.ts";
 import { formatToolCall } from "./ui/toolLog.ts";
 import { transcriptLines } from "./ui/transcript.ts";
 import { banner, c, rule, truncate } from "./ui/theme.ts";
@@ -83,7 +87,7 @@ import { makeListPeersTool, makeSendMessageTool } from "./tools/mailbox.ts";
 import type { Envelope } from "./mailbox/types.ts";
 import type { ToolCtx } from "./tools/types.ts";
 
-const VERSION = "0.2.4";
+const VERSION = "0.3.0";
 
 /** /auto 列表里各实现的说明。 */
 const DESC: Record<string, string> = {
@@ -250,14 +254,21 @@ ${c.bold("交互命令")}
   /why             上次分类判定与理由
   /exit            退出（别名 /quit）
   !<cmd>           直接执行 shell（受权限模式约束）
-  ESC              运行中取消本轮（不回滚历史）；续行中放弃本次多行
+  ESC              运行中取消本轮（不回滚历史）；空闲时清空输入
   Ctrl+C           双击退出（运行中第一次 = 取消本轮）
+  Ctrl+O           transcript 视图（v0.3.1 提供；当前按下一行提示）
 
 ${c.bold("输入")}
+  输入框           底部常驻（上下横线 + 状态行）：Enter 提交；Ctrl+J / Shift+Enter /
+                   Alt+Enter 换行；多行超过可视高度时滚动窗口
   Tab              补全：@ 文件路径（模糊匹配，多个候选连按 Tab 循环）/ 命令名
   @path            引用文件内容随消息发送（≤5 个文件，单文件 ≤400 行，总 ≤60KB）
-  Ctrl+J           多行续行（提示符变 …；Enter 提交，Esc 放弃）
-  行尾 \\          同样续行（不支持 Ctrl+J 的终端用这个）
+  ← → ↑ ↓          行内移动；↑↓ 在首/末行翻历史（前缀搜索）；Home/End 行首尾
+  Ctrl+A/E/K/U/W   Home / End / 删到行尾 / 删到行首 / 删前一个词
+  Ctrl+V           粘贴剪贴板图片（以 chip 形式进输入框）
+  粘贴             小段多行直接进输入框；大段/超长折叠为 [Pasted text #N]
+  行尾 \          多行的等价触发（不支持 Ctrl+J 的终端用这个）
+  鼠标/全屏        不使用 alt-screen：历史始终留在终端 scrollback，Cmd+F/tmux 可用
 
 ${c.bold("环境变量")}
   NEO_PROVIDER / NEO_TIER / NEO_MODEL / NEO_BASE_URL / NEO_API_KEY  覆盖 settings.json
@@ -332,7 +343,33 @@ async function main(): Promise<number> {
     return 2;
   }
 
-  const ui = new Console(cfg.theme === "matrix", cfg.toolcallInfoDetails);
+  // ---- v0.3.0 底部 live 帧：TTY 才启用 composer/dock，非 TTY 走 v0.2.4 readline 路径 ----
+  const interactiveTTY = process.stdin.isTTY === true && process.stdout.isTTY === true;
+  let composerRef: Composer | null = null;
+  /** composer 启动前的输出（banner / 记忆提示 / --resume 回放）先缓存，启动后一次性落到上方。 */
+  const preComposerRows: string[] = [];
+  const dockHost: DockHost = {
+    width: () => {
+      const w = composerRef?.width() ?? process.stdout.columns;
+      return typeof w === "number" && w > 20 ? w : 80;
+    },
+    commitAbove: (rows) => {
+      if (composerRef) composerRef.commitAbove(rows);
+      else preComposerRows.push(...rows);
+    },
+    setPending: (rows) => composerRef?.setPending(rows),
+    setActivity: (text, persist) => composerRef?.setActivity(text, persist),
+    commitActivity: () => composerRef?.commitActivity(),
+    clearActivity: () => composerRef?.clearActivity(),
+    notice: (text, ms) => composerRef?.notice(text, ms),
+    rerender: () => composerRef?.rerender(),
+  };
+  const dock = interactiveTTY ? new TranscriptDock(dockHost) : null;
+  const ui = new Console(
+    cfg.theme === "matrix",
+    cfg.toolcallInfoDetails,
+    dock ? { dock } : {},
+  );
 
   // default_provider 指向未接入的协议时，必须在启动就拦下。
   // 放过的话会一路走到 fetch，得到的错误跟配置问题无关，排查方向完全被带偏。
@@ -644,6 +681,403 @@ async function main(): Promise<number> {
     if (restored && restored.length > 0) replayTranscript(ui, agent.messages);
   }
 
+  // ---- 共享：队列 / drain / 输入源抽象（TTY composer 与 readline 共用）----
+  let composer: Composer | null = null;
+  let externalShellActive = false;
+  let promptInput: () => void = () => {};
+  let closeInput: () => void = () => {};
+  let selectDeps: SelectDeps = {
+    router: { on: ((_k, _fn) => () => {}) as SelectDeps["router"]["on"] },
+    isTTY: false,
+  };
+  // 空闲 tick 的互斥条件（select / 审批问句期间不塞 mailbox 自动 turn）
+  let selectActive = false;
+  let selectCancel: (() => void) | undefined;
+  let questionPending = false;
+
+  // 输入串行化：粘贴多行或快速回车时，readline 的 line 事件会并发触发。
+  // 用队列 + 单 worker 保证处理顺序与输出不交错。
+  // M1 粘贴增强（PRD §5.4）：queue 元素升级为 QueuedLine（行文本 + 绑定附件）。
+  // 跨会话消息（PRD v1.2 §4.4 P2）：合成行带 origin，与用户行共享同一队列。
+  type QueueOrigin = "user" | "mailbox" | "notice";
+  interface QueueItem extends QueuedLine {
+    origin: QueueOrigin;
+    /** mailbox/notice 的来源 session（状态机 turn.from）。 */
+    from?: string;
+  }
+  const queue: QueueItem[] = [];
+  let draining = false;
+  /** 会话内 turn 序号（状态机审计用）。 */
+  let turnSeq = 0;
+  /** 连续自动 turn 计数（PRD §4.4 链条上限）；用户输入重置。 */
+  let autoTurnChain = 0;
+  /** 当前 turn 的 mailbox 触发者；只有它才允许 send_message 自动补 reply_to。 */
+  let activeTurnFrom: string | null = null;
+
+  let turnStartedAt = 0;
+  let lastTurnMs = 0;
+  /** 真正在跑 agent turn（不含斜杠命令/选择菜单）；状态行的时长只认它。 */
+  let turnActive = false;
+  let pasteTextCounter = 0; // chip 编号会话内递增（PRD §3），图片/文本各自独立
+  let pasteImageCounter = 0;
+
+  // 文件索引：@ 补全的唯一来源。启动预热一次（2 万文件 ~75ms），按键路径只读缓存。
+  const fileIndex = new FileIndex({ cwd: cfg.cwd });
+  // 不阻塞首帧：composer 先起来，索引在后台刷新（Tab 路径有 in-flight 去重）。
+  const fileIndexPreheat = process.stdin.isTTY
+    ? fileIndex.refresh().catch(() => {
+        // 索引失败不影响会话：后续 Tab 会再踢一次刷新
+      })
+    : Promise.resolve();
+
+  /** 人类输入统一入口（readline 的 line 事件与 composer 的 onSubmit 都走这里）。 */
+  function submitUserLine(raw: string, attachments: Attachment[]): void {
+    const line = raw.trim();
+    if (!line) return;
+    const bound = bindAttachments(line, attachments);
+    queue.push({ text: line, attachments: bound, origin: "user" });
+    composerRef?.setQueueCount(queue.length);
+    runDrainSafely();
+  }
+
+  /** 退出：两类输入源都收敛到 closeInput()。 */
+  async function shutdown(): Promise<void> {
+    try {
+      await memory.flush();
+    } catch {
+      // 记忆失败不阻止退出
+    }
+    closeMailbox();
+    persist(agent.messages, sess.meta);
+    ui.blank();
+    ui.line(c.dim("再见。"));
+    closeInput();
+    process.exit(0);
+  }
+
+  /** `!cmd`：TTY 下先让出终端（cooked + 显示光标 + 擦帧），命令跑完再恢复自绘帧。 */
+  async function runShellWithTui(cmd: string): Promise<void> {
+    if (!composer || composer.isSuspended) {
+      await runShell(cmd, cfg, ui, agent.mode);
+      return;
+    }
+    externalShellActive = true;
+    composer.suspend();
+    try {
+      await runShell(cmd, cfg, ui, agent.mode);
+    } finally {
+      externalShellActive = false;
+      composer.resume();
+    }
+  }
+
+  async function drain(): Promise<void> {
+    if (draining) return;
+    draining = true;
+    try {
+    while (queue.length > 0) {
+      const q = queue.shift();
+      if (!q) continue;
+      try {
+      composerRef?.setQueueCount(queue.length);
+      const line = q.text;
+      if (!line) continue;
+      const origin = q.origin;
+
+      if (origin === "user") {
+        if (line.startsWith("!")) {
+          await runShellWithTui(line.slice(1));
+          continue;
+        }
+        if (line.startsWith("/")) {
+          await handleCommand(
+            line,
+            agent,
+            ui,
+            cfg,
+            memory,
+            classifier,
+            sess.meta,
+            shutdown,
+            selectDeps,
+            mailbox,
+            (env) => {
+              ui.line(c.dim(formatPreview(env)));
+              queue.push({ text: formatIncomingFrame(env), attachments: [], origin: "mailbox", from: env.from.session });
+            },
+            () => inboundRefs.clear(),
+          );
+          continue;
+        }
+        autoTurnChain = 0;
+        if (mailbox) {
+          try {
+            mailboxState.noteHumanInput(mailbox.root, mailbox.sessionId);
+          } catch {
+            // 状态写入失败不阻塞交互
+          }
+        }
+      } else {
+        autoTurnChain++;
+      }
+
+      // 合成行（mailbox/notice）文本已经是 frame 后的内容，不经命令分发、不做 chip 还原。
+      // v0.2.4 C3：先展开 @ 引用，再做 chip 还原 ——
+      // 反过来会把「粘贴内容里恰好出现的 @foo」也当成引用展开（用户并没有这个意图）。
+      const expanded =
+        origin === "user"
+          ? expandReferences(line, { cwd: cfg.cwd })
+          : { text: line, refs: [], errors: [] as string[] };
+      const resolved =
+        origin === "user"
+          ? resolveLine(expanded.text, q.attachments)
+          : { text: line, images: [] as string[] };
+      if (expanded.refs.length > 0) {
+        const lines = expanded.refs.reduce((n, r) => n + r.lines, 0);
+        ui.line(c.dim(`· 已引用 ${expanded.refs.length} 个文件（+${lines} 行）`));
+      }
+      for (const e of expanded.errors) ui.line(c.dim(`· ${e}`));
+      if (resolved.images.length > 0) {
+        // PRD §5.8：用户对「发出去了什么」有知情权（图片可能含敏感信息）
+        ui.line(c.dim(`· 已发送图片 ×${resolved.images.length}`));
+      }
+      ui.blank();
+      turnStartedAt = Date.now();
+      turnActive = true;
+      composerRef?.setBusy(true);
+      let outcome: "ok" | "aborted" | "error" = "ok";
+      activeTurnFrom = origin === "user" ? null : (q.from ?? null);
+      if (mailbox) {
+        try {
+          mailboxState.beginTurn(mailbox.root, mailbox.sessionId, {
+            seq: ++turnSeq,
+            source: origin === "user" ? "user" : "mailbox",
+            from: origin === "user" ? null : (q.from ?? null),
+          });
+        } catch {
+          // 状态机失败不阻塞 turn
+        }
+      }
+      try {
+        // ESC 回滚语义（PRD §4.11 裁决 A）：人类输入的 turn 保留回滚；
+        // 由 mailbox / 状态通知触发的自动 turn 只停不删（否则会连任务消息与已完成结果一起抹掉）。
+        const stats = await agent.send(
+          resolved.images.length > 0 ? { text: resolved.text, images: resolved.images } : resolved.text,
+          { rollbackOnAbort: origin === "user" },
+        );
+        if (stats.aborted) outcome = "aborted";
+        ui.blank();
+        ui.blank();
+        // 档位切换必须显式告知 —— 静默换模型会让人困惑「为什么这轮答得不一样」
+        if (stats.tierSwitch) {
+          const ts = stats.tierSwitch;
+          ui.line(
+            `${c.accent("⇅")} 档位 ${c.dim(ts.from)} → ${c.accent(ts.to)} ` +
+              `${c.dim(`(${cfg.providerName}/${cfg.model})`)}`,
+          );
+          ui.line(`  ${c.dim("理由:")} ${c.muted(ts.reason)}`);
+          if (ts.degraded) ui.line(`  ${c.warn("降级:")} ${c.warn(ts.degraded)}`);
+          ui.blank();
+        }
+        showStats(ui, agent, cfg, stats);
+      } catch (e) {
+        outcome = "error";
+        ui.error(`未捕获异常: ${(e as Error).message}`);
+        // C9：本轮带图且请求失败 → 追加一行软提示（无法可靠区分「服务端拒绝图片」
+        // 与其他 4xx，用软提示近似 PRD 要求，不误导为确定结论）
+        if (resolved.images.length > 0) ui.line(c.dim("  当前 provider 可能不支持图片输入"));
+        if (process.env["NEO_DEBUG"]) console.error(e);
+      } finally {
+        turnActive = false;
+        composerRef?.setBusy(false);
+        lastTurnMs = turnStartedAt > 0 ? Date.now() - turnStartedAt : 0;
+        activeTurnFrom = null;
+        if (mailbox) {
+          try {
+            mailboxState.endTurn(mailbox.root, mailbox.sessionId, {
+              outcome,
+              abortSource: outcome === "aborted" ? "human" : outcome === "error" ? "error" : null,
+            });
+          } catch {
+            // 状态机失败不阻塞交互
+          }
+        }
+      }
+      persist(agent.messages, sess.meta);
+      } catch (e) {
+        // 单条输入失败只丢这一条：命令/工具抛错不能让 draining 永久卡死。
+        ui.error(`处理输入失败: ${(e as Error).message}`);
+      }
+    }
+    } finally {
+      draining = false;
+      composerRef?.setQueueCount(queue.length);
+      promptInput();
+    }
+  }
+
+  /** 所有触发点统一走安全包装：drain 异常时复位 draining 并恢复提示符。 */
+  function runDrainSafely(): void {
+    void drain().catch((e: unknown) => {
+      draining = false;
+      ui.error(`队列处理异常: ${(e as Error).message}`);
+      promptInput();
+    });
+  }
+
+  /**
+   * P2 空闲 tick（PRD §4.4）：
+   *  - 只在 draining=false && queue 空 && !questionPending && !selectActive 时工作；
+   *  - inbox 每 1s 检查一次（消息落盘后静坐也能收到）；
+   *  - 委派 watchdog 每 cross_session_watchdog_interval_s（默认 120s）检查一次；
+   *  - 自动 turn 链超过上限时暂停拉取（用户输入会重置）。
+   */
+  const runIdleTick = (): void => {
+    if (!mailbox) return;
+    if (draining || queue.length > 0 || selectActive || questionPending) return;
+    if (autoTurnChain >= cfg.mailbox.autoTurnLimit) return;
+
+    const now = Date.now();
+    const remaining = cfg.mailbox.autoTurnLimit - autoTurnChain;
+    if (remaining <= 0) return;
+    if (now - lastWatchdogAt >= cfg.mailbox.watchdogIntervalS * 1000) {
+      lastWatchdogAt = now;
+      try {
+        for (const n of mailbox.watchdog()) {
+          if (queue.length >= remaining) break;
+          ui.line(c.dim(formatNoticePreview(n)));
+          queue.push({ text: formatNotice(n), attachments: [], origin: "notice", from: n.target_id });
+        }
+      } catch {
+        // watchdog 失败不阻塞交互
+      }
+    }
+    if (queue.length === 0) {
+      for (const env of collectInbound(remaining)) {
+        queue.push({ text: formatIncomingFrame(env), attachments: [], origin: "mailbox", from: env.from.session });
+      }
+    }
+    if (queue.length > 0) runDrainSafely();
+  };
+
+  if (mailbox) {
+    mailboxTick = setInterval(runIdleTick, 1000);
+    // 不让 tick 阻止进程退出（Bun 定时器都有 unref）
+    (mailboxTick as unknown as { unref?: () => void }).unref?.();
+  }
+
+  // 状态条每帧都会问 ctx；contextUsage() 会遍历全部 messages + stringify tools，
+  // 500ms 节流一次即可（两位有效数字，人眼分辨不出）。
+  let ctxCacheValue = 0;
+  let ctxCacheAt = 0;
+  const ctxUsage = (): number => {
+    const now = Date.now();
+    if (now - ctxCacheAt >= 500) {
+      ctxCacheValue = agent.contextUsage();
+      ctxCacheAt = now;
+    }
+    return ctxCacheValue;
+  };
+
+  // ---- 输入源二选一：TTY 用 composer（底部 live 帧）；非 TTY 保留 v0.2.4 readline ----
+  if (interactiveTTY) {
+    composer = new Composer({
+      stdin: process.stdin as unknown as NodeJS.ReadStream,
+      stdout: process.stdout,
+      getStatus: (): ComposerStatus => ({
+        model: cfg.model,
+        tier: cfg.modelTier,
+        mode:
+          args.mode === "auto-edit" ? "edit" : args.mode === "auto-all" ? "yolo" : args.mode,
+        branch: getBranch(cfg.cwd),
+        ctxUsage: ctxUsage(),
+        elapsedMs: turnActive ? Math.max(0, Date.now() - turnStartedAt) : lastTurnMs,
+        active: turnActive,
+        tokensTotal: agent.cumulative.prompt + agent.cumulative.completion,
+      }),
+      getTitle: () => `neo · ${basename(cfg.cwd)}`,
+      commands: COMMANDS,
+      files: () => fileIndex.list(),
+      onSubmit: (text, attachments) => submitUserLine(text, attachments as Attachment[]),
+      onExit: () => {
+        void shutdown();
+      },
+      onCancelTurn: () => agent.cancel(),
+      pasteText: (text) => {
+        pasteTextCounter += 1;
+        const att = makeTextAttachment(pasteTextCounter, text);
+        return { chip: att.chip, attachment: att };
+      },
+      pasteImage: async () => {
+        const img = await readClipboardImage();
+        if (!img) return null;
+        if (img.data.length > cfg.paste.imageMaxBytes) {
+          throw new Error(
+            `图片超过 ${(cfg.paste.imageMaxBytes / 1024 / 1024).toFixed(0)}MB 上限`,
+          );
+        }
+        pasteImageCounter += 1;
+        const att = makeImageAttachment(pasteImageCounter, img.data);
+        return { chip: att.chip, attachment: att };
+      },
+      paste: { foldLines: cfg.paste.foldLines, foldChars: cfg.paste.foldChars },
+      beforeUserCommit: () => dock?.flushPending(),
+      onResize: () => dock?.resize(),
+    });
+    composerRef = composer;
+    ui.setAsker((q: string) => composer!.ask(q));
+    selectDeps = {
+      isTTY: true,
+      router: { on: ((_k, _fn) => () => {}) as SelectDeps["router"]["on"] },
+      asker: (q: string) => composer!.ask(q),
+      clearLine: () => {},
+      onActiveChange: () => {},
+      present: (question, options, initial) => {
+        selectActive = true;
+        return composer!.choose(question, options, initial).finally(() => {
+          selectActive = false;
+        });
+      },
+    };
+    closeInput = () => composer!.stop();
+    promptInput = () => composer!.rerender();
+    const onSigintTui = (): void => {
+      // !cmd 在跑时把 Ctrl+C 让给子进程（父进程别退出/别取消 turn）。
+      if (externalShellActive) return;
+      void shutdown();
+    };
+    const onCrash = (e: unknown): void => {
+      try { composer?.stop(); } catch { /* 尽力还原 */ }
+      console.error(c.err(`✖ 未捕获异常，终端已还原：${(e as Error)?.message ?? String(e)}`));
+      process.exit(1);
+    };
+    const onTerm = (): void => {
+      try { composer?.stop(); } catch { /* 尽力还原 */ }
+      process.exit(143);
+    };
+    process.on("SIGINT", onSigintTui);
+    process.once("uncaughtException", onCrash);
+    process.once("unhandledRejection", onCrash);
+    process.once("SIGTERM", onTerm);
+    process.once("SIGHUP", onTerm);
+    try {
+      composer.start();
+      // 启动前的 banner / 记忆提示 / --resume 回放：补写到帧上方（顺序不变）
+      if (preComposerRows.length > 0) {
+        composer.commitAbove([...preComposerRows]);
+        preComposerRows.length = 0;
+      }
+      await fileIndexPreheat;
+      await composer.closed;
+    } finally {
+      composer.stop();
+      process.off("SIGINT", onSigintTui);
+      process.off("uncaughtException", onCrash);
+      process.off("unhandledRejection", onCrash);
+      process.off("SIGTERM", onTerm);
+      process.off("SIGHUP", onTerm);
+    }
+  } else {
   const rl = createInterface({
     input: process.stdin,
     output: process.stdout,
@@ -656,6 +1090,7 @@ async function main(): Promise<number> {
     // 将来若想迁回原生 completer，删掉这个 no-op 并改 onTab 即可 —— 路线是通的。
     completer: (line: string) => [[], line] as [string[], string],
   });
+    const rlC = rl;
   const prompt = (): void => {
     rl.prompt();
   };
@@ -679,16 +1114,6 @@ async function main(): Promise<number> {
   // 而 `@` 需要「光标前 token 精确替换」。M0 文档 P1/P2 记录了这些限制。
   type RlInternal = { line: string; cursor: number; _refreshLine?: () => void; history?: string[] };
   const rlInternal = (): RlInternal => rl as unknown as RlInternal;
-  const fileIndex = new FileIndex({ cwd: cfg.cwd });
-  // 只在交互 TTY 下预热并 await：2 万文件仓库实测 ~75ms，启动付一次，
-  // 换来「第一下 Tab 就有候选」的确定性。
-  // 非 TTY（-p / 管道 / 测试脚本）绝不 await —— 它既用不到补全，
-  // 而这里的 await 会推迟下方 rl close 监听的注册，管道 EOF 先到就永远等不到 close。
-  if (process.stdin.isTTY) {
-    await fileIndex.refresh().catch(() => {
-      // 索引失败不影响会话：后续 Tab 会再踢一次刷新
-    });
-  }
   /**
    * 连续 Tab 的候选循环状态。
    *
@@ -832,7 +1257,6 @@ async function main(): Promise<number> {
    * question 会自动挂起/恢复 line 事件，因此外层队列不会被问句污染。
    * questionPending 供粘贴热键 C1 判定：问句中 rl.write(chip) 会污染问句缓冲。
    */
-  let questionPending = false;
   ui.setAsker((q: string) => new Promise<string>((resolve) => {
     questionPending = true;
     rl.question(q, (a) => {
@@ -840,21 +1264,6 @@ async function main(): Promise<number> {
       resolve(a);
     });
   }));
-
-  const shutdown = async (): Promise<void> => {
-    // 退出前冲刷记忆写队列：提炼是后台异步的，直接退出会丢掉最后几轮的记忆
-    try {
-      await memory.flush();
-    } catch {
-      // 记忆失败不阻止退出
-    }
-    closeMailbox();
-    persist(agent.messages, sess.meta);
-    ui.blank();
-    ui.line(c.dim("再见。"));
-    rl.close();
-    process.exit(0);
-  };
 
   // Ctrl+C 双击退出（模仿 Claude Code）：第一次按下闪现橙色提示，
   // 2 秒内再按才真正退出。挂在 SIGINT 路径而非 keypress ——
@@ -888,33 +1297,12 @@ async function main(): Promise<number> {
   };
   process.on("SIGINT", onSigint);
 
-  // 输入串行化：粘贴多行或快速回车时，readline 的 line 事件会并发触发。
-  // 用队列 + 单 worker 保证处理顺序与输出不交错。
-  // M1 粘贴增强（PRD §5.4）：queue 元素升级为 QueuedLine（行文本 + 绑定附件）。
-  // 跨会话消息（PRD v1.2 §4.4 P2）：合成行带 origin，与用户行共享同一队列。
-  type QueueOrigin = "user" | "mailbox" | "notice";
-  interface QueueItem extends QueuedLine {
-    origin: QueueOrigin;
-    /** mailbox/notice 的来源 session（状态机 turn.from）。 */
-    from?: string;
-  }
-  const queue: QueueItem[] = [];
-  let draining = false;
-  /** 会话内 turn 序号（状态机审计用）。 */
-  let turnSeq = 0;
-  /** 连续自动 turn 计数（PRD §4.4 链条上限）；用户输入重置。 */
-  let autoTurnChain = 0;
-  /** 当前 turn 的 mailbox 触发者；只有它才允许 send_message 自动补 reply_to。 */
-  let activeTurnFrom: string | null = null;
-
   // ---- 粘贴拦截（PRD §5.3 + §7 探针结论）----
   // readline 不自带 bracketed paste：启用 \x1b[?2004h 后终端才会在粘贴前后
   // 包裹 200~/201~ 标记，readline 才会发 paste-start/paste-end keypress。
   // 不支持的终端无标记，行为退化为现状（逐行提交），非回归。
   if (process.stdin.isTTY) process.stdout.write("\x1b[?2004h");
   const pasteCollector = new PasteCollector();
-  let pasteTextCounter = 0; // chip 编号会话内递增（PRD §3），图片/文本各自独立
-  let pasteImageCounter = 0;
   /** 待绑定附件：chip 已写入缓冲、随下一次 line 提交绑定入队（PRD §5.4）。 */
   let pendingAttachments: Attachment[] = [];
 
@@ -954,7 +1342,7 @@ async function main(): Promise<number> {
     autoTurnChain = 0; // 人类输入重置自动 turn 链
     tabCycle = null;
     queue.push({ text: line, attachments: bound, origin: "user" });
-    void drain();
+    runDrainSafely();
   };
   rl.on("line", origLineHandler);
 
@@ -1048,9 +1436,7 @@ async function main(): Promise<number> {
   // C11（M0 §3 实证）：select 存续期间 readline 仍会发 line 事件——
   // 回车提交的是当时缓冲里的残留（↑ 历史召回 / 误触字符），可能非空。
   // 置标志让 line 处理器丢弃这些事件，防止残留被当成命令/聊天消息入队。
-  let selectActive = false;
-  let selectCancel: (() => void) | undefined;
-  const selectDeps: SelectDeps = {
+  selectDeps = {
     router: hotkeys,
     asker: (q: string): Promise<string> =>
       new Promise<string>((resolve) => rl.question(q, (a) => resolve(a))),
@@ -1064,180 +1450,6 @@ async function main(): Promise<number> {
     },
   };
 
-  // v0.2 记忆激活：旧的「首条输入 → ~/.neo/memorys/raw」钩子已移除。
-  // 它只记录首行截断（实测 7 条全是 exit 这类噪音），信噪比过低；
-  // 由轮末 TurnRecord（含工具/文件/结论）取代，见 src/memory/capture.ts。
-
-  const drain = async (): Promise<void> => {
-    if (draining) return;
-    draining = true;
-    while (queue.length > 0) {
-      const q = queue.shift();
-      if (!q) continue;
-      const line = q.text;
-      if (!line) continue;
-      const origin = q.origin;
-
-      if (origin === "user") {
-        if (line.startsWith("!")) {
-          await runShell(line.slice(1), cfg, ui, agent.mode);
-          continue;
-        }
-        if (line.startsWith("/")) {
-          await handleCommand(
-            line,
-            agent,
-            ui,
-            cfg,
-            memory,
-            classifier,
-            sess.meta,
-            shutdown,
-            selectDeps,
-            mailbox,
-            (env) => {
-              ui.line(c.dim(formatPreview(env)));
-              queue.push({ text: formatIncomingFrame(env), attachments: [], origin: "mailbox", from: env.from.session });
-            },
-            () => inboundRefs.clear(),
-          );
-          continue;
-        }
-        autoTurnChain = 0;
-        if (mailbox) {
-          try {
-            mailboxState.noteHumanInput(mailbox.root, mailbox.sessionId);
-          } catch {
-            // 状态写入失败不阻塞交互
-          }
-        }
-      } else {
-        autoTurnChain++;
-      }
-
-      // 合成行（mailbox/notice）文本已经是 frame 后的内容，不经命令分发、不做 chip 还原。
-      // v0.2.4 C3：先展开 @ 引用，再做 chip 还原 ——
-      // 反过来会把「粘贴内容里恰好出现的 @foo」也当成引用展开（用户并没有这个意图）。
-      const expanded =
-        origin === "user"
-          ? expandReferences(line, { cwd: cfg.cwd })
-          : { text: line, refs: [], errors: [] as string[] };
-      const resolved =
-        origin === "user"
-          ? resolveLine(expanded.text, q.attachments)
-          : { text: line, images: [] as string[] };
-      if (expanded.refs.length > 0) {
-        const lines = expanded.refs.reduce((n, r) => n + r.lines, 0);
-        ui.line(c.dim(`· 已引用 ${expanded.refs.length} 个文件（+${lines} 行）`));
-      }
-      for (const e of expanded.errors) ui.line(c.dim(`· ${e}`));
-      if (resolved.images.length > 0) {
-        // PRD §5.8：用户对「发出去了什么」有知情权（图片可能含敏感信息）
-        ui.line(c.dim(`· 已发送图片 ×${resolved.images.length}`));
-      }
-      ui.blank();
-      let outcome: "ok" | "aborted" | "error" = "ok";
-      activeTurnFrom = origin === "user" ? null : (q.from ?? null);
-      if (mailbox) {
-        try {
-          mailboxState.beginTurn(mailbox.root, mailbox.sessionId, {
-            seq: ++turnSeq,
-            source: origin === "user" ? "user" : "mailbox",
-            from: origin === "user" ? null : (q.from ?? null),
-          });
-        } catch {
-          // 状态机失败不阻塞 turn
-        }
-      }
-      try {
-        // ESC 回滚语义（PRD §4.11 裁决 A）：人类输入的 turn 保留回滚；
-        // 由 mailbox / 状态通知触发的自动 turn 只停不删（否则会连任务消息与已完成结果一起抹掉）。
-        const stats = await agent.send(
-          resolved.images.length > 0 ? { text: resolved.text, images: resolved.images } : resolved.text,
-          { rollbackOnAbort: origin === "user" },
-        );
-        if (stats.aborted) outcome = "aborted";
-        ui.blank();
-        ui.blank();
-        // 档位切换必须显式告知 —— 静默换模型会让人困惑「为什么这轮答得不一样」
-        if (stats.tierSwitch) {
-          const ts = stats.tierSwitch;
-          ui.line(
-            `${c.accent("⇅")} 档位 ${c.dim(ts.from)} → ${c.accent(ts.to)} ` +
-              `${c.dim(`(${cfg.providerName}/${cfg.model})`)}`,
-          );
-          ui.line(`  ${c.dim("理由:")} ${c.muted(ts.reason)}`);
-          if (ts.degraded) ui.line(`  ${c.warn("降级:")} ${c.warn(ts.degraded)}`);
-          ui.blank();
-        }
-        showStats(ui, agent, cfg, stats);
-      } catch (e) {
-        outcome = "error";
-        ui.error(`未捕获异常: ${(e as Error).message}`);
-        // C9：本轮带图且请求失败 → 追加一行软提示（无法可靠区分「服务端拒绝图片」
-        // 与其他 4xx，用软提示近似 PRD 要求，不误导为确定结论）
-        if (resolved.images.length > 0) ui.line(c.dim("  当前 provider 可能不支持图片输入"));
-        if (process.env["NEO_DEBUG"]) console.error(e);
-      } finally {
-        activeTurnFrom = null;
-        if (mailbox) {
-          try {
-            mailboxState.endTurn(mailbox.root, mailbox.sessionId, {
-              outcome,
-              abortSource: outcome === "aborted" ? "human" : outcome === "error" ? "error" : null,
-            });
-          } catch {
-            // 状态机失败不阻塞交互
-          }
-        }
-      }
-      persist(agent.messages, sess.meta);
-    }
-    draining = false;
-    prompt();
-  };
-
-  /**
-   * P2 空闲 tick（PRD §4.4）：
-   *  - 只在 draining=false && queue 空 && !questionPending && !selectActive 时工作；
-   *  - inbox 每 1s 检查一次（消息落盘后静坐也能收到）；
-   *  - 委派 watchdog 每 cross_session_watchdog_interval_s（默认 120s）检查一次；
-   *  - 自动 turn 链超过上限时暂停拉取（用户输入会重置）。
-   */
-  const runIdleTick = (): void => {
-    if (!mailbox) return;
-    if (draining || queue.length > 0 || selectActive || questionPending) return;
-    if (autoTurnChain >= cfg.mailbox.autoTurnLimit) return;
-
-    const now = Date.now();
-    const remaining = cfg.mailbox.autoTurnLimit - autoTurnChain;
-    if (remaining <= 0) return;
-    if (now - lastWatchdogAt >= cfg.mailbox.watchdogIntervalS * 1000) {
-      lastWatchdogAt = now;
-      try {
-        for (const n of mailbox.watchdog()) {
-          if (queue.length >= remaining) break;
-          ui.line(c.dim(formatNoticePreview(n)));
-          queue.push({ text: formatNotice(n), attachments: [], origin: "notice", from: n.target_id });
-        }
-      } catch {
-        // watchdog 失败不阻塞交互
-      }
-    }
-    if (queue.length === 0) {
-      for (const env of collectInbound(remaining)) {
-        queue.push({ text: formatIncomingFrame(env), attachments: [], origin: "mailbox", from: env.from.session });
-      }
-    }
-    if (queue.length > 0) void drain();
-  };
-
-  if (mailbox) {
-    mailboxTick = setInterval(runIdleTick, 1000);
-    // 不让 tick 阻止进程退出（Bun / Node 定时器都有 unref）
-    (mailboxTick as unknown as { unref?: () => void }).unref?.();
-  }
-
   rl.on("close", () => {
     process.off("SIGINT", onSigint);
     if (process.stdout.isTTY) process.stdout.off("resize", onResize);
@@ -1246,9 +1458,13 @@ async function main(): Promise<number> {
     if (process.stdin.isTTY) process.stdout.write("\x1b[?2004l"); // 退出还原终端 bracketed paste 模式
   });
 
-  prompt();
+    closeInput = () => rlC.close();
+    promptInput = () => rlC.prompt();
+    await fileIndexPreheat;
+    prompt();
+    await new Promise<void>((resolve) => rlC.on("close", () => resolve()));
+  }
 
-  await new Promise<void>((resolve) => rl.on("close", () => resolve()));
   closeMailbox();
   // 终端关闭（Ctrl+D 等）同样冲刷记忆写队列
   try {
@@ -1258,7 +1474,6 @@ async function main(): Promise<number> {
   }
   return 0;
 }
-
 function persist(messages: Message[], meta: SessionMeta): void {
   try {
     const copy = messages.filter((m) => m.role !== "system");
@@ -1303,6 +1518,18 @@ function showStats(ui: Console, agent: Agent, cfg: Config, stats: {
 }): void {
   const cum = agent.cumulative;
   const usage = agent.contextUsage();
+  // v0.3.0：TTY 已有常驻状态条，轮末只补一行「本轮摘要」，不再打印三行状态栏。
+  if (ui.hasLiveDock) {
+    ui.line(
+      c.dim(
+        `· 本轮 ${(stats.durationMs / 1000).toFixed(1)}s · ` +
+          `${formatTokens(stats.promptTokens)}↑ ${formatTokens(stats.completionTokens)}↓ · ` +
+          `${stats.toolCalls} tools · ctx ${(usage * 100).toFixed(0)}% · ` +
+          `total ${formatTokens(cum.prompt)}↑ ${formatTokens(cum.completion)}↓`,
+      ),
+    );
+    return;
+  }
   ui.statusBar([
     ["model", `${cfg.providerName}/${cfg.model}`],
     ["tier", cfg.modelTier],

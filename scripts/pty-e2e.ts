@@ -414,7 +414,13 @@ async function waitFakeReady(fake: FakeServer, timeoutMs = 8000): Promise<number
 
 /** 启动 fake-llm：PORT=0 → 内核分配端口，彻底规避端口冲突。 */
 async function startFake(
-  scenario: "tool-then-answer" | "narration" | "resume" | "echo-ref",
+  scenario:
+    | "tool-then-answer"
+    | "narration"
+    | "resume"
+    | "echo-ref"
+    | "slow"
+    | "write-then-answer",
 ): Promise<FakeServer> {
   const proc = Bun.spawn([BUN, "run", FAKE_LLM], {
     cwd: ROOT,
@@ -484,6 +490,8 @@ interface NeoOptions {
   rows?: number;
   /** 用于日志与临时文件命名。 */
   name: string;
+  /** 启动 1.5s 后把 PTY 改窄（测 resize 下帧/输入框不串行）。 */
+  resizeToCols?: number;
 }
 
 /**
@@ -528,13 +536,20 @@ async function startNeo(opts: NeoOptions): Promise<NeoRun> {
     throw new Error(`创建 FIFO 失败：${fifoRes.stderr.toString() || fifo}`);
   }
 
+  const resizeLine =
+    opts.resizeToCols !== undefined
+      ? `( sleep 1.5; stty cols ${opts.resizeToCols} rows ${rows} < /dev/tty 2>/dev/null ) &`
+      : "";
   const wrapperBody = [
     "#!/bin/sh",
     `# 由 scripts/pty-e2e.ts 生成：PTY winsize 必须先于 neo 启动设置好`,
     `stty cols ${cols} rows ${rows} 2>/dev/null || true`,
+    resizeLine,
     `exec ${shellQuote(BUN)} run ${shellQuote(NEO_ENTRY)} ${args.map(shellQuote).join(" ")}`.trimEnd(),
     "",
-  ].join("\n");
+  ]
+    .filter((l) => l !== "")
+    .join("\n");
   await writeFile(wrapper, wrapperBody, { mode: 0o755 });
 
   const inner = IS_DARWIN
@@ -703,6 +718,11 @@ class CheckError extends Error {
   }
 }
 
+/** v0.3.0 场景用的断言助手（失败时带上屏幕快照）。 */
+function check(cond: boolean, msg: string, screen?: Screen): void {
+  if (!cond) throw new CheckError(msg, [], screen);
+}
+
 /** 给任意错误补上屏幕与 stderr，保证失败时一定有诊断信息。 */
 function attachScreen(e: unknown, screen: Screen, stderr?: string): unknown {
   if (e instanceof CheckError) {
@@ -749,19 +769,33 @@ async function waitUntil(pred: () => boolean, timeoutMs: number): Promise<boolea
   }
 }
 
-/** 屏幕回到空闲提示符：最后一条非空行就是 `❯`。 */
+/** 屏幕回到空闲输入状态。
+ *  v0.3.0 起 TTY 用底部 live 帧：输入行含 `❯`，最后一行是状态行（含 `ctx`）；
+ *  忙碌时顶线标题带「运行中」。旧版（非 TTY / 回退）仍是单独一行 `❯`。 */
 function promptReady(screen: Screen): boolean {
-  return screen.lastNonEmptyLine().trim() === "❯";
+  const last = screen.lastNonEmptyLine().trim();
+  if (last === "❯") return true;
+  const lines = screen.lines();
+  const hasInput = lines.some((l) => l.trim().startsWith("❯"));
+  return hasInput && last.includes("ctx ") && !screen.text().includes("运行中");
 }
 
-/** 屏幕上最后一个提示符行（`❯ ...`，含用户已敲入的内容）。 */
+/** 屏幕上最后一个提示符行（`❯ ...`，含用户已敲入的内容；v0.3.0 的输入行也以 ❯ 开头）。 */
 function lastPromptLine(screen: Screen): string | null {
   const lines = screen.lines();
   for (let i = lines.length - 1; i >= 0; i--) {
     const t = (lines[i] ?? "").trimEnd();
-    if (t.startsWith("❯")) return t;
+    if (t.trimStart().startsWith("❯")) return t;
   }
   return null;
+}
+
+/** 输入行是否为空（v0.3.0 空输入会显示 placeholder）。 */
+function inputEmpty(screen: Screen): boolean {
+  const line = lastPromptLine(screen);
+  if (line === null) return false;
+  const t = line.trim();
+  return t === "❯" || t.includes("输入消息");
 }
 
 /**
@@ -771,9 +805,9 @@ function lastPromptLine(screen: Screen): string | null {
  */
 async function clearInputLine(run: NeoRun): Promise<string> {
   await run.write("\x15");
-  if (await waitUntil(() => lastPromptLine(run.screen)?.trim() === "❯", 800)) return "Ctrl+U";
+  if (await waitUntil(() => inputEmpty(run.screen), 800)) return "Ctrl+U";
   await run.write("\x7f".repeat(40));
-  await waitFor(() => lastPromptLine(run.screen)?.trim() === "❯", {
+  await waitFor(() => inputEmpty(run.screen), {
     label: "退格清空行缓冲",
     run,
     timeoutMs: 5000,
@@ -917,9 +951,10 @@ async function scenarioS2(tmpRoot: string): Promise<void> {
 
     // 基线：/last 之前已经滚过去的行。终答本身也含「hello」，
     // 所以必须只检查 /last 之后**新增**的行，否则会假阳性。
-    const baseline = run.screen.lines().length;
+    // 注意：v0.3.0 的 live 帧在底部，/last 的输出会插到帧上方，
+    // 之前的行数 baseline 不再等于「新增行」的起点；直接对全屏断言。
     await run.type("/last");
-    const newAfterLast = (): string => run.screen.lines().slice(baseline).join("\n");
+    const newAfterLast = (): string => run.screen.text();
     await waitFor(
       () => /1\s+hello/.test(newAfterLast()) || newAfterLast().includes("未知命令 /last"),
       { label: "/last 打印出 read_file 的完整输出（含行号 1 与 hello）", run },
@@ -1164,16 +1199,20 @@ async function scenarioS7(tmpRoot: string): Promise<void> {
     // Ctrl+J = 0x0A：续行（不是提交）。必须等提示符切换后再发下一行：
     // 两行若挤在同一个 stdin 分块里，newlineKindFromBytes 只能看到最后一个换行字节。
     await run.write("第一行\n");
-    await waitFor(() => run.screen.lastNonEmptyLine().trim() === "…", {
-      label: "Ctrl+J 后续行提示符变为 …",
-      run,
-    });
+    // v0.3.0：多行不再切换「… 」提示符，而是输入框内出现第二行（对齐两个空格）。
+    await waitFor(
+      () => {
+        const lines = run.screen.lines();
+        const at = lines.findIndex((l) => l.startsWith("❯ 第一行"));
+        // 空输入行在屏幕缓冲里被去掉行尾空白 → 第二行表现为「紧接着的空白行」
+        return at >= 0 && (lines[at + 1] ?? "").trim() === "" && lines.length > at + 2;
+      },
+      { label: "Ctrl+J 后输入框出现第二行", run },
+    );
     // Enter = 0x0D：提交拼接后的单条消息。
+    // 第二行与 Enter 同一批写入：提交后输入框即清空，不再断言「第二行」停在框内；
+    // 多行语义由后面的会话 JSON「第一行\n第二行」断言兜底。
     await run.write("第二行\r");
-    await waitFor(() => run.screen.text().includes("… 第二行"), {
-      label: "续行提示符下出现「… 第二行」",
-      run,
-    });
     await waitFor(() => run.screen.text().includes("会话恢复测试答案。"), {
       label: "多行消息送达模型并收到回复",
       run,
@@ -1399,6 +1438,407 @@ async function scenarioS10(tmpRoot: string): Promise<void> {
 }
 
 /* ------------------------------------------------------------------ */
+/* v0.3.0 常驻状态条 + 自绘输入框场景                                  */
+/* ------------------------------------------------------------------ */
+
+/** 状态行 = 帧最后一条含 ctx 与分隔符的非空行。 */
+function statusLineOf(screen: Screen): string | null {
+  const lines = screen.lines();
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const l = (lines[i] ?? "").trimEnd();
+    if (l.includes("ctx ") && l.includes("·")) return l;
+  }
+  return null;
+}
+
+/** 在 work 目录造一个真 git 仓库（main 分支），用于状态条分支字段断言。 */
+function initGitRepo(cwd: string): void {
+  const run = (args: string[]): void => {
+    const r = Bun.spawnSync(args, { cwd, stdout: "ignore", stderr: "ignore" });
+    if (r.exitCode !== 0) throw new CheckError(`git 初始化失败：${args.join(" ")}`);
+  };
+  run(["git", "init", "-q"]);
+  run(["git", "symbolic-ref", "HEAD", "refs/heads/main"]);
+  run(["git", "config", "user.email", "pty@example.com"]);
+  run(["git", "config", "user.name", "pty"]);
+  run(["git", "add", "-A"]);
+  run(["git", "commit", "-q", "-m", "init"]);
+}
+
+/** S11：状态条常驻 / 忙碌态 / 排队输入。 */
+async function scenarioS11(tmpRoot: string): Promise<void> {
+  const dirs = await makeDirs(tmpRoot, "s11-statusline");
+  await writeFile(join(dirs.work, "a.txt"), "hello\n", "utf8");
+  initGitRepo(dirs.work);
+  const fake = await startFake("slow");
+  const run = await startNeo({
+    fake,
+    dirs,
+    name: "s11",
+    args: BASE_ARGS,
+    cols: DEFAULT_COLS,
+    rows: DEFAULT_ROWS,
+  });
+  try {
+    await waitPrompt(run);
+    const s0 = statusLineOf(run.screen);
+    check(s0 !== null, "初始状态行缺失", run.screen);
+    check(s0!.includes("fake-model"), `状态行缺 model：${s0}`, run.screen);
+    check(s0!.includes("default"), `状态行缺 tier：${s0}`, run.screen);
+    check(s0!.includes("ctx "), `状态行缺 ctx：${s0}`, run.screen);
+    check(s0!.includes("⎇ main"), `状态行缺 git 分支：${s0}`, run.screen);
+    check(s0!.includes("tok"), `状态行缺 tok：${s0}`, run.screen);
+
+    await run.type("第一问");
+    await waitFor(() => run.screen.text().includes("运行中"), {
+      label: "turn 进行中顶线出现「运行中」",
+      run,
+      timeoutMs: 8000,
+    });
+    check(statusLineOf(run.screen) !== null, "turn 进行中状态行消失", run.screen);
+    await waitFor(() => /0:0[1-9]/.test(statusLineOf(run.screen) ?? ""), {
+      label: "状态条的本轮时长在递增（不是一直 0:00）",
+      run,
+      timeoutMs: 8000,
+    });
+
+    // 忙碌中输入并回车 → 排队（状态行出现「排队」）
+    await run.type("排队消息");
+    await waitFor(() => (statusLineOf(run.screen) ?? "").includes("排队"), {
+      label: "忙碌时提交的消息进入排队（状态行有提示）",
+      run,
+      timeoutMs: 6000,
+    });
+
+    // 两轮慢回答都要完成；排队消息必须以「❯ 排队消息」进入历史
+    await waitFor(
+      () => (run.screen.text().match(/慢回答完成。/g) ?? []).length >= 2,
+      { label: "两轮都完成（含排队消息）", run, timeoutMs: 25_000 },
+    );
+    await waitPrompt(run, "两轮结束、回到提示符");
+    check(
+      run.screen.lines().some((l) => l.startsWith("❯ 排队消息")),
+      "排队消息没有作为用户行进入历史",
+      run.screen,
+    );
+    check(statusLineOf(run.screen) !== null, "turn 结束后状态行消失", run.screen);
+    maybeDumpScreen(run.screen);
+    await run.type("/exit");
+    await run.waitExit();
+  } catch (e) {
+    throw attachScreen(e, run.screen, run.stderr);
+  } finally {
+    await run.close();
+    await fake.stop();
+  }
+}
+
+/** S12：输入框视觉 + 中文/emoji + 退格按整字。 */
+async function scenarioS12(tmpRoot: string): Promise<void> {
+  const dirs = await makeDirs(tmpRoot, "s12-inputbox");
+  const fake = await startFake("resume");
+  const run = await startNeo({
+    fake,
+    dirs,
+    name: "s12",
+    args: BASE_ARGS,
+    cols: DEFAULT_COLS,
+    rows: DEFAULT_ROWS,
+  });
+  try {
+    await waitPrompt(run);
+    // 上横线 + 下横线都在
+    const ruleCount = run.screen.lines().filter((l) => /^─+/.test(l.trim())).length;
+    check(ruleCount >= 2, `输入框横线缺失（找到 ${ruleCount} 条）`, run.screen);
+    check(statusLineOf(run.screen) !== null, "输入框下没有状态行", run.screen);
+
+    const typed = "中文输入 😀 test";
+    await run.type(typed);
+    await waitFor(() => run.screen.lines().some((l) => l.trimStart().startsWith(`❯ ${typed}`)), {
+      label: "中文/emoji 输入上屏",
+      run,
+      timeoutMs: 8000,
+    });
+    const row = run.screen.lines().find((l) => l.trimStart().startsWith(`❯ ${typed}`)) ?? "";
+    check(displayWidth(row.trimEnd()) <= DEFAULT_COLS, `输入行超宽：${displayWidth(row)} 列`, run.screen);
+    check(!row.includes("\ufffd"), "输入行出现替换字符（UTF-8 解码坏了）", run.screen);
+
+    // 中文退格：一次只删一个字
+    await run.write("\x15"); // Ctrl+U 清行
+    await waitFor(() => inputEmpty(run.screen), { label: "Ctrl+U 清行", run, timeoutMs: 5000 });
+    await run.write("你好");
+    await waitFor(() => run.screen.lines().some((l) => l.trimStart().startsWith("❯ 你好")), {
+      label: "中文上屏",
+      run,
+    });
+    await run.write("\x7f"); // Backspace
+    await waitFor(
+      () =>
+        run.screen.lines().some((l) => l.trimStart().startsWith("❯ 你")) &&
+        !run.screen.lines().some((l) => l.trimStart().startsWith("❯ 你好")),
+      { label: "退格一次只删一个汉字", run, timeoutMs: 5000 },
+    );
+    // 宽字符压力：60 个 emoji（=120 列）必须折进输入框、不把帧行撑超宽
+    await run.write("\x15");
+    await waitFor(() => inputEmpty(run.screen), { label: "清行（emoji 压力前）", run, timeoutMs: 5000 });
+    await run.write("😀".repeat(60));
+    await waitFor(() => run.screen.text().includes("😀"), { label: "emoji 输入上屏", run, timeoutMs: 8000 });
+    const emojiLines = run.screen.lines();
+    const top = emojiLines.findLastIndex((l) => l.trim().startsWith("─") && l.includes("neo ·"));
+    const bottom = emojiLines.findIndex((l, i) => i > top && l.trim().startsWith("─") && !l.includes("neo ·"));
+    check(top >= 0 && bottom > top, "emoji 输入后找不到输入框边界", run.screen);
+    for (const l of emojiLines.slice(top, bottom + 1)) {
+      check(displayWidth(l.trimEnd()) <= DEFAULT_COLS, `emoji 输入行超宽（${displayWidth(l)} 列）`, run.screen);
+    }
+    // 清行后退出
+    await run.write("\x15");
+    await waitFor(() => inputEmpty(run.screen), { label: "退出前清行", run, timeoutMs: 5000 });
+    maybeDumpScreen(run.screen);
+    await run.type("/exit");
+    await run.waitExit();
+  } catch (e) {
+    throw attachScreen(e, run.screen, run.stderr);
+  } finally {
+    await run.close();
+    await fake.stop();
+  }
+}
+
+/** S13：输入框多行滚动（超过可视行数时只显示窗口，框/状态行仍在）。 */
+async function scenarioS13(tmpRoot: string): Promise<void> {
+  const dirs = await makeDirs(tmpRoot, "s13-input-scroll");
+  const fake = await startFake("resume");
+  const run = await startNeo({
+    fake,
+    dirs,
+    name: "s13",
+    args: BASE_ARGS,
+    cols: DEFAULT_COLS,
+    rows: DEFAULT_ROWS,
+  });
+  try {
+    await waitPrompt(run);
+    await run.write("L1\nL2\nL3\nL4\nL5\nL6\nL7\nL8\nL9\nL10");
+    await waitFor(() => run.screen.text().includes("L10"), { label: "10 行输入已进入缓冲", run });
+    const lines = run.screen.lines();
+    const top = lines.findLastIndex((l) => l.includes("neo ·") && l.trim().startsWith("─"));
+    const bottom = lines.findIndex((l, i) => i > top && l.trim().startsWith("─") && !l.includes("neo ·"));
+    check(top >= 0 && bottom > top, "多行输入时输入框横线找不到", run.screen);
+    check(bottom - top - 1 <= 8, `输入区可视行数超过 8（${bottom - top - 1}）`, run.screen);
+    check(lines.some((l) => l.includes("L1")), "滚动后第一行仍应可回看（窗口只滚动，不丢内容）", run.screen);
+    check(statusLineOf(run.screen) !== null, "多行输入时状态行丢失", run.screen);
+    await run.write("\x1b"); // Esc 清空输入
+    await waitFor(() => inputEmpty(run.screen), { label: "Esc 清空多行输入", run, timeoutMs: 5000 });
+    maybeDumpScreen(run.screen);
+    await run.type("/exit");
+    await run.waitExit();
+  } catch (e) {
+    throw attachScreen(e, run.screen, run.stderr);
+  } finally {
+    await run.close();
+    await fake.stop();
+  }
+}
+
+/** S14：审批模态在输入框上方展示问题，y/N 生效且输入框不消失。 */
+async function scenarioS14(tmpRoot: string): Promise<void> {
+  const dirs = await makeDirs(tmpRoot, "s14-approval");
+  const fake = await startFake("write-then-answer");
+  const run = await startNeo({
+    fake,
+    dirs,
+    name: "s14",
+    args: BASE_ARGS,
+    cols: DEFAULT_COLS,
+    rows: DEFAULT_ROWS,
+  });
+  try {
+    await waitPrompt(run);
+    await run.type("写一个文件");
+    await waitFor(
+      () => run.screen.text().includes("write_file") && run.screen.text().includes("新建文件"),
+      { label: "审批问题显示在输入框上方", run, timeoutMs: 10_000 },
+    );
+    const during = run.screen.lines();
+    check(during.some((l) => l.trimStart().startsWith("?")), "审批态输入提示符缺少 `?`", run.screen);
+    check(during.some((l) => l.trimStart().startsWith("❯")), "审批态输入框被卸载（找不到 ❯）", run.screen);
+    check(statusLineOf(run.screen) !== null, "审批态状态行消失", run.screen);
+    await run.write("y\r");
+    await waitFor(() => run.screen.text().includes("写完了。"), {
+      label: "批准后工具执行并收到最终回答",
+      run,
+      timeoutMs: 10_000,
+    });
+    await waitPrompt(run, "审批轮结束、回到提示符");
+    check(readFileSync(join(dirs.work, "a.txt"), "utf8") === "written by neo\n", "write_file 未按批准写入", run.screen);
+    maybeDumpScreen(run.screen);
+    await run.type("/exit");
+    await run.waitExit();
+  } catch (e) {
+    throw attachScreen(e, run.screen, run.stderr);
+  } finally {
+    await run.close();
+    await fake.stop();
+  }
+}
+
+/** S15：运行中把 PTY 从 100 列改到 60 列，帧/状态行仍不超宽、不串行。 */
+async function scenarioS15(tmpRoot: string): Promise<void> {
+  const dirs = await makeDirs(tmpRoot, "s15-resize");
+  const fake = await startFake("resume");
+  const run = await startNeo({
+    fake,
+    dirs,
+    name: "s15",
+    args: BASE_ARGS,
+    cols: DEFAULT_COLS,
+    rows: DEFAULT_ROWS,
+    resizeToCols: 60,
+  });
+  try {
+    await waitPrompt(run);
+    const lastTop = (): string | null => {
+      const lines = run.screen.lines();
+      for (let i = lines.length - 1; i >= 0; i--) {
+        const l = lines[i] ?? "";
+        if (l.trim().startsWith("─") && l.includes("neo ·")) return l;
+      }
+      return null;
+    };
+    // 不猜时序：等后台 stty 真的把 PTY 切到 60 列、输入框按新宽度重画
+    await waitFor(() => {
+      const t = lastTop();
+      return t !== null && displayWidth(t) <= 60;
+    }, { label: "PTY 已切到 60 列并重画输入框", run, timeoutMs: 8000 });
+    await run.type("这是一段用于测试终端从一百列缩到六十列之后输入框重绘是否串行的中文内容");
+    await waitFor(() => run.screen.text().includes("这是一段用于测试"), {
+      label: "resize 后输入仍正常上屏",
+      run,
+      timeoutMs: 8000,
+    });
+    // 屏幕是流式字节的切片：等 live 帧完整（顶线 + 状态行都在）再断言，避免撞上重画中途。
+    await waitFor(
+      () => {
+        const t = lastTop();
+        return t !== null && displayWidth(t) <= 60 && statusLineOf(run.screen) !== null;
+      },
+      { label: "resize 后 live 帧完整（60 列）", run, timeoutMs: 8000 },
+    );
+    const lines = run.screen.lines();
+    // 只看 live 帧（最后一条顶线到状态行），历史行可能保留 resize 前的宽度
+    const top = lines.findLastIndex((l) => l.trim().startsWith("─") && l.includes("neo ·"));
+    check(top >= 0, "resize 后找不到输入框顶线", run.screen);
+    const frame = lines.slice(top);
+    for (const l of frame) {
+      check(displayWidth(l.trimEnd()) <= 60, `resize 后帧行超宽（${displayWidth(l)} 列）：${l}`, run.screen);
+    }
+    check(statusLineOf(run.screen) !== null, "resize 后状态行丢失", run.screen);
+    // 提交这一条（fake=resume 立即回），确认交互没坏
+    await run.write("\r");
+    await waitFor(() => run.screen.text().includes("会话恢复测试答案。"), {
+      label: "resize 后仍能完成一轮问答",
+      run,
+      timeoutMs: 10_000,
+    });
+    maybeDumpScreen(run.screen);
+    await run.type("/exit");
+    await run.waitExit();
+  } catch (e) {
+    throw attachScreen(e, run.screen, run.stderr);
+  } finally {
+    await run.close();
+    await fake.stop();
+  }
+}
+
+/** S16：选择菜单在 live 帧里渲染，↓/Enter 生效，Esc 取消。 */
+async function scenarioS16(tmpRoot: string): Promise<void> {
+  const dirs = await makeDirs(tmpRoot, "s16-select");
+  const fake = await startFake("resume");
+  const run = await startNeo({
+    fake,
+    dirs,
+    name: "s16",
+    args: BASE_ARGS,
+    cols: DEFAULT_COLS,
+    rows: DEFAULT_ROWS,
+  });
+  try {
+    await waitPrompt(run);
+    await run.type("/tier");
+    await waitFor(() => run.screen.text().includes("切换到哪个档位？"), {
+      label: "/tier 打开档位选择菜单",
+      run,
+      timeoutMs: 8000,
+    });
+    check(run.screen.text().includes("glm-5.3-flash"), "菜单里缺少各档位路由提示", run.screen);
+    check(statusLineOf(run.screen) !== null, "选择菜单时状态行丢失", run.screen);
+    await run.write("\x1b[B"); // ↓
+    await sleep(120);
+    await run.write("\r"); // Enter
+    await waitFor(() => run.screen.text().includes("档位 →"), {
+      label: "选择后档位切换生效",
+      run,
+      timeoutMs: 8000,
+    });
+    await waitPrompt(run, "档位切换后回到提示符");
+    check(statusLineOf(run.screen) !== null, "菜单关闭后状态行丢失", run.screen);
+
+    // 再开一次，Esc 取消
+    await run.type("/tier");
+    await waitFor(() => run.screen.text().includes("切换到哪个档位？"), {
+      label: "第二次打开档位菜单",
+      run,
+    });
+    await run.write("\x1b"); // Esc
+    await waitFor(() => run.screen.text().includes("已取消。"), {
+      label: "Esc 取消选择",
+      run,
+      timeoutMs: 8000,
+    });
+    maybeDumpScreen(run.screen);
+    await run.type("/exit");
+    await run.waitExit();
+  } catch (e) {
+    throw attachScreen(e, run.screen, run.stderr);
+  } finally {
+    await run.close();
+    await fake.stop();
+  }
+}
+
+/** S17：双 Ctrl+C 退出（第一次提示，第二次真的退出）。 */
+async function scenarioS17(tmpRoot: string): Promise<void> {
+  const dirs = await makeDirs(tmpRoot, "s17-ctrlc");
+  const fake = await startFake("resume");
+  const run = await startNeo({
+    fake,
+    dirs,
+    name: "s17",
+    args: BASE_ARGS,
+    cols: DEFAULT_COLS,
+    rows: DEFAULT_ROWS,
+  });
+  try {
+    await waitPrompt(run);
+    await run.write("\x03"); // Ctrl+C #1
+    await waitFor(() => run.screen.text().includes("再按 Ctrl+C 退出"), {
+      label: "第一次 Ctrl+C 显示确认提示",
+      run,
+      timeoutMs: 5000,
+    });
+    await run.write("\x03"); // Ctrl+C #2（2s 内）
+    const code = await run.waitExit(8000);
+    check(code === 0, `双 Ctrl+C 退出码不是 0（${code}）`, run.screen);
+  } catch (e) {
+    throw attachScreen(e, run.screen, run.stderr);
+  } finally {
+    await run.close();
+    await fake.stop();
+  }
+}
+
+/* ------------------------------------------------------------------ */
 /* 主流程                                                              */
 /* ------------------------------------------------------------------ */
 
@@ -1471,6 +1911,48 @@ const SCENARIOS: Scenario[] = [
     title: "S10 连按 Tab 遍历首轮候选：alpha1/2/3",
     fn: scenarioS10,
     focus: ["@alpha", "候选"],
+  },
+  {
+    id: "s11",
+    title: "S11 状态条常驻：字段/时长递增/忙碌排队/分支",
+    fn: scenarioS11,
+    focus: ["ctx ", "运行中", "排队"],
+  },
+  {
+    id: "s12",
+    title: "S12 输入框视觉：中文/emoji/退格整字",
+    fn: scenarioS12,
+    focus: ["❯ 中文输入", "❯ 你"],
+  },
+  {
+    id: "s13",
+    title: "S13 输入框多行滚动：窗口/横线/状态行",
+    fn: scenarioS13,
+    focus: ["L10", "neo ·"],
+  },
+  {
+    id: "s14",
+    title: "S14 审批模态：问题可见/输入框不消失/写入生效",
+    fn: scenarioS14,
+    focus: ["write_file", "写完了。"],
+  },
+  {
+    id: "s15",
+    title: "S15 resize：100→60 列后帧不超宽/不串行",
+    fn: scenarioS15,
+    focus: ["这是一段用于测试", "neo ·"],
+  },
+  {
+    id: "s16",
+    title: "S16 选择菜单：↓/Enter 生效、Esc 取消、状态行在",
+    fn: scenarioS16,
+    focus: ["切换到哪个档位", "档位 →"],
+  },
+  {
+    id: "s17",
+    title: "S17 双 Ctrl+C：第一次提示、第二次退出",
+    fn: scenarioS17,
+    focus: ["再按 Ctrl+C 退出"],
   },
 ];
 

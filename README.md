@@ -168,14 +168,36 @@ provider 里的 `*_model_name` 表示「**这个 provider** 在各档位上用�
 !<cmd>     直接执行 shell（受权限模式约束，plan 模式下拒绝）
 ```
 
-### 输入体验（v0.2.4）
+### TUI：底部常驻状态条 + 输入框（v0.3.0）
+
+```
+────────────────────────────── neo · neo ──
+❯ 你的消息…（多行 / 补全 / 中文 / 光标可编辑）
+────────────────────────────────────────────
+deepseek-flash · balanced · ask · ⎇ main · ctx ▓▓░░░ 42% · 0:42 · 12.3k tok
+```
+
+- 状态条每 250ms 刷新：model / tier / 权限模式 / git 分支 / ctx 百分比 + 进度条 /
+  本轮已跑时长 / 累计 tok；忙碌时顶线标题带「运行中」，排队有提示。宽度不足按优先级降级，不折行。
+- 输入框：上下横线、无左右边框；`Enter` 提交，`Ctrl+J` / `Shift+Enter` / `Alt+Enter` /
+  `Ctrl+Enter` 换行；超过 8 行滚动窗口；退格按码点（中文一次一个字）。
+- 历史 ↑↓（前缀搜索）、`Tab` 补全、`Ctrl+V` 贴图、大段粘贴折叠 chip；
+  审批问题显示在框上方、输入框不卸载；选择菜单在 live 帧内渲染。
+- **不换渲染模型**：不 alt-screen，历史留在 scrollback；非 TTY（`-p` / 管道 / CI）走原 readline 路径。
+- `Ctrl+O` transcript 视图与轮次 diff 留 v0.3.1 / v0.3.2。
+
+> M0 探针（raw mode / 按键 / live 帧 / 交错 / 终端恢复）见
+> `scripts/tui-probe.ts` 与 `docs/v0.3.0-tui-prd[done].md` §2；PTY 场景 S11~S17 覆盖状态条、
+> 输入框、多行、审批、resize、选择菜单、双 Ctrl+C。
+
+### 输入补全与引用（v0.2.4）
 
 | 能力 | 用法 |
 |---|---|
 | 文件补全 | `@` + 路径前缀 + `Tab`：模糊匹配当前工作目录（走 `git ls-files`，尊重 `.gitignore`），多个候选连按 `Tab` 在同一批候选里循环，并打印候选提示行 |
 | 命令补全 | `/` + 前缀 + `Tab`：列出并插入斜杠命令（命令候选不设 20 上限，33 条都能搜到） |
 | 文件引用 | `@src/ui/console.ts`：提交时把文件内容附在消息末尾（≤5 个文件、单文件 ≤400 行、总 ≤60KB），失败只警告不阻断 |
-| 多行输入 | `Ctrl+J` 续行（提示符变 `… `），`Enter` 提交为一条含换行的消息，`Esc` 放弃；不支持的终端用行尾 `\` |
+| 多行输入 | v0.3.0 起由输入框原生多行承载：`Ctrl+J` / `Shift+Enter` / `Alt+Enter` 换行，`Enter` 提交为一条含换行的消息；行尾 `\` 等价 |
 | 工具回看 | `/last [n]`：回看最近 n 次工具调用的完整输出 |
 
 > 为什么 Tab 由自己接管：bun 1.3.13 的原生 `completer` **可用**（M0 探针 P1/P3 实证），
@@ -190,9 +212,9 @@ provider 里的 `*_model_name` 表示「**这个 provider** 在各档位上用�
 
 ```bash
 bun run check   # tsc --noEmit，strict + noUncheckedIndexedAccess（含 scripts/）
-bun test        # 单元测试，660 pass（37 个测试文件）
-bun run e2e     # 真 PTY 端到端（渲染类改动必跑；不需要真实网络/LLM）
-bun run verify  # 全量闸门：tsc → test → pty（10 个 PTY 场景），证据落 docs/evidence/
+bun test        # 单元测试，812 pass（43 个测试文件）
+bun run e2e     # 真 PTY 端到端（17 场景；渲染类改动必跑；不需要真实网络/LLM）
+bun run verify  # 全量闸门：tsc → test → pty（17 个 PTY 场景），证据落 docs/evidence/
 ```
 
 > 终端渲染类改动（动画行、宽度、覆盖语义）**只有真 PTY 能验证**。

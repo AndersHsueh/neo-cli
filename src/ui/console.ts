@@ -24,6 +24,7 @@ import {
   FAILURE_DETAIL_LINES,
   MAX_TOOL_HISTORY,
   formatOutputLines,
+  failureDetailRows,
   summarizeFailure,
   type ToolCallRecord,
 } from "./toolLog.ts";
@@ -47,6 +48,26 @@ export interface ConsoleDeps {
    * 这里只需 write，保持函数式最小面。
    */
   write?: (s: string) => void;
+  /**
+   * TTY 下的底部 live 帧桥（v0.3.0）。有 dock 时所有输出改走 dock：
+   * 流式行缓冲、工具行 transient、状态条由 composer 负责；非 TTY 不传。
+   */
+  dock?: ConsoleDock;
+}
+
+/** Console 用到的 dock 子集（structural，避免 ui → tui 的实体依赖）。 */
+export interface ConsoleDock {
+  writeStream(text: string): void;
+  line(text?: string): void;
+  blank(): void;
+  tool(text: string): void;
+  spinner(text: string | null): void;
+  dropActivity(): void;
+  finishActivity(): void;
+  failTool(detailLines: string[]): void;
+  commitLines(lines: string[]): void;
+  notice(text: string, ms: number): void;
+  resize(): void;
 }
 
 export class Console {
@@ -73,6 +94,7 @@ export class Console {
   /** 提示符重绘回调（由持有 readline 的一方注入；D5）。 */
   private promptRestorer: (() => void) | null = null;
   private flashTimer: Timer | null = null;
+  private readonly dock: ConsoleDock | null;
 
   constructor(
     private readonly useMatrixSpinner = true,
@@ -81,6 +103,7 @@ export class Console {
   ) {
     // 紧凑模式只在 TTY 生效：非 TTY（管道 / -p / CI）保留逐行详情，避免动画控制符污染日志。
     this.toolCompact = !toolcallInfoDetails && this.stdoutIsTTY();
+    this.dock = deps.dock ?? null;
   }
 
   private stdoutIsTTY(): boolean {
@@ -97,6 +120,7 @@ export class Console {
 
   /** 供 StreamFormatter 复用同一输出通道（正文/代码块也走注入点）。 */
   writeRaw(s: string): void {
+    if (this.dock) { this.dock.writeStream(s); return; }
     this.write(s);
   }
 
@@ -113,6 +137,11 @@ export class Console {
   /** 终端宽度，供块级渲染用。非 TTY 与异常宽度下统一回落 80。 */
   get width(): number {
     return this.cols();
+  }
+
+  /** 是否处于底部 live 帧模式（TTY）。showStats 据此决定单行摘要还是三行状态栏。 */
+  get hasLiveDock(): boolean {
+    return this.dock !== null;
   }
 
   /** 统一缩进，避免各处自己拼前缀。 */
@@ -142,8 +171,25 @@ export class Console {
 
   // ---------- 紧凑工具行 ----------
 
+  /** 当前工具行的唯一拼装实现（dock / 非 dock / /last 之外的实时路径共用）。 */
+  private toolLineNow(includeDots = true): string {
+    const seg = toolLineSegments({
+      name: this.toolName,
+      args: this.toolArgs,
+      width: this.cols(),
+      ...(includeDots ? { dots: this.toolDots } : {}),
+      status: this.toolStatus,
+      errorText: this.toolError,
+    });
+    return toolLineText(seg, paintTail(seg, this.toolStatus));
+  }
+
   private renderToolLine(): void {
     if (!this.toolLineActive) return;
+    if (this.dock) {
+      this.dock.tool(this.toolLineNow());
+      return;
+    }
     const seg = toolLineSegments({
       name: this.toolName,
       args: this.toolArgs,
@@ -152,12 +198,18 @@ export class Console {
       status: this.toolStatus,
       errorText: this.toolError,
     });
-    this.write(`\r\x1b[2K${toolLineText(seg, paintTail(seg, this.toolStatus))}`);
+    this.write(`\r\x1b[2K${this.toolLineNow()}`);
   }
 
   /** 清掉当前工具行（下一个工具调用覆盖同一行时用，不留换行）。 */
   private clearToolLine(): void {
     if (!this.toolLineActive) return;
+    if (this.dock) {
+      if (this.toolLineTimer) { clearInterval(this.toolLineTimer); this.toolLineTimer = null; }
+      this.toolLineActive = false;
+      this.dock.dropActivity();
+      return;
+    }
     if (this.toolLineTimer) {
       clearInterval(this.toolLineTimer);
       this.toolLineTimer = null;
@@ -169,6 +221,12 @@ export class Console {
   /** 结束当前工具行（保留已显示内容并换行）；其它输出前调用。 */
   private finishToolLine(): void {
     if (!this.toolLineActive) return;
+    if (this.dock) {
+      if (this.toolLineTimer) { clearInterval(this.toolLineTimer); this.toolLineTimer = null; }
+      this.toolLineActive = false;
+      this.dock.finishActivity();
+      return;
+    }
     if (this.toolLineTimer) {
       clearInterval(this.toolLineTimer);
       this.toolLineTimer = null;
@@ -194,11 +252,13 @@ export class Console {
   // ---------- 基础写入 ----------
 
   line(s = ""): void {
+    if (this.dock) { this.stopSpinner(); this.dock.line(s); return; }
     this.stopSpinner();
     this.write(s + "\n");
   }
 
   blank(): void {
+    if (this.dock) { this.stopSpinner(); this.dock.blank(); return; }
     this.line("");
   }
 
@@ -213,6 +273,10 @@ export class Console {
     this.spinnerTimer = setInterval(() => {
       const frames = this.useMatrixSpinner ? MATRIX_FRAMES : FRAMES;
       const f = frames[this.spinnerFrame++ % frames.length] ?? "⠋";
+      if (this.dock) {
+        this.dock.spinner(` ${f} ${this.spinnerText}`);
+        return;
+      }
       const clear = this.spinnerLineActive ? "\r\x1b[2K" : "";
       this.spinnerLineActive = true;
       this.write(clear + ` ${c.accent(f)} ${c.dim(this.spinnerText)}`);
@@ -225,6 +289,22 @@ export class Console {
   }
 
   stopSpinner(finalLine?: string): void {
+    if (this.dock) {
+      // dock 里工具行/spinner 都归一个活动行：finishActivity 会按 persist 决定提交/丢弃。
+      if (this.spinnerTimer) {
+        clearInterval(this.spinnerTimer);
+        this.spinnerTimer = null;
+      }
+      if (this.toolLineTimer) {
+        clearInterval(this.toolLineTimer);
+        this.toolLineTimer = null;
+      }
+      this.toolLineActive = false;
+      this.spinnerLineActive = false;
+      this.dock.finishActivity();
+      if (finalLine) this.dock.line(finalLine);
+      return;
+    }
     // 任何 spinner 停止都意味着要让出输出行：紧凑工具行先收尾（换行保留）。
     this.finishToolLine();
     this.stopSpinnerOnly(finalLine);
@@ -240,6 +320,10 @@ export class Console {
       this.write("\r\x1b[2K");
       this.spinnerLineActive = false;
     }
+    if (this.dock) {
+      if (finalLine) this.dock.line(finalLine);
+      return;
+    }
     if (finalLine) this.write(finalLine + "\n");
   }
 
@@ -251,13 +335,13 @@ export class Console {
     this.streamKind = kind;
     switch (kind) {
       case "reasoning":
-        this.write(c.dim("┌ think "));
+        this.writeRaw(c.dim("┌ think "));
         break;
       case "answer":
-        this.write(c.accent("● "));
+        this.writeRaw(c.accent("● "));
         break;
       case "tool-args":
-        this.write(c.tool("│ "));
+        this.writeRaw(c.tool("│ "));
         break;
     }
   }
@@ -265,7 +349,7 @@ export class Console {
   writeStream(text: string, kind: StreamKind): void {
     if (!this.streamKind) return;
     const painted = kind === "reasoning" ? c.dim(text) : c.text(text);
-    this.write(painted);
+    this.writeRaw(painted);
   }
 
   /**
@@ -277,8 +361,8 @@ export class Console {
     if (!this.streamKind) return;
     const current = kind ?? this.streamKind;
     this.streamKind = null;
-    if (newline) this.write("\n");
-    if (current === "reasoning") this.write(c.dim("└─\n"));
+    if (newline) this.writeRaw("\n");
+    if (current === "reasoning") this.writeRaw(c.dim("└─\n"));
   }
 
   /** 无输出时也要收尾：按当前打开的块类型关闭，避免「关了 answer、reasoning 的 └─ 丢了」。 */
@@ -301,6 +385,7 @@ export class Console {
    */
   handleResize(): void {
     if (!this.stdoutIsTTY()) return;
+    if (this.dock) { this.dock.resize(); return; }
     if (this.toolLineActive) {
       this.write("\n"); // 旧行定格
       this.renderToolLine(); // 新行第 0 列，安全重画；toolLineTimer 继续跑
@@ -372,11 +457,25 @@ export class Console {
     };
     this.pushToolCall(record);
 
+    if (this.dock && this.toolCompact) {
+      const summary = ok ? null : summarizeFailure(body, { maxLines: FAILURE_DETAIL_LINES });
+      this.toolStatus = ok ? "ok" : "error";
+      this.toolError = summary?.tail ?? "";
+      if (this.toolLineTimer) { clearInterval(this.toolLineTimer); this.toolLineTimer = null; }
+      this.dock.tool(this.toolLineNow());
+      this.toolLineActive = false;
+      if (!ok && summary) this.dock.failTool(failureDetailRows(summary, this.cols()));
+      return;
+    }
+
     if (!this.toolCompact) {
       this.stopSpinner();
-      for (const l of formatOutputLines(body, { maxLines, width: this.cols(), margin: "│ " })) {
-        this.line(l);
+      const rows = formatOutputLines(body, { maxLines, width: this.cols(), margin: "│ " });
+      if (this.dock) {
+        this.dock.commitLines(rows);
+        return;
       }
+      for (const l of rows) this.line(l);
       return;
     }
 
@@ -398,25 +497,11 @@ export class Console {
       }
     } else {
       // 行已被其它输出收尾（例如审批问句 / resize）：用独立一行显示最终状态。
-      const seg = toolLineSegments({
-        name: this.toolName,
-        args: this.toolArgs,
-        width: this.cols(),
-        status: this.toolStatus,
-        errorText: this.toolError,
-      });
-      this.line(toolLineText(seg, paintTail(seg, this.toolStatus)));
+      this.line(this.toolLineNow(false));
     }
 
     if (!ok && summary) {
-      for (const l of formatOutputLines(summary.detail.join("\n"), {
-        maxLines: FAILURE_DETAIL_LINES,
-        width: this.cols(),
-        margin: "  │ ",
-      })) {
-        this.line(l);
-      }
-      this.line(c.dim("  （完整输出：/last）"));
+      for (const l of failureDetailRows(summary, this.cols())) this.line(l);
     }
   }
 
@@ -456,6 +541,7 @@ export class Console {
 
   /** 让出一行给外部（readline）使用。 */
   flush(): void {
+    if (this.dock) { this.stopSpinner(); return; }
     this.yieldAnimationLines();
   }
 
@@ -468,6 +554,7 @@ export class Console {
    */
   flashNotice(text: string, ms: number): void {
     if (!this.stdoutIsTTY()) return;
+    if (this.dock) { this.dock.notice(text, ms); return; }
     this.yieldAnimationLines();
     this.write(`\r\x1b[2K${c.warn(text)}\n`);
     this.promptRestorer?.();

@@ -6,11 +6,11 @@
 
 ```bash
 bunx tsc --noEmit     # exit 0（strict + noUncheckedIndexedAccess）
-bun test              # 660 pass / 0 fail（37 个测试文件，约 4.9s）
-bash scripts/verify.sh # 全量闸门：上两条 + 真 PTY E2E（10 场景），输出落 docs/evidence/
+bun test              # 839 pass / 0 fail（46 个测试文件，约 6s）
+bash scripts/verify.sh # 全量闸门：上两条 + 真 PTY E2E（17 场景），输出落 docs/evidence/
 ```
 
-v0.2.4 输入层后的基线：**660 pass / 0 fail**（v0.2.3 为 569 / 32 文件，v0.2.2 为 530 / 27 文件）。
+v0.3.0 TUI 后的基线：**827 pass / 0 fail / 45 文件**（v0.2.4 为 660/37，v0.2.3 为 569/32，v0.2.2 为 530/27）。
 改功能前先在干净树上跑一遍，数字对位后再动手。
 
 ### TTY-only 行为的验证方式（v0.2.3 起）
@@ -24,6 +24,7 @@ bun test 里的 fake IO 测不出事件顺序与覆盖语义。可复用脚本�
 | `scripts/pty-e2e.ts` | 用系统 `script(1)` 起真 PTY 跑 neo，喂脚本化输入 + 最小屏幕缓冲断言屏幕文本 |
 | `scripts/verify.sh` | 全量闸门：tsc → bun test → pty-e2e，各阶段输出写 `docs/evidence/v0.2.4-<stage>.txt` |
 | `scripts/readline-probe.ts` | bun readline 行为探针（completer / Tab / Ctrl+J / rl.line 多行），改输入层前先跑它 |
+| `scripts/tui-probe.ts` | v0.3.0 TUI 探针（raw mode / 按键形态 / 底部 live 帧 / 异步交错 / 终端恢复），改渲染前先跑它 |
 
 新增 TTY 行为时**先加 pty-e2e 场景，再改实现**；不要靠手工敲一遍当证据。
 
@@ -44,7 +45,7 @@ bun test 里的 fake IO 测不出事件顺序与覆盖语义。可复用脚本�
 | 工具注册 | `registerTool` 会改全局注册表：测试必须拿返回的注销函数清理 |
 | 子进程 | 跨进程锁用 `Bun.spawnSync` 真子进程验证，不用同进程 `Promise.all` 冒充 |
 
-## §4 测试文件清单（27 个）
+## §4 测试文件清单（46 个）
 
 | 文件 | 覆盖 |
 |---|---|
@@ -79,6 +80,20 @@ bun test 里的 fake IO 测不出事件顺序与覆盖语义。可复用脚本�
 | `toollog.test.ts` | D3：失败摘要（stderr/exit code）、时长格式、`/last` 格式化、缓存上限 20、失败详情的行数预算 |
 | `transcript.test.ts` | D4：轮次切取、角色过滤、`maxLines` 截断提示、多行用户输入、markdown 渲染 |
 | `flash-notice.test.ts` | D5：提示符重绘注入、不打印 `❯`、非 TTY 不写、无 restorer 退化 |
+
+### v0.3.0 新增（46 文件 / 839 例）
+
+| 文件 | 覆盖 |
+|---|---|
+| `tui-frame.test.ts` | live 帧：擦除/提交/重画/光标归位/长高缩短无残影/DEC 2026 开关；含最小屏幕缓冲 |
+| `tui-dock.test.ts` | 流式行缓冲、transient 提交/丢弃、失败详情批量、resize 重排、240 字符软断 |
+| `tui-composer.test.ts` | 输入/多行/历史/补全/粘贴 chip/审批/选择 initial/双 Ctrl+C/粘贴 idle 兜底 |
+| `tui-buffer.test.ts` | 按显示列折行、光标映射、码点编辑、显示列 preferred column、历史前缀搜索 |
+| `tui-keys.test.ts` | Ctrl+J/Enter 与修饰键组合、UTF-8 name=undefined、Tab、PasteMachine |
+| `tui-status.test.ts` | 状态行字段/优先级降级/进度条/60 列不折行 |
+| `tui-console-dock.test.ts` | Console dock 接线（流式/工具行/详情批量/spinner 不泄漏/`● ` 前缀回归） |
+| `git.test.ts` | git 分支读取 + 缓存 + 非仓库/detached |
+| `tui-width.test.ts` | Unicode 宽度真值（emoji=2、ZWJ 家庭=2、VS16、国旗、组合字符、truncate 不切坏 grapheme） |
 
 ### v0.2.4 新增（37 文件 / 660 例）
 

@@ -26,12 +26,24 @@ export interface FoldThresholds {
   foldChars: number;
 }
 
+export interface FoldOptions {
+  /**
+   * true = 自绘输入框（v0.3.0 起）：小段多行直接插入，只有行数/字符数超阈值才折叠。
+   * false/缺省 = readline 路径：行缓冲装不下 \n，含换行必折叠（结构性约束）。
+   */
+  allowMultiline?: boolean;
+}
+
 /**
- * 折叠判定（纯函数）。
- * 含 \n 必折叠——readline 行缓冲无法容纳换行，这是结构性约束不是策略；
- * 单行超长按 fold_chars 折叠。
+ * 折叠判定（纯函数，两种宿主共用同一份阈值）。
+ * - readline：含 \n 必折叠（结构性约束）；
+ * - composer：\n 是合法编辑内容，按 foldLines / foldChars 判断。
  */
-export function shouldFold(text: string, t: FoldThresholds): boolean {
+export function shouldFold(text: string, t: FoldThresholds, opts: FoldOptions = {}): boolean {
+  if (opts.allowMultiline) {
+    const lines = text.split("\n").length;
+    return lines > t.foldLines || text.length >= t.foldChars;
+  }
   if (text.includes("\n")) return true;
   return text.length >= t.foldChars;
 }

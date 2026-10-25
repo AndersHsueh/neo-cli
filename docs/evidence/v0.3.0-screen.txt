@@ -1,0 +1,89 @@
+── neo PTY E2E ──
+平台      darwin / bun 1.3.13
+被测入口  /Users/xueyuheng/research/000-alice-new/neo/src/index.ts
+fake-llm  /Users/xueyuheng/research/000-alice-new/neo/scripts/fake-llm.ts
+场景      s11, s14, s16
+
+▶ s11 S11 状态条常驻：字段/时长递增/忙碌排队/分支
+  ── 屏幕（PASS，供人工复核）──
+  ── 屏幕快照（第 8~28 行 / 共 28 行；>> 为锚点）──
+     8│  model  fake-model
+     9│  endpoint 127.0.0.1:60254
+    10│  tools  read_file write_file edit_file list_dir glob grep shell web_fetch use_skill compact_ctx
+    11│task wiki_search wiki_write remember send_message list_peers
+    12│────────────────────────────────────────────────────────────────────────────
+    13│❯ 第一问
+    14│
+    15│❯ 排队消息
+    16│● 慢回答完成。
+    17│
+    18│
+    19│· 本轮 1.3s · 0↑ 0↓ · 0 tools · ctx 1% · total 0↑ 0↓
+    20│
+    21│● 慢回答完成。
+    22│
+    23│
+    24│· 本轮 1.3s · 0↑ 0↓ · 0 tools · ctx 1% · total 0↑ 0↓
+    25│────────────────────────────────────────────────────────────────────────────────────── neo · work ──
+    26│❯  输入消息 · @ 文件 · / 命令 · Ctrl+J 换行
+    27│────────────────────────────────────────────────────────────────────────────────────────────────────
+>>  28│fake-model · default · ask · ⎇ main · ctx ░░░░░ 1% · 0:01 · 0 tok
+  PASS s11（2970ms）
+
+▶ s14 S14 审批模态：问题可见/输入框不消失/写入生效
+  ── 屏幕（PASS，供人工复核）──
+  ── 屏幕快照（第 7~27 行 / 共 27 行；>> 为锚点）──
+     7│  provider ipsa [default]
+     8│  model  fake-model
+     9│  endpoint 127.0.0.1:60258
+    10│  tools  read_file write_file edit_file list_dir glob grep shell web_fetch use_skill compact_ctx
+    11│task wiki_search wiki_write remember send_message list_peers
+    12│────────────────────────────────────────────────────────────────────────────
+    13│❯ 写一个文件
+    14│
+    15│● 准备写文件。
+    16│ ⚡ write_file {"path":"a.txt","content":"written by neo\n"} .
+    17│
+    18│
+    19│ ⚡ write_file {"path":"a.txt","content":"written by neo\n"} ✓
+    20│● 写完了。
+    21│
+    22│
+    23│· 本轮 0.1s · 0↑ 0↓ · 1 tools · ctx 1% · total 0↑ 0↓
+    24│────────────────────────────────────────────────────────────────────────────────────── neo · work ──
+    25│❯  输入消息 · @ 文件 · / 命令 · Ctrl+J 换行
+    26│────────────────────────────────────────────────────────────────────────────────────────────────────
+>>  27│fake-model · default · ask · ctx ░░░░░ 1% · 0:00 · 0 tok
+  PASS s14（279ms）
+
+▶ s16 S16 选择菜单：↓/Enter 生效、Esc 取消、状态行在
+  ── 屏幕（PASS，供人工复核）──
+  ── 屏幕快照（第 11~31 行 / 共 31 行；>> 为锚点）──
+    11│task wiki_search wiki_write remember send_message list_peers
+    12│────────────────────────────────────────────────────────────────────────────
+    13│❯ /tier
+    14│
+    15│当前档位       default
+    16│生效路由       ipsa / glm-5.3-flash
+    17│
+    18│
+    19│!  档位 deep_reasoning 指向 minimax（anthropic 未接入），已降级到 default / ipsa
+    20│✔  档位 → default（ipsa / glm-5.3-flash）
+    21│❯ /tier
+    22│
+    23│当前档位       default
+    24│生效路由       ipsa / glm-5.3-flash
+    25│
+    26│
+    27│·  已取消。
+    28│────────────────────────────────────────────────────────────────────────────────────── neo · work ──
+    29│❯  输入消息 · @ 文件 · / 命令 · Ctrl+J 换行
+    30│────────────────────────────────────────────────────────────────────────────────────────────────────
+>>  31│glm-5.3-flash · default · ask · ctx ░░░░░ 1% · 0:00 · 0 tok
+  PASS s16（943ms）
+
+── 汇总 ──
+  PASS  s11  S11 状态条常驻：字段/时长递增/忙碌排队/分支
+  PASS  s14  S14 审批模态：问题可见/输入框不消失/写入生效
+  PASS  s16  S16 选择菜单：↓/Enter 生效、Esc 取消、状态行在
+  3 passed / 0 failed

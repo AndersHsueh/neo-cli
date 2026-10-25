@@ -130,3 +130,16 @@ neo 开发过程中沉淀的教训清单,持续追加。当前十条:zsh 变量�
 - **`Ctrl+J`(0x0A) 与 `Enter`(0x0D) 可区分，但 keypress / line 的先后顺序由监听器注册时机决定**：默认路径拦不住 Ctrl+J（line 先到）。稳定做法是在 stdin `data` 事件里按字节记类型（比 readline 处理更早），且要按**队列**消费——一个数据块可能产生多个 line 事件，CRLF 只算一个 Enter。
 - **`rl.prompt()` 无参调用会把 `rl.cursor` 归零**：补全后继续输入会变成 `X@补全结果`；`_refreshLine()` 保留 cursor。用 `rl.line=` 改写缓冲后要么手动设 `rl.cursor`，要么走 `_refreshLine()`。
 - **续行/多行与 readline history 的交互**：readline 只把非空且非纯空白的行写进 history；无条件 splice 会误删上一条真实历史。回滚前先校验 `history[0] === 该行`。
+
+## 2026-10-25 v0.3.0 live 帧八坑：提交行后光标归零 / resize 残影 / activity 状态 / 粘贴丢包 / 用户消息 / 审批不卸载 / PTY 中间态 / stty 要 /dev/tty
+
+- **提交行后必须把「帧内光标行号」归零**：`FrameRenderer` 用 `cursorRowInFrame` 决定下一次 `CSI nA` 上移几行；提交行写完栈顶光标已在帧下方，若仍按旧行号擦除，会把刚写进 scrollback 的提交行擦掉（M0 第一次实现就踩到，P2 场景固化）。
+- **resize 只 invalidate 不擦旧帧会留残影**：`onResize` 先 `frame.erase()`（按 resize 前坐标尽力擦）再 `invalidate()` 重画；S15 一开始偶发「旧 100 列顶线留在历史里」。
+- **状态行时长不能用 `draining` 判断**：斜杠命令/选择菜单期间 drain 也是 true，`Date.now() - 0` 会显示 49 万小时；新增 `turnActive` 只在 agent turn 期间为真。
+- **`dock.finishActivity` 不能无条件 flush pending**：agent 在首个正文 chunk 前会再调一次 `stopSpinner`，若 spinner 收尾也 flush，「● 」前缀会被单独提交成一行（S1 回归，真 bug）；只有 persist 的工具行才 flush。
+- **paste-end 丢包必须有 idle 兜底**：bracketed paste 缺结束标记会让 `pasteActive` 永久为真、之后所有按键被静默吞掉；1s idle 超时收尾（qwen 用注释标出的坑），单测用 `pasteIdleMs` 调小验证。
+- **用户消息要在提交时写进 scrollback**：输入框提交后只清 buffer 的话，历史和屏幕上都会「查无此消息」；`commitUserInput` 负责首行 `❯ `、续行两空格，并先 `dock.flushPending()` 保证顺序。
+- **审批态不能卸载输入框**：问题显示在框上方、顶线变「确认」，输入框继续可见（qwen 的 residual 类问题）；同时 `stopSpinner` 的 dock 分支必须清 `toolLineTimer/toolLineActive`，否则 350ms 计时器会把活动行画回来、同一工具重复落盘。
+- **PTY 断言不能抓「流式字节的中间态」**：一次帧写入可能被 PTY 分块，断言前要等「顶线 + 状态行都在」的稳定帧（S15 偶发失败的原因）；后台 `stty` 必须 `< /dev/tty`，否则在 wrapper 里报 `stdin isn't a terminal`。
+- **宽度模型必须含 emoji/组合字符**：`charWidth("😀")=1` 会让帧行实际超宽 → 终端 auto-wrap → 光标行号记账失效 → 串屏。修法：grapheme 级宽度（Intl.Segmenter + VS16/ZWJ/国旗/组合字符），`displayWidth/truncate/tokenize` 全部按 grapheme。
+- **`!cmd` 与 live 帧是两套写端**：子进程 inherit tty 会写穿帧；实现 suspend/resume（cooked + 显示光标 + 擦帧 + 定格），但长子进程 Ctrl+C 的回显/归还时序在 PTY 下不稳定，v0.3.1 改子进程输出走 pipe。

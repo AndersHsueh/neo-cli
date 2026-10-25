@@ -113,6 +113,23 @@ export function formatOutputLines(body: string, opts: OutputLinesOptions): strin
 }
 
 /**
+ * 失败详情行（实时紧凑路径与 /last 之外共用）：
+ * 缩进 + 限高 + 「完整输出：/last」提示。
+ */
+export function failureDetailRows(
+  summary: ReturnType<typeof summarizeFailure>,
+  width: number,
+): string[] {
+  const rows = formatOutputLines(summary.detail.join("\n"), {
+    maxLines: FAILURE_DETAIL_LINES,
+    width,
+    margin: "  │ ",
+  });
+  rows.push(c.dim("  （完整输出：/last）"));
+  return rows;
+}
+
+/**
  * 把一条调用记录渲染成多行（供 `/last` 使用）。
  * 失败摘要与紧凑行共用同一套宽度收敛，保证单行头不超宽。
  */

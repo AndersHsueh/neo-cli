@@ -109,6 +109,15 @@ export interface SelectDeps {
   onActiveChange?: (active: boolean, cancel?: () => void) => void;
   /** 非 TTY 回退用问句函数（即 ui.asker） */
   asker?: (q: string) => Promise<string>;
+  /**
+   * TTY 下的展示函数（v0.3.0）：由 composer 在自己的 live 帧里渲染菜单。
+   * 提供后跳过本文件的行内自绘（不再直接写 stdout），select 只做语义收敛。
+   */
+  present?: <T>(
+    question: string,
+    options: SelectOption<T>[],
+    initial?: number,
+  ) => Promise<T | null>;
   /** C5 行缓冲清理（M0 §2 手段B：rl.line="" + _refreshLine），由持有 readline 的一方注入 */
   clearLine?: () => void;
   /**
@@ -154,7 +163,9 @@ export async function select<T>(
 ): Promise<T | null> {
   if (options.length === 0) return null;
   const isTTY = deps.isTTY ?? process.stdin.isTTY;
-  if (!isTTY || !deps.router) return fallbackNumeric(question, options, deps);
+  if (!isTTY) return fallbackNumeric(question, options, deps);
+  if (deps.present) return deps.present(question, options, deps.initial);
+  if (!deps.router) return fallbackNumeric(question, options, deps);
 
   const out = deps.out ?? process.stdout;
   const cols = (): number =>

@@ -153,10 +153,31 @@ export function hostOf(u: string): string {
 /** ANSI SGR 转义（颜色/加粗等），不占显示宽度。 */
 const ANSI_SGR = /\x1b\[[0-9;]*m/g;
 
-/** 单个 code point 的显示宽度：CJK / 全角 / 韩文 算 2 列，其余 1 列。 */
+/** combining / format 字符（宽度 0）。 */
+const ZERO_WIDTH = /\p{Mn}|\p{Me}|\p{Cf}/u;
+
+/** 是否 emoji 主体区（终端按 2 列渲染）。 */
+function isEmojiBase(cp: number): boolean {
+  return (
+    (cp >= 0x1f000 && cp <= 0x1faff) || // emoji / 补充符号
+    (cp >= 0x1f1e6 && cp <= 0x1f1ff) || // 区域指示符（国旗）
+    (cp >= 0x1f3fb && cp <= 0x1f3ff) // 肤色修饰
+  );
+}
+
+/**
+ * 单个 code point 的显示宽度（近似 wcwidth）：
+ * CJK/全角 2，emoji 2，combining/format/ZWJ/VS 0，其余 1。
+ * 注意：VS16/ZWJ 需要 grapheme 级判断，见 `graphemeWidth` / `displayWidth`。
+ */
 export function charWidth(ch: string): number {
   const cp = ch.codePointAt(0) ?? 0;
-  if (cp === 0x200b) return 0; // 零宽空格
+  if (cp < 0x20 || cp === 0x7f) return 0; // 控制字符不占显示列（换行/制表由上层处理）
+  if (cp === 0x200b || cp === 0x200d) return 0; // 零宽空格 / ZWJ
+  if (cp >= 0xfe00 && cp <= 0xfe0f) return 0; // variation selectors
+  if (cp === 0x20e3) return 0; // combining enclosing keycap
+  if (ZERO_WIDTH.test(ch)) return 0;
+  if (isEmojiBase(cp)) return 2;
   return (cp >= 0x1100 && cp <= 0x115f) ||
     (cp >= 0x2e80 && cp <= 0xa4cf) ||
     (cp >= 0xac00 && cp <= 0xd7a3) ||
@@ -168,10 +189,42 @@ export function charWidth(ch: string): number {
     : 1;
 }
 
-/** 终端可视宽度（忽略 ANSI，宽字符算 2 列）。 */
+/** grapheme cluster 切分（emoji ZWJ / 组合字符不拆开）。 */
+const SEGMENTER: { segment(input: string): Iterable<{ segment: string }> } | null =
+  typeof Intl !== "undefined" && "Segmenter" in Intl
+    ? (new (Intl as unknown as { Segmenter: new (l?: string, o?: { granularity: string }) => { segment(input: string): Iterable<{ segment: string }> } }).Segmenter(undefined, { granularity: "grapheme" }))
+    : null;
+
+export function graphemes(s: string): string[] {
+  if (SEGMENTER) return Array.from(SEGMENTER.segment(s), (x) => x.segment);
+  return Array.from(s);
+}
+
+/** 一个 grapheme cluster 的显示宽度（VS16/ZWJ/国旗/组合字符按终端实际列数）。 */
+export function graphemeWidth(g: string): number {
+  const cps = Array.from(g);
+  if (cps.length === 0) return 0;
+  if (cps.length === 1) return charWidth(cps[0] as string);
+  // 国旗（两个区域指示符）整体 2 列
+  if (cps.length === 2 && cps.every((c) => {
+    const cp = c.codePointAt(0) ?? 0;
+    return cp >= 0x1f1e6 && cp <= 0x1f1ff;
+  })) return 2;
+  const hasVs16 = cps.includes("\ufe0f");
+  const hasZwj = cps.includes("\u200d");
+  const emojiBase = cps.some((c) => isEmojiBase(c.codePointAt(0) ?? 0));
+  // 组合序列：所有码点都是 0 宽 → 0
+  const allZero = cps.every((c) => charWidth(c) === 0);
+  if (allZero) return 0;
+  if (hasVs16 || hasZwj || emojiBase) return 2;
+  // 其余（如 e + combining acute）：取 base 宽度
+  return charWidth(cps[0] as string);
+}
+
+/** 终端可视宽度（忽略 ANSI；按 grapheme 计算，emoji/组合字符不低估）。 */
 export function displayWidth(s: string): number {
   let w = 0;
-  for (const ch of s.replace(ANSI_SGR, "")) w += charWidth(ch);
+  for (const g of graphemes(s.replace(ANSI_SGR, ""))) w += graphemeWidth(g);
   return w;
 }
 
@@ -193,10 +246,10 @@ export function truncate(s: string, max: number): string {
   const budget = max - 1;
   let out = "";
   let w = 0;
-  for (const ch of s.replace(ANSI_SGR, "")) {
-    const cw = charWidth(ch);
+  for (const g of graphemes(s.replace(ANSI_SGR, ""))) {
+    const cw = graphemeWidth(g);
     if (w + cw > budget) break;
-    out += ch;
+    out += g;
     w += cw;
   }
   return `${out}…`;
