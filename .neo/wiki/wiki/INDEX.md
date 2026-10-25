@@ -1,7 +1,7 @@
 # neo 开发知识库 — 索引
 
 > 内容导向的目录:每个 wiki 页面在这里占一行,给出链接、一句话摘要和可选元数据。
-> 最后更新:2026-10-25
+> 最后更新:2026-10-26
 
 ## 📌 一句话定位
 
@@ -9,7 +9,7 @@
 
 ## 🧭 当前状态
 
-已编译 5 份 raw,覆盖 23 个主题页。2026-10-20 v0.2.0 发布:跨会话消息 —— 文件信箱(~/.neo/mailbox/<session-id>/)+ 会话状态机(state.json: idle/working/waiting_input/exiting + 心跳 + outstanding)+ 委派 watchdog(120s)+ send_message/list_peers + P1 工具间隙注入 / P2 空闲 tick + 人工接管(ESC 裁决 A);对等组网、无固定 leader,支持多跳协作;全量用例 445→519(+74,26 文件),tsc 零错误。同日 v0.2.1 hotfix:真实双会话验证暴露 ① 主代理运行时工具被 `TOOL_NAMES_EXCLUDED_FOR_SUBAGENT` 误过滤、② 长 turn 心跳不刷新导致 watchdog 误报 dead;修复后用例 519→523。v0.2.2 界面优化:工具调用默认紧凑单行(`⚡ name args .` 原地更新/下一个覆盖/✓✗),`toolcall_info_details` 可恢复旧版详情;用例 523→530(27 文件)。当晚 anders↔huan 两个真实前台进程完成双向验收(消息 id/reply_to/13s/紧凑工具行),详见 [[里程碑-1020]]。v0.2.3 TUI 补漏:流式状态泄漏(`●` 前缀只出现一次)、宽度数学(CJK 按 code unit 截断/回落 100/无 resize)、`/last` 工具回看与失败详情、`--resume` 回放、Ctrl+C 提示破坏输入五行修复;用例 530→580(32 文件),PTY 4/4,详见 [[TUI补漏-v0.2.3]] 与 [[TUI进化路线-2026Q4]]。v0.2.4 输入层:`@` 文件补全/引用展开、`/` 命令补全、`Ctrl+J` 多行;M0 探针纠正「bun 不支持 completer」误判(真 PTY 下原生可用,缺 cursor 入参);用例 569→660(37 文件),PTY 10/10,详见 [[输入层-v0.2.4]]。v0.3.0 TUI:底部常驻状态条(model/tier/模式/分支/ctx/时长/tok)+ Claude Code 式自绘输入框(多行/历史/补全/粘贴/审批/选择/双 Ctrl+C);不换渲染模型(inline+scrollback、不 alt-screen);M0 探针 P1~P4 全 PASS;用例 660→839(46 文件),PTY 17/17,详见 [[TUI状态栏-输入框-v0.3.0]]。v0.3.1 剧情层:`--resume` 真续接同一 session-id(活进程拒绝/列表隐藏/残留锁回收)+ 12 个 Matrix 角色池随机代号 + `Agent: <代号>` 顶线 + `neo` 的 Mr.Anderson/N E O 绿字动画;用例 839→873(52 文件),PTY 19/19,详见 [[会话代号与标题动画-v0.3.1]]。v0.3.2 hotfix:并发 resume 抢锁失败覆盖存活 profile(critical)修复 + deadAfterMs 贯穿;用例 873→876,PTY 19/19。v0.3.3 hotfix:resume 身份失败致命 exit 2 + owner 新鲜独立保护启动窗口;用例 876→878,PTY 19/19。v0.3.4 banner 视觉:M.A.T.R.I.X + 底部空行;用例 878→881(53 文件)。前一版 v0.1.12:记忆旧件清理 —— 删除 8 个零调用模块、861 行旧测试与死配置,用例 497→445。缺口:supervisor/后台会话/attach/agent view/跨机留 v0.3;多跳环检测与 reply_to 兜底待实测;协调消息是否静默记忆捕获待评估。
+已编译 5 份 raw,覆盖 24 个主题页。2026-10-20 v0.2.0 发布:跨会话消息 —— 文件信箱(~/.neo/mailbox/<session-id>/)+ 会话状态机(state.json: idle/working/waiting_input/exiting + 心跳 + outstanding)+ 委派 watchdog(120s)+ send_message/list_peers + P1 工具间隙注入 / P2 空闲 tick + 人工接管(ESC 裁决 A);对等组网、无固定 leader,支持多跳协作;全量用例 445→519(+74,26 文件),tsc 零错误。同日 v0.2.1 hotfix:真实双会话验证暴露 ① 主代理运行时工具被 `TOOL_NAMES_EXCLUDED_FOR_SUBAGENT` 误过滤、② 长 turn 心跳不刷新导致 watchdog 误报 dead;修复后用例 519→523。v0.2.2 界面优化:工具调用默认紧凑单行(`⚡ name args .` 原地更新/下一个覆盖/✓✗),`toolcall_info_details` 可恢复旧版详情;用例 523→530(27 文件)。当晚 anders↔huan 两个真实前台进程完成双向验收(消息 id/reply_to/13s/紧凑工具行),详见 [[里程碑-1020]]。v0.2.3 TUI 补漏:流式状态泄漏(`●` 前缀只出现一次)、宽度数学(CJK 按 code unit 截断/回落 100/无 resize)、`/last` 工具回看与失败详情、`--resume` 回放、Ctrl+C 提示破坏输入五行修复;用例 530→580(32 文件),PTY 4/4,详见 [[TUI补漏-v0.2.3]] 与 [[TUI进化路线-2026Q4]]。v0.2.4 输入层:`@` 文件补全/引用展开、`/` 命令补全、`Ctrl+J` 多行;M0 探针纠正「bun 不支持 completer」误判(真 PTY 下原生可用,缺 cursor 入参);用例 569→660(37 文件),PTY 10/10,详见 [[输入层-v0.2.4]]。v0.3.0 TUI:底部常驻状态条(model/tier/模式/分支/ctx/时长/tok)+ Claude Code 式自绘输入框(多行/历史/补全/粘贴/审批/选择/双 Ctrl+C);不换渲染模型(inline+scrollback、不 alt-screen);M0 探针 P1~P4 全 PASS;用例 660→839(46 文件),PTY 17/17,详见 [[TUI状态栏-输入框-v0.3.0]]。v0.3.1 剧情层:`--resume` 真续接同一 session-id(活进程拒绝/列表隐藏/残留锁回收)+ 12 个 Matrix 角色池随机代号 + `Agent: <代号>` 顶线 + `neo` 的 Mr.Anderson/N E O 绿字动画;用例 839→873(52 文件),PTY 19/19,详见 [[会话代号与标题动画-v0.3.1]]。v0.3.2 hotfix:并发 resume 抢锁失败覆盖存活 profile(critical)修复 + deadAfterMs 贯穿;用例 873→876,PTY 19/19。v0.3.3 hotfix:resume 身份失败致命 exit 2 + owner 新鲜独立保护启动窗口;用例 876→878,PTY 19/19。v0.3.4 banner 视觉:M.A.T.R.I.X + 底部空行;用例 878→881(53 文件)。前一版 v0.1.12:记忆旧件清理 —— 删除 8 个零调用模块、861 行旧测试与死配置,用例 497→445。缺口:supervisor/后台会话/attach/agent view/跨机留 v0.3;多跳环检测与 reply_to 兜底待实测;协调消息是否静默记忆捕获待评估。
 
 ## 🗂 主题目录
 
@@ -34,6 +34,7 @@
 | 输入层-v0.2.4 | [[输入层-v0.2.4]] | v0.2.4 补齐输入层：`@` 文件补全（Tab/模糊匹配）、`@path` 引用展开（预算截断）、`/` 命令补全（漂移守卫）、`Ctrl+J` 多行（非 TTY 保持 Enter 语义）；M0 探针推翻「bun 不支持 completer」误判 | v0.2.4 已交付 |
 | TUI状态栏-输入框-v0.3.0 | [[TUI状态栏-输入框-v0.3.0]] | v0.3.0 底部 live 帧：常驻状态条 + 自绘输入框（上下横线/多行/历史/补全/粘贴/审批/选择/双 Ctrl+C）；不 alt-screen；PTY 17/17、红态 0/7 | v0.3.0 已交付 |
 | 会话代号与标题动画-v0.3.1 | [[会话代号与标题动画-v0.3.1]] | v0.3.1 剧情层：Matrix 角色池随机代号 + `Agent: <代号>` 顶线 + `neo` 的 Mr.Anderson/N E O 动画；前置 `--resume` 真续接；v0.3.2/0.3.3 并发抢锁 + owner 启动窗口 hotfix；PTY 19/19 | v0.3.3 已交付 |
+| 2026-10-26 工作盘点 | [[盘点-2026-10-26-v0.3.1剧情层与hotfix]] | v0.3.1 剧情层 + 3 轮 resume 并发 hotfix + v0.3.4 banner 的当日完整盘点：版本时间线、owner 锁经验、测试/证据与下一步 | v0.3.4 已交付 |
 | TUI进化路线-2026Q4 | [[TUI进化路线-2026Q4]] | v0.2.4 输入层（`@` 补全/多行）→ v0.3 常驻状态栏+transcript+diff → v0.3.x supervisor；含「不做」清单与 2026 横评依据 | 规划中 |
 | 里程碑-1020 | [[里程碑-1020]] | 2026-10-20 v0.2.0~v0.2.2 三连发 + anders↔huan 真实双会话验收通过；当日经验（工具可见性/心跳/watchdog/紧凑显示/reply_to 对账） | 3 个 tag 已推 gitee |
 
