@@ -22,6 +22,17 @@ import { isRecallMessage, type MemoryPort } from "./memory/port.ts";
 
 export type PermissionMode = "ask" | "auto-edit" | "auto-all" | "plan";
 
+/* ------------------------------------------------------------------ */
+/* 上下文压缩参数（P0-2）                                              */
+/* ------------------------------------------------------------------ */
+
+/** 压缩后保留的近期原文条数（上限）。最近的路径/命令/错误细节靠它活着。 */
+const COMPACT_KEEP_TAIL = 6;
+/** 喂给摘要器的单条消息字符上限。旧的 160 字符会砍掉路径、命令与错误栈。 */
+const COMPACT_MSG_CHAR_CAP = 2_000;
+/** 摘要器输入总字符上限，防止一次压缩把窗口再撑爆。 */
+const COMPACT_INPUT_CHAR_CAP = 60_000;
+
 /**
  * Agent 对输出层的最小依赖面。
  *
@@ -265,18 +276,40 @@ export class Agent {
       throw new ToolError("对话太短，压缩不划算（非 system 消息不足 4 条）");
     }
 
-    const convoText = convo
+    // ---- 切分：摘要较早的部分，最近 N 条保留原文（P0-2）----
+    // 切点必须落在 user 消息之前：这样 assistant(tool_calls) 与紧随其后的
+    // tool 结果不会被拆开，下一轮请求的消息序列仍然合法。
+    const desiredTail = Math.min(COMPACT_KEEP_TAIL, Math.max(2, Math.floor(convo.length / 2)));
+    let cut = Math.max(0, convo.length - desiredTail);
+    while (cut > 0 && convo[cut]?.role !== "user") cut -= 1;
+    if (cut === 0) {
+      // 历史里没有 user 边界（极少见）：退化为从尾部保留最后一条的边界，
+      // 且不要把 tool 结果与其 assistant 调用拆开。
+      cut = Math.max(1, convo.length - 1);
+      while (cut > 0 && convo[cut]?.role === "tool") cut -= 1;
+    }
+    const head = convo.slice(0, cut);
+    const tail = convo.slice(cut);
+    if (head.length === 0) throw new ToolError("找不到可压缩的安全切点");
+
+    const clip = (s: string, max = COMPACT_MSG_CHAR_CAP): string =>
+      s.length > max ? `${s.slice(0, max)}…[截断 ${s.length - max} 字符]` : s;
+
+    let convoText = head
       .map((m) => {
         if (m.role === "assistant" && m.tool_calls?.length) {
           const calls = m.tool_calls
-            .map((tc) => `${tc.function.name}(${truncateArgs(tc.function.arguments)})`)
+            .map((tc) => `${tc.function.name}(${truncateArgs(tc.function.arguments, 500)})`)
             .join("; ");
-          return `assistant(tool_call): ${calls}`;
+          return `assistant(tool_call): ${clip(calls)}`;
         }
-        if (m.role === "tool") return `tool(${m.name ?? ""}): ${truncateArgs(contentText(m.content) ?? "")}`;
-        return `${m.role}: ${truncateArgs(contentText(m.content) ?? "")}`;
+        if (m.role === "tool") return `tool(${m.name ?? ""}): ${clip(contentText(m.content) ?? "")}`;
+        return `${m.role}: ${clip(contentText(m.content) ?? "")}`;
       })
       .join("\n");
+    if (convoText.length > COMPACT_INPUT_CHAR_CAP) {
+      convoText = `${convoText.slice(0, COMPACT_INPUT_CHAR_CAP)}\n…[较早历史过长，已截断 ${convoText.length - COMPACT_INPUT_CHAR_CAP} 字符]`;
+    }
 
     const convoTokens = estimateTokens(convo);
     const budget = Math.min(12_000, Math.floor(this.opt.cfg.contextWindow * 0.2));
@@ -284,7 +317,9 @@ export class Agent {
       `请把下面的对话历史压缩成一份结构化摘要，供后续继续工作使用。\n` +
       `必须保留：用户的目标与明确要求、已确定的事实与结论、已改动的文件路径、关键代码片段、待办事项与未解决问题。\n` +
       `丢弃：寒暄、重复内容、冗长的工具原始输出。\n` +
-      `输出纯文本摘要，不要加前言。\n\n【对话历史】\n${convoText}`;
+      `输出纯文本摘要，不要加前言。\n` +
+      `注意：最近 ${tail.length} 条消息已保留原文、不在此次压缩范围内；摘要只需覆盖下面这段较早的历史。\n\n` +
+      `【较早的历史（共 ${head.length} 条消息）】\n${convoText}`;
 
     const res = await this.streamFn(
       { ...this.opt.cfg, maxTokens: budget, temperature: 0.2 },
@@ -299,6 +334,13 @@ export class Agent {
       throw new ToolError("压缩器返回了空摘要");
     }
 
+    // 压缩请求本身也花 token：计入累计，否则 /cost 与真实账单对不上（P0-2）。
+    if (res.usage) {
+      this.totalPrompt += res.usage.prompt_tokens ?? 0;
+      this.totalCompletion += res.usage.completion_tokens ?? 0;
+      this.totalReasoning += res.usage.completion_tokens_details?.reasoning_tokens ?? 0;
+    }
+
     // v0.2 记忆激活 §7.6.1 T2：压缩前捕获摘要 —— 历史即将被替换，
     // 这轮对话的信息价值最高（决策/踩坑很可能只在这一轮里出现过）。
     this.turnSeq += 1;
@@ -308,11 +350,14 @@ export class Agent {
       // 记忆失败不影响压缩
     }
 
-    const sys = this.messages[0];
-    this.messages = [
-      ...(sys ? [sys] : []),
-      { role: "user", content: `<对话摘要>\n${res.content.trim()}\n</对话摘要>` },
-    ];
+    const sys = this.messages[0]?.role === "system" ? this.messages[0] : undefined;
+    const summaryMsg: Message = {
+      role: "user",
+      content:
+        `<对话摘要>\n${res.content.trim()}\n</对话摘要>\n\n` +
+        `（较早的 ${head.length} 条消息已压缩为上述摘要；最近 ${tail.length} 条保留原文。）`,
+    };
+    this.messages = [...(sys ? [sys] : []), summaryMsg, ...tail];
     const afterTokens = estimateTokens(this.messages);
     this.opt.onEvent?.({ type: "compact", data: { beforeTokens: convoTokens, afterTokens } });
     return { beforeTokens: convoTokens, afterTokens };
