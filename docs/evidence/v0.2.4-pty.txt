@@ -1,0 +1,56 @@
+──── stage: pty ────
+command: bun run scripts/pty-e2e.ts
+started: 2026-10-25 21:53:16 +0800
+repo:    /Users/xueyuheng/research/000-alice-new/neo
+bun:     1.3.13
+──────────────────────────
+── neo PTY E2E ──
+平台      darwin / bun 1.3.13
+被测入口  /Users/xueyuheng/research/000-alice-new/neo/src/index.ts
+fake-llm  /Users/xueyuheng/research/000-alice-new/neo/scripts/fake-llm.ts
+场景      s1, s2, s3, s4, s5, s6, s7, s8, s9, s10
+
+▶ s1 S1 narration：两轮正文都有行首 ● 前缀
+  PASS s1（261ms）
+
+▶ s2 S2 /last：回看 read_file 的完整输出
+  PASS s2（281ms）
+
+▶ s3 S3 窄终端（COLUMNS=60）：工具行不超宽、错误摘要非空
+  PASS s3（255ms）
+
+▶ s4 S4 --resume：回放上一轮问答
+  PASS s4（395ms）
+
+▶ s5 S5 Tab 补全 @ 文件：插入 @a.txt 并触发引用
+  PASS s5（227ms）
+
+▶ s6 S6 Tab 补全 / 命令：/las → /last
+  PASS s6（254ms）
+
+▶ s7 S7 Ctrl+J 多行：一条含 \n 的 user 消息
+  PASS s7（228ms）
+
+▶ s8 S8 @ 引用送达模型：REF_OK
+  PASS s8（198ms）
+
+▶ s9 S9 补全后光标在行尾：@a.txt + X → @a.txtX
+  · 清行方式：Ctrl+U（Ctrl+U 可用）
+  PASS s9（308ms）
+
+▶ s10 S10 连按 Tab 遍历首轮候选：alpha1/2/3
+  · 退出前清行方式：Ctrl+U（Ctrl+U 可用）
+  PASS s10（316ms）
+
+── 汇总 ──
+  PASS  s1  S1 narration：两轮正文都有行首 ● 前缀
+  PASS  s2  S2 /last：回看 read_file 的完整输出
+  PASS  s3  S3 窄终端（COLUMNS=60）：工具行不超宽、错误摘要非空
+  PASS  s4  S4 --resume：回放上一轮问答
+  PASS  s5  S5 Tab 补全 @ 文件：插入 @a.txt 并触发引用
+  PASS  s6  S6 Tab 补全 / 命令：/las → /last
+  PASS  s7  S7 Ctrl+J 多行：一条含 \n 的 user 消息
+  PASS  s8  S8 @ 引用送达模型：REF_OK
+  PASS  s9  S9 补全后光标在行尾：@a.txt + X → @a.txtX
+  PASS  s10  S10 连按 Tab 遍历首轮候选：alpha1/2/3
+  10 passed / 0 failed

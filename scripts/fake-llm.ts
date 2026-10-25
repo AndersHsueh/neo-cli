@@ -15,7 +15,7 @@
  *
  * 环境变量：
  *   PORT      监听端口，默认 18123；0 = 自动分配
- *   SCENARIO  tool-then-answer（默认）| narration | resume
+ *   SCENARIO  tool-then-answer（默认）| narration | resume | echo-ref
  *   HOST      监听地址，默认 127.0.0.1
  *
  * 路由：
@@ -27,9 +27,9 @@
  * 所有请求体仅在内存中读取、不落盘；不记录日志（避免把测试数据写进仓库）。
  */
 
-type Scenario = "tool-then-answer" | "narration" | "resume";
+type Scenario = "tool-then-answer" | "narration" | "resume" | "echo-ref";
 
-const SCENARIOS: readonly Scenario[] = ["tool-then-answer", "narration", "resume"];
+const SCENARIOS: readonly Scenario[] = ["tool-then-answer", "narration", "resume", "echo-ref"];
 
 function pickScenario(raw: string | undefined): Scenario {
   const s = (raw ?? "").trim();
@@ -130,6 +130,27 @@ function countToolMessages(messages: WireMessage[]): number {
   return messages.reduce((n, m) => (m.role === "tool" ? n + 1 : n), 0);
 }
 
+/** 最后一条 user 消息的纯文本（content 可能是 string 或多模态 part 数组）。 */
+function lastUserText(messages: WireMessage[]): string {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const m = messages[i];
+    if (!m || m.role !== "user") continue;
+    const content = m.content;
+    if (typeof content === "string") return content;
+    if (Array.isArray(content)) {
+      return content
+        .map((part) => {
+          if (typeof part !== "object" || part === null) return "";
+          const p = part as { type?: string; text?: unknown };
+          return p.type === "text" && typeof p.text === "string" ? p.text : "";
+        })
+        .join("");
+    }
+    return "";
+  }
+  return "";
+}
+
 function framesFor(scenario: Scenario, messages: WireMessage[]): string[] {
   const toolRounds = countToolMessages(messages);
   switch (scenario) {
@@ -146,6 +167,14 @@ function framesFor(scenario: Scenario, messages: WireMessage[]): string[] {
         return [...contentFrames("第二次说明。"), ...toolCallFrames(), ...finishFrames("tool_calls")];
       }
       return [...contentFrames("都读完了。"), ...finishFrames("stop")];
+    }
+
+    case "echo-ref": {
+      // v0.2.4 S8：验证 @path 引用内容确实进了发给模型的 user 消息。
+      // 只认分隔标记：少任何一段都说明引用块没送达。
+      const text = lastUserText(messages);
+      const hasRefBlock = text.includes("——— ") && text.includes("end ");
+      return [...contentFrames(hasRefBlock ? "REF_OK" : "REF_MISS"), ...finishFrames("stop")];
     }
 
     case "tool-then-answer":

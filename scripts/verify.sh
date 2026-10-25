@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# scripts/verify.sh — neo 全量验证闸门（v0.2.3 及以后可复用）。
+# scripts/verify.sh — neo 全量验证闸门（v0.2.4 及以后可复用）。
 #
 # 顺序：tsc 类型检查 → bun test 单测 → pty-e2e 真 PTY 端到端。
-# 每个阶段的输出同时落到 docs/evidence/v0.2.3-<stage>.txt：
+# 每个阶段的输出同时落到 docs/evidence/v0.2.4-<stage>.txt：
 #   - 红态时这是「哪里红了」的原始证据；
 #   - 绿态时这是发布前可复查的验收记录。
 # （运行期写 docs/evidence/ 是脚本行为，不是手工改 docs；不要 git add 这些产物。）
@@ -26,7 +26,7 @@ echo "时间    $STARTED_AT"
 echo "仓库    $ROOT"
 echo "平台    $(uname -srm)"
 echo "bun     $(bun --version)"
-echo "证据    docs/evidence/v0.2.3-{tsc,tests,pty}.txt"
+echo "证据    docs/evidence/v0.2.4-{tsc,tests,pty}.txt"
 echo
 
 # run_stage <stage-name> <command...>
@@ -36,7 +36,7 @@ echo
 run_stage() {
   local stage="$1"
   shift
-  local out="$EVIDENCE_DIR/v0.2.3-${stage}.txt"
+  local out="$EVIDENCE_DIR/v0.2.4-${stage}.txt"
 
   echo "▶ [$stage] $*"
   if {
@@ -48,11 +48,11 @@ run_stage() {
     echo "──────────────────────────"
     "$@"
   } 2>&1 | tee "$out"; then
-    echo "  ✔ ${stage} 通过（证据：docs/evidence/v0.2.3-${stage}.txt）"
+    echo "  ✔ ${stage} 通过（证据：docs/evidence/v0.2.4-${stage}.txt）"
     echo
   else
     local code="${PIPESTATUS[0]}"
-    echo "  ✖ ${stage} 失败（exit ${code}；证据：docs/evidence/v0.2.3-${stage}.txt）" >&2
+    echo "  ✖ ${stage} 失败（exit ${code}；证据：docs/evidence/v0.2.4-${stage}.txt）" >&2
     echo "FAILED: ${stage}" >&2
     exit 1
   fi

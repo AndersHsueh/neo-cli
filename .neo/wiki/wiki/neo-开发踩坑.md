@@ -122,3 +122,11 @@ neo 开发过程中沉淀的教训清单,持续追加。当前十条:zsh 变量�
 - **macOS `script(1)` 不接受 Bun 的 `stdin:"pipe"`**：Bun 的 pipe 是 socketpair，`script` 启动即报 `tcgetattr/ioctl: Operation not supported on socket`。解法：`mkfifo` + `/bin/sh -c 'cat <fifo> | script ...'`，让 script 拿到真 pipe；写入端 `O_NONBLOCK` 按行写。
 - **`COLUMNS` 环境变量不改变 Bun 的 `process.stdout.columns`**：窄终端测试必须走 PTY wrapper 内 `stty cols 60 rows 40`（ioctl TIOCSWINSZ），`COLUMNS`/`LINES` 只能当双保险。顺带实证：Bun 1.3.13 在 winsize 变化时 `process.stdout` 会派发 `resize`，v0.2.3 的 `handleResize` 不是死代码。
 - **别用会话 JSON 推断屏幕行为**：`~/.neo/sessions/*.json` 里有 2901 字正文，不代表它没上屏 —— 真实缺陷是流式状态泄漏（`●` 前缀只出现一次）。屏幕行为一律以真 PTY 捕获为准（证据见 `scripts/pty-e2e.ts`）。
+
+## 2026-10-25 readline 三坑：非 TTY 不跑行编辑器 / 裸 Tab 插字面量 / Ctrl+J 顺序不可靠
+
+- **readline 的「terminal 模式」取 `!!output.isTTY`，非 TTY 流上根本不跑行编辑器**：我用管道跑探针，看到「`completer` 从不被调用、Tab 被当普通字符插进 line（提交 `"ab\tZ"`）」，据此得出「bun 不支持 Tab 补全」——**真 PTY 复测推翻了它**（原生 completer 生效，单候选自动补全）。教训：**凡是要断言 readline 行为，必须在真 PTY（`script(1)`/pty）里跑**；管道只代表非交互语义。证据见 `docs/v0.2.4-m0-probes[done].md`。
+- **不传 completer 时裸 Tab 会字面插入 `\t` 进 `rl.line`**：自接管 Tab 的实现在真 PTY 下会收到带 `\t` 的缓冲。修法两层：`createInterface({completer: () => [[], line]})` 注册 no-op 从源头吞掉 + 实现侧再兜底摘一次。
+- **`Ctrl+J`(0x0A) 与 `Enter`(0x0D) 可区分，但 keypress / line 的先后顺序由监听器注册时机决定**：默认路径拦不住 Ctrl+J（line 先到）。稳定做法是在 stdin `data` 事件里按字节记类型（比 readline 处理更早），且要按**队列**消费——一个数据块可能产生多个 line 事件，CRLF 只算一个 Enter。
+- **`rl.prompt()` 无参调用会把 `rl.cursor` 归零**：补全后继续输入会变成 `X@补全结果`；`_refreshLine()` 保留 cursor。用 `rl.line=` 改写缓冲后要么手动设 `rl.cursor`，要么走 `_refreshLine()`。
+- **续行/多行与 readline history 的交互**：readline 只把非空且非纯空白的行写进 history；无条件 splice 会误删上一条真实历史。回滚前先校验 `history[0] === 该行`。

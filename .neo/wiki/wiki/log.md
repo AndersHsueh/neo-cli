@@ -246,3 +246,5 @@ grep -E -A3 "^## \[[0-9-]+\] todo \|" wiki/log.md
 ## [2026-10-20] wiki | 新建 [[里程碑-1020]] 记录当日三连发与经验，更新踩坑第十条（心跳不能挂空闲 tick）、跨会话/工具显示验收与 INDEX
 ## [2026-10-25] milestone | v0.2.3 TUI 补漏交付：流式状态/宽度/`/last`/回放/Ctrl+C 五项，用例 530→580，PTY 4/4，verify.sh ALL GREEN
 ## [2026-10-25] wiki | 新建 [[TUI补漏-v0.2.3]] 与 [[TUI进化路线-2026Q4]]，踩坑补 2026-10-25 条（PTY --auto off / script socketpair / COLUMNS），INDEX 版本行与主题目录同步
+## [2026-10-25] milestone | v0.2.4 输入层交付：@ 文件补全/引用展开、/ 命令补全、Ctrl+J 多行；用例 569→660，PTY 10/10，verify.sh ALL GREEN
+## [2026-10-25] wiki | 新建 [[输入层-v0.2.4]]，[[TUI进化路线-2026Q4]] 标记第一段完成，踩坑补 readline 三坑（非 TTY 不跑行编辑器/裸 Tab 插字面量/Ctrl+J 顺序），INDEX 版本行同步

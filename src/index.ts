@@ -36,6 +36,25 @@ import { formatToolCall } from "./ui/toolLog.ts";
 import { transcriptLines } from "./ui/transcript.ts";
 import { banner, c, rule, truncate } from "./ui/theme.ts";
 import { renderMarkdown } from "./ui/render.ts";
+import {
+  applyMatch,
+  completeLine,
+  formatCandidateHint,
+  triggerAt,
+} from "./input/completion.ts";
+import { COMMANDS } from "./input/commands.ts";
+import { FileIndex } from "./input/fileIndex.ts";
+import { expandReferences } from "./input/references.ts";
+import {
+  appendContinuation,
+  continuationPrompt,
+  emptyContinuation,
+  finishContinuation,
+  isActiveContinuation,
+  newlineKindsFromBytes,
+  stripContinuationMarker,
+  type Continuation,
+} from "./input/multiline.ts";
 import { buildMemoryFile, buildSystemPrompt } from "./system-prompt.ts";
 import { initProjectLevel as initProjectLevelImpl } from "./memory/init.ts";
 import { createMemoryBridge, type MemoryBridge } from "./memory/bridge.ts";
@@ -64,7 +83,7 @@ import { makeListPeersTool, makeSendMessageTool } from "./tools/mailbox.ts";
 import type { Envelope } from "./mailbox/types.ts";
 import type { ToolCtx } from "./tools/types.ts";
 
-const VERSION = "0.2.3";
+const VERSION = "0.2.4";
 
 /** /auto 列表里各实现的说明。 */
 const DESC: Record<string, string> = {
@@ -229,9 +248,16 @@ ${c.bold("交互命令")}
   /tier [name]     查看/切档位      /auto [name] 切换分类器（off/rule/llm）
   /fast /balanced /deep            档位快捷方式（等价 /tier）
   /why             上次分类判定与理由
-  /exit            退出
+  /exit            退出（别名 /quit）
   !<cmd>           直接执行 shell（受权限模式约束）
-  ESC              运行中取消本轮（不回滚历史）；Ctrl+C 双击退出
+  ESC              运行中取消本轮（不回滚历史）；续行中放弃本次多行
+  Ctrl+C           双击退出（运行中第一次 = 取消本轮）
+
+${c.bold("输入")}
+  Tab              补全：@ 文件路径（模糊匹配，多个候选连按 Tab 循环）/ 命令名
+  @path            引用文件内容随消息发送（≤5 个文件，单文件 ≤400 行，总 ≤60KB）
+  Ctrl+J           多行续行（提示符变 …；Enter 提交，Esc 放弃）
+  行尾 \\          同样续行（不支持 Ctrl+J 的终端用这个）
 
 ${c.bold("环境变量")}
   NEO_PROVIDER / NEO_TIER / NEO_MODEL / NEO_BASE_URL / NEO_API_KEY  覆盖 settings.json
@@ -623,6 +649,12 @@ async function main(): Promise<number> {
     output: process.stdout,
     prompt: `${c.accent("❯")} `,
     historySize: 200,
+    // M0 探针（docs/v0.2.4-m0-probes[done].md P1/P3）：真 PTY 下 bun 原生 completer **可用**，
+    // 但不传它时 Tab 会被当字面量 `\t` 插进行缓冲。这里注册一个返回空候选的 no-op：
+    // 让 readline 不插字符、也不做自己的补全，Tab 的语义统一交给 HotkeyRouter
+    // （我们需要 @ 与 / 同一套排序 + token 精确替换；原生 completer 没有 cursor 入参）。
+    // 将来若想迁回原生 completer，删掉这个 no-op 并改 onTab 即可 —— 路线是通的。
+    completer: (line: string) => [[], line] as [string[], string],
   });
   const prompt = (): void => {
     rl.prompt();
@@ -639,6 +671,160 @@ async function main(): Promise<number> {
     ui.handleResize();
   };
   if (process.stdout.isTTY) process.stdout.on("resize", onResize);
+
+  // ---- v0.2.4 输入层 ----
+  // Tab 由我们自己接管（readline 只挂 no-op completer）：摘掉可能被插入的 `\t`
+  // → 计算候选 → 改写 rl.line/cursor → 重绘。
+  // 为什么不用原生 completer：它只给整行、不给光标位置，且候选样式/排序不可控；
+  // 而 `@` 需要「光标前 token 精确替换」。M0 文档 P1/P2 记录了这些限制。
+  type RlInternal = { line: string; cursor: number; _refreshLine?: () => void; history?: string[] };
+  const rlInternal = (): RlInternal => rl as unknown as RlInternal;
+  const fileIndex = new FileIndex({ cwd: cfg.cwd });
+  // 只在交互 TTY 下预热并 await：2 万文件仓库实测 ~75ms，启动付一次，
+  // 换来「第一下 Tab 就有候选」的确定性。
+  // 非 TTY（-p / 管道 / 测试脚本）绝不 await —— 它既用不到补全，
+  // 而这里的 await 会推迟下方 rl close 监听的注册，管道 EOF 先到就永远等不到 close。
+  if (process.stdin.isTTY) {
+    await fileIndex.refresh().catch(() => {
+      // 索引失败不影响会话：后续 Tab 会再踢一次刷新
+    });
+  }
+  /**
+   * 连续 Tab 的候选循环状态。
+   *
+   * 关键：第二按 Tab 时行内容已经变成「上一次插入的候选」，此时 triggerAt 的 token
+   * 也变成了候选本身 —— 不能拿 token 当循环身份（旧实现因此第二按就重新搜索、
+   * 候选集缩小，首轮候选永远轮不到）。正确做法是记住「上次应用后的整行 + 插入区间」，
+   * 只有当当前行与它完全一致（用户没编辑过）时才继续在**同一批候选**里推进。
+   */
+  interface TabCycle {
+    start: number;
+    matches: string[];
+    index: number;
+    /** 上次应用后的整行，用于判断用户是否改过。 */
+    applied: string;
+    /** 上次应用后的光标位置。 */
+    cursorAfter: number;
+  }
+  let tabCycle: TabCycle | null = null;
+
+  /**
+   * 把整行写回 readline 并重绘（Tab 补全 / 续行清空共用）。
+   *
+   * 实测（PTY，bun 1.3.13）：无参 `rl.prompt()` 会把 rl.cursor **归零**
+   * （line="ABC"/cursor=3 调用后 cursor=0，再输入 X 得到 "XABC"）；
+   * `_refreshLine()` 保留 cursor。两个都调会画两遍提示符（`❯ ❯ ...`）。
+   * 所以固定用 _refreshLine，prompt() 只作缺失时的兜底。
+   */
+  const applyLine = (line: string, cursor: number): void => {
+    const r = rlInternal();
+    r.line = line;
+    r.cursor = cursor;
+    process.stdout.write("\r\x1b[2K"); // 清掉 readline 已经画出的旧行
+    if (r._refreshLine) r._refreshLine();
+    else rl.prompt();
+  };
+
+  /** 同一次触发里取第 index 个候选替换进整行（首次补全与连按循环共用）。 */
+  const applyLineMatches = (
+    line: string,
+    cursor: number,
+    start: number,
+    matches: string[],
+    index: number,
+  ): { line: string; cursor: number } => {
+    const match = matches[index];
+    return match === undefined ? { line, cursor } : applyMatch(line, cursor, start, match);
+  };
+
+  const formatCandidates = (kind: "file" | "command", matches: string[]): string =>
+    `· ${formatCandidateHint(kind, matches)}`;
+
+  const onTab = (): void => {
+    const r = rlInternal();
+    const buf = r.line ?? "";
+    let cursor = typeof r.cursor === "number" ? r.cursor : buf.length;
+    // 兜底：若 readline 仍把 Tab 当普通字符插进缓冲，先摘掉（守卫提前返回时也不要留脏字符）
+    let line = buf;
+    if (cursor > 0 && buf[cursor - 1] === "\t") {
+      line = buf.slice(0, cursor - 1) + buf.slice(cursor);
+      cursor -= 1;
+    }
+    // 该不该接管：draining 期间写 stdout/清行会和流式输出抢同一行
+    if (draining || selectActive || questionPending) {
+      if (line !== buf) applyLine(line, cursor);
+      return;
+    }
+
+    // 连按 Tab：与上次应用结果完全一致（用户没编辑）→ 在同一批候选里推进
+    if (tabCycle && line === tabCycle.applied && cursor === tabCycle.cursorAfter) {
+      const index = (tabCycle.index + 1) % tabCycle.matches.length;
+      const applied = applyLineMatches(line, cursor, tabCycle.start, tabCycle.matches, index);
+      tabCycle = { ...tabCycle, index, applied: applied.line, cursorAfter: applied.cursor };
+      applyLine(applied.line, applied.cursor);
+      return;
+    }
+
+    // 命令行走 / 分支，不提供 @ 引用补全（否则用户补出来的 @x 在提交时会被静默忽略）
+    const ctx = triggerAt(line, cursor);
+    if (!ctx || (ctx.kind === "file" && line.trimStart().startsWith("/"))) {
+      if (line !== buf) applyLine(line, cursor);
+      tabCycle = null;
+      return;
+    }
+
+    const result = completeLine(line, {
+      files: ctx.kind === "file" ? fileIndex.list() : [],
+      commands: COMMANDS,
+      cursor,
+    });
+    if (!result || result.matches.length === 0) {
+      if (line !== buf) applyLine(line, cursor);
+      tabCycle = null;
+      return;
+    }
+    const applied = applyLineMatches(line, cursor, result.start, result.matches, 0);
+    tabCycle = {
+      start: result.start,
+      matches: result.matches,
+      index: 0,
+      applied: applied.line,
+      cursorAfter: applied.cursor,
+    };
+    // 多候选第一次给出提示：列出候选名（命令带说明），让用户知道有什么可选
+    if (result.matches.length > 1 && queue.length === 0) {
+      // 提示必须自己以换行结尾：applyLine 的第一步是 `\r\x1b[2K`，
+      // 如果光标还停在提示行尾，提示会被同一行清掉（PTY 实测：屏幕上永远看不到）。
+      process.stdout.write(`\n${c.dim(formatCandidates(ctx.kind, result.matches))}\n`);
+    }
+    applyLine(applied.line, applied.cursor);
+  };
+
+  // ---- v0.2.4 C4 多行：continuation 状态机 ----
+  // Ctrl+J(0x0A) 与 Enter(0x0D) 在 keypress 上可区分，但 keypress 与 line 事件的先后
+  // 实测不可靠（同一次回车顺序随分块变化）；stdin 的 data 比 readline 处理更早，
+  // 用 prependListener 记下换行字节，在 line 事件里读 —— 这是唯一稳定的判定方式。
+  let continuation: Continuation = emptyContinuation();
+  /** 换行种类队列：一个 stdin 数据块可能产生多个 line 事件，按序消费；队空按 Enter。 */
+  const newlineQueue: Array<"lf" | "cr"> = [];
+  if (process.stdin.isTTY) {
+    process.stdin.prependListener("data", (buf: Buffer) => {
+      newlineQueue.push(...newlineKindsFromBytes(buf));
+    });
+  }
+  const promptForContinuation = (): void => {
+    rl.setPrompt(c.accent(continuationPrompt(continuation)));
+  };
+
+  /**
+   * readline 只把「非空且非纯空白」的行走进 history（PTY 实测）。
+   * 续行的半行不该进历史，但空行/纯空白行本来就没进 —— 无条件 splice 会误删上一条真实历史。
+   */
+  const dropHistory = (entry: string): void => {
+    if (entry.trim() === "") return;
+    const h = rlInternal().history;
+    if (Array.isArray(h) && h[0] === entry) h.splice(0, 1);
+  };
 
   /**
    * 审批问句统一走 readline.question。
@@ -736,14 +922,37 @@ async function main(): Promise<number> {
   // 收集态由 paste-end 的 collector.end() 撤销（探针 §7.2：此刻最后一段仍在缓冲，
   // 由 paste-end 处理器取出组装，之后无 flush）。
   const origLineHandler = (raw: string): void => {
+    // 每种换行事件只消费一个；队空（例如脚本注入）按 Enter 处理
+    const newline = newlineQueue.shift() ?? "cr";
     if (selectActive) return; // C11：select 存续期间的 line 一律丢弃（残留提交）
     if (pasteCollector.consume(raw)) return; // 粘贴期间：收集，不入队
-    const line = raw.trim();
+
+    // ---- v0.2.4 C4：续行判定（Ctrl+J 或行尾反斜杠）----
+    const marker = stripContinuationMarker(raw);
+    // 只在真 TTY 下把 LF(0x0A) 当 Ctrl+J：管道/脚本里 \n 就是普通行终止符，
+    // 若也按续行处理，`printf '/help\n' | neo` 之类会用不了（v0.2.4 回归实测）。
+    const lfIsCtrlJ = process.stdin.isTTY === true && newline === "lf";
+    const wantsContinue = marker.cont || (lfIsCtrlJ && !marker.cont);
+    if (wantsContinue) {
+      continuation = appendContinuation(continuation, marker.cont ? marker.text : raw);
+      dropHistory(raw); // 半行进 history 会让 ↑ 把未完成的多行塞回单行缓冲
+      promptForContinuation();
+      applyLine("", 0);
+      return;
+    }
+    const composed = isActiveContinuation(continuation) ? finishContinuation(continuation, raw) : raw;
+    if (isActiveContinuation(continuation)) {
+      continuation = emptyContinuation();
+      promptForContinuation();
+    }
+
+    const line = composed.trim();
     if (!line) return;
     const bound = bindAttachments(line, pendingAttachments);
     // 绑定即消费：chip 只对本次提交生效，防止后续消息引用同款字样被二次还原
     if (bound.length > 0) pendingAttachments = pendingAttachments.filter((a) => !bound.includes(a));
     autoTurnChain = 0; // 人类输入重置自动 turn 链
+    tabCycle = null;
     queue.push({ text: line, attachments: bound, origin: "user" });
     void drain();
   };
@@ -753,9 +962,19 @@ async function main(): Promise<number> {
   const hotkeys = new HotkeyRouter();
   hotkeys.attach(rl, process.stdin);
   hotkeys.on("escape", () => {
+    // v0.2.4：续行中 ESC = 放弃多行输入（不触发 agent 取消）
+    if (isActiveContinuation(continuation)) {
+      continuation = emptyContinuation();
+      promptForContinuation();
+      applyLine("", 0);
+      return;
+    }
     if (draining) agent.cancel();
     // 空闲时无操作，留给将来的热键语义
   });
+
+  // v0.2.4 C1/C2：Tab 补全（bun 的 readline 不处理 Tab，只能自己接管）
+  hotkeys.on("tab", onTab);
 
   // ---- 粘贴边界接线（PRD §5.3 + §7 探针结论）----
   // paste-start：进入收集态。用户先打到一半的字随首行 line 提交天然带上，无需特殊处理。
@@ -897,8 +1116,21 @@ async function main(): Promise<number> {
       }
 
       // 合成行（mailbox/notice）文本已经是 frame 后的内容，不经命令分发、不做 chip 还原。
+      // v0.2.4 C3：先展开 @ 引用，再做 chip 还原 ——
+      // 反过来会把「粘贴内容里恰好出现的 @foo」也当成引用展开（用户并没有这个意图）。
+      const expanded =
+        origin === "user"
+          ? expandReferences(line, { cwd: cfg.cwd })
+          : { text: line, refs: [], errors: [] as string[] };
       const resolved =
-        origin === "user" ? resolveLine(line, q.attachments) : { text: line, images: [] as string[] };
+        origin === "user"
+          ? resolveLine(expanded.text, q.attachments)
+          : { text: line, images: [] as string[] };
+      if (expanded.refs.length > 0) {
+        const lines = expanded.refs.reduce((n, r) => n + r.lines, 0);
+        ui.line(c.dim(`· 已引用 ${expanded.refs.length} 个文件（+${lines} 行）`));
+      }
+      for (const e of expanded.errors) ui.line(c.dim(`· ${e}`));
       if (resolved.images.length > 0) {
         // PRD §5.8：用户对「发出去了什么」有知情权（图片可能含敏感信息）
         ui.line(c.dim(`· 已发送图片 ×${resolved.images.length}`));

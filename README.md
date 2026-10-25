@@ -168,6 +168,21 @@ provider 里的 `*_model_name` 表示「**这个 provider** 在各档位上用�
 !<cmd>     直接执行 shell（受权限模式约束，plan 模式下拒绝）
 ```
 
+### 输入体验（v0.2.4）
+
+| 能力 | 用法 |
+|---|---|
+| 文件补全 | `@` + 路径前缀 + `Tab`：模糊匹配当前工作目录（走 `git ls-files`，尊重 `.gitignore`），多个候选连按 `Tab` 在同一批候选里循环，并打印候选提示行 |
+| 命令补全 | `/` + 前缀 + `Tab`：列出并插入斜杠命令（命令候选不设 20 上限，33 条都能搜到） |
+| 文件引用 | `@src/ui/console.ts`：提交时把文件内容附在消息末尾（≤5 个文件、单文件 ≤400 行、总 ≤60KB），失败只警告不阻断 |
+| 多行输入 | `Ctrl+J` 续行（提示符变 `… `），`Enter` 提交为一条含换行的消息，`Esc` 放弃；不支持的终端用行尾 `\` |
+| 工具回看 | `/last [n]`：回看最近 n 次工具调用的完整输出 |
+
+> 为什么 Tab 由自己接管：bun 1.3.13 的原生 `completer` **可用**（M0 探针 P1/P3 实证），
+> 但它只拿到整行、不给光标位置，候选排序与样式也不可控；而 `@` 需要「光标前 token 精确替换」。
+> 所以注册一个返回空候选的 no-op completer（否则裸 Tab 会被当字面量 `\t` 插进缓冲），
+> Tab 的语义统一交给 `HotkeyRouter`。探针与原始证据见 `docs/v0.2.4-m0-probes[done].md`。
+
 `!cmd` 与模型工具调用走**同一套权限判定**：`--plan` 下两者都会被拒绝，
 `auto-all` 下两者都直接放行，`ask` / `auto-edit` 下都要审批。
 
@@ -175,9 +190,9 @@ provider 里的 `*_model_name` 表示「**这个 provider** 在各档位上用�
 
 ```bash
 bun run check   # tsc --noEmit，strict + noUncheckedIndexedAccess（含 scripts/）
-bun test        # 单元测试，580 pass（32 个测试文件）
+bun test        # 单元测试，660 pass（37 个测试文件）
 bun run e2e     # 真 PTY 端到端（渲染类改动必跑；不需要真实网络/LLM）
-bun run verify  # 全量闸门：tsc → test → pty，证据落 docs/evidence/
+bun run verify  # 全量闸门：tsc → test → pty（10 个 PTY 场景），证据落 docs/evidence/
 ```
 
 > 终端渲染类改动（动画行、宽度、覆盖语义）**只有真 PTY 能验证**。

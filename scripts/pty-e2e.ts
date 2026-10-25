@@ -1,6 +1,13 @@
 #!/usr/bin/env bun
 /**
- * scripts/pty-e2e.ts — 真 PTY 端到端断言（v0.2.3 及以后可复用）。
+ * scripts/pty-e2e.ts — 真 PTY 端到端断言（v0.2.4 及以后可复用）。
+ *
+ * 场景：S1 流式 ● 前缀 / S2 /last 回看 / S3 窄终端宽度 / S4 --resume 回放 /
+ *       S5 Tab 补全 @ 文件 / S6 Tab 补全 / 命令 / S7 Ctrl+J 多行 / S8 @ 引用送达模型 /
+ *       S9 补全后光标在行尾 / S10 连按 Tab 遍历首轮候选。
+ *
+ * 输入约定（v0.2.4 起）：Enter = `\r`，Ctrl+J = `\n`。run.type() 写「一行 + Enter(\r)」；
+ * 需要发 Ctrl+J 或精确控制换行时用 run.write() 写原始字节。
  *
  * 为什么必须用真 PTY：neo 的交互渲染（readline、spinner、紧凑工具行的
  * `\r\x1b[2K` 覆盖、COLUMNS 宽度）只有在 TTY 下才走不同分支；管道里的
@@ -18,13 +25,15 @@
  * 用法：
  *   bun run scripts/pty-e2e.ts                 # 跑全部场景
  *   bun run scripts/pty-e2e.ts s1 s4           # 只跑名字含 s1/s4 的场景（调试用）
+ *   bun run scripts/pty-e2e.ts s5 s7           # 只跑 v0.2.4 输入层场景
+ *   bun run scripts/pty-e2e.ts s9 s10          # 只跑 Tab 循环/光标回归场景
  *   KEEP_TMP=1 bun run scripts/pty-e2e.ts      # 保留临时目录并在结尾打印路径
  *   NEO_ENTRY=/path/to/src/index.ts bun run scripts/pty-e2e.ts
  *                                              # 覆盖被测入口（用于「改动前」红态对照）
  *
  * 退出码：全部 PASS → 0，否则 → 1。
  */
-import { closeSync, constants as fsConstants, openSync, writeSync } from "node:fs";
+import { closeSync, constants as fsConstants, openSync, readdirSync, readFileSync, statSync, writeSync } from "node:fs";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -320,7 +329,9 @@ interface NeoRun {
   screen: Screen;
   stderr: string;
   exitCode: number | null;
-  /** 向 PTY 写一行（自动补 \n 并 flush）。 */
+  /** 原样写字节（不补换行）；Ctrl+J 多行等精确输入用这个。 */
+  write: (text: string) => Promise<void>;
+  /** 写一行并回车（自动补 Enter = \r；v0.2.4 起 \n 会被当成 Ctrl+J 续行）。 */
   type: (line: string) => Promise<void>;
   /** 等 neo 进程退出（默认 10s）。 */
   waitExit: (timeoutMs?: number) => Promise<number>;
@@ -402,7 +413,9 @@ async function waitFakeReady(fake: FakeServer, timeoutMs = 8000): Promise<number
 }
 
 /** 启动 fake-llm：PORT=0 → 内核分配端口，彻底规避端口冲突。 */
-async function startFake(scenario: "tool-then-answer" | "narration" | "resume"): Promise<FakeServer> {
+async function startFake(
+  scenario: "tool-then-answer" | "narration" | "resume" | "echo-ref",
+): Promise<FakeServer> {
   const proc = Bun.spawn([BUN, "run", FAKE_LLM], {
     cwd: ROOT,
     env: { ...cleanBaseEnv(), PORT: "0", SCENARIO: scenario },
@@ -574,9 +587,17 @@ async function startNeo(opts: NeoOptions): Promise<NeoRun> {
     screen: new Screen(),
     stderr: "",
     exitCode: null,
+    write: async (text: string) => {
+      try {
+        await writeFifo(writerFd, text);
+      } catch {
+        /* 进程已退出：由 waitFor 的提前退出检查统一报错 */
+      }
+    },
     type: async (line: string) => {
       try {
-        await writeFifo(writerFd, `${line}\n`);
+        // v0.2.4：\r 才是 Enter；\n 已被 Ctrl+J 多行语义占用。
+        await writeFifo(writerFd, `${line}\r`);
       } catch {
         /* 进程已退出：由 waitFor 的提前退出检查统一报错 */
       }
@@ -718,9 +739,46 @@ async function waitFor(
   }
 }
 
+/** 轮询一段时间，条件成立返回 true、超时返回 false（用于「先试 A 再回退 B」）。 */
+async function waitUntil(pred: () => boolean, timeoutMs: number): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    if (pred()) return true;
+    if (Date.now() > deadline) return false;
+    await sleep(25);
+  }
+}
+
 /** 屏幕回到空闲提示符：最后一条非空行就是 `❯`。 */
 function promptReady(screen: Screen): boolean {
   return screen.lastNonEmptyLine().trim() === "❯";
+}
+
+/** 屏幕上最后一个提示符行（`❯ ...`，含用户已敲入的内容）。 */
+function lastPromptLine(screen: Screen): string | null {
+  const lines = screen.lines();
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const t = (lines[i] ?? "").trimEnd();
+    if (t.startsWith("❯")) return t;
+  }
+  return null;
+}
+
+/**
+ * 清空 readline 行缓冲（Tab 场景收尾用，避免 `/exit` 被追加到残留输入后面）。
+ * 先试 Ctrl+U(0x15)；bun readline 不支持时退化为退格 0x7f（S9 已实测 Ctrl+U 可用）。
+ * 返回实际生效的方式，供输出/报告标注。
+ */
+async function clearInputLine(run: NeoRun): Promise<string> {
+  await run.write("\x15");
+  if (await waitUntil(() => lastPromptLine(run.screen)?.trim() === "❯", 800)) return "Ctrl+U";
+  await run.write("\x7f".repeat(40));
+  await waitFor(() => lastPromptLine(run.screen)?.trim() === "❯", {
+    label: "退格清空行缓冲",
+    run,
+    timeoutMs: 5000,
+  });
+  return "退格 ×40";
 }
 
 async function waitPrompt(run: NeoRun, label = "等待 neo 交互提示符"): Promise<void> {
@@ -993,6 +1051,354 @@ async function scenarioS4(tmpRoot: string): Promise<void> {
 }
 
 /* ------------------------------------------------------------------ */
+/* v0.2.4 输入层场景：Tab 补全 / @ 引用 / Ctrl+J 多行                   */
+/* ------------------------------------------------------------------ */
+
+/** 会话目录里最新的 .json（S7 用它断言落盘的 user 消息）。 */
+function latestSessionFile(dir: string): string | null {
+  let best: { path: string; mtime: number } | null = null;
+  for (const f of readdirSync(dir)) {
+    if (!f.endsWith(".json")) continue;
+    const path = join(dir, f);
+    const mtime = statSync(path).mtimeMs;
+    if (!best || mtime > best.mtime) best = { path, mtime };
+  }
+  return best?.path ?? null;
+}
+
+/** S5：`@a` + Tab → 插入 `@a.txt`；提交后出现 `· 已引用 1 个文件`。 */
+async function scenarioS5(tmpRoot: string): Promise<void> {
+  const dirs = await makeDirs(tmpRoot, "s5-tab-file");
+  await writeFile(join(dirs.work, "a.txt"), "alpha\n", "utf8");
+  await mkdir(join(dirs.work, "src", "ui"), { recursive: true });
+  await writeFile(join(dirs.work, "src", "ui", "console.ts"), "// 占位：让 @ 补全的索引里有层级目录\n", "utf8");
+  const fake = await startFake("resume");
+  const run = await startNeo({
+    fake,
+    dirs,
+    name: "s5",
+    args: [...BASE_ARGS, "--yes", "--no-reasoning"],
+    cols: DEFAULT_COLS,
+    rows: DEFAULT_ROWS,
+  });
+  try {
+    await waitPrompt(run);
+    // 输入 `@a` 后按 Tab：@ 文件补全应把 token 替换成 `@a.txt`（单候选，没有候选提示行）。
+    await run.write("@a\t");
+    await waitFor(() => findLine(run.screen, (l) => /❯\s*@a\.txt/.test(l)) !== null, {
+      label: "Tab 后行缓冲出现补全结果 @a.txt",
+      run,
+    });
+    await run.write("\r");
+    await waitFor(() => run.screen.text().includes("· 已引用 1 个文件"), {
+      label: "提交后屏幕出现「· 已引用 1 个文件」",
+      run,
+    });
+    await waitFor(() => run.screen.text().includes("会话恢复测试答案。"), {
+      label: "引用轮完成（fake-llm 回包）",
+      run,
+    });
+    await waitPrompt(run, "S5 结束、回到提示符");
+    maybeDumpScreen(run.screen);
+    await run.type("/exit");
+    await run.waitExit();
+  } catch (e) {
+    throw attachScreen(e, run.screen, run.stderr);
+  } finally {
+    await run.close();
+    await fake.stop();
+  }
+}
+
+/** S6：`/las` + Tab → 插入 `/last`；提交后不得出现「未知命令」。 */
+async function scenarioS6(tmpRoot: string): Promise<void> {
+  const dirs = await makeDirs(tmpRoot, "s6-tab-command");
+  const fake = await startFake("resume");
+  const run = await startNeo({
+    fake,
+    dirs,
+    name: "s6",
+    args: [...BASE_ARGS, "--yes", "--no-reasoning"],
+    cols: DEFAULT_COLS,
+    rows: DEFAULT_ROWS,
+  });
+  try {
+    await waitPrompt(run);
+    // `/las` 只有一个模糊候选（/last），因此不会有「N 个候选」提示行可依赖。
+    await run.write("/las\t");
+    await waitFor(() => findLine(run.screen, (l) => /❯\s*\/last\b/.test(l)) !== null, {
+      label: "Tab 后行缓冲出现补全结果 /last",
+      run,
+    });
+    await run.write("\r");
+    // 等待命令处理完、提示符回来；然后断言没有「未知命令」。
+    await waitPrompt(run, "提交补全出的 /last 后回到提示符");
+    if (run.screen.text().includes("未知命令")) {
+      throw new CheckError("补全出的 /last 提交后被判为未知命令", ["未知命令", "/last"], run.screen);
+    }
+    maybeDumpScreen(run.screen);
+    await run.type("/exit");
+    await run.waitExit();
+  } catch (e) {
+    throw attachScreen(e, run.screen, run.stderr);
+  } finally {
+    await run.close();
+    await fake.stop();
+  }
+}
+
+/** S7：Ctrl+J 续行（提示符 `… `）→ Enter 提交一条含 \n 的 user 消息。 */
+async function scenarioS7(tmpRoot: string): Promise<void> {
+  const dirs = await makeDirs(tmpRoot, "s7-multiline");
+  const fake = await startFake("resume");
+  const run = await startNeo({
+    fake,
+    dirs,
+    name: "s7",
+    args: [...BASE_ARGS, "--yes", "--no-reasoning"],
+    cols: DEFAULT_COLS,
+    rows: DEFAULT_ROWS,
+  });
+  try {
+    await waitPrompt(run);
+    // Ctrl+J = 0x0A：续行（不是提交）。必须等提示符切换后再发下一行：
+    // 两行若挤在同一个 stdin 分块里，newlineKindFromBytes 只能看到最后一个换行字节。
+    await run.write("第一行\n");
+    await waitFor(() => run.screen.lastNonEmptyLine().trim() === "…", {
+      label: "Ctrl+J 后续行提示符变为 …",
+      run,
+    });
+    // Enter = 0x0D：提交拼接后的单条消息。
+    await run.write("第二行\r");
+    await waitFor(() => run.screen.text().includes("… 第二行"), {
+      label: "续行提示符下出现「… 第二行」",
+      run,
+    });
+    await waitFor(() => run.screen.text().includes("会话恢复测试答案。"), {
+      label: "多行消息送达模型并收到回复",
+      run,
+    });
+    await waitPrompt(run, "多行 turn 结束、回到提示符");
+
+    // 会话 JSON：user 消息必须是含 \n 的一条（不是两条独立消息）。
+    const file = latestSessionFile(dirs.sessions);
+    if (!file) throw new CheckError("会话目录里没有 json 文件（persist 未落盘）", ["第一行"], run.screen);
+    const raw = readFileSync(file, "utf8");
+    let content: unknown;
+    try {
+      const parsed = JSON.parse(raw) as { messages?: Array<{ role?: string; content?: unknown }> };
+      const users = (parsed.messages ?? []).filter((m) => m.role === "user");
+      content = users.at(-1)?.content;
+    } catch (e) {
+      throw new CheckError(`会话 JSON 解析失败：${(e as Error).message}`, ["第一行"], run.screen);
+    }
+    if (content !== "第一行\n第二行") {
+      throw new CheckError(
+        `会话 JSON 的 user 消息不是「第一行\\n第二行」（实际 ${JSON.stringify(content)}）`,
+        ["第一行", "第二行"],
+        run.screen,
+      );
+    }
+    // JSON.stringify 会把真实换行转义成两个字符 \n —— 原文里应能直接看到转义形式。
+    if (!raw.includes("第一行\\n第二行")) {
+      throw new CheckError("会话 JSON 原文里没有转义形式的第一行\\n第二行", ["第一行"], run.screen);
+    }
+
+    maybeDumpScreen(run.screen);
+    await run.type("/exit");
+    await run.waitExit();
+  } catch (e) {
+    throw attachScreen(e, run.screen, run.stderr);
+  } finally {
+    await run.close();
+    await fake.stop();
+  }
+}
+
+/** S8：`@a.txt` 提交后，模型收到的 user 消息里必须带引用分隔标记（fake-llm 回 REF_OK）。 */
+async function scenarioS8(tmpRoot: string): Promise<void> {
+  const dirs = await makeDirs(tmpRoot, "s8-ref-delivery");
+  await writeFile(join(dirs.work, "a.txt"), "alpha\n", "utf8");
+  const fake = await startFake("echo-ref");
+  const run = await startNeo({
+    fake,
+    dirs,
+    name: "s8",
+    args: [...BASE_ARGS, "--yes", "--no-reasoning"],
+    cols: DEFAULT_COLS,
+    rows: DEFAULT_ROWS,
+  });
+  try {
+    await waitPrompt(run);
+    // 手工输入 @a.txt（不依赖 Tab 补全），提交时 expandReferences 会把内容附在 user 消息末尾。
+    await run.type("@a.txt");
+    await waitFor(
+      () => run.screen.text().includes("REF_OK") || run.screen.text().includes("REF_MISS"),
+      { label: "模型回应引用检测结果（REF_OK / REF_MISS）", run },
+    );
+    if (!run.screen.text().includes("REF_OK")) {
+      throw new CheckError("模型收到 REF_MISS：@ 引用内容没有随消息送达", ["REF_MISS"], run.screen);
+    }
+    await waitPrompt(run, "S8 结束、回到提示符");
+    maybeDumpScreen(run.screen);
+    await run.type("/exit");
+    await run.waitExit();
+  } catch (e) {
+    throw attachScreen(e, run.screen, run.stderr);
+  } finally {
+    await run.close();
+    await fake.stop();
+  }
+}
+
+/** S9：Tab 补全后光标必须留在行尾（再输入 X 应得到 `@a.txtX`，而不是 `X@a.txt`）。 */
+async function scenarioS9(tmpRoot: string): Promise<void> {
+  const dirs = await makeDirs(tmpRoot, "s9-cursor-after-tab");
+  await writeFile(join(dirs.work, "a.txt"), "alpha\n", "utf8");
+  const fake = await startFake("resume");
+  const run = await startNeo({
+    fake,
+    dirs,
+    name: "s9",
+    args: [...BASE_ARGS, "--yes", "--no-reasoning"],
+    cols: DEFAULT_COLS,
+    rows: DEFAULT_ROWS,
+  });
+  try {
+    await waitPrompt(run);
+    // @a + Tab：单候选 @a.txt（光标应在行尾，即 cursor=6）。
+    await run.write("@a\t");
+    await waitFor(
+      () => {
+        const line = lastPromptLine(run.screen);
+        return line !== null && line.includes("@a.txt");
+      },
+      { label: "Tab 后行缓冲出现 @a.txt", run },
+    );
+    // 继续输入 X：光标若被 rl.prompt() 归零，屏幕会出现「X@a.txt」而不是「@a.txtX」。
+    await run.write("X");
+    await waitFor(
+      () => {
+        const line = lastPromptLine(run.screen);
+        return line !== null && /❯\s*@a\.txtX\s*$/.test(line);
+      },
+      { label: "Tab 后继续输入 X 落在行尾（❯ @a.txtX）", run, timeoutMs: 5000 },
+    );
+    const lineAfterX = lastPromptLine(run.screen) ?? "";
+    if (/❯\s*X@a\.txt/.test(lineAfterX)) {
+      throw new CheckError(`补全后光标被重置到行首：屏幕出现「${lineAfterX}」`, ["X@a.txt"], run.screen);
+    }
+
+    // 清行：Ctrl+U 优先，不支持时退格回退（helper 内处理）。
+    const clearMethod = await clearInputLine(run);
+    console.log(`  · 清行方式：${clearMethod}${clearMethod === "Ctrl+U" ? "（Ctrl+U 可用）" : "（Ctrl+U 不可用，已回退退格）"}`);
+
+    // 清空后重新走引用流程，确认清行没有破坏后续输入。
+    await run.type("@a.txt");
+    await waitFor(() => run.screen.text().includes("· 已引用 1 个文件"), {
+      label: "清行后重新提交 @a.txt 触发引用",
+      run,
+    });
+    await waitFor(() => run.screen.text().includes("会话恢复测试答案。"), {
+      label: "引用轮完成（fake-llm 回包）",
+      run,
+    });
+    await waitPrompt(run, "S9 结束、回到提示符");
+    maybeDumpScreen(run.screen);
+    await run.type("/exit");
+    await run.waitExit();
+  } catch (e) {
+    throw attachScreen(e, run.screen, run.stderr);
+  } finally {
+    await run.close();
+    await fake.stop();
+  }
+}
+
+/** S10：连按 Tab 必须在**首轮候选集**里循环（不能第二按就重新搜索、候选集缩小）。 */
+async function scenarioS10(tmpRoot: string): Promise<void> {
+  const dirs = await makeDirs(tmpRoot, "s10-tab-cycle");
+  const expected = ["@alpha1.txt", "@alpha2.txt", "@alpha3.txt"];
+  for (const name of ["alpha1.txt", "alpha2.txt", "alpha3.txt"]) {
+    await writeFile(join(dirs.work, name), `${name}\n`, "utf8");
+  }
+  const fake = await startFake("resume");
+  const run = await startNeo({
+    fake,
+    dirs,
+    name: "s10",
+    args: [...BASE_ARGS, "--yes", "--no-reasoning"],
+    cols: DEFAULT_COLS,
+    rows: DEFAULT_ROWS,
+  });
+  try {
+    await waitPrompt(run);
+    await run.write("@alpha");
+    await waitFor(() => lastPromptLine(run.screen)?.includes("@alpha") === true, {
+      label: "输入 @alpha 后提示符行可见",
+      run,
+    });
+
+    const seen: string[] = [];
+    for (let i = 0; i < 3; i++) {
+      const prev = lastPromptLine(run.screen);
+      await run.write("\t");
+      await waitFor(
+        () => {
+          const line = lastPromptLine(run.screen);
+          return line !== null && line !== prev && /@alpha\d\.txt/.test(line);
+        },
+        { label: `第 ${i + 1} 次 Tab 后行缓冲切换到新的候选`, run, timeoutMs: 5000 },
+      );
+      const line = lastPromptLine(run.screen) ?? "";
+      const m = /❯\s*(@\S+)/.exec(line);
+      seen.push(m?.[1] ?? `<无法解析：${line}>`);
+    }
+
+    if (new Set(seen).size !== 3) {
+      throw new CheckError(
+        `连按 Tab 没有遍历到 3 个互不相同的候选：${JSON.stringify(seen)}`,
+        ["@alpha"],
+        run.screen,
+      );
+    }
+    const expectedSet = new Set(expected);
+    for (const got of seen) {
+      if (!expectedSet.has(got)) {
+        throw new CheckError(
+          `第 ${seen.indexOf(got) + 1} 次 Tab 得到的候选「${got}」不在首轮候选集 [${expected.join(", ")}] 内`,
+          ["@alpha"],
+          run.screen,
+        );
+      }
+    }
+
+    // 多候选首次 Tab 的提示行：应含「3 个文件候选」。提示行可能被重绘擦掉，
+    // 这里只要它曾经出现在屏幕缓冲里即可（不要求顺序/具体候选文案）。
+    if (!run.screen.text().includes("3 个文件候选")) {
+      throw new CheckError(
+        "多候选提示行缺失：屏幕缓冲里没有「3 个文件候选」（第一次 Tab 应打印候选提示）",
+        ["候选", "@alpha"],
+        run.screen,
+      );
+    }
+
+    maybeDumpScreen(run.screen);
+    // 不提交候选，直接退出；但必须先清空行缓冲，否则 /exit 会被追加成
+    // `@alpha3.txt/exit` 当普通消息发出去，进程永远不退出。
+    const clearMethod = await clearInputLine(run);
+    console.log(`  · 退出前清行方式：${clearMethod}${clearMethod === "Ctrl+U" ? "（Ctrl+U 可用）" : "（Ctrl+U 不可用，已回退退格）"}`);
+    await run.type("/exit");
+    await run.waitExit();
+  } catch (e) {
+    throw attachScreen(e, run.screen, run.stderr);
+  } finally {
+    await run.close();
+    await fake.stop();
+  }
+}
+
+/* ------------------------------------------------------------------ */
 /* 主流程                                                              */
 /* ------------------------------------------------------------------ */
 
@@ -1029,6 +1435,42 @@ const SCENARIOS: Scenario[] = [
     title: "S4 --resume：回放上一轮问答",
     fn: scenarioS4,
     focus: ["回放", "读一下 a.txt", "读完了：内容是 hello。"],
+  },
+  {
+    id: "s5",
+    title: "S5 Tab 补全 @ 文件：插入 @a.txt 并触发引用",
+    fn: scenarioS5,
+    focus: ["@a.txt", "已引用"],
+  },
+  {
+    id: "s6",
+    title: "S6 Tab 补全 / 命令：/las → /last",
+    fn: scenarioS6,
+    focus: ["/last", "未知命令"],
+  },
+  {
+    id: "s7",
+    title: "S7 Ctrl+J 多行：一条含 \\n 的 user 消息",
+    fn: scenarioS7,
+    focus: ["… 第二行", "第一行"],
+  },
+  {
+    id: "s8",
+    title: "S8 @ 引用送达模型：REF_OK",
+    fn: scenarioS8,
+    focus: ["REF_OK", "@a.txt"],
+  },
+  {
+    id: "s9",
+    title: "S9 补全后光标在行尾：@a.txt + X → @a.txtX",
+    fn: scenarioS9,
+    focus: ["@a.txtX", "@a.txt", "已引用"],
+  },
+  {
+    id: "s10",
+    title: "S10 连按 Tab 遍历首轮候选：alpha1/2/3",
+    fn: scenarioS10,
+    focus: ["@alpha", "候选"],
   },
 ];
 

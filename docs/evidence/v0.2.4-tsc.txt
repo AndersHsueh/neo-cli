@@ -1,0 +1,6 @@
+──── stage: tsc ────
+command: bunx tsc --noEmit
+started: 2026-10-25 21:53:11 +0800
+repo:    /Users/xueyuheng/research/000-alice-new/neo
+bun:     1.3.13
+──────────────────────────
