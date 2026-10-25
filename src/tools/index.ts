@@ -221,7 +221,10 @@ const editFile: ToolImpl = {
     );
     if (!ok) return "用户拒绝了该操作，文件未修改。";
 
-    const out = all ? src.split(oldS).join(newS) : src.replace(oldS, newS);
+    // 按字面写入，绝不能用 String.replace(old, new)：new_string 里的 $&、$1、$$、
+    // $`、$' 会被当成替换模式展开，静默写坏代码（P0-3）。此时 count 已确认，
+    // split/join 与单次 replace 语义等价，且没有模式展开。
+    const out = src.split(oldS).join(newS);
     writeFileSync(path, out, "utf8");
     return `已修改 ${path}（${all ? count : 1} 处）`;
   },

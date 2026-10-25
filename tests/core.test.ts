@@ -157,6 +157,35 @@ describe("edit_file 唯一性校验（PRD S4）", () => {
     expect(readFileSync(p, "utf8")).toBe("Y\nY");
   });
 
+  test("new_string 里的 $ 替换模式按字面写入（P0-3）", async () => {
+    // $&、$1、$$、$`、$' 在 String.replace 的第二参数里都是特殊模式；
+    // edit_file 必须把它们当普通字符，否则会静默改写用户代码。
+    const cases = ["$&", "$1", "$$", "$`", "$'"];
+    for (const [i, pat] of cases.entries()) {
+      const p = write(`dollar-${i}.txt`, "TOKEN");
+      const replacement = `s.replace(/a/g, "${pat}")`;
+      const r = await dispatch(
+        "edit_file",
+        JSON.stringify({ path: p, old_string: "TOKEN", new_string: replacement }),
+        makeCtx(),
+      );
+      expect(r.ok).toBe(true);
+      expect(readFileSync(p, "utf8")).toBe(replacement);
+    }
+  });
+
+  test("replace_all 下 $& 同样按字面写入（P0-3）", async () => {
+    const p = write("dollar-all.txt", "TOKEN\nTOKEN");
+    const replacement = "x$&y";
+    const r = await dispatch(
+      "edit_file",
+      JSON.stringify({ path: p, old_string: "TOKEN", new_string: replacement, replace_all: true }),
+      makeCtx(),
+    );
+    expect(r.ok).toBe(true);
+    expect(readFileSync(p, "utf8")).toBe(`${replacement}\n${replacement}`);
+  });
+
   test("找不到 old_string 时报错", async () => {
     const p = write("e3.txt", "abc");
     const r = await dispatch("edit_file", JSON.stringify({ path: p, old_string: "zzz", new_string: "y" }), makeCtx());
