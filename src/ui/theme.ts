@@ -123,7 +123,7 @@ export function banner(
   modelTier?: string,
   toolsText = "read_file write_file edit_file list_dir glob grep shell fetch",
 ): string {
-  const title = "N E O";
+  const title = "M.A.T.R.I.X";
   const sub = "wake up, neo... the matrix has you.";
   const host = hostOf(baseUrl);
   const providerLine =
@@ -138,7 +138,9 @@ export function banner(
     c.dim("  model  ") + c.accent(model),
     c.dim("  endpoint ") + c.muted(host),
     c.dim("  tools  ") + c.muted(toolsText),
-    rule(76),
+    // 底部不再画第二条横线：输入框顶线就在下面，两条线贴太近会显得突兀。
+    // 用「一个空格行」而不是空串：dock 的 wrapAnsi 会忽略尾部空串，空格行才能稳定落成空行。
+    " ",
   ];
   return lines.filter((l) => l !== "").join("\n");
 }
