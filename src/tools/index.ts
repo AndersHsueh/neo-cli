@@ -14,6 +14,7 @@ import { describeSource, insideGlobalSkills, isRealDir, listSkillFiles, resolveS
 import { insideRawDir } from "../wiki/paths.ts";
 import { ToolError, type ToolCtx, type ToolImpl, type DispatchResult } from "./types.ts";
 import { shellMarks } from "./shellMarks.ts";
+import { listSearchFiles } from "./fileList.ts";
 
 // 基础类型与注册表在 ./types.ts（叶子模块，解开 task → agent → tools 循环依赖）。
 // 这里 re-export 保持既有导入路径不变。
@@ -333,42 +334,30 @@ const globTool: ToolImpl = {
     const limit = Math.max(1, Number(args["limit"] ?? 200) || 200);
 
     const re = globToRegExp(pattern);
+    const { files, backend, truncated } = await listSearchFiles(root);
     const hits: Array<{ p: string; mtime: number }> = [];
 
-    const walk = (dir: string, depth: number): void => {
-      if (hits.length >= limit * 4 || depth > 14) return;
-      let entries: Dirent[];
+    for (const f of files) {
+      if (hits.length >= limit * 4) break;
+      const base = f.rel.split("/").pop() ?? f.rel;
+      if (!re.test(f.rel) && !re.test(base)) continue;
+      let m = 0;
       try {
-        entries = readdirSync(dir, { withFileTypes: true });
+        m = statSync(f.full).mtimeMs;
       } catch {
-        return;
+        /* ignore */
       }
-      for (const e of entries) {
-        if (e.name.startsWith(".") && e.name !== ".env") continue;
-        const full = join(dir, e.name);
-        if (isRealDir(full, e)) {
-          if (e.name === "node_modules" || e.name === ".git") continue;
-          walk(full, depth + 1);
-        } else {
-          const rel = relative(root, full).split(sep).join("/");
-          if (re.test(rel) || re.test(e.name)) {
-            let m = 0;
-            try {
-              m = statSync(full).mtimeMs;
-            } catch {
-              /* ignore */
-            }
-            hits.push({ p: rel, mtime: m });
-          }
-        }
-      }
-    };
-    walk(root, 0);
+      hits.push({ p: f.rel, mtime: m });
+    }
 
     hits.sort((a, b) => b.mtime - a.mtime);
     const shown = hits.slice(0, limit);
     if (shown.length === 0) return `无匹配文件: ${pattern}`;
-    return `匹配 ${hits.length} 个文件（显示前 ${shown.length}）:\n${shown.map((h) => h.p).join("\n")}`;
+    const notes: string[] = [];
+    if (backend === "git") notes.push("git 文件清单，已按 .gitignore 排除");
+    if (truncated) notes.push("文件枚举已截断");
+    const note = notes.length > 0 ? `\n（${notes.join("；")}）` : "";
+    return `匹配 ${hits.length} 个文件（显示前 ${shown.length}）:\n${shown.map((h) => h.p).join("\n")}${note}`;
   },
 };
 
@@ -449,7 +438,7 @@ const grepTool: ToolImpl = {
       },
     },
   },
-  execute(args, ctx) {
+  async execute(args, ctx) {
     const pattern = String(args["pattern"] ?? "");
     const root = abs(ctx, String(args["path"] ?? "."));
     const globPat = args["glob"] ? String(args["glob"]) : null;
@@ -474,62 +463,52 @@ const grepTool: ToolImpl = {
     let filesScanned = 0;
     let truncated = false;
 
-    const walk = (dir: string, depth: number): void => {
-      if (hits.length >= limit || truncated || depth > 12) return;
-      let entries: Dirent[];
-      try {
-        entries = readdirSync(dir, { withFileTypes: true });
-      } catch {
-        return;
+    // 文件清单走 gitignore 语义（git 工作区用 git ls-files，非 git 目录用内置匹配器）；
+    // 匹配仍用上面的 JS 正则，不切 git grep —— 保持 \d、lookahead 等语义不变。
+    const listed = await listSearchFiles(root);
+    for (const f of listed.files) {
+      if (hits.length >= limit) {
+        truncated = true;
+        break;
       }
-      for (const e of entries) {
+      const base = f.rel.split("/").pop() ?? f.rel;
+      if (globRe && !globRe.test(f.rel) && !globRe.test(base)) continue;
+
+      let st;
+      try {
+        st = statSync(f.full);
+      } catch {
+        continue;
+      }
+      if (!st.isFile() || st.size > 3_000_000) continue;
+
+      let text: string;
+      try {
+        text = readFileSync(f.full, "utf8");
+      } catch {
+        continue;
+      }
+      if (text.includes("\u0000")) continue; // 二进制
+      filesScanned++;
+      const lines = text.split("\n");
+      for (let i = 0; i < lines.length; i++) {
+        const line = lines[i] ?? "";
+        if (!re.test(line)) continue;
+        hits.push(`${f.rel}:${i + 1}: ${line.trim().slice(0, 300)}`);
         if (hits.length >= limit) {
           truncated = true;
-          return;
-        }
-        if (e.name.startsWith(".") && e.name !== ".env") continue;
-        const full = join(dir, e.name);
-        if (isRealDir(full, e)) {
-          if (e.name === "node_modules" || e.name === ".git") continue;
-          walk(full, depth + 1);
-          continue;
-        }
-        const rel = relative(root, full).split(sep).join("/");
-        if (globRe && !globRe.test(e.name) && !globRe.test(rel)) continue;
-
-        let st;
-        try {
-          st = statSync(full);
-        } catch {
-          continue;
-        }
-        if (st.size > 3_000_000) continue;
-
-        let text: string;
-        try {
-          text = readFileSync(full, "utf8");
-        } catch {
-          continue;
-        }
-        if (text.includes("\u0000")) continue; // 二进制
-        filesScanned++;
-        const lines = text.split("\n");
-        for (let i = 0; i < lines.length; i++) {
-          const line = lines[i] ?? "";
-          if (!re.test(line)) continue;
-          hits.push(`${rel}:${i + 1}: ${line.trim().slice(0, 300)}`);
-          if (hits.length >= limit) {
-            truncated = true;
-            return;
-          }
+          break;
         }
       }
-    };
-    walk(root, 0);
+    }
 
-    if (hits.length === 0) return `无匹配。扫描 ${filesScanned} 个文件，模式: ${pattern}`;
+    const notes: string[] = [];
+    if (listed.backend === "git") notes.push("已按 .gitignore 排除");
+    if (listed.truncated) notes.push("文件枚举已截断");
+    const note = notes.length > 0 ? `；${notes.join("；")}` : "";
+    if (hits.length === 0) return `无匹配。扫描 ${filesScanned} 个文件（${pattern}）${note}`;
     const tail = truncated ? `\n… 结果截断在 ${limit} 行` : "";
-    return `${hits.length} 处匹配（扫描 ${filesScanned} 文件）:\n${hits.join("\n")}${tail}`;
+    return `${hits.length} 处匹配（扫描 ${filesScanned} 文件${note}）:\n${hits.join("\n")}${tail}`;
   },
 };
 
