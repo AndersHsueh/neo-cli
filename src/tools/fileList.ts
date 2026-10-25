@@ -53,7 +53,7 @@ async function gitList(root: string, maxFiles: number): Promise<string[] | null>
   }
 }
 
-interface IgnoreRule {
+export interface IgnoreRule {
   re: RegExp;
   negate: boolean;
   dirOnly: boolean;
@@ -87,7 +87,10 @@ function wildcardBody(pat: string): string {
     if (ch === "[") {
       const end = pat.indexOf("]", i);
       if (end !== -1) {
-        out += pat.slice(i, end + 1);
+        let cls = pat.slice(i, end + 1);
+        // gitignore 的 [!a] 是「非 a」，JS 字符类里对应 [^a]；原样塞进 RegExp 语义相反。
+        if (cls.startsWith("[!")) cls = `[^${cls.slice(2)}`;
+        out += cls;
         i = end;
         continue;
       }
@@ -105,10 +108,18 @@ export function parseGitignore(text: string, baseRel = ""): IgnoreRule[] {
   const rules: IgnoreRule[] = [];
   const prefix = baseRel ? `${baseRel.replace(REGEX_SPECIAL, "\\$&")}/` : "";
   for (const raw of text.split("\n")) {
-    let line = raw.replace(/\r$/, "").trim();
-    if (!line || line.startsWith("#")) continue;
+    let line = raw.replace(/\r$/, "");
+    // 空行与注释行；注意不能 trim：前导空格是模式的一部分（git 只忽略未转义的尾随空格）。
+    if (line === "" || /^\s*$/.test(line) || line.startsWith("#")) continue;
+    // 去掉未转义的尾随空格
+    line = line.replace(/(?<!\\) +$/, "");
+    if (line === "") continue;
+
+    // 行首转义的 \# / \! 表示字面字符，不参与注释/否定语义
     let negate = false;
-    if (line.startsWith("!")) {
+    if (line.startsWith("\\#") || line.startsWith("\\!")) {
+      line = line.slice(1);
+    } else if (line.startsWith("!")) {
       negate = true;
       line = line.slice(1);
     }
@@ -226,7 +237,7 @@ function expandGitEntries(root: string, rels: string[], maxFiles: number): Liste
     }
     for (const e of entries) {
       if (out.length >= maxFiles) return;
-      if (e.name === ".git") continue;
+      if (e.name === ".git" || e.name === "node_modules") continue;
       const full = join(dirAbs, e.name);
       const rel = `${relBase}/${e.name}`;
       if (isDirEntry(full, e)) walkDir(full, rel, depth + 1);
@@ -270,7 +281,10 @@ export async function listSearchFiles(
 ): Promise<ListResult> {
   const fromGit = await gitList(root, maxFiles);
   if (fromGit !== null && fromGit.length > 0) {
-    const files = expandGitEntries(root, fromGit, maxFiles);
+    // 与旧实现保持一致：依赖树永远跳过（即使仓库忘了把 node_modules 写进 .gitignore）。
+    // 项目若真要搜依赖，显式把 path 指到 node_modules 子目录即可（此时 rel 不含该段）。
+    const usable = fromGit.filter((rel) => !rel.split("/").includes("node_modules"));
+    const files = expandGitEntries(root, usable, maxFiles);
     return { files, backend: "git", truncated: fromGit.length >= maxFiles || files.length >= maxFiles };
   }
   return walkList(root, maxFiles);

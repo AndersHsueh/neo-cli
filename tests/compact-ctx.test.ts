@@ -369,6 +369,58 @@ describe("compactNow / compact", () => {
     expect(agent.cumulative).toEqual({ prompt: 120, completion: 30, reasoning: 0 });
   });
 
+  test("P0-2：短历史的最后 user 提问必须保留为原文（切点回退修复）", async () => {
+    const { fn } = fakeStream([() => ({ content: "摘要" })]);
+    const agent = new Agent({
+      cfg: makeCfg(),
+      console: spyConsole(),
+      mode: "auto-all",
+      systemPrompt: "sys",
+      chatStream: fn,
+    });
+    const toolCall: ToolCall = {
+      id: "call_short",
+      type: "function",
+      function: { name: "read_file", arguments: '{"path":"a.ts"}' },
+    };
+    // 6 条：切点初始落在 tool，向下回退会到 0 —— 修复前只剩 1 条 assistant
+    agent.messages.push(
+      { role: "user", content: "u0" },
+      { role: "assistant", content: "", tool_calls: [toolCall] },
+      { role: "tool", tool_call_id: "call_short", name: "read_file", content: "body" },
+      { role: "assistant", content: "a0" },
+      { role: "user", content: "u1" },
+      { role: "assistant", content: "a1" },
+    );
+    await agent.compactNow();
+    const tail = agent.messages.slice(2);
+    expect(tail.map((m) => m.content)).toEqual(["u1", "a1"]);
+    expect(tail[0]!.role).toBe("user");
+  });
+
+  test("P0-2：10–11 条历史仍保留 ≥6 条原文", async () => {
+    for (const len of [10, 11]) {
+      const { fn } = fakeStream([() => ({ content: "摘要" })]);
+      const agent = new Agent({
+        cfg: makeCfg(),
+        console: spyConsole(),
+        mode: "auto-all",
+        systemPrompt: "sys",
+        chatStream: fn,
+      });
+      for (let i = 0; i < len; i++) {
+        agent.messages.push(
+          i % 2 === 0
+            ? { role: "user", content: `u${i}` }
+            : { role: "assistant", content: `a${i}` },
+        );
+      }
+      await agent.compactNow();
+      expect(agent.messages.slice(2).length).toBeGreaterThanOrEqual(6);
+      expect(agent.messages[2]!.role).toBe("user");
+    }
+  });
+
   test("压缩器返回空内容：compactNow 抛错，compact 返回 false", async () => {    const { fn } = fakeStream([() => ({ content: "" })]);
     const agent = new Agent({
       cfg: makeCfg(),
@@ -426,11 +478,11 @@ describe("compact_ctx 端到端", () => {
 
     // 压缩确实执行了
     expect(infos.some((m) => m.includes("已按模型请求压缩上下文"))).toBe(true);
-    // 历史：system + 摘要 + 最近 3 条原文 + 最终 assistant（P0-2 保留原文）
-    expect(agent.messages).toHaveLength(6);
+    // 历史：system + 摘要 + 最近 5 条原文 + 最终 assistant（P0-2 保留原文）
+    expect(agent.messages).toHaveLength(8);
     expect(agent.messages[1]!.content).toContain("<对话摘要>");
-    // 三次 LLM 调用：round1（7 条）→ 压缩器（2 条）→ round2（5 条 + budgetMsg = 6）
-    expect(msgCounts).toEqual([7, 2, 6]);
+    // 三次 LLM 调用：round1（7 条）→ 压缩器（2 条）→ round2（7 条 + budgetMsg = 8）
+    expect(msgCounts).toEqual([7, 2, 8]);
     // 压缩后保留的最近段必须以 user 开头，工具调用与结果不能被拆散
     expect(agent.messages[2]!.role).toBe("user");
   });

@@ -156,6 +156,21 @@ describe("chatStream 重试（P0-1）", () => {
     expect(hits).toBe(1);
   });
 
+  test("进入前已 abort 的 signal：不发请求直接失败", async () => {
+    let hits = 0;
+    const url = serve(() => {
+      hits += 1;
+      return sseOk();
+    });
+    const ctrl = new AbortController();
+    ctrl.abort();
+    const err = await chatStream(makeCfg(url), messages(), [], {}, ctrl.signal).catch(
+      (e: unknown) => e,
+    );
+    expect((err as Error).name).toBe("AbortError");
+    expect(hits).toBe(0);
+  });
+
   test("退避等待期间 abort 立即停止", async () => {
     let hits = 0;
     const url = serve(() => {

@@ -5,7 +5,7 @@
  * 条数上限裁剪、manifest 坏行容错、工作目录外不快照、超大文件只记 manifest。
  */
 import { afterAll, describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 
@@ -129,6 +129,24 @@ describe("CheckpointStore（P0-4）", () => {
     const outside = join(SANDBOX, "outside.txt");
     write(outside, "x");
     expect(store.beforeWrite(outside, "write_file")).toBeNull();
+    expect(store.list()).toHaveLength(0);
+  });
+
+  test("目录路径不快照（避免 /checkpoints 噪音）", () => {
+    const { cwd, store } = env();
+    const dir = join(cwd, "adir");
+    mkdirSync(dir, { recursive: true });
+    expect(store.beforeWrite(dir, "write_file")).toBeNull();
+    expect(store.list()).toHaveLength(0);
+  });
+
+  test("指向工作目录外的软链不快照（避免 /undo 写穿仓库）", () => {
+    const { cwd, store } = env();
+    const outside = join(SANDBOX, `outside-link-${seq}.txt`);
+    write(outside, "x");
+    const link = join(cwd, "link.txt");
+    symlinkSync(outside, link);
+    expect(store.beforeWrite(link, "edit_file")).toBeNull();
     expect(store.list()).toHaveLength(0);
   });
 

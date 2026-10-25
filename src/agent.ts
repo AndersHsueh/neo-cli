@@ -109,6 +109,11 @@ export interface AgentOptions {
    */
   isSubagent?: boolean;
   /**
+   * 非交互单次模式（-p）：即使 stdout 是 TTY 也用块级渲染，不逐 chunk 流式输出。
+   * 否则 `neo -p` 在真终端里会喷出 spinner/ANSI，脚本与日志都难读。
+   */
+  nonInteractive?: boolean;
+  /**
    * 写文件检查点（P0-4）。主代理由组合根注入会话级 CheckpointStore；
    * 子代理沿用父代理的实例（写入仍记在同一个会话下）。
    */
@@ -288,14 +293,22 @@ export class Agent {
     // ---- 切分：摘要较早的部分，最近 N 条保留原文（P0-2）----
     // 切点必须落在 user 消息之前：这样 assistant(tool_calls) 与紧随其后的
     // tool 结果不会被拆开，下一轮请求的消息序列仍然合法。
-    const desiredTail = Math.min(COMPACT_KEEP_TAIL, Math.max(2, Math.floor(convo.length / 2)));
+    // 保留条数优先 6 条；历史较短时按「至少给摘要留 2 条」退让，而不是按一半砍。
+    const desiredTail = Math.min(COMPACT_KEEP_TAIL, Math.max(2, convo.length - 2));
     let cut = Math.max(0, convo.length - desiredTail);
     while (cut > 0 && convo[cut]?.role !== "user") cut -= 1;
     if (cut === 0) {
-      // 历史里没有 user 边界（极少见）：退化为从尾部保留最后一条的边界，
-      // 且不要把 tool 结果与其 assistant 调用拆开。
-      cut = Math.max(1, convo.length - 1);
-      while (cut > 0 && convo[cut]?.role === "tool") cut -= 1;
+      // 回退过头（最近的 user 落在初始切点之前）：改为以「最后一个 user」为切点，
+      // 保证最近一次提问及其后续回答以原文保留；否则短历史会只剩一条 assistant。
+      const lastUser = convo.map((m) => m.role).lastIndexOf("user");
+      if (lastUser > 0) {
+        cut = lastUser;
+      } else {
+        // 历史里根本没有可用的 user 边界（极少见）：保留最后一条，
+        // 且不要把 tool 结果与其 assistant 调用拆开。
+        cut = Math.max(1, convo.length - 1);
+        while (cut > 0 && convo[cut]?.role === "tool") cut -= 1;
+      }
     }
     const head = convo.slice(0, cut);
     const tail = convo.slice(cut);
@@ -546,7 +559,7 @@ export class Agent {
       // TTY 下逐 chunk 流式；非 TTY（管道 / CI / 重定向）改为块级：
       // 逐 chunk 写进管道只会得到带控制符的碎片，且没有任何阅读价值。
       // 做法是照常接收增量，但先累积，等本轮结束后一次性渲染。
-      const interactive = process.stdout.isTTY === true;
+      const interactive = this.opt.nonInteractive !== true && process.stdout.isTTY === true;
       const reasoningOpen = { open: false };
       // 正文/代码块经 StreamFormatter 写入，但同样要走 Console 的输出通道：
       // 否则注入的 write 只覆盖「● 」前缀，正文仍直写 stdout，测试与真实路径分叉。

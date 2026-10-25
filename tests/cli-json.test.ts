@@ -37,15 +37,37 @@ const server = Bun.serve({
 });
 const BASE = `http://127.0.0.1:${server.port}/v1`;
 
+/** 永不发 SSE 帧的假端点：用于 SIGINT 中断用例。 */
+const slowServer = Bun.serve({
+  port: 0,
+  fetch(req) {
+    const url = new URL(req.url);
+    if (url.pathname.endsWith("/models")) {
+      return Response.json({ object: "list", data: [{ id: "fake-model" }] });
+    }
+    if (url.pathname.endsWith("/chat/completions")) {
+      return new Response(
+        new ReadableStream<Uint8Array>({
+          start() {
+            /* 故意不 enqueue / 不 close：模拟卡住的流 */
+          },
+        }),
+        { headers: { "content-type": "text/event-stream" } },
+      );
+    }
+    return new Response("not found", { status: 404 });
+  },
+});
+const SLOW_BASE = `http://127.0.0.1:${slowServer.port}/v1`;
+
 afterAll(() => {
   server.stop(true);
+  slowServer.stop(true);
   rmSync(SANDBOX, { recursive: true, force: true });
 });
 
-/** 每个用例一个独立工作目录 + 最小 settings.json（不读用户真实配置）。 */
-function project(baseUrl: string, retry = 1): string {
-  const dir = join(SANDBOX, `p${seq++}`);
-  mkdirSync(dir, { recursive: true });
+/** 写入最小 settings.json（不读用户真实配置）。 */
+function writeSettings(dir: string, baseUrl: string, retry = 1): void {
   writeFileSync(
     join(dir, "settings.json"),
     JSON.stringify(
@@ -82,8 +104,17 @@ function project(baseUrl: string, retry = 1): string {
     ),
     "utf8",
   );
+}
+
+/** 每个用例一个独立工作目录。 */
+function project(baseUrl: string, retry = 1): string {
+  const dir = join(SANDBOX, `p${seq++}`);
+  mkdirSync(dir, { recursive: true });
+  writeSettings(dir, baseUrl, retry);
   return dir;
 }
+
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 async function run(cwd: string, args: string[]): Promise<{ out: string; err: string; code: number }> {
   const proc = Bun.spawn(["bun", INDEX, ...args], {
@@ -138,6 +169,65 @@ describe("P0-6 -p --output-format json", () => {
     const r = await run(dir, ["-p", "hello", "--output-format", "yaml"]);
     expect(r.code).toBe(2);
     expect(r.out).toBe("");
+  });
+
+  test("等号形式 --output-format=json 同样生效", async () => {
+    const dir = project(BASE);
+    const r = await run(dir, ["-p", "hello", "-y", "--output-format=json"]);
+    expect(r.code).toBe(0);
+    const j = JSON.parse(r.out.trim()) as Record<string, unknown>;
+    expect(j["ok"]).toBe(true);
+    expect(j["answer"]).toBe("hi");
+  });
+
+  test("--resume 本轮失败时 answer 不回填上一轮旧答案", async () => {
+    const dir = project(BASE);
+    const first = await run(dir, ["-p", "hello", "-y", "--output-format", "json"]);
+    expect(first.code).toBe(0);
+    const firstJson = JSON.parse(first.out.trim()) as Record<string, unknown>;
+    expect(firstJson["answer"]).toBe("hi");
+
+    // 把端点改坏，再用 --resume 继续同一会话
+    writeSettings(dir, "http://127.0.0.1:9/v1", 1);
+    const second = await run(dir, [
+      "-p",
+      "hello again",
+      "-y",
+      "--output-format",
+      "json",
+      "--resume",
+      "last",
+    ]);
+    expect(second.code).toBe(1);
+    const j = JSON.parse(second.out.trim()) as Record<string, unknown>;
+    expect(j["ok"]).toBe(false);
+    expect(j["answer"]).toBeNull();
+  });
+
+  test("SIGINT 中断：仍输出 JSON、aborted=true、exit 130", async () => {
+    const dir = project(SLOW_BASE);
+    const proc = Bun.spawn(["bun", INDEX, "-p", "hello", "-y", "--output-format", "json"], {
+      cwd: dir,
+      stdout: "pipe",
+      stderr: "pipe",
+      env: {
+        ...process.env,
+        NEO_SESSIONS_DIR: sessionsDir,
+        NEO_MEMORY_DISABLE: "1",
+      },
+    });
+    await sleep(800);
+    proc.kill("SIGINT");
+    const [out, , code] = await Promise.all([
+      new Response(proc.stdout).text(),
+      new Response(proc.stderr).text(),
+      proc.exited,
+    ]);
+    expect(code).toBe(130);
+    const j = JSON.parse(out.trim()) as Record<string, unknown>;
+    expect(j["aborted"]).toBe(true);
+    expect(j["exit_code"]).toBe(130);
+    expect(j["ok"]).toBe(false);
   });
 
   test("text 模式输出保持原样（回归）", async () => {

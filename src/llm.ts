@@ -225,6 +225,8 @@ export async function chatStream(
   signal?: AbortSignal,
 ): Promise<StreamResult> {
   const policy = cfg.retry ?? DEFAULT_RETRY_CONFIG;
+  // 已经取消的 signal 不应再发请求（调用方可能在进入前就按了 ESC）。
+  if (signal?.aborted) throw abortError();
   let attempt = 0;
   for (;;) {
     attempt += 1;

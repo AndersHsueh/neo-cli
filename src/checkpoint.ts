@@ -16,6 +16,7 @@ import {
   existsSync,
   mkdirSync,
   readFileSync,
+  realpathSync,
   rmSync,
   statSync,
   writeFileSync,
@@ -73,11 +74,18 @@ function sanitize(name: string): string {
 export class CheckpointStore implements CheckpointSink {
   readonly dir: string;
   private readonly cwd: string;
+  /** cwd 的真实路径（cwd 自身可能是软链，如 macOS 的 /var → /private/var）。 */
+  private readonly realCwd: string;
   private readonly maxEntries: number;
   private nextSeq: number | null = null;
 
   constructor(opts: CheckpointOptions) {
     this.cwd = resolve(opts.cwd);
+    try {
+      this.realCwd = realpathSync(this.cwd);
+    } catch {
+      this.realCwd = this.cwd;
+    }
     this.dir = opts.dir ?? join(opts.cwd, ".neo", "backups", opts.sessionId);
     this.maxEntries = Math.max(1, opts.maxEntries ?? DEFAULT_MAX_ENTRIES);
   }
@@ -95,11 +103,27 @@ export class CheckpointStore implements CheckpointSink {
     let size = 0;
     try {
       const st = statSync(path);
-      existed = st.isFile();
-      size = existed ? st.size : 0;
+      // 目录/设备等非普通文件：不记录（写入本身会失败，留条目只会在 /checkpoints 里制造噪音）
+      if (!st.isFile()) return null;
+      existed = true;
+      size = st.size;
     } catch {
       existed = false;
     }
+
+    // 软链可能指向工作目录外：按真实路径再校验一次，避免 /undo 写穿仓库。
+    let realPath = path;
+    try {
+      realPath = realpathSync(path);
+    } catch {
+      try {
+        realPath = join(realpathSync(dirname(path)), basename(absPath));
+      } catch {
+        realPath = path;
+      }
+    }
+    const realRel = relative(this.realCwd, realPath);
+    if (realRel === "" || realRel.startsWith("..") || isAbsolute(realRel)) return null;
 
     mkdirSync(this.dir, { recursive: true });
     const seq = this.allocSeq();

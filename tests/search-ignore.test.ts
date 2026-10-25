@@ -13,6 +13,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { dispatch } from "../src/tools/index.ts";
+import { parseGitignore } from "../src/tools/fileList.ts";
 import type { Config } from "../src/config.ts";
 import type { ToolCtx } from "../src/tools/types.ts";
 
@@ -93,6 +94,36 @@ describe("P0-5 git 工作区：尊重 .gitignore、包含隐藏文件", () => {
     expect(digit.output).toContain("id.txt:1:");
     const look = await grep(f, "id=(?=123)");
     expect(look.output).toContain("id.txt:1:");
+  });
+
+  test("未把 node_modules 写进 .gitignore 时也跳过依赖树（与旧版一致）", async () => {
+    const f = project(true);
+    put(f.dir, "node_modules/pkg/index.ts", "NM_MARKER_42\n");
+    put(f.dir, "src/ok.ts", "NM_MARKER_42\n");
+    const g = await grep(f, "NM_MARKER_42");
+    expect(g.output).toContain("src/ok.ts");
+    expect(g.output).not.toContain("node_modules");
+    const l = await glob(f, "**/*.ts");
+    expect(l.output).not.toContain("node_modules");
+  });
+});
+
+describe("P0-5 非 git fallback 的 .gitignore 方言", () => {
+  const matches = (pattern: string, path: string): boolean =>
+    parseGitignore(pattern).some((r) => !r.negate && r.re.test(path));
+
+  test("[!a] 是字符类否定（不是字面 ! 或 a）", () => {
+    expect(matches("f[!a].txt", "fb.txt")).toBe(true);
+    expect(matches("f[!a].txt", "fa.txt")).toBe(false);
+  });
+
+  test("\\# 转义为字面 #（不是注释）", () => {
+    expect(matches("\\#literal.txt", "#literal.txt")).toBe(true);
+  });
+
+  test("前导空格属于模式的一部分", () => {
+    expect(matches(" foo", " foo")).toBe(true);
+    expect(matches(" foo", "foo")).toBe(false);
   });
 });
 

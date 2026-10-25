@@ -155,6 +155,17 @@ function parseArgs(argv: string[]): Args {
   };
   for (let i = 0; i < argv.length; i++) {
     const v = argv[i] ?? "";
+    // 等号形式（--output-format=json）也要认，否则编排器写 `--flag=value` 会被静默忽略。
+    if (v.startsWith("--output-format=")) {
+      const val = v.slice("--output-format=".length).trim();
+      if (val !== "text" && val !== "json") {
+        console.error(`✖ --output-format 只支持 text | json（收到 "${val}"）`);
+        a.badArgs = true;
+      } else {
+        a.outputFormat = val;
+      }
+      continue;
+    }
     switch (v) {
       case "-h":
       case "--help":
@@ -386,7 +397,11 @@ async function main(): Promise<number> {
   }
 
   // ---- v0.3.0 底部 live 帧：TTY 才启用 composer/dock，非 TTY 走 v0.2.4 readline 路径 ----
-  const interactiveTTY = process.stdin.isTTY === true && process.stdout.isTTY === true;
+  // -p 是单次模式：即使 stdout 是 TTY 也不要起 composer/dock ——
+  // dock 的 preComposerRows 只有 composer 启动时才会 flush，-p 下永不启动，
+  // 会导致「真终端里 neo -p 零输出」。这里直接走 no-dock 的直写路径。
+  const interactiveTTY =
+    args.print === null && process.stdin.isTTY === true && process.stdout.isTTY === true;
   let composerRef: Composer | null = null;
   /** composer 启动前的输出（banner / 记忆提示 / --resume 回放）先缓存，启动后一次性落到上方。 */
   const preComposerRows: string[] = [];
@@ -641,6 +656,8 @@ async function main(): Promise<number> {
     classifier,
     memory,
     checkpoint: checkpoints,
+    // -p 单次模式：即使终端是 TTY 也按非交互块级渲染，避免 spinner/ANSI 污染输出
+    nonInteractive: args.print !== null,
     pollInbox: mailbox
       ? () => {
           const mb = mailbox;
@@ -771,7 +788,16 @@ async function main(): Promise<number> {
       console.error(c.err("✖ -p 需要提供内容"));
       return 2;
     }
-    const stats = await agent.send(prompt);
+    // json 模式把 SIGINT 转成 aborted 统计：Ctrl+C 后仍能输出一行 JSON（exit 130），
+    // 而不是被信号直接杀掉、编排器拿到空 stdout。
+    const onSigint = (): void => agent.cancel();
+    if (jsonMode) process.on("SIGINT", onSigint);
+    let stats: Awaited<ReturnType<typeof agent.send>>;
+    try {
+      stats = await agent.send(prompt);
+    } finally {
+      if (jsonMode) process.off("SIGINT", onSigint);
+    }
     persist(agent.messages, sess.meta);
     // 单次模式：把记忆写队列在退出前冲刷掉（仅项目级；带超时，不阻塞关闭）
     await memory.flush();
@@ -780,14 +806,18 @@ async function main(): Promise<number> {
     const exitCode = stats.aborted ? 130 : stats.hadError ? 1 : 0;
 
     if (jsonMode) {
-      const answer = [...agent.messages]
-        .reverse()
-        .find(
-          (m) =>
-            m.role === "assistant" &&
-            !m.tool_calls &&
-            (contentText(m.content) ?? "").trim() !== "",
-        );
+      // 失败/中断时不要回填历史里的旧 assistant（--resume 场景会误导编排器）。
+      const answer =
+        stats.hadError || stats.aborted
+          ? null
+          : [...agent.messages]
+              .reverse()
+              .find(
+                (m) =>
+                  m.role === "assistant" &&
+                  !m.tool_calls &&
+                  (contentText(m.content) ?? "").trim() !== "",
+              ) ?? null;
       const payload = {
         v: 1,
         ok: exitCode === 0,
