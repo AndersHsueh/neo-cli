@@ -1,6 +1,6 @@
 # neo 测试约定
 
-> **最后更新:2026-10-26**（v0.3.1 会话代号 + Agent 标题动画 + resume 真续接；v0.3.0 TUI；v0.2.4 输入层；v0.2.0 跨会话消息）
+> **最后更新:2026-10-26**（v0.3.5 P0 可靠性加固 + 独立复验修复；v0.3.4 banner；v0.3.1 会话代号 + resume；v0.3.0 TUI）
 
 ## §1 当前基线
 
@@ -10,7 +10,7 @@ bun test              # 873 pass / 0 fail（52 个测试文件，约 6s）
 bash scripts/verify.sh # 全量闸门：上两条 + 真 PTY E2E（19 场景），输出落 docs/evidence/
 ```
 
-v0.3.4 后的基线：**881 pass / 0 fail / 53 文件**（v0.3.0 为 839/46，v0.2.4 为 660/37，v0.2.3 为 569/32，v0.2.2 为 530/27）。
+v0.3.5 后的基线：**925 pass / 0 fail / 57 文件**（v0.3.4 为 881/53，v0.3.0 为 839/46，v0.2.4 为 660/37，v0.2.3 为 569/32）。
 改功能前先在干净树上跑一遍，数字对位后再动手。
 
 ### TTY-only 行为的验证方式（v0.2.3 起）
@@ -80,6 +80,17 @@ bun test 里的 fake IO 测不出事件顺序与覆盖语义。可复用脚本�
 | `toollog.test.ts` | D3：失败摘要（stderr/exit code）、时长格式、`/last` 格式化、缓存上限 20、失败详情的行数预算 |
 | `transcript.test.ts` | D4：轮次切取、角色过滤、`maxLines` 截断提示、多行用户输入、markdown 渲染 |
 | `flash-notice.test.ts` | D5：提示符重绘注入、不打印 `❯`、非 TTY 不写、无 restorer 退化 |
+
+### v0.3.5 新增（57 文件 / 925 例，+44）
+
+| 文件 | 覆盖 |
+|---|---|
+| `llm-retry.test.ts` | P0-1：5xx/4xx/429 Retry-After/连接超时/空闲超时/中途断流/用户 abort/退避 abort/预置 abort（本地 Bun.serve） |
+| `search-ignore.test.ts` | P0-5：gitignore/git 清单/隐藏文件/node_modules/非 git 方言（`[!a]`、`\#`、前导空格）/JS 正则语义 |
+| `checkpoint.test.ts` | P0-4：快照还原/新建删除/逆序/裁剪/坏行/越界/超大文件/目录/软链外路径 |
+| `cli-json.test.ts` | P0-6：json stdout 纯净/退出码/等号形式/--resume 失败 answer/SIGINT 130/text 回归 |
+| `core.test.ts`（扩展） | P0-3：`$& $1 $$ $\` $'` 按字面写入 + replace_all |
+| `compact-ctx.test.ts`（扩展） | P0-2：保留近期原文/不拆 tool 配对/长输入/usage/短历史最后 user |
 
 ### v0.3.1/0.3.2/0.3.3 新增（53 文件 / 881 例）
 

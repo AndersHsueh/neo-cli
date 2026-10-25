@@ -98,7 +98,7 @@ import { mailboxRoot, type Envelope } from "./mailbox/types.ts";
 import { CheckpointStore } from "./checkpoint.ts";
 import type { ToolCtx } from "./tools/types.ts";
 
-const VERSION = "0.3.4";
+const VERSION = "0.3.5";
 
 /** /auto 列表里各实现的说明。 */
 const DESC: Record<string, string> = {

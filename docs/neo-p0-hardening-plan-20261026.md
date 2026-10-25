@@ -218,5 +218,5 @@
 **与计划的偏差**：
 - P0-5 未安装 ripgrep（本机原本没有），按默认方案用 git 枚举 + 内置匹配器；有 rg 时未做加速分支（避免引入未在本机验证的代码路径）。
 - P0-4 未扩大 shell 覆盖（按拍板默认值）。
-- 未改 `package.json` 版本、未 push；release note 草稿见 `docs/release-notes/v0.3.5.md`。
+- 已 bump 版本 `0.3.5`（`package.json` + `src/index.ts`）并打 tag `v0.3.5`；release note 见 `docs/release-notes/v0.3.5.md`。
 - 独立审计子代理的复验报告在 `/tmp/p0-verify/report.md`；其指出的预存在 bug「真 TTY 下 `-p` 零输出」也已顺带修复（非本次 6 项范围，单独说明）。
