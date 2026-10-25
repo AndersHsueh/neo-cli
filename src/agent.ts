@@ -17,7 +17,7 @@ import { renderMarkdown } from "./ui/render.ts";
 import { c, colorEnabled } from "./ui/theme.ts";
 import { Classifier } from "./classifier/index.ts";
 import { dispatch, toolSpecs, toolNames, TOOL_NAMES_EXCLUDED_FOR_SUBAGENT, type ToolCtx } from "./tools/index.ts";
-import { ToolError } from "./tools/types.ts";
+import { ToolError, type CheckpointSink } from "./tools/types.ts";
 import { isRecallMessage, type MemoryPort } from "./memory/port.ts";
 
 export type PermissionMode = "ask" | "auto-edit" | "auto-all" | "plan";
@@ -108,6 +108,11 @@ export interface AgentOptions {
    * 主代理必须能看到全部运行时注册工具（task / wiki_* / remember / send_message / list_peers）。
    */
   isSubagent?: boolean;
+  /**
+   * 写文件检查点（P0-4）。主代理由组合根注入会话级 CheckpointStore；
+   * 子代理沿用父代理的实例（写入仍记在同一个会话下）。
+   */
+  checkpoint?: CheckpointSink;
 }
 
 export interface TurnStats {
@@ -867,6 +872,7 @@ export class Agent {
       cfg: this.opt.cfg,
       signal,
       host: this,
+      checkpoint: this.opt.checkpoint,
       approve: async (tool, detail) => {
         if (mode === "auto-all") return true;
         if (mode === "auto-edit" && tool !== "shell") return true;

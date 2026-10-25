@@ -9,6 +9,9 @@ settings.json
 # —— gitignore 无法区分 symlink 与真目录，写 skills/ 会连项目私有技能一起 ignore。
 .neo/skills/
 
+# 写文件检查点：快照是本地恢复用运行时状态，不进版本控制
+.neo/backups/
+
 # neo 会话导出
 neo-session.json
 

@@ -206,6 +206,8 @@ export async function runSubagent(
     systemPrompt: subSystemPrompt(trimmed),
     chatStream: main.injectedStreamFn,
     isSubagent: true,
+    // 子代理的写操作也进父会话的检查点（/undo 能一起恢复）
+    checkpoint: ctx.checkpoint,
     // 不传 classifier：子代理任务短，内部切档收益趋近于零，
     // 且分类器依赖连续失败计数等主循环状态，子代理里没有意义。
   });

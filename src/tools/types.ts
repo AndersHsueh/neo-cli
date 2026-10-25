@@ -27,10 +27,20 @@ export interface CompactHost {
   requestCompact(): void;
 }
 
+/** 写文件检查点（P0-4）。结构化类型，避免工具层反向依赖 checkpoint 模块。 */
+export interface CheckpointSink {
+  beforeWrite(path: string, op: string): unknown;
+}
+
 export interface ToolCtx {
   cfg: Config;
   /** 敏感操作审批，返回 true 才执行。 */
   approve: (tool: string, detail: string) => Promise<boolean>;
+  /**
+   * 写盘前的检查点入口（可选）。write_file / edit_file 在审批通过后调用；
+   * 不传 = 不做快照（测试裸 ctx / 子代理未接线时）。
+   */
+  checkpoint?: CheckpointSink;
   /**
    * 宿主代理（可选，测试的裸 ctx 可不传）。compact_ctx 用它登记压缩请求。
    */

@@ -43,6 +43,8 @@ export const COMMANDS: CommandEntry[] = [
   { name: "save", description: "导出会话" },
   { name: "resume", description: "恢复会话" },
   { name: "last", description: "回看最近 n 次工具调用" },
+  { name: "undo", description: "撤销最近 n 次 write/edit" },
+  { name: "checkpoints", description: "列出写文件检查点" },
   { name: "sessions", description: "历史会话列表" },
   { name: "exit", description: "退出；别名 quit" },
   { name: "quit", description: "别名：/exit" },

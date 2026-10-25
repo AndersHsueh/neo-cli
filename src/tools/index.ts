@@ -166,6 +166,12 @@ const writeFileTool: ToolImpl = {
     const ok = await ctx.approve("write_file", detail);
     if (!ok) return "用户拒绝了该操作，未写入文件。";
 
+    // 审批通过、写盘之前留检查点（P0-4）。失败不阻塞写入。
+    try {
+      ctx.checkpoint?.beforeWrite(path, "write_file");
+    } catch {
+      /* 检查点是增强项：失败不阻止写盘 */
+    }
     mkdirSync(dirname(path), { recursive: true });
     writeFileSync(path, content, "utf8");
     return `${isNew ? "已创建" : "已覆盖"} ${path}（${content.length} 字符，${content.split("\n").length} 行）`;
@@ -221,6 +227,13 @@ const editFile: ToolImpl = {
       `修改 ${path}：${count > 1 ? `替换全部 ${count} 处` : "替换 1 处"}`,
     );
     if (!ok) return "用户拒绝了该操作，文件未修改。";
+
+    // 审批通过、写盘之前留检查点（P0-4）。失败不阻塞写入。
+    try {
+      ctx.checkpoint?.beforeWrite(path, "edit_file");
+    } catch {
+      /* 检查点是增强项：失败不阻止写盘 */
+    }
 
     // 按字面写入，绝不能用 String.replace(old, new)：new_string 里的 $&、$1、$$、
     // $`、$' 会被当成替换模式展开，静默写坏代码（P0-3）。此时 count 已确认，

@@ -95,6 +95,7 @@ import * as mailboxState from "./mailbox/state.ts";
 import { decideInbound, formatIncomingFrame, formatNotice, formatNoticePreview, formatPreview } from "./mailbox/inbound.ts";
 import { makeListPeersTool, makeSendMessageTool } from "./tools/mailbox.ts";
 import { mailboxRoot, type Envelope } from "./mailbox/types.ts";
+import { CheckpointStore } from "./checkpoint.ts";
 import type { ToolCtx } from "./tools/types.ts";
 
 const VERSION = "0.3.4";
@@ -266,6 +267,8 @@ ${c.bold("交互命令")}
   /save [path]     导出会话        /sessions    历史会话
   /resume [id]     恢复会话（无参进入选择；last = 最近一次）
   /last [n]        回看最近 n 次工具调用（默认 1；紧凑模式的信息找回入口）
+  /undo [n]        撤销最近 n 次 write/edit（默认 1；仅工具写，不含 shell）
+  /checkpoints [n] 列出最近的写文件检查点（默认 10）
   /tier [name]     查看/切档位      /auto [name] 切换分类器（off/rule/llm）
   /fast /balanced /deep            档位快捷方式（等价 /tier）
   /why             上次分类判定与理由
@@ -475,6 +478,10 @@ async function main(): Promise<number> {
   // --resume：沿用被恢复会话的 id/path（真续接），而不是新开一个 fork。
   const sess = meta ? adoptSession(meta, cfg.model) : createSession(cfg.model, cfg.cwd);
 
+  // 写文件检查点（P0-4）：会话级目录，/undo 用它在写盘后恢复本会话的 write/edit。
+  // 只覆盖工具写路径（shell 改动不追），只快照工作目录内文件。
+  const checkpoints = new CheckpointStore({ cwd: cfg.cwd, sessionId: sess.meta.id });
+
   // 记忆桥（v0.2 记忆激活）：
   //  - -p / 非交互 = oneshot：只用项目级记忆（服务器脚本场景，不混入操作员个人记忆）；
   //  - plan 模式禁写（captureEnabled=false），召回仍可用。
@@ -600,6 +607,7 @@ async function main(): Promise<number> {
     systemPrompt: buildSystemPrompt(cfg, { mailbox: mailboxEnabled }),
     classifier,
     memory,
+    checkpoint: checkpoints,
     pollInbox: mailbox
       ? () => {
           const mb = mailbox;
@@ -886,6 +894,7 @@ async function main(): Promise<number> {
             shutdown,
             selectDeps,
             mailbox,
+            checkpoints,
             (env) => {
               ui.line(c.dim(formatPreview(env)));
               queue.push({ text: formatIncomingFrame(env), attachments: [], origin: "mailbox", from: env.from.session });
@@ -1650,6 +1659,7 @@ async function handleCommand(
   shutdown: () => void | Promise<void>,
   selectDeps: SelectDeps,
   mailbox: Mailbox | null,
+  checkpoints: CheckpointStore | null,
   injectMailbox?: (env: Envelope) => void,
   onMailboxRekey?: () => void,
   onNameChange?: (name: string) => void,
@@ -1674,6 +1684,48 @@ async function handleCommand(
       const ok = await agent.compact();
       if (ok) ui.success(`压缩完成。上下文使用率 ${(agent.contextUsage() * 100).toFixed(1)}%`);
       else ui.warn("对话太短或压缩失败，未做处理。");
+      break;
+    }
+
+    case "undo": {
+      const n = Math.max(1, Number(arg) || 1);
+      if (!checkpoints) {
+        ui.warn("当前没有启用写文件检查点。");
+        break;
+      }
+      const results = checkpoints.undo(n);
+      if (results.length === 0) {
+        ui.info("没有可撤销的写操作。");
+        break;
+      }
+      for (const r of results) {
+        if (r.restored === "content") {
+          ui.line(`${c.accent("↩")} 已还原 ${r.entry.rel}（${r.entry.op}）`);
+        } else if (r.restored === "deleted") {
+          ui.line(`${c.accent("↩")} 已删除 ${r.entry.rel}（恢复为写前不存在）`);
+        } else {
+          ui.warn(`未能恢复 ${r.entry.rel}：${r.reason ?? "未知原因"}`);
+        }
+      }
+      break;
+    }
+
+    case "checkpoints": {
+      if (!checkpoints) {
+        ui.warn("当前没有启用写文件检查点。");
+        break;
+      }
+      const n = Math.max(1, Number(arg) || 10);
+      const list = checkpoints.list(n);
+      if (list.length === 0) {
+        ui.info("还没有写文件检查点。");
+        break;
+      }
+      ui.line(c.dim(`最近 ${list.length} 条写文件检查点（${checkpoints.dir}）：`));
+      for (const e of list.slice().reverse()) {
+        const meta = `${e.op} · ${e.existed ? `${e.size}B` : "新建"} · ${e.at}`;
+        ui.line(`  #${e.seq} ${e.rel}  ${c.dim(meta)}${e.note ? `  ${c.warn(e.note)}` : ""}`);
+      }
       break;
     }
 
