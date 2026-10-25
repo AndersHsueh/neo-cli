@@ -82,6 +82,30 @@ export interface RouteConfig {
   fallbackAllowed: boolean;
 }
 
+/**
+ * LLM 请求重试与超时策略（P0-1）。
+ *
+ * 只重试「尚未向用户输出任何增量」的失败；时间单位毫秒。
+ * settings.json 的 `retry` 段可覆盖，缺省值见 DEFAULT_RETRY_CONFIG。
+ */
+export interface RetryConfig {
+  /** 总尝试次数（含首次）。1 = 不重试。 */
+  maxAttempts: number;
+  /** 指数退避基数（毫秒）。 */
+  baseDelayMs: number;
+  /** 连接 + 首字节超时（毫秒）。 */
+  connectTimeoutMs: number;
+  /** 流式空闲超时（毫秒），每收到一个 chunk 重置。 */
+  streamIdleTimeoutMs: number;
+}
+
+export const DEFAULT_RETRY_CONFIG: RetryConfig = {
+  maxAttempts: 3,
+  baseDelayMs: 500,
+  connectTimeoutMs: 30_000,
+  streamIdleTimeoutMs: 120_000,
+};
+
 export interface Config {
   /** 当前选中的 provider（已解析为具体值）。 */
   providerName: string;
@@ -113,6 +137,11 @@ export interface Config {
   compactThreshold: number;
   maxToolIterations: number;
   toolOutputLimit: number;
+  /**
+   * LLM 重试/超时策略。所有字段都有默认值；测试可直接注入缩小的超时。
+   * 缺省时 llm.ts 回落到 DEFAULT_RETRY_CONFIG。
+   */
+  retry?: RetryConfig;
   theme: string;
   showReasoning: boolean;
   /**
@@ -234,6 +263,23 @@ function resolveMailboxSettings(raw: Raw): MailboxConfig {
 
 function resolveInboundPolicy(raw: unknown): InboundPolicy | "auto" {
   return raw === "accept" || raw === "hold" || raw === "refuse" ? raw : "auto";
+}
+
+/**
+ * LLM 重试/超时配置（P0-1）。settings.json `retry` 段，snake_case 键。
+ *
+ * 下限保护：max_attempts ≥1，超时 ≥1000ms —— 配成 0 会让所有请求立刻失败，
+ * 这不是一个可以用配置表达的意图，直接兜底到合理值。
+ */
+export function resolveRetryConfig(raw: unknown): RetryConfig {
+  const r = (raw ?? {}) as Raw;
+  const d = DEFAULT_RETRY_CONFIG;
+  return {
+    maxAttempts: Math.max(1, Math.floor(num(r["max_attempts"], d.maxAttempts))),
+    baseDelayMs: Math.max(0, Math.floor(num(r["base_delay_ms"], d.baseDelayMs))),
+    connectTimeoutMs: Math.max(1000, Math.floor(num(r["connect_timeout_ms"], d.connectTimeoutMs))),
+    streamIdleTimeoutMs: Math.max(1000, Math.floor(num(r["stream_idle_timeout_ms"], d.streamIdleTimeoutMs))),
+  };
 }
 
 
@@ -515,6 +561,7 @@ export function loadConfig(overrides: Partial<Config> = {}): Config {
     compactThreshold: num(raw["compact_threshold"], num(dflt["compact_threshold"], 0.75)),
     maxToolIterations: num(raw["max_tool_iterations"], num(dflt["max_tool_iterations"], 80)),
     toolOutputLimit: num(raw["tool_output_limit"], num(dflt["tool_output_limit"], 30_000)),
+    retry: resolveRetryConfig(raw["retry"]),
     theme: str(raw["theme"], str(dflt["theme"], "matrix")),
     showReasoning: bool(raw["show_reasoning"], bool(dflt["show_reasoning"], true)),
     // 兼容用户手写的连字符键名；项目惯例仍是 snake_case。

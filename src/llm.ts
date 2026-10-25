@@ -7,7 +7,7 @@
  *  2. tool_calls 以增量形式下发（delta.tool_calls 带 index），需按 index 拼接。
  *  3. SSE 以空行分隔事件，末条为 data: [DONE]。
  */
-import type { Config } from "./config.ts";
+import { DEFAULT_RETRY_CONFIG, type Config, type RetryConfig } from "./config.ts";
 
 export type Role = "system" | "user" | "assistant" | "tool";
 
@@ -75,6 +75,10 @@ export interface StreamResult {
 }
 
 export class LLMError extends Error {
+  /** 是否值得重试。4xx（408/409/425/429 除外）与「已输出后的中断」置 false。 */
+  retryable = true;
+  /** 服务端 Retry-After 给出的等待时长（毫秒）。 */
+  retryAfterMs?: number;
   constructor(
     message: string,
     readonly status?: number,
@@ -82,6 +86,17 @@ export class LLMError extends Error {
   ) {
     super(message);
     this.name = "LLMError";
+  }
+}
+
+/** 连接/首字节或流式空闲超时（P0-1）。 */
+export class LLMTimeoutError extends LLMError {
+  constructor(
+    readonly kind: "connect" | "idle",
+    timeoutMs: number,
+  ) {
+    super(kind === "connect" ? `连接/首字节超时（${timeoutMs}ms）` : `流式响应空闲超时（${timeoutMs}ms）`);
+    this.name = "LLMTimeoutError";
   }
 }
 
@@ -170,10 +185,21 @@ export async function chat(
 /* 流式                                                                */
 /* ------------------------------------------------------------------ */
 
+/** 除 5xx 外，按 HTTP 语义明确值得重试的状态码。 */
+const RETRYABLE_STATUS: ReadonlySet<number> = new Set([408, 409, 425, 429]);
+const MAX_BACKOFF_MS = 8_000;
+const MAX_RETRY_AFTER_MS = 30_000;
+
+function isRetryableStatus(status?: number): boolean {
+  return status === undefined || status >= 500 || RETRYABLE_STATUS.has(status);
+}
+
 export interface StreamHandlers {
   onReasoning?: (delta: string) => void;
   onContent?: (delta: string) => void;
   onToolCallDelta?: (index: number, name: string | null, argsDelta: string) => void;
+  /** 重试/降级提示（可选）。用于把「正在重试」告诉用户，而不是静默变慢。 */
+  onNotice?: (msg: string) => void;
 }
 
 interface PartialToolCall {
@@ -183,8 +209,13 @@ interface PartialToolCall {
 }
 
 /**
- * 发起流式请求并累积结果。
- * 同时把增量回调给 handlers，用于实时渲染。
+ * 发起流式请求并累积结果，失败时按策略重试（P0-1）。
+ *
+ * 重试边界是本函数最重要的约束：
+ *  - 只重试「尚未向调用方输出任何增量」的失败 —— 一旦 reasoning/content/tool 增量
+ *    已经回调给 handlers，重试会造成重复输出或重复工具调用，一律不重试；
+ *  - 4xx（408/409/425/429 除外）不重试；
+ *  - 用户 abort 不重试（agent 按 signal.aborted 走取消路径）。
  */
 export async function chatStream(
   cfg: Config,
@@ -193,86 +224,214 @@ export async function chatStream(
   handlers: StreamHandlers = {},
   signal?: AbortSignal,
 ): Promise<StreamResult> {
-  const res = await fetch(`${cfg.baseUrl}/chat/completions`, {
-    method: "POST",
-    headers: authHeaders(cfg),
-    body: JSON.stringify(buildBody(cfg, messages, tools, true)),
-    signal,
+  const policy = cfg.retry ?? DEFAULT_RETRY_CONFIG;
+  let attempt = 0;
+  for (;;) {
+    attempt += 1;
+    try {
+      return await streamOnce(cfg, messages, tools, handlers, signal, policy);
+    } catch (e) {
+      if (signal?.aborted) throw abortError();
+      const err = e instanceof LLMError ? e : new LLMError((e as Error)?.message ?? String(e));
+      const canRetry = err.retryable && isRetryableStatus(err.status);
+      if (!canRetry || attempt >= policy.maxAttempts) {
+        if (attempt > 1) err.message = `${err.message}（已尝试 ${attempt} 次）`;
+        throw err;
+      }
+      const delay = backoffMs(attempt, policy, err.retryAfterMs);
+      handlers.onNotice?.(
+        `LLM 请求失败：${err.message}；${(delay / 1000).toFixed(1)}s 后重试（第 ${attempt + 1}/${policy.maxAttempts} 次）`,
+      );
+      await sleepAbortable(delay, signal);
+    }
+  }
+}
+
+function abortError(): DOMException {
+  return new DOMException("The operation was aborted.", "AbortError");
+}
+
+function isAbortError(e: unknown): boolean {
+  return (e as Error | undefined)?.name === "AbortError";
+}
+
+function parseRetryAfter(res: Response): number | undefined {
+  const h = res.headers.get("retry-after");
+  if (!h) return undefined;
+  const secs = Number(h);
+  if (Number.isFinite(secs)) return Math.max(0, Math.round(secs * 1000));
+  const at = Date.parse(h);
+  if (Number.isFinite(at)) return Math.max(0, at - Date.now());
+  return undefined;
+}
+
+/** 指数退避 + 抖动；服务端给了 Retry-After 就优先听它的（封顶 30s）。 */
+function backoffMs(attempt: number, policy: RetryConfig, retryAfterMs?: number): number {
+  if (retryAfterMs !== undefined) return Math.min(retryAfterMs, MAX_RETRY_AFTER_MS);
+  const exp = Math.min(MAX_BACKOFF_MS, policy.baseDelayMs * 2 ** Math.max(0, attempt - 1));
+  const jitter = policy.baseDelayMs > 0 ? Math.random() * policy.baseDelayMs * 0.25 : 0;
+  return Math.round(exp + jitter);
+}
+
+/** 可被 abort 打断的 sleep（退避期间用户按 ESC 要能立刻停）。 */
+function sleepAbortable(ms: number, signal?: AbortSignal): Promise<void> {
+  if (ms <= 0) return Promise.resolve();
+  return new Promise<void>((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(abortError());
+      return;
+    }
+    const onAbort = (): void => {
+      clearTimeout(timer);
+      reject(abortError());
+    };
+    const timer = setTimeout(() => {
+      signal?.removeEventListener("abort", onAbort);
+      resolve();
+    }, ms);
+    signal?.addEventListener("abort", onAbort, { once: true });
   });
-  if (!res.ok) throw await describeError(res);
-  if (!res.body) throw new LLMError("响应没有 body，无法流式读取");
+}
 
-  const reader = res.body.getReader();
-  const decoder = new TextDecoder();
-  let buffer = "";
+/** 已经输出过内容后的中断：明确不可重试，避免重复正文/重复工具调用。 */
+function partialInterrupt(e: Error, emittedChars: number): LLMError {
+  const err = new LLMError(
+    `流式响应中断（已输出 ${emittedChars} 字符，为避免重复不再重试）：${e.message}`,
+    e instanceof LLMError ? e.status : undefined,
+  );
+  err.retryable = false;
+  return err;
+}
 
-  let content = "";
-  let reasoning = "";
-  let finishReason: string | null = null;
-  let usage: Usage | null = null;
-  const partials = new Map<number, PartialToolCall>();
-  let lastRaw: unknown = null;
-
-  const handleChunk = (chunk: Record<string, unknown>): void => {
-    lastRaw = chunk;
-    if (typeof chunk["usage"] === "object" && chunk["usage"] !== null) {
-      usage = chunk["usage"] as Usage;
+/**
+ * 单次流式请求（不重试）。失败语义：
+ *  - LLMTimeoutError：连接/首字节或空闲超时，调用方按「是否已输出」决定能否重试；
+ *  - LLMError(status)：HTTP 失败；
+ *  - 其余：网络错误。
+ */
+async function streamOnce(
+  cfg: Config,
+  messages: Message[],
+  tools: ToolSpec[],
+  handlers: StreamHandlers,
+  signal: AbortSignal | undefined,
+  policy: RetryConfig,
+): Promise<StreamResult> {
+  const ctrl = new AbortController();
+  let timedOut: "connect" | "idle" | null = null;
+  /** 已向调用方输出的字符数；>0 表示失败不可重试。 */
+  let emittedChars = 0;
+  /** 流 reader 的释放动作（读完或异常都要 releaseLock）。 */
+  let releaseReader: (() => void) | null = null;
+  const onUserAbort = (): void => ctrl.abort();
+  signal?.addEventListener("abort", onUserAbort, { once: true });
+  const connectTimer = setTimeout(() => {
+    timedOut = "connect";
+    ctrl.abort();
+  }, policy.connectTimeoutMs);
+  let idleTimer: ReturnType<typeof setTimeout> | null = null;
+  const armIdle = (): void => {
+    if (idleTimer) clearTimeout(idleTimer);
+    idleTimer = setTimeout(() => {
+      timedOut = "idle";
+      ctrl.abort();
+    }, policy.streamIdleTimeoutMs);
+  };
+  try {
+    const res = await fetch(`${cfg.baseUrl}/chat/completions`, {
+      method: "POST",
+      headers: authHeaders(cfg),
+      body: JSON.stringify(buildBody(cfg, messages, tools, true)),
+      signal: ctrl.signal,
+    });
+    clearTimeout(connectTimer);
+    if (!res.ok) {
+      const err = await describeError(res);
+      err.retryable = isRetryableStatus(res.status);
+      err.retryAfterMs = parseRetryAfter(res);
+      throw err;
     }
-    const choices = chunk["choices"] as Array<Record<string, unknown>> | undefined;
-    const choice = choices?.[0];
-    if (!choice) return;
+    if (!res.body) throw new LLMError("响应没有 body，无法流式读取");
 
-    if (typeof choice["finish_reason"] === "string") {
-      finishReason = choice["finish_reason"] as string;
-    }
+    const streamReader = res.body.getReader();
+    releaseReader = () => streamReader.releaseLock?.();
+    armIdle();
+    const decoder = new TextDecoder();
+    let buffer = "";
 
-    const delta = choice["delta"] as Record<string, unknown> | undefined;
-    if (!delta) return;
+    let content = "";
+    let reasoning = "";
+    let finishReason: string | null = null;
+    let usage: Usage | null = null;
+    const partials = new Map<number, PartialToolCall>();
+    let lastRaw: unknown = null;
+    /** 是否收到显式 [DONE]；与 finish_reason 一起用于识别连接被提前掐断。 */
+    let sawDone = false;
 
-    const r = delta["reasoning_content"];
-    if (typeof r === "string" && r.length > 0) {
-      reasoning += r;
-      handlers.onReasoning?.(r);
-    }
-    // 部分服务端把 reasoning 放在 reasoning 或 thinking 字段
-    const th = delta["thinking"];
-    if (typeof th === "string" && th.length > 0) {
-      reasoning += th;
-      handlers.onReasoning?.(th);
-    }
+    const handleChunk = (chunk: Record<string, unknown>): void => {
+      lastRaw = chunk;
+      if (typeof chunk["usage"] === "object" && chunk["usage"] !== null) {
+        usage = chunk["usage"] as Usage;
+      }
+      const choices = chunk["choices"] as Array<Record<string, unknown>> | undefined;
+      const choice = choices?.[0];
+      if (!choice) return;
 
-    const ct = delta["content"];
-    if (typeof ct === "string" && ct.length > 0) {
-      content += ct;
-      handlers.onContent?.(ct);
-    }
+      if (typeof choice["finish_reason"] === "string") {
+        finishReason = choice["finish_reason"] as string;
+      }
 
-    const tcs = delta["tool_calls"] as Array<Record<string, unknown>> | undefined;
-    if (Array.isArray(tcs)) {
-      for (const tc of tcs) {
-        const idx = typeof tc["index"] === "number" ? tc["index"] : 0;
-        let p = partials.get(idx);
-        if (!p) {
-          p = { id: "", name: "", args: "" };
-          partials.set(idx, p);
-        }
-        if (typeof tc["id"] === "string" && tc["id"].length > 0) p.id = tc["id"];
-        const fn = tc["function"] as Record<string, unknown> | undefined;
-        if (fn) {
-          if (typeof fn["name"] === "string" && fn["name"].length > 0) p.name = fn["name"];
-          if (typeof fn["arguments"] === "string" && fn["arguments"].length > 0) {
-            p.args += fn["arguments"];
-            handlers.onToolCallDelta?.(idx, p.name, fn["arguments"]);
+      const delta = choice["delta"] as Record<string, unknown> | undefined;
+      if (!delta) return;
+
+      const r = delta["reasoning_content"];
+      if (typeof r === "string" && r.length > 0) {
+        reasoning += r;
+        emittedChars += r.length;
+        handlers.onReasoning?.(r);
+      }
+      // 部分服务端把 reasoning 放在 reasoning 或 thinking 字段
+      const th = delta["thinking"];
+      if (typeof th === "string" && th.length > 0) {
+        reasoning += th;
+        emittedChars += th.length;
+        handlers.onReasoning?.(th);
+      }
+
+      const ct = delta["content"];
+      if (typeof ct === "string" && ct.length > 0) {
+        content += ct;
+        emittedChars += ct.length;
+        handlers.onContent?.(ct);
+      }
+
+      const tcs = delta["tool_calls"] as Array<Record<string, unknown>> | undefined;
+      if (Array.isArray(tcs)) {
+        for (const tc of tcs) {
+          const idx = typeof tc["index"] === "number" ? tc["index"] : 0;
+          let p = partials.get(idx);
+          if (!p) {
+            p = { id: "", name: "", args: "" };
+            partials.set(idx, p);
+          }
+          if (typeof tc["id"] === "string" && tc["id"].length > 0) p.id = tc["id"];
+          const fn = tc["function"] as Record<string, unknown> | undefined;
+          if (fn) {
+            if (typeof fn["name"] === "string" && fn["name"].length > 0) p.name = fn["name"];
+            if (typeof fn["arguments"] === "string" && fn["arguments"].length > 0) {
+              p.args += fn["arguments"];
+              emittedChars += fn["arguments"].length;
+              handlers.onToolCallDelta?.(idx, p.name, fn["arguments"]);
+            }
           }
         }
       }
-    }
-  };
+    };
 
-  try {
     for (;;) {
-      const { done, value } = await reader.read();
+      const { done, value } = await streamReader.read();
       if (done) break;
+      armIdle();
       buffer += decoder.decode(value, { stream: true });
 
       // SSE 事件以空行分隔
@@ -286,7 +445,11 @@ export async function chatStream(
           const trimmed = line.trim();
           if (!trimmed.startsWith("data:")) continue;
           const data = trimmed.slice(5).trim();
-          if (!data || data === "[DONE]") continue;
+          if (!data) continue;
+          if (data === "[DONE]") {
+            sawDone = true;
+            continue;
+          }
           try {
             handleChunk(JSON.parse(data) as Record<string, unknown>);
           } catch {
@@ -295,20 +458,55 @@ export async function chatStream(
         }
       }
     }
+
+    // SSE 正常收尾：OpenAI 兼容端点应发 [DONE] 或至少一个 finish_reason。
+    // 两者都没有却 EOF，说明连接被中途掐断（部分网关/代理会这样，客户端读到的
+    // 是正常 EOF 而不是错误）。必须显式失败，否则会拿半截内容当完整答案。
+    if (!sawDone && finishReason === null) {
+      const err = new LLMError("流式连接提前结束（未收到 [DONE] 或 finish_reason）");
+      if (emittedChars > 0) throw partialInterrupt(err, emittedChars);
+      throw err;
+    }
+
+    const toolCalls: ToolCall[] = [...partials.entries()]
+      .sort((a, b) => a[0] - b[0])
+      .filter(([, p]) => p.name.length > 0)
+      .map(([, p], i) => ({
+        id: p.id || `call_${i}_${Date.now()}`,
+        type: "function" as const,
+        function: { name: p.name, arguments: p.args || "{}" },
+      }));
+
+    return { content, reasoning, toolCalls, finishReason, usage, raw: lastRaw };
+  } catch (e) {
+    if (signal?.aborted) throw abortError();
+    if (timedOut) {
+      const err = new LLMTimeoutError(
+        timedOut,
+        timedOut === "connect" ? policy.connectTimeoutMs : policy.streamIdleTimeoutMs,
+      );
+      if (emittedChars > 0) throw partialInterrupt(err, emittedChars);
+      throw err;
+    }
+    if (e instanceof LLMError) {
+      if (emittedChars > 0) throw partialInterrupt(e, emittedChars);
+      throw e;
+    }
+    if (isAbortError(e) && ctrl.signal.aborted) {
+      // 除了超时与用户取消，没有别的内部 abort 来源；兜底按连接超时归类。
+      const err = new LLMTimeoutError("connect", policy.connectTimeoutMs);
+      if (emittedChars > 0) throw partialInterrupt(err, emittedChars);
+      throw err;
+    }
+    const err = new LLMError(`网络请求失败：${(e as Error)?.message ?? String(e)}`);
+    if (emittedChars > 0) throw partialInterrupt(err, emittedChars);
+    throw err;
   } finally {
-    reader.releaseLock?.();
+    clearTimeout(connectTimer);
+    if (idleTimer) clearTimeout(idleTimer);
+    signal?.removeEventListener("abort", onUserAbort);
+    releaseReader?.();
   }
-
-  const toolCalls: ToolCall[] = [...partials.entries()]
-    .sort((a, b) => a[0] - b[0])
-    .filter(([, p]) => p.name.length > 0)
-    .map(([, p], i) => ({
-      id: p.id || `call_${i}_${Date.now()}`,
-      type: "function" as const,
-      function: { name: p.name, arguments: p.args || "{}" },
-    }));
-
-  return { content, reasoning, toolCalls, finishReason, usage, raw: lastRaw };
 }
 
 /* ------------------------------------------------------------------ */

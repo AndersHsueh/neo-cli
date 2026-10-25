@@ -37,6 +37,14 @@
   "compact_threshold": 0.75,
   "max_tool_iterations": 80,
   "tool_output_limit": 30000,
+
+  "retry": {
+    "max_attempts": 3,
+    "base_delay_ms": 500,
+    "connect_timeout_ms": 30000,
+    "stream_idle_timeout_ms": 120000
+  },
+
   "theme": "matrix",
   "show_reasoning": true,
   "toolcall_info_details": false,

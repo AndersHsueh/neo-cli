@@ -544,6 +544,10 @@ export class Agent {
               }
               answerFmt.write(d);
             },
+            onNotice: (m) => {
+              // 重试/降级提示：仅交互模式让人看见；管道模式留给最终答案，避免污染 stdout
+              if (interactive) this.opt.console.warn(m);
+            },
           },
           signal,
         );
