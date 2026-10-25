@@ -1,7 +1,7 @@
 # neo 开发知识库 — 索引
 
 > 内容导向的目录:每个 wiki 页面在这里占一行,给出链接、一句话摘要和可选元数据。
-> 最后更新:2026-10-20
+> 最后更新:2026-10-25
 
 ## 📌 一句话定位
 
@@ -9,7 +9,7 @@
 
 ## 🧭 当前状态
 
-已编译 5 份 raw,覆盖 18 个主题页。2026-10-20 v0.2.0 发布:跨会话消息 —— 文件信箱(~/.neo/mailbox/<session-id>/)+ 会话状态机(state.json: idle/working/waiting_input/exiting + 心跳 + outstanding)+ 委派 watchdog(120s)+ send_message/list_peers + P1 工具间隙注入 / P2 空闲 tick + 人工接管(ESC 裁决 A);对等组网、无固定 leader,支持多跳协作;全量用例 445→519(+74,26 文件),tsc 零错误。同日 v0.2.1 hotfix:真实双会话验证暴露 ① 主代理运行时工具被 `TOOL_NAMES_EXCLUDED_FOR_SUBAGENT` 误过滤、② 长 turn 心跳不刷新导致 watchdog 误报 dead;修复后用例 519→523。v0.2.2 界面优化:工具调用默认紧凑单行(`⚡ name args .` 原地更新/下一个覆盖/✓✗),`toolcall_info_details` 可恢复旧版详情;用例 523→530(27 文件)。当晚 anders↔huan 两个真实前台进程完成双向验收(消息 id/reply_to/13s/紧凑工具行),详见 [[里程碑-1020]]。前一版 v0.1.12:记忆旧件清理 —— 删除 8 个零调用模块、861 行旧测试与死配置,用例 497→445。缺口:supervisor/后台会话/attach/agent view/跨机留 v0.3;多跳环检测与 reply_to 兜底待实测;协调消息是否静默记忆捕获待评估。
+已编译 5 份 raw,覆盖 18 个主题页。2026-10-20 v0.2.0 发布:跨会话消息 —— 文件信箱(~/.neo/mailbox/<session-id>/)+ 会话状态机(state.json: idle/working/waiting_input/exiting + 心跳 + outstanding)+ 委派 watchdog(120s)+ send_message/list_peers + P1 工具间隙注入 / P2 空闲 tick + 人工接管(ESC 裁决 A);对等组网、无固定 leader,支持多跳协作;全量用例 445→519(+74,26 文件),tsc 零错误。同日 v0.2.1 hotfix:真实双会话验证暴露 ① 主代理运行时工具被 `TOOL_NAMES_EXCLUDED_FOR_SUBAGENT` 误过滤、② 长 turn 心跳不刷新导致 watchdog 误报 dead;修复后用例 519→523。v0.2.2 界面优化:工具调用默认紧凑单行(`⚡ name args .` 原地更新/下一个覆盖/✓✗),`toolcall_info_details` 可恢复旧版详情;用例 523→530(27 文件)。当晚 anders↔huan 两个真实前台进程完成双向验收(消息 id/reply_to/13s/紧凑工具行),详见 [[里程碑-1020]]。v0.2.3 TUI 补漏:流式状态泄漏(`●` 前缀只出现一次)、宽度数学(CJK 按 code unit 截断/回落 100/无 resize)、`/last` 工具回看与失败详情、`--resume` 回放、Ctrl+C 提示破坏输入五行修复;用例 530→580(32 文件),PTY 4/4,详见 [[TUI补漏-v0.2.3]] 与 [[TUI进化路线-2026Q4]]。前一版 v0.1.12:记忆旧件清理 —— 删除 8 个零调用模块、861 行旧测试与死配置,用例 497→445。缺口:supervisor/后台会话/attach/agent view/跨机留 v0.3;多跳环检测与 reply_to 兜底待实测;协调消息是否静默记忆捕获待评估。
 
 ## 🗂 主题目录
 
@@ -30,6 +30,8 @@
 | 清理-v0.1.12 | [[清理-v0.1.12]] | v0.1.12 清理 v0.1.0 时代遗留的「空转实现」：删除 recordIndex/profile/ingest/forget/reindex/redac | |
 | 跨会话消息-v0.2.0 | [[跨会话消息-v0.2.0]] | v0.2.0 交付 neo 的跨会话消息：多个前台交互式进程通过 `~/.neo/mailbox/` 文件信箱互发纯文本消息，支持任意会话派活/回信/多跳协作， | v0.2.0 已交付 |
 | 工具调用紧凑显示-v0.2.2 | [[工具调用紧凑显示-v0.2.2]] | v0.2.2 工具调用默认单行原地更新（点号动画/下一条覆盖/✓✗），`toolcall_info_details` 可恢复旧版详情；非 TTY 保留详情 | v0.2.2 已交付 |
+| TUI补漏-v0.2.3 | [[TUI补漏-v0.2.3]] | v0.2.3 不换渲染模型，修 5 个丢信息/吃输入的缺陷：流式状态泄漏（`●` 只出现一次）、宽度数学（CJK/回落 80/resize）、`/last` 工具回看、`--resume` 回放、Ctrl+C 提示不破坏输入；TTY 验证固化为 `scripts/` 三件套 | v0.2.3 已交付 |
+| TUI进化路线-2026Q4 | [[TUI进化路线-2026Q4]] | v0.2.4 输入层（`@` 补全/多行）→ v0.3 常驻状态栏+transcript+diff → v0.3.x supervisor；含「不做」清单与 2026 横评依据 | 规划中 |
 | 里程碑-1020 | [[里程碑-1020]] | 2026-10-20 v0.2.0~v0.2.2 三连发 + anders↔huan 真实双会话验收通过；当日经验（工具可见性/心跳/watchdog/紧凑显示/reply_to 对账） | 3 个 tag 已推 gitee |
 
 ### 流程与基础设施
@@ -49,8 +51,9 @@
 
 ## ⭐ 关键事实速查
 
-- **当前版本**: v0.2.2(版本号双源 package.json + src/index.ts) — 工具调用紧凑显示,见 `docs/release-notes/v0.2.2.md`;v0.2.1 hotfix 与 v0.2.0 功能见对应 release notes 与 [[跨会话消息-v0.2.0]]
-- **测试基线**: bun test 530 通过 / 0 失败(27 文件),tsc --noEmit 零错误 — v0.2.2 发布时实测
+- **当前版本**: v0.2.3(版本号双源 package.json + src/index.ts) — TUI 补漏,见 `docs/release-notes/v0.2.3.md`;v0.2.2 紧凑工具行见 [[工具调用紧凑显示-v0.2.2]],v0.2.1 hotfix 与 v0.2.0 功能见对应 release notes 与 [[跨会话消息-v0.2.0]]
+- **测试基线**: bun test 580 通过 / 0 失败(32 文件)、`scripts/verify.sh` ALL GREEN(tsc + pty 4/4),tsc --noEmit 零错误 — v0.2.3 发布前实测
+- **TTY 行为验证**: `scripts/fake-llm.ts`(无状态假 SSE) + `scripts/pty-e2e.ts`(真 PTY 断言) + `scripts/verify.sh`(全量闸门) — PTY 必加 `--auto off`,见 [[neo-开发踩坑]] 2026-10-25 条
 - **工具预算**: 每轮告知模型「第 N 次/上限 80」,≤5 次带具体次数收敛;入口 `budgetMessage()` — 见 `wiki/工具调用预算-v0.1.2+.md`
 - **热键语义**: ESC=中止+回滚,Ctrl+C=双击退出不回滚;按键唯一入口 `HotkeyRouter` — 见 `wiki/热键系统-v0.1.2+.md`
 - **技能唯一实体**: `~/.neo/skills/`,项目 `skills/` 只放软链 — 见 `wiki/karpathy-wiki-技能拓扑.md`

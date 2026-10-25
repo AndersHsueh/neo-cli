@@ -14,7 +14,7 @@
  *  - keypress 实际发在 stdin 上（hotkeys.ts 存量 bug），修复在 hotkeys.ts，本文件照常消费 router。
  */
 import type { HotkeyKey } from "../hotkeys";
-import { c, displayWidth } from "./theme";
+import { c, displayWidth, truncate } from "./theme";
 
 /** 状态机状态：cursor = 当前指向的选项下标；scroll = 可见窗口起始下标。 */
 export interface SelectState {
@@ -120,20 +120,6 @@ export interface SelectDeps {
   graceMs?: number;
 }
 
-/** 宽度感知截断（C6，CJK 安全；基于 theme.displayWidth）。 */
-function truncateW(s: string, maxW: number): string {
-  if (maxW <= 0) return "";
-  if (displayWidth(s) <= maxW) return s;
-  let w = 0;
-  let out = "";
-  for (const ch of s) {
-    const cw = displayWidth(ch);
-    if (w + cw > maxW - 1) break;
-    out += ch;
-    w += cw;
-  }
-  return out + "…";
-}
 
 type FinalMode =
   | { mode: "active" }
@@ -195,10 +181,10 @@ export async function select<T>(
       const bright = f.mode !== "cancel" && isMarked;
       const avail = w - 2; // "❯ " 前缀占 2 列
       // hint 截断到半宽：hint 过长会挤压 label、破坏「行不折行」的宽度数学（C6）
-      const hint = o.hint ? truncateW(o.hint, Math.max(4, Math.floor(w / 2))) : undefined;
+      const hint = o.hint ? truncate(o.hint, Math.max(4, Math.floor(w / 2))) : undefined;
       const hintW = hint ? displayWidth(hint) + 2 : 0;
       const labelMax = Math.max(4, avail - hintW);
-      const label = truncateW(o.label, labelMax);
+      const label = truncate(o.label, labelMax);
       let line = `${bright ? c.accent("❯") : " "} ${bright ? c.bold(label) : c.dim(label)}`;
       if (hint) {
         const pad = Math.max(1, labelMax - displayWidth(label));

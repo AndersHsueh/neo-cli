@@ -1,6 +1,6 @@
 {
   "name": "neo",
-  "version": "0.2.2",
+  "version": "0.2.3",
   "private": true,
   "type": "module",
   "description": "A Matrix-themed CLI coding harness powered by an OpenAI-compatible LLM endpoint.",
@@ -11,7 +11,9 @@
     "start": "bun run src/index.ts",
     "neo": "bun run src/index.ts",
     "check": "bunx tsc --noEmit",
-    "test": "bun test"
+    "test": "bun test",
+    "e2e": "bun run scripts/pty-e2e.ts",
+    "verify": "bash scripts/verify.sh"
   },
   "engines": {
     "bun": ">=1.1.0"

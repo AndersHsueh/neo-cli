@@ -44,8 +44,11 @@ export interface AgentIO {
   stopSpinner(finalLine?: string): void;
   beginStream(kind: "reasoning" | "answer" | "tool-args"): void;
   writeStream(text: string, kind: "reasoning" | "answer" | "tool-args"): void;
-  endStream(kind: "reasoning" | "answer" | "tool-args"): void;
-  ensureStreamClosed(kind: "reasoning" | "answer" | "tool-args"): void;
+  endStream(kind?: "reasoning" | "answer" | "tool-args", newline?: boolean): void;
+  /** 关闭当前打开的流式块（kind 由 Console 自己记录，调用方不再猜）。 */
+  ensureStreamClosed(): void;
+  /** 与 Console 共享的输出通道（正文经 StreamFormatter 写入时用）。 */
+  writeRaw?(s: string): void;
   confirm(question: string): Promise<boolean>;
   readonly width: number;
 }
@@ -490,7 +493,13 @@ export class Agent {
       // 做法是照常接收增量，但先累积，等本轮结束后一次性渲染。
       const interactive = process.stdout.isTTY === true;
       const reasoningOpen = { open: false };
-      const answerFmt = new StreamFormatter({ colorize: colorEnabled() });
+      // 正文/代码块经 StreamFormatter 写入，但同样要走 Console 的输出通道：
+      // 否则注入的 write 只覆盖「● 」前缀，正文仍直写 stdout，测试与真实路径分叉。
+      const writeRaw = this.opt.console.writeRaw?.bind(this.opt.console);
+      const answerFmt = new StreamFormatter({
+        colorize: colorEnabled(),
+        ...(writeRaw ? { write: writeRaw } : {}),
+      });
       let answerOpen = false;
       let blockReasoning = "";
       let blockAnswer = "";
@@ -559,7 +568,11 @@ export class Agent {
             reasoningOpen.open = false;
           }
           if (answerOpen) {
+            // StreamFormatter 已经负责正文换行，这里只复位流式状态（v0.2.3 D1）。
+            // 旧实现在正常路径完全不复位：streaming 一旦置 true 就再没下来，
+            // 下一批次的 beginStream 直接早退 —— `●` 前缀整个会话只出现一次。
             answerFmt.finish();
+            this.opt.console.endStream("answer", false);
             answerOpen = false;
           }
         }
@@ -673,10 +686,12 @@ export class Agent {
         }
         if (answerOpen) {
           answerFmt.finish();
+          this.opt.console.endStream("answer", false);
           answerOpen = false;
         }
-        this.opt.console.ensureStreamClosed("answer");
-        this.opt.console.ensureStreamClosed("reasoning");
+        // 只关「当前真正打开的那个块」：旧实现先 answer 后 reasoning，
+        // 推理阶段出错时 answer 的复位把状态清掉，reasoning 的 └─ 永远不打印。
+        this.opt.console.ensureStreamClosed();
 
         if (e instanceof LLMError || (e as Error).name === "AbortError") {
           const err = e as Error;

@@ -1,16 +1,30 @@
 # neo 测试约定
 
-> **最后更新:2026-10-20**（v0.2.0 跨会话消息交付；v0.1.12 记忆旧件清理后重写；v0.1.0 时代的 worktree / `full_test.sh` 内容已随 `../neo-memory` 工作树退役，git 历史可查）
+> **最后更新:2026-10-25**（v0.2.3 TUI 补漏交付；v0.2.0 跨会话消息；v0.1.12 记忆旧件清理后重写；v0.1.0 时代的 worktree / `full_test.sh` 内容已随 `../neo-memory` 工作树退役，git 历史可查）
 
 ## §1 当前基线
 
 ```bash
 bunx tsc --noEmit     # exit 0（strict + noUncheckedIndexedAccess）
-bun test              # 530 pass / 0 fail（27 个测试文件，约 3.6s）
+bun test              # 569 pass / 0 fail（32 个测试文件，约 3.6s）
+bash scripts/verify.sh # 全量闸门：上两条 + 真 PTY E2E，输出落 docs/evidence/
 ```
 
-v0.2.2 工具调用紧凑显示后的基线：**530 pass / 0 fail**。
+v0.2.3 TUI 补漏后的基线：**569 pass / 0 fail**（v0.2.2 为 530 / 27 文件）。
 改功能前先在干净树上跑一遍，数字对位后再动手。
+
+### TTY-only 行为的验证方式（v0.2.3 起）
+
+终端渲染类改动（动画行覆盖、`●` 前缀、宽度、`/last`、`--resume` 回放）**只有真 PTY 能验证**，
+bun test 里的 fake IO 测不出事件顺序与覆盖语义。可复用脚本：
+
+| 脚本 | 用途 |
+|---|---|
+| `scripts/fake-llm.ts` | 无状态假 OpenAI SSE 端点（按 `messages` 有无 tool 消息决定下一帧，可反复跑），`SCENARIO` 选场景 |
+| `scripts/pty-e2e.ts` | 用系统 `script(1)` 起真 PTY 跑 neo，喂脚本化输入 + 最小屏幕缓冲断言屏幕文本 |
+| `scripts/verify.sh` | 全量闸门：tsc → bun test → pty-e2e，各阶段输出写 `docs/evidence/v0.2.3-<stage>.txt` |
+
+新增 TTY 行为时**先加 pty-e2e 场景，再改实现**；不要靠手工敲一遍当证据。
 
 ## §2 测试即规格
 
@@ -54,6 +68,17 @@ v0.2.2 工具调用紧凑显示后的基线：**530 pass / 0 fail**。
 | `mailbox-inbound.test.ts` | 入站三态 + 权限档判定、消息/通知框架、两个工具、prompt/config 接线 |
 | `mailbox-agent.test.ts` | P1 注入点协议合法性（tool→user→budget 序列）、无工具 turn 不注入、轮询失败不击穿主循环、主代理运行时工具可见性 |
 | `toolcall-display.test.ts` | 紧凑工具行格式化（点号循环/✓✗/CJK 宽度收敛）、`toolcall_info_details` 默认值与别名 |
+
+### v0.2.3 新增（32 文件 / 569 例）
+
+| 文件 | 覆盖 |
+|---|---|
+| `width.test.ts` | D2：`truncate` 按显示列截断（CJK/ANSI/混合宽度）、`Console` 宽度回落 80、失败摘要不挤掉工具名 |
+| `stream-state.test.ts` | D1：`endStream(kind,newline)` 语义、流式状态复位、`●` 前缀可重复出现、幂等 |
+| `toollog.test.ts` | D3：失败摘要（stderr/exit code）、时长格式、`/last` 格式化、缓存上限 20、失败详情的行数预算 |
+| `transcript.test.ts` | D4：轮次切取、角色过滤、`maxLines` 截断提示、多行用户输入、markdown 渲染 |
+| `flash-notice.test.ts` | D5：提示符重绘注入、不打印 `❯`、非 TTY 不写、无 restorer 退化 |
+
 
 ## §5 记忆子系统的特殊约定
 

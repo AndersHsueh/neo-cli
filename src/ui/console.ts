@@ -3,21 +3,59 @@
  * 关键约束：readline 在交互模式下一直接管光标，任何非提示符写入都可能打乱行。
  * 因此所有写入都经由 Console 统一处理：流式输出结束后强制补一个换行，
  * 使 readline 的内部行缓冲回到一致状态。
+ *
+ * v0.2.3：
+ *  - 构造注入 `{ stdoutIsTTY, stdinIsTTY, columns, write }`，让 TTY 分支可在 bun test
+ *    里直测（项目踩坑约定：不用 mock.module 全局污染）。
+ *  - 流式块记录 kind（D1）：收尾时不再由调用方猜「关的是哪个块」。
+ *  - 工具调用历史 + 失败详情（D3）；宽度/resize（D2）；Ctrl+C 提示交回 readline（D5）。
+ *  - 动画行只有一个持有者：任何「借行」输出（flashNotice / resize）先走
+ *    `yieldAnimationLines()`，避免两个计时器抢同一行。
  */
 import { c, displayWidth, padEndW, truncate, glyph } from "./theme.ts";
-import { nextDots, toolLineSegments, type ToolLineStatus } from "./toolLine.ts";
+import {
+  nextDots,
+  paintTail,
+  toolLineSegments,
+  toolLineText,
+  type ToolLineStatus,
+} from "./toolLine.ts";
+import {
+  FAILURE_DETAIL_LINES,
+  MAX_TOOL_HISTORY,
+  formatOutputLines,
+  summarizeFailure,
+  type ToolCallRecord,
+} from "./toolLog.ts";
 
 const FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 const MATRIX_FRAMES = ["ﾐ", "ﾋ", "ﾉ", "ﾘ", "ﾔ", "ｶ", "ﾁ", "ﾈ"];
 
 export type StreamKind = "reasoning" | "answer" | "tool-args";
 
+/** 构造注入点：默认走真实 stdout/stdin，测试注入收集器。 */
+export interface ConsoleDeps {
+  /** stdout 是否 TTY（影响紧凑模式与动画）。默认 process.stdout.isTTY。 */
+  stdoutIsTTY?: boolean;
+  /** stdin 是否 TTY（只影响审批问句）。默认 process.stdin.isTTY。 */
+  stdinIsTTY?: boolean;
+  /** 终端列数；默认读 process.stdout.columns。 */
+  columns?: () => number;
+  /**
+   * 输出通道。默认 process.stdout.write。
+   * 注意：与 SelectDeps.out 是两套（那个还要 on/off resize 事件）；
+   * 这里只需 write，保持函数式最小面。
+   */
+  write?: (s: string) => void;
+}
+
 export class Console {
   private spinnerTimer: Timer | null = null;
   private spinnerText = "";
   private spinnerFrame = 0;
   private spinnerLineActive = false;
-  private streaming = false;
+  /** 当前打开的流式块类型（null = 无）。 */
+  private streamKind: StreamKind | null = null;
   private asker: ((prompt: string) => Promise<string>) | null = null;
   /** 紧凑工具行模式（默认；toolcall_info_details=true 时走旧版详情块）。 */
   private readonly toolCompact: boolean;
@@ -28,16 +66,51 @@ export class Console {
   private toolDots = 0;
   private toolStatus: ToolLineStatus = "running";
   private toolError = "";
+  /** 当前工具开始时间（toolResult 用它算耗时）。 */
+  private toolStartedAt = 0;
+  /** 最近工具调用（含完整输出），供 /last 回看。 */
+  private toolHistory: ToolCallRecord[] = [];
+  /** 提示符重绘回调（由持有 readline 的一方注入；D5）。 */
+  private promptRestorer: (() => void) | null = null;
+  private flashTimer: Timer | null = null;
+
+  constructor(
+    private readonly useMatrixSpinner = true,
+    toolcallInfoDetails = true,
+    private readonly deps: ConsoleDeps = {},
+  ) {
+    // 紧凑模式只在 TTY 生效：非 TTY（管道 / -p / CI）保留逐行详情，避免动画控制符污染日志。
+    this.toolCompact = !toolcallInfoDetails && this.stdoutIsTTY();
+  }
+
+  private stdoutIsTTY(): boolean {
+    return this.deps.stdoutIsTTY ?? process.stdout.isTTY === true;
+  }
+
+  private stdinIsTTY(): boolean {
+    return this.deps.stdinIsTTY ?? process.stdin.isTTY === true;
+  }
+
+  private write(s: string): void {
+    (this.deps.write ?? ((x: string) => process.stdout.write(x)))(s);
+  }
+
+  /** 供 StreamFormatter 复用同一输出通道（正文/代码块也走注入点）。 */
+  writeRaw(s: string): void {
+    this.write(s);
+  }
+
   /**
    * 终端宽度。某些环境（PTY 未设置 winsize、CI）下 columns 为 0 或 undefined，
    * 直接参与算术会让 truncate 收到负数宽度 —— 必须夹到合理下限。
+   * v0.2.3：回落值 100 → 80（80 列是终端最普遍的默认宽度，100 会系统性地算宽 20 列）。
    */
   private cols(): number {
-    const n = process.stdout.columns;
-    return typeof n === "number" && n > 20 ? n : 100;
+    const n = this.deps.columns ? this.deps.columns() : process.stdout.columns;
+    return typeof n === "number" && n > 20 ? n : 80;
   }
 
-  /** 终端宽度，供块级渲染用。非 TTY 与异常宽度下统一回落100。 */
+  /** 终端宽度，供块级渲染用。非 TTY 与异常宽度下统一回落 80。 */
   get width(): number {
     return this.cols();
   }
@@ -50,12 +123,21 @@ export class Console {
       .join("\n");
   }
 
-  constructor(
-    private readonly useMatrixSpinner = true,
-    toolcallInfoDetails = true,
-  ) {
-    // 紧凑模式只在 TTY 生效：非 TTY（管道 / -p / CI）保留逐行详情，避免动画控制符污染日志。
-    this.toolCompact = !toolcallInfoDetails && process.stdout.isTTY === true;
+  // ---------- 动画行所有权 ----------
+
+  /**
+   * 把动画行（spinner / 紧凑工具行）收尾成完整行，让出当前行给别的输出。
+   *
+   * 只有这里能收尾动画行 —— flashNotice / resize / 异常输出都走它，
+   * 否则两个计时器会用 `\r\x1b[2K` 抢同一行（v0.2.3 simplify 审查的 critical）。
+   */
+  private yieldAnimationLines(): void {
+    this.finishToolLine();
+    this.stopSpinnerOnly();
+    if (this.flashTimer) {
+      clearTimeout(this.flashTimer);
+      this.flashTimer = null;
+    }
   }
 
   // ---------- 紧凑工具行 ----------
@@ -70,17 +152,7 @@ export class Console {
       status: this.toolStatus,
       errorText: this.toolError,
     });
-    const tail =
-      this.toolStatus === "ok"
-        ? c.ok(seg.tail)
-        : this.toolStatus === "error"
-          ? c.err(seg.tail)
-          : c.accent(seg.tail);
-    const text =
-      ` ${c.tool("⚡")} ${c.bright(seg.name)}` +
-      (seg.args ? ` ${c.dim(seg.args)}` : "") +
-      ` ${tail}`;
-    process.stdout.write(`\r\x1b[2K${text}`);
+    this.write(`\r\x1b[2K${toolLineText(seg, paintTail(seg, this.toolStatus))}`);
   }
 
   /** 清掉当前工具行（下一个工具调用覆盖同一行时用，不留换行）。 */
@@ -91,7 +163,7 @@ export class Console {
       this.toolLineTimer = null;
     }
     this.toolLineActive = false;
-    process.stdout.write("\r\x1b[2K");
+    this.write("\r\x1b[2K");
   }
 
   /** 结束当前工具行（保留已显示内容并换行）；其它输出前调用。 */
@@ -102,24 +174,32 @@ export class Console {
       this.toolLineTimer = null;
     }
     this.toolLineActive = false;
-    process.stdout.write("\n");
+    this.write("\n");
+  }
+
+  /** 记录一次工具调用（/last 回看的数据源）。 */
+  private pushToolCall(rec: ToolCallRecord): void {
+    this.toolHistory.push(rec);
+    if (this.toolHistory.length > MAX_TOOL_HISTORY) {
+      this.toolHistory.splice(0, this.toolHistory.length - MAX_TOOL_HISTORY);
+    }
+  }
+
+  /** 最近的工具调用，最新在前。/last 用它（内部夹取范围，调用方不必再判）。 */
+  recentToolCalls(n = MAX_TOOL_HISTORY): ToolCallRecord[] {
+    const k = Math.max(1, Math.min(MAX_TOOL_HISTORY, Math.trunc(n) || 1));
+    return this.toolHistory.slice(-k).reverse();
   }
 
   // ---------- 基础写入 ----------
 
   line(s = ""): void {
     this.stopSpinner();
-    process.stdout.write(s + "\n");
+    this.write(s + "\n");
   }
 
   blank(): void {
     this.line("");
-  }
-
-  /** 用户输入回显（带 Matrix 提示符）。 */
-  promptEcho(text: string): void {
-    this.stopSpinner();
-    process.stdout.write(c.accent("❯ ") + c.text(text) + "\n");
   }
 
   // ---------- Spinner ----------
@@ -127,7 +207,7 @@ export class Console {
   startSpinner(text: string): void {
     this.stopSpinner();
     // 非 TTY（管道 / 重定向）下动画只会产生垃圾字符，直接跳过
-    if (!process.stdout.isTTY) return;
+    if (!this.stdoutIsTTY()) return;
     this.spinnerText = text;
     this.spinnerLineActive = false;
     this.spinnerTimer = setInterval(() => {
@@ -135,7 +215,7 @@ export class Console {
       const f = frames[this.spinnerFrame++ % frames.length] ?? "⠋";
       const clear = this.spinnerLineActive ? "\r\x1b[2K" : "";
       this.spinnerLineActive = true;
-      process.stdout.write(clear + ` ${c.accent(f)} ${c.dim(this.spinnerText)}`);
+      this.write(clear + ` ${c.accent(f)} ${c.dim(this.spinnerText)}`);
     }, 90);
     this.spinnerTimer.unref?.();
   }
@@ -157,50 +237,82 @@ export class Console {
       this.spinnerTimer = null;
     }
     if (this.spinnerLineActive) {
-      process.stdout.write("\r\x1b[2K");
+      this.write("\r\x1b[2K");
       this.spinnerLineActive = false;
     }
-    if (finalLine) process.stdout.write(finalLine + "\n");
+    if (finalLine) this.write(finalLine + "\n");
   }
 
   // ---------- 流式输出 ----------
 
   beginStream(kind: StreamKind): void {
     this.stopSpinner();
-    if (this.streaming) return;
-    this.streaming = true;
+    if (this.streamKind) return;
+    this.streamKind = kind;
     switch (kind) {
       case "reasoning":
-        process.stdout.write(c.dim("┌ think "));
+        this.write(c.dim("┌ think "));
         break;
       case "answer":
-        process.stdout.write(c.accent("● "));
+        this.write(c.accent("● "));
         break;
       case "tool-args":
-        process.stdout.write(c.tool("│ "));
+        this.write(c.tool("│ "));
         break;
     }
   }
 
   writeStream(text: string, kind: StreamKind): void {
-    if (!this.streaming) return;
+    if (!this.streamKind) return;
     const painted = kind === "reasoning" ? c.dim(text) : c.text(text);
-    process.stdout.write(painted);
+    this.write(painted);
   }
 
-  endStream(kind: StreamKind): void {
-    if (!this.streaming) return;
-    this.streaming = false;
-    // 结束流式行：填满剩余列以便清行，然后换行
-    process.stdout.write("\n");
-    if (kind === "reasoning") {
-      process.stdout.write(c.dim("└─\n"));
+  /**
+   * 结束流式块。
+   * `newline=false` 用于正文：换行由 StreamFormatter 自己收尾，避免双空行。
+   * kind 省略时按 beginStream 记录的块类型收尾（推理块补 `└─`）。
+   */
+  endStream(kind?: StreamKind, newline = true): void {
+    if (!this.streamKind) return;
+    const current = kind ?? this.streamKind;
+    this.streamKind = null;
+    if (newline) this.write("\n");
+    if (current === "reasoning") this.write(c.dim("└─\n"));
+  }
+
+  /** 无输出时也要收尾：按当前打开的块类型关闭，避免「关了 answer、reasoning 的 └─ 丢了」。 */
+  ensureStreamClosed(): void {
+    if (this.streamKind) this.endStream(this.streamKind);
+  }
+
+  private stopStreamingRaw(): void {
+    this.ensureStreamClosed();
+  }
+
+  // ---------- 尺寸变化 ----------
+
+  /**
+   * SIGWINCH / resize 处理（D2）。
+   *
+   * append-only 已输出的历史行无法回溯，能做的只有：**不再用 `\r\x1b[2K` 覆盖
+   * 一个坐标已经失效的行**。做法是把动画行定格成完整行、从新行第 0 列重画；
+   * 计时器**保留**（否则长任务里 resize 一次，动画就永久消失，看起来像卡死）。
+   */
+  handleResize(): void {
+    if (!this.stdoutIsTTY()) return;
+    if (this.toolLineActive) {
+      this.write("\n"); // 旧行定格
+      this.renderToolLine(); // 新行第 0 列，安全重画；toolLineTimer 继续跑
+    } else if (this.spinnerLineActive) {
+      this.write("\n");
+      this.spinnerLineActive = false; // 下一帧自然从新行开始
     }
-  }
-
-  /** 无输出时也要收尾，避免提示符粘在思考行上。 */
-  ensureStreamClosed(kind: StreamKind): void {
-    if (this.streaming) this.endStream(kind);
+    if (this.flashTimer) {
+      clearTimeout(this.flashTimer);
+      this.flashTimer = null;
+    }
+    this.promptRestorer?.();
   }
 
   // ---------- 结构化区块 ----------
@@ -214,6 +326,9 @@ export class Console {
       const room = w - displayWidth(name) - 6;
       const tail = room > 12 ? c.dim(truncate(argsPreview, room)) : "";
       this.line(head + (tail ? " " + tail : ""));
+      this.toolStartedAt = Date.now();
+      this.toolName = name;
+      this.toolArgs = argsPreview;
       return;
     }
 
@@ -225,6 +340,7 @@ export class Console {
     this.toolDots = 0;
     this.toolStatus = "running";
     this.toolError = "";
+    this.toolStartedAt = Date.now();
     this.toolLineActive = true;
     this.renderToolLine();
     this.toolLineTimer = setInterval(() => {
@@ -236,50 +352,72 @@ export class Console {
   }
 
   /**
-   * 工具结果块（缩进、限高）。
-   * 紧凑模式：不打印正文，只把当前行尾标改成 ✓ / ✗（失败附首行摘要）；
-   * 下一个工具调用会覆盖这一行。
+   * 工具结果块。
+   *
+   * 详情模式：缩进 + 限高打印正文。
+   * 紧凑模式：成功只把当前行尾标改成 ✓（下一条覆盖）；失败把行收尾后补
+   * ≤3 行错误正文 + `/last` 提示 —— 失败罕见但信息量最大，值得多占几行。
+   *
+   * 注意 maxLines 只在**详情模式**生效；紧凑模式的失败详情固定
+   * FAILURE_DETAIL_LINES 行，避免把「一行覆盖」的清爽变成刷屏。
    */
   toolResult(body: string, maxLines = 18, ok = true): void {
+    const record: ToolCallRecord = {
+      name: this.toolName || "tool",
+      args: this.toolArgs,
+      ok,
+      ms: this.toolStartedAt > 0 ? Date.now() - this.toolStartedAt : 0,
+      output: body,
+      at: Date.now(),
+    };
+    this.pushToolCall(record);
+
     if (!this.toolCompact) {
       this.stopSpinner();
-      const w = this.cols();
-      const lines = body.replace(/\t/g, "  ").split("\n");
-      const shown = lines.length > maxLines ? lines.slice(0, maxLines) : lines;
-      const indent = c.dim("│ ");
-      const room = Math.max(20, w - 6);
-      for (const l of shown) this.line(indent + c.muted(truncate(l, room)));
-      if (lines.length > maxLines) {
-        this.line(indent + c.dim(`… 还有 ${lines.length - maxLines} 行未显示`));
+      for (const l of formatOutputLines(body, { maxLines, width: this.cols(), margin: "│ " })) {
+        this.line(l);
       }
       return;
     }
 
-    // 紧凑模式：原地把当前行尾标改成 ✓/✗，不能先 finish（那会多出一行）。
+    const summary = ok ? null : summarizeFailure(body, { maxLines: FAILURE_DETAIL_LINES });
+    this.toolStatus = ok ? "ok" : "error";
+    this.toolError = summary?.tail ?? "";
     this.stopSpinnerOnly();
 
-    this.toolStatus = ok ? "ok" : "error";
-    this.toolError = ok ? "" : (body.split("\n")[0] ?? "");
     if (this.toolLineActive) {
       if (this.toolLineTimer) {
         clearInterval(this.toolLineTimer);
         this.toolLineTimer = null;
       }
       this.renderToolLine();
-      return;
+      // 失败行要留痕（失败信息比「一行覆盖」重要）；成功仍属于可覆盖的动画行
+      if (!ok) {
+        this.toolLineActive = false;
+        this.write("\n");
+      }
+    } else {
+      // 行已被其它输出收尾（例如审批问句 / resize）：用独立一行显示最终状态。
+      const seg = toolLineSegments({
+        name: this.toolName,
+        args: this.toolArgs,
+        width: this.cols(),
+        status: this.toolStatus,
+        errorText: this.toolError,
+      });
+      this.line(toolLineText(seg, paintTail(seg, this.toolStatus)));
     }
-    // 行已被其它输出收尾（例如审批问句）：用独立一行显示最终状态。
-    const seg = toolLineSegments({
-      name: this.toolName,
-      args: this.toolArgs,
-      width: this.cols(),
-      status: this.toolStatus,
-      errorText: this.toolError,
-    });
-    const tail = ok ? c.ok(seg.tail) : c.err(seg.tail);
-    const text =
-      ` ${c.tool("⚡")} ${c.bright(seg.name)}` + (seg.args ? ` ${c.dim(seg.args)}` : "") + ` ${tail}`;
-    this.line(text);
+
+    if (!ok && summary) {
+      for (const l of formatOutputLines(summary.detail.join("\n"), {
+        maxLines: FAILURE_DETAIL_LINES,
+        width: this.cols(),
+        margin: "  │ ",
+      })) {
+        this.line(l);
+      }
+      this.line(c.dim("  （完整输出：/last）"));
+    }
   }
 
   /** 键值对，例如 usage 统计。 */
@@ -316,38 +454,38 @@ export class Console {
     this.line(line);
   }
 
-  private stopStreamingRaw(): void {
-    if (this.streaming) {
-      this.streaming = false;
-      process.stdout.write("\n");
-    }
-  }
-
   /** 让出一行给外部（readline）使用。 */
   flush(): void {
-    this.finishToolLine();
-    this.stopSpinner();
+    this.yieldAnimationLines();
   }
 
   /**
    * 底部闪现一条提示（如 Ctrl+C 双击确认），ms 后自动清除。
    *
-   * 清除用「回车 + 清行 + 重打提示符」而不是清屏：提示符行可能已有用户
-   * 敲到一半的输入，重打 readline 缓冲能恢复显示；窗口极短，轻微错位可接受。
+   * v0.2.3 修法：**不自己画提示符**。先收尾动画行（否则 350ms 的工具行计时器
+   * 下一拍就把 readline 刚重画的提示符擦掉），再写提示 + 换行，然后调用注入的
+   * `promptRestorer` 让 readline 重绘（保留用户已敲到一半的行缓冲）。
    */
   flashNotice(text: string, ms: number): void {
-    if (!process.stdout.isTTY) return;
-    if (this.flashTimer) clearTimeout(this.flashTimer);
-    process.stdout.write(c.warn(text));
+    if (!this.stdoutIsTTY()) return;
+    this.yieldAnimationLines();
+    this.write(`\r\x1b[2K${c.warn(text)}\n`);
+    this.promptRestorer?.();
     this.flashTimer = setTimeout(() => {
       this.flashTimer = null;
-      process.stdout.write("\r\x1b[2K");
-      this.promptEcho("");
+      this.write("\r\x1b[2K");
+      this.promptRestorer?.();
     }, ms);
     this.flashTimer.unref?.();
   }
 
-  private flashTimer: Timer | null = null;
+  /**
+   * 注册提示符重绘函数。必须由持有 readline 的一方向注入
+   * （与 `setAsker` 同源理由：Console 不直接摸 readline）。
+   */
+  setPromptRestorer(fn: (() => void) | null): void {
+    this.promptRestorer = fn;
+  }
 
   // ---------- 审批交互 ----------
 
@@ -363,7 +501,7 @@ export class Console {
    */
   async confirm(question: string): Promise<boolean> {
     this.stopSpinner();
-    if (!process.stdin.isTTY) {
+    if (!this.stdinIsTTY()) {
       this.line(
         `${c.warn("✖ 非交互模式")} ${c.dim("无法征求批准")} ${c.warn(question)}\n` +
           `  ${c.dim("已拒绝。脚本场景请显式加 -y（全部放行）或 --edit（仅放行写文件）。")}`,
@@ -389,7 +527,6 @@ export class Console {
   setAsker(fn: ((prompt: string) => Promise<string>) | null): void {
     this.asker = fn;
   }
-
 }
 
 // ---------- 单行读取 ----------

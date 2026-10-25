@@ -25,7 +25,12 @@ export class StreamFormatter {
   /** 最后一次输出后是否处于行首。 */
   private atLineStart = true;
 
-  constructor(private readonly opts: { colorize: boolean }) {}
+  constructor(private readonly opts: { colorize: boolean; write?: (s: string) => void }) {}
+
+  /** 所有输出都经这里 —— 默认 stdout，测试/上层可注入（v0.2.3 simplify 审查）。 */
+  private out(s: string): void {
+    (this.opts.write ?? ((x: string) => process.stdout.write(x)))(s);
+  }
 
   get wrote(): boolean {
     return this.wroteAny;
@@ -62,7 +67,7 @@ export class StreamFormatter {
       this.write("\n");
       this.inFence = false;
     }
-    if (this.wroteAny && !this.atLineStart) process.stdout.write("\n");
+    if (this.wroteAny && !this.atLineStart) this.out("\n");
     this.atLineStart = true;
   }
 
@@ -77,14 +82,14 @@ export class StreamFormatter {
     } else {
       const m = new RegExp(`^\\s{0,3}${this.fenceMarker[0] === "`" ? "`" : "~"}{${this.fenceMarker.length},}\\s*$`).exec(line);
       if (m) {
-        process.stdout.write(c.dim("└" + "─".repeat(44)) + "\n");
+        this.out(c.dim("└" + "─".repeat(44)) + "\n");
         this.inFence = false;
         this.fenceMarker = "";
         this.atLineStart = true;
         this.wroteAny = true;
         return;
       }
-      process.stdout.write(c.dim("│ ") + (this.opts.colorize ? c.mid(line) : line) + "\n");
+      this.out(c.dim("│ ") + (this.opts.colorize ? c.mid(line) : line) + "\n");
       this.atLineStart = true;
       this.wroteAny = true;
       return;
@@ -92,30 +97,30 @@ export class StreamFormatter {
 
     // --- 文本行 ---
     if (line.trim() === "") {
-      if (!this.atLineStart) process.stdout.write("\n");
+      if (!this.atLineStart) this.out("\n");
       this.atLineStart = true;
       this.wroteAny = true;
       return;
     }
 
     const painted = this.opts.colorize ? paintInline(line) : line;
-    process.stdout.write(painted);
+    this.out(painted);
     if (!softBreak) {
-      process.stdout.write("\n");
+      this.out("\n");
       this.atLineStart = true;
     } else {
-      process.stdout.write(" ");
+      this.out(" ");
       this.atLineStart = false;
     }
     this.wroteAny = true;
   }
 
   private enterFence(marker: string, lang: string): void {
-    if (!this.atLineStart) process.stdout.write("\n");
+    if (!this.atLineStart) this.out("\n");
     this.inFence = true;
     this.fenceMarker = marker;
     const label = lang ? c.dim(` ${lang} `) : c.dim(" code ");
-    process.stdout.write(c.dim("┌─") + label + "\n");
+    this.out(c.dim("┌─") + label + "\n");
     this.atLineStart = true;
     this.wroteAny = true;
   }

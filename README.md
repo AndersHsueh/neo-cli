@@ -163,6 +163,7 @@ provider 里的 `*_model_name` 表示「**这个 provider** 在各档位上用�
 /skills    技能列表与详情  /ingest    编译 raw → wiki
 /wiki-lint wiki 体检        /memory    记忆子命令族
 /remember  显式记忆         /exit      退出
+/last [n]  回看最近 n 次工具调用（默认 1；紧凑模式的信息找回入口）
 /fast /balanced /deep /deep_reasoning /default   档位快捷方式（等价 /tier）
 !<cmd>     直接执行 shell（受权限模式约束，plan 模式下拒绝）
 ```
@@ -173,9 +174,15 @@ provider 里的 `*_model_name` 表示「**这个 provider** 在各档位上用�
 ## 开发
 
 ```bash
-bun run check   # tsc --noEmit，strict + noUncheckedIndexedAccess
-bun test        # 单元测试，530 pass（27 个测试文件）
+bun run check   # tsc --noEmit，strict + noUncheckedIndexedAccess（含 scripts/）
+bun test        # 单元测试，580 pass（32 个测试文件）
+bun run e2e     # 真 PTY 端到端（渲染类改动必跑；不需要真实网络/LLM）
+bun run verify  # 全量闸门：tsc → test → pty，证据落 docs/evidence/
 ```
+
+> 终端渲染类改动（动画行、宽度、覆盖语义）**只有真 PTY 能验证**。
+> 可复用脚本见 `scripts/`：`fake-llm.ts`（无状态假 SSE）、`pty-e2e.ts`（屏幕断言）、
+> `verify.sh`（闸门）。约定见 `tests/README.md` §1。
 
 ## 分类器
 

@@ -244,3 +244,5 @@ grep -E -A3 "^## \[[0-9-]+\] todo \|" wiki/log.md
 ## [2026-10-20] wiki | 自动记忆：project/跨会话消息-v0.2.0.md（append）
 ## [2026-10-20] milestone | anders↔huan 真实双会话跨会话消息验收通过：双向消息/reply_to/13s/紧凑工具行，用户反馈清爽迅速
 ## [2026-10-20] wiki | 新建 [[里程碑-1020]] 记录当日三连发与经验，更新踩坑第十条（心跳不能挂空闲 tick）、跨会话/工具显示验收与 INDEX
+## [2026-10-25] milestone | v0.2.3 TUI 补漏交付：流式状态/宽度/`/last`/回放/Ctrl+C 五项，用例 530→580，PTY 4/4，verify.sh ALL GREEN
+## [2026-10-25] wiki | 新建 [[TUI补漏-v0.2.3]] 与 [[TUI进化路线-2026Q4]]，踩坑补 2026-10-25 条（PTY --auto off / script socketpair / COLUMNS），INDEX 版本行与主题目录同步

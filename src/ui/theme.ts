@@ -150,24 +150,28 @@ export function hostOf(u: string): string {
   }
 }
 
-/** 终端可视宽度（近似：忽略 ANSI、宽字符算 2 列）。 */
+/** ANSI SGR 转义（颜色/加粗等），不占显示宽度。 */
+const ANSI_SGR = /\x1b\[[0-9;]*m/g;
+
+/** 单个 code point 的显示宽度：CJK / 全角 / 韩文 算 2 列，其余 1 列。 */
+export function charWidth(ch: string): number {
+  const cp = ch.codePointAt(0) ?? 0;
+  if (cp === 0x200b) return 0; // 零宽空格
+  return (cp >= 0x1100 && cp <= 0x115f) ||
+    (cp >= 0x2e80 && cp <= 0xa4cf) ||
+    (cp >= 0xac00 && cp <= 0xd7a3) ||
+    (cp >= 0xf900 && cp <= 0xfaff) ||
+    (cp >= 0xfe30 && cp <= 0xfe6f) ||
+    (cp >= 0xff00 && cp <= 0xff60) ||
+    (cp >= 0xffe0 && cp <= 0xffe6)
+    ? 2
+    : 1;
+}
+
+/** 终端可视宽度（忽略 ANSI，宽字符算 2 列）。 */
 export function displayWidth(s: string): number {
-  const plain = s.replace(/\x1b\[[0-9;]*m/g, "");
   let w = 0;
-  for (const ch of plain) {
-    const cp = ch.codePointAt(0) ?? 0;
-    if (cp === 0x200b) continue;
-    w +=
-      (cp >= 0x1100 && cp <= 0x115f) ||
-      (cp >= 0x2e80 && cp <= 0xa4cf) ||
-      (cp >= 0xac00 && cp <= 0xd7a3) ||
-      (cp >= 0xf900 && cp <= 0xfaff) ||
-      (cp >= 0xfe30 && cp <= 0xfe6f) ||
-      (cp >= 0xff00 && cp <= 0xff60) ||
-      (cp >= 0xffe0 && cp <= 0xffe6)
-        ? 2
-        : 1;
-  }
+  for (const ch of s.replace(ANSI_SGR, "")) w += charWidth(ch);
   return w;
 }
 
@@ -176,9 +180,24 @@ export function padEndW(s: string, width: number): string {
   return pad > 0 ? s + " ".repeat(pad) : s;
 }
 
+/**
+ * 按**显示列**截断（v0.2.3 D2）。
+ *
+ * 旧实现按 code unit 切：`truncate("中文内容很长的字符串", 10)` 返回 20 列，
+ * 窄终端里右侧被折断、行对不齐。省略号本身占 1 列，故预算为 max-1。
+ * 输入约定为纯文本；带 ANSI 着色时先剥掉转义再切（绝不切半个转义序列）。
+ */
 export function truncate(s: string, max: number): string {
-  // 负数/零宽度会让 slice 产生垃圾内容，必须短路
   if (!Number.isFinite(max) || max <= 0) return "";
-  if (s.length <= max) return s;
-  return s.slice(0, Math.max(0, max - 1)) + "…";
+  if (displayWidth(s) <= max) return s;
+  const budget = max - 1;
+  let out = "";
+  let w = 0;
+  for (const ch of s.replace(ANSI_SGR, "")) {
+    const cw = charWidth(ch);
+    if (w + cw > budget) break;
+    out += ch;
+    w += cw;
+  }
+  return `${out}…`;
 }

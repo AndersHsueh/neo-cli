@@ -115,3 +115,10 @@ neo 开发过程中沉淀的教训清单,持续追加。当前十条:zsh 变量�
 - **`mkdirSync(dir,{recursive:true})` 不抛 EEXIST**：记忆互斥锁沿用它，导致「第二次加锁」静默成功，互斥从未生效（探针实测两次均成功）。正确做法：先递归建父目录，再对锁目录本身做**非递归** mkdir，EEXIST 才表示他方持锁。
 - **后台提炼进程被杀会留下锁**：`-p` 模式 flush 超时后主进程退出，提炼仍在飞，`finally` 没机会释放锁 —— 实测留下 `.write.lock` 卡死后续捕获。两层修复：锁目录 mtime 超 2 分钟自动清理（`tryAcquireLock(lockDir,{staleMs})`）+ 先落 journal 后提炼，未完成的下次启动恢复。
 - **`wiki_write append` 不同步 INDEX**：返回 `indexSynced:false`，自动沉淀的页面在 INDEX 里永远停着创建时的旧摘要。修复：append 后用更新后正文重算摘要并 `syncIndex`；顺带修了 append 段内容插到旧内容之前的顺序 bug。
+
+## 2026-10-25 TUI 补漏三坑：PTY 必须 --auto off / script(1) 不吃 socketpair / COLUMNS 改不了 winsize
+
+- **PTY E2E 不加 `--auto off` 会偷打真实网络**：规则分类器把「读一下 a.txt」判成 fast 档，`applyTier` 会经 provider 路由把 `cfg.baseUrl` 重置回 settings.json 里的真实 provider —— 假端点被绕过，测试时好时坏、还烧真钱。修复：所有 PTY 场景显式 `--auto off`。教训：**任何靠环境变量覆盖 baseUrl 的离线测试，都要先关掉所有会重算路由的开关**。
+- **macOS `script(1)` 不接受 Bun 的 `stdin:"pipe"`**：Bun 的 pipe 是 socketpair，`script` 启动即报 `tcgetattr/ioctl: Operation not supported on socket`。解法：`mkfifo` + `/bin/sh -c 'cat <fifo> | script ...'`，让 script 拿到真 pipe；写入端 `O_NONBLOCK` 按行写。
+- **`COLUMNS` 环境变量不改变 Bun 的 `process.stdout.columns`**：窄终端测试必须走 PTY wrapper 内 `stty cols 60 rows 40`（ioctl TIOCSWINSZ），`COLUMNS`/`LINES` 只能当双保险。顺带实证：Bun 1.3.13 在 winsize 变化时 `process.stdout` 会派发 `resize`，v0.2.3 的 `handleResize` 不是死代码。
+- **别用会话 JSON 推断屏幕行为**：`~/.neo/sessions/*.json` 里有 2901 字正文，不代表它没上屏 —— 真实缺陷是流式状态泄漏（`●` 前缀只出现一次）。屏幕行为一律以真 PTY 捕获为准（证据见 `scripts/pty-e2e.ts`）。

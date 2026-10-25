@@ -13,6 +13,7 @@ import type { Config } from "../config.ts";
 import { describeSource, insideGlobalSkills, isRealDir, listSkillFiles, resolveSkill } from "../skills.ts";
 import { insideRawDir } from "../wiki/paths.ts";
 import { ToolError, type ToolCtx, type ToolImpl, type DispatchResult } from "./types.ts";
+import { shellMarks } from "./shellMarks.ts";
 
 // 基础类型与注册表在 ./types.ts（叶子模块，解开 task → agent → tools 循环依赖）。
 // 这里 re-export 保持既有导入路径不变。
@@ -600,10 +601,10 @@ const shell: ToolImpl = {
     ]);
     clearTimeout(timer);
 
-    const parts = [`$ ${command}`];
+    const parts = [shellMarks.cmd(command)];
     if (out.trim()) parts.push(out.trimEnd());
-    if (errOut.trim()) parts.push(`[stderr] ${errOut.trimEnd()}`);
-    parts.push(`[exit ${code}]`);
+    if (errOut.trim()) parts.push(`${shellMarks.stderr}${errOut.trimEnd()}`);
+    parts.push(shellMarks.exit(code));
     return parts.join("\n");
   },
 };

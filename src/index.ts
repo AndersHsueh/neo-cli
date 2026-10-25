@@ -32,6 +32,8 @@ import { makeTextAttachment, makeImageAttachment, bindAttachments, resolveLine, 
 import { readClipboardImage } from "./clipboard.ts";
 import { select, type SelectDeps } from "./ui/select.ts";
 import { Console } from "./ui/console.ts";
+import { formatToolCall } from "./ui/toolLog.ts";
+import { transcriptLines } from "./ui/transcript.ts";
 import { banner, c, rule, truncate } from "./ui/theme.ts";
 import { renderMarkdown } from "./ui/render.ts";
 import { buildMemoryFile, buildSystemPrompt } from "./system-prompt.ts";
@@ -62,7 +64,7 @@ import { makeListPeersTool, makeSendMessageTool } from "./tools/mailbox.ts";
 import type { Envelope } from "./mailbox/types.ts";
 import type { ToolCtx } from "./tools/types.ts";
 
-const VERSION = "0.2.2";
+const VERSION = "0.2.3";
 
 /** /auto 列表里各实现的说明。 */
 const DESC: Record<string, string> = {
@@ -223,11 +225,13 @@ ${c.bold("交互命令")}
   /remember <文本> 显式记忆（--user 写用户级；-p 模式仅项目级）
   /save [path]     导出会话        /sessions    历史会话
   /resume [id]     恢复会话（无参进入选择；last = 最近一次）
+  /last [n]        回看最近 n 次工具调用（默认 1；紧凑模式的信息找回入口）
   /tier [name]     查看/切档位      /auto [name] 切换分类器（off/rule/llm）
   /fast /balanced /deep            档位快捷方式（等价 /tier）
   /why             上次分类判定与理由
   /exit            退出
   !<cmd>           直接执行 shell（受权限模式约束）
+  ESC              运行中取消本轮（不回滚历史）；Ctrl+C 双击退出
 
 ${c.bold("环境变量")}
   NEO_PROVIDER / NEO_TIER / NEO_MODEL / NEO_BASE_URL / NEO_API_KEY  覆盖 settings.json
@@ -610,6 +614,8 @@ async function main(): Promise<number> {
   // ---- 交互模式 ----
   if (process.stdin.isTTY) {
     ui.line(banner(cfg.model, cfg.baseUrl, cfg.providerName, cfg.modelTier, toolNames().join(" ")));
+    // v0.2.3 D4：--resume 之后屏幕不能是空的 —— 回放最近几轮，人和上下文对齐
+    if (restored && restored.length > 0) replayTranscript(ui, agent.messages);
   }
 
   const rl = createInterface({
@@ -621,6 +627,18 @@ async function main(): Promise<number> {
   const prompt = (): void => {
     rl.prompt();
   };
+
+  // v0.2.3 D5：把「重绘提示符」交回 readline（保留行缓冲与已敲入的字符）。
+  // flashNotice 只负责清行 + 写提示 + 换行，绝不自己画 ❯。
+  ui.setPromptRestorer(() => {
+    (rl as unknown as { _refreshLine?: () => void })._refreshLine?.();
+  });
+
+  // v0.2.3 D2：宽度变化时不再用失效坐标去覆盖行（否则会吃掉用户正在输入的行）。
+  const onResize = (): void => {
+    ui.handleResize();
+  };
+  if (process.stdout.isTTY) process.stdout.on("resize", onResize);
 
   /**
    * 审批问句统一走 readline.question。
@@ -990,6 +1008,8 @@ async function main(): Promise<number> {
 
   rl.on("close", () => {
     process.off("SIGINT", onSigint);
+    if (process.stdout.isTTY) process.stdout.off("resize", onResize);
+    ui.setPromptRestorer(null);
     closeMailbox();
     if (process.stdin.isTTY) process.stdout.write("\x1b[?2004l"); // 退出还原终端 bracketed paste 模式
   });
@@ -1015,6 +1035,24 @@ function persist(messages: Message[], meta: SessionMeta): void {
   } catch {
     // 落盘失败不打断交互
   }
+}
+
+/* ------------------------------------------------------------------ */
+/* 会话回放                                                            */
+/* ------------------------------------------------------------------ */
+
+/**
+ * 回放最近几轮对话（v0.2.3 D4）。
+ * 只在交互 TTY 下打印 —— `-p` / 管道场景回放会污染 stdout 的可解析性。
+ */
+function replayTranscript(ui: Console, messages: Message[], turns = 3): void {
+  if (process.stdout.isTTY !== true) return;
+  const lines = transcriptLines(messages, { turns, width: ui.width });
+  if (lines.length === 0) return;
+  ui.blank();
+  ui.info("以下为最近几轮对话回放（只读，不重新发送）：");
+  for (const l of lines) ui.line(l);
+  ui.blank();
 }
 
 /* ------------------------------------------------------------------ */
@@ -1823,11 +1861,28 @@ async function handleCommand(
         }
       }
       ui.success(`已恢复会话 ${full.meta.id}（${full.messages.length} 条消息）`);
+      // v0.2.3 D4：恢复后回放，避免「上下文都在、屏幕上什么都没有」
+      replayTranscript(ui, full.messages);
       const lastUser = [...full.messages]
         .reverse()
         .find((m) => m.role === "user" && (contentText(m.content) ?? "").trim());
       if (lastUser?.content) {
         ui.line(c.dim(`  上次输入：${truncate((contentText(lastUser.content) ?? "").replace(/\s+/g, " ").trim(), 60)}`));
+      }
+      break;
+    }
+
+    case "last": {
+      // v0.2.3 D3：紧凑模式不打印工具正文，这里用内存缓存把最近 n 次找回来。
+      // 范围夹取在 recentToolCalls 内部完成，这里不做第二遍。
+      const recs = ui.recentToolCalls(arg ? Number(arg) || 1 : 1).reverse(); // 时间顺序：旧 → 新
+      if (recs.length === 0) {
+        ui.info("本次会话还没有工具调用记录。");
+        break;
+      }
+      for (const r of recs) {
+        for (const l of formatToolCall(r, ui.width)) ui.line(l);
+        ui.blank();
       }
       break;
     }
