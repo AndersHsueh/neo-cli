@@ -58,6 +58,8 @@ export const c = {
   tool: wrap("cyan"),
   think: wrap("dimGreen"),
   accentMagenta: wrap("magenta"),
+  /** Matrix 绿（#00FF41）：剧情标题等语义化用法，与 accent 同色但表达不同含义。 */
+  matrix: wrap("phosphor"),
 
   bold: (s: string): string => (colorEnabled() ? `${esc}1m${s}${RESET}` : s),
   dimAttr: (s: string): string => (colorEnabled() ? `${esc}2m${s}${RESET}` : s),

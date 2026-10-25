@@ -13,6 +13,7 @@ import {
   isAlive,
   readProfile,
   sessionLiveness,
+  writeProfile,
 } from "../src/mailbox/identity.ts";
 import { profilePath, statePath } from "../src/mailbox/types.ts";
 
@@ -78,6 +79,24 @@ describe("R2 会话活/死判定", () => {
     ageFiles([profilePath(root, id), statePath(root, id)], 200_000);
     acquireAlive(root, id, { takeover: true, pidAlive: pidAliveYes });
     expect(isAlive(root, id)).toBe(true);
+  });
+
+  test("R2g 崩溃残留（.alive 在、pid 死）resume 旧名不会自己撞成 -2", () => {
+    const root = sandbox();
+    const id = "si-crash-name";
+    createIdentity({ root, sessionId: id, cwd: "/tmp", name: "Trinity", nowMs: Date.now() });
+    // 模拟 SIGKILL：.alive 残留，profile.pid 指向一个不存在的进程
+    const p = readProfile(root, id)!;
+    p.pid = 999999;
+    writeProfile(root, p);
+
+    createIdentity({ root, sessionId: id, cwd: "/tmp", name: "Trinity", nowMs: Date.now() + 1000 });
+    expect(readProfile(root, id)?.name).toBe("Trinity");
+
+    // 不显式给名（走 old?.name）也不能撞自己
+    rmSync(join(root, id, ".alive"), { recursive: true, force: true });
+    createIdentity({ root, sessionId: id, cwd: "/tmp", nowMs: Date.now() + 2000 });
+    expect(readProfile(root, id)?.name).toBe("Trinity");
   });
 
   test("R2f createIdentity 同 id 续接：name 保留；显式 name 覆盖", () => {

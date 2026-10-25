@@ -27,6 +27,7 @@ import { TextBuffer, InputHistory, layoutBuffer, type VisualLine } from "./buffe
 import { PasteMachine, mapKey, type RawKey, type KeyAction } from "./keys.ts";
 import { renderStatus, type StatusSnapshot, type StatusSegment } from "./status.ts";
 import { stripAnsi, truncateAnsi, wrapAnsi } from "./ansi.ts";
+import { TitleAnimator, type TitleView } from "./title.ts";
 import { shouldFold } from "../paste.ts";
 
 /** 状态行数据源（index.ts 提供闭包；width/queueCount 由 Composer 补）。 */
@@ -45,7 +46,7 @@ export interface ComposerDeps {
   rows?: () => number;
   getStatus: () => ComposerStatus;
   /** 顶线右侧标签（会话名 / cwd 短名）。 */
-  getTitle?: () => string;
+  getTitle?: () => string | TitleView;
   commands: CommandEntry[];
   files: () => string[];
   /** 提交一条消息（此时 buffer 已清空，attachments 是 chip 绑定列表）。 */
@@ -123,6 +124,7 @@ export class Composer {
   private activity: string | null = null;
   private pendingRows: string[] = [];
   private inputScroll = 0;
+  private titleAnimator: TitleAnimator | null = null;
   /** 输入布局缓存：文本/光标/宽度没变时，流式每帧不重算整份 layout（效率审查）。 */
   private layoutCache: { text: string; cursor: number; width: number; layout: ReturnType<typeof layoutBuffer> } | null =
     null;
@@ -190,6 +192,7 @@ export class Composer {
     this.scheduleRender();
     this.tickTimer = setInterval(() => this.tick(), 250);
     this.tickTimer.unref?.();
+    this.titleAnimator?.start(() => this.scheduleRender());
   }
 
   /** exit 事件里只能同步写，不碰定时器/异步。 */
@@ -212,6 +215,7 @@ export class Composer {
     if (this.noticeTimer) { clearTimeout(this.noticeTimer); this.noticeTimer = null; }
     if (this.pasteTimer) { clearTimeout(this.pasteTimer); this.pasteTimer = null; }
     this.pasteChunks = [];
+    this.titleAnimator?.stop();
     const stdin = this.deps.stdin as unknown as {
       setRawMode?: (v: boolean) => void;
       off: (ev: string, fn: (...a: never[]) => void) => void;
@@ -381,6 +385,14 @@ export class Composer {
 
   rerender(): void { this.scheduleRender(); }
 
+  /** 注入标题动画（index 创建；Composer.start/stop 负责启停）。 */
+  setTitleAnimator(animator: TitleAnimator | null): void {
+    if (this.titleAnimator && this.titleAnimator !== animator) this.titleAnimator.stop();
+    this.titleAnimator = animator;
+    if (this.started && !this.stopped) animator?.start(() => this.scheduleRender());
+    this.scheduleRender();
+  }
+
   // ---------------------------------------------------------------- 渲染
 
   scheduleRender(): void {
@@ -477,12 +489,14 @@ export class Composer {
     this.inputScroll = scroll;
 
     const rows: string[] = [];
-    let ruleTitle = kind === "ask" ? "确认" : this.titleWithBusy();
+    let ruleTitle: string | TitleView | null = kind === "ask" ? "确认" : this.titleView();
     if (total > viewH) {
       const range = `${scroll + 1}-${Math.min(scroll + viewH, total)}/${total} 行`;
-      ruleTitle = ruleTitle ? `${ruleTitle} · ${range}` : range;
+      if (typeof ruleTitle === "string") ruleTitle = ruleTitle ? `${ruleTitle} · ${range}` : range;
+      else if (ruleTitle) ruleTitle = { ...ruleTitle, text: `${ruleTitle.text} · ${range}` };
+      else ruleTitle = range;
     }
-    const rule = this.topRule(width, ruleTitle);
+    const rule = this.topRule(width, ruleTitle, kind !== "ask" && this.busy);
     rows.push(rule);
     const prefix = kind === "ask" ? c.warn("? ") : c.accent("❯ ");
     const cont = "  ";
@@ -523,23 +537,54 @@ export class Composer {
     return c.text(before) + cursorCell + c.text(after);
   }
 
-  private topRule(width: number, title: string | null): string {
-    if (!title) return c.dim("─".repeat(width));
-    const label = ` ${truncate(title, Math.max(4, width - 8))} `;
+  /** 顶线：横线 + 右侧 label；支持旧的 string 与结构化 TitleView。 */
+  private topRule(
+    width: number,
+    label: string | TitleView | null,
+    busy = false,
+  ): string {
+    if (!label) return c.dim("─".repeat(width));
+    if (typeof label === "string") {
+      const full = busy ? `${label} · 运行中` : label;
+      return this.ruleWithPlainLabel(width, full);
+    }
+    const prefix = `${label.prefix}: `;
+    const suffix = busy ? " · 运行中" : "";
+    const budget = Math.max(4, width - 8);
+    let name = label.text;
+    if (displayWidth(`${prefix}${name}${suffix}`) > budget) {
+      const nameBudget = Math.max(1, budget - displayWidth(prefix) - displayWidth(suffix));
+      name = truncate(label.text, nameBudget);
+      if (displayWidth(`${prefix}${name}${suffix}`) > budget) {
+        // 极窄终端：放弃分段着色，按纯文本截断，保证不超宽。
+        return this.ruleWithPlainLabel(width, `${prefix}${name}${suffix}`);
+      }
+    }
+    const namePainted = label.matrix ? c.matrix(name) : c.dim(name);
+    const inner = `${c.dim(prefix)}${namePainted}${c.dim(suffix)}`;
+    const plainLen = displayWidth(`${prefix}${name}${suffix}`);
+    const dashes = Math.max(1, width - plainLen - 2 - 2);
+    return c.dim("─".repeat(dashes)) + ` ${inner} ` + c.dim("──");
+  }
+
+  /** 纯文本 label（全 dim）的顶线，旧行为与极窄兜底共用。 */
+  private ruleWithPlainLabel(width: number, text: string): string {
+    const label = ` ${truncate(text, Math.max(4, width - 8))} `;
     const dashes = Math.max(1, width - displayWidth(label) - 2);
     return c.dim("─".repeat(dashes)) + c.dim(label) + c.dim("──");
   }
 
-  private title(): string | null {
-    const t = this.deps.getTitle?.();
-    return t && t.trim() !== "" ? t.trim() : null;
-  }
-
-  /** 顶线标题：忙碌时追加「运行中」——用户能看出 agent 还在跑（PTY 也用它判定 idle）。 */
-  private titleWithBusy(): string | null {
-    const base = this.title();
-    if (!this.busy) return base;
-    return base ? `${base} · 运行中` : "运行中";
+  /** 当前标题视图：优先动画器，其次旧的 string/TitleView 注入点（测试/宿主兼容）。 */
+  private titleView(): string | TitleView | null {
+    const anim = this.titleAnimator?.getView();
+    if (anim) return anim.text === "" ? null : anim;
+    const raw = this.deps.getTitle?.();
+    if (!raw) return null;
+    if (typeof raw === "string") {
+      const t = raw.trim();
+      return t === "" ? null : t;
+    }
+    return raw.text.trim() === "" ? null : raw;
   }
 
   private composeSelect(

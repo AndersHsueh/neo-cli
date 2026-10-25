@@ -8,6 +8,8 @@ import { describe, expect, test } from "bun:test";
 import { EventEmitter } from "node:events";
 import { Composer, type ComposerDeps, type ComposerStatus } from "../src/tui/composer.ts";
 import { COMMANDS } from "../src/input/commands.ts";
+import { TitleAnimator } from "../src/tui/title.ts";
+import { displayWidth } from "../src/ui/theme.ts";
 
 interface Harness {
   composer: Composer;
@@ -367,6 +369,47 @@ describe("C4i 模态粘贴 / 审批 Ctrl+C / suspend（v0.3.0 质量审查补充
     expect(h.composer.isSuspended).toBe(false);
     typeText(h, "ok");
     expect(h.composer.text).toBe("ok");
+    h.composer.stop();
+  });
+});
+
+
+describe("C1e Agent 标题视图（v0.3.1）", () => {
+  test("C1e TitleView 普通名 + busy 后缀", () => {
+    const h = makeHarness({ getTitle: () => ({ prefix: "Agent", text: "Trinity", matrix: false }) });
+    expect(h.composer.compose().rows.join("\n")).toContain("Agent: Trinity");
+    h.composer.setBusy(true);
+    expect(h.composer.compose().rows.join("\n")).toContain("Agent: Trinity · 运行中");
+    h.composer.stop();
+  });
+
+  test("C1e N E O 用 Matrix 绿（#00FF41）渲染", () => {
+    const prevNo = process.env["NO_COLOR"];
+    const prevForce = process.env["FORCE_COLOR"];
+    delete process.env["NO_COLOR"];
+    process.env["FORCE_COLOR"] = "1";
+    try {
+      const h = makeHarness({ getTitle: () => ({ prefix: "Agent", text: "N E O", matrix: true }) });
+      const rows = h.composer.compose().rows.join("\n");
+      expect(rows).toContain("Agent:");
+      expect(rows).toContain("\x1b[38;2;0;255;65mN E O\x1b[0m");
+      h.composer.stop();
+    } finally {
+      if (prevNo === undefined) delete process.env["NO_COLOR"];
+      else process.env["NO_COLOR"] = prevNo;
+      if (prevForce === undefined) delete process.env["FORCE_COLOR"];
+      else process.env["FORCE_COLOR"] = prevForce;
+    }
+  });
+
+  test("C1e TitleAnimator 接入 composer；窄终端标题不超宽", () => {
+    const h = makeHarness({ columns: () => 30, stdout: { write: () => {}, columns: 30, rows: 24 } });
+    const anim = new TitleAnimator({ rng: () => 0.5 });
+    anim.setName("Morpheus");
+    h.composer.setTitleAnimator(anim);
+    const rows = h.composer.compose().rows;
+    expect(rows.join("\n")).toContain("Agent: Morpheus");
+    for (const r of rows) expect(displayWidth(r)).toBeLessThanOrEqual(30);
     h.composer.stop();
   });
 });

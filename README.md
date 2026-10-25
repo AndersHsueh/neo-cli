@@ -171,7 +171,7 @@ provider 里的 `*_model_name` 表示「**这个 provider** 在各档位上用�
 ### TUI：底部常驻状态条 + 输入框（v0.3.0）
 
 ```
-────────────────────────────── neo · neo ──
+────────────────────────────── Agent: Trinity ──
 ❯ 你的消息…（多行 / 补全 / 中文 / 光标可编辑）
 ────────────────────────────────────────────
 deepseek-flash · balanced · ask · ⎇ main · ctx ▓▓░░░ 42% · 0:42 · 12.3k tok
@@ -184,11 +184,16 @@ deepseek-flash · balanced · ask · ⎇ main · ctx ▓▓░░░ 42% · 0:42
 - 历史 ↑↓（前缀搜索）、`Tab` 补全、`Ctrl+V` 贴图、大段粘贴折叠 chip；
   审批问题显示在框上方、输入框不卸载；选择菜单在 live 帧内渲染。
 - **不换渲染模型**：不 alt-screen，历史留在 scrollback；非 TTY（`-p` / 管道 / CI）走原 readline 路径。
-- `Ctrl+O` transcript 视图与轮次 diff 留 v0.3.1 / v0.3.2。
+- **会话代号（v0.3.1）**：交互启动从 12 个《黑客帝国》角色池随机取一个未被存活会话占用的名字
+  （`--name` 与 resume 旧名优先；池全占才加后缀）；顶线显示 `Agent: <代号>`，`/rename` 即时同步。
+  代号为 `neo` 时，标题每 10–20 秒在 `Mr.Anderson`（dim）与 `N E O`（Matrix 绿）之间切换，
+  切换前 3 帧 ×80ms 字符雨；`neo` 本身仍是普通可寻址名字。
+- `--resume`（v0.3.1 起）真续接同一 session-id/文件/信箱身份；运行中的会话不列出、不允许恢复。
+- `Ctrl+O` transcript 视图与轮次 diff 留 v0.3.2 / v0.3.3。
 
 > M0 探针（raw mode / 按键 / live 帧 / 交错 / 终端恢复）见
-> `scripts/tui-probe.ts` 与 `docs/v0.3.0-tui-prd[done].md` §2；PTY 场景 S11~S17 覆盖状态条、
-> 输入框、多行、审批、resize、选择菜单、双 Ctrl+C。
+> `scripts/tui-probe.ts` 与 `docs/v0.3.0-tui-prd[done].md` §2；PTY 场景 S11~S19 覆盖状态条、
+> 输入框、多行、审批、resize、选择菜单、双 Ctrl+C、resume 真续接、代号/标题。
 
 ### 输入补全与引用（v0.2.4）
 
@@ -213,8 +218,8 @@ deepseek-flash · balanced · ask · ⎇ main · ctx ▓▓░░░ 42% · 0:42
 ```bash
 bun run check   # tsc --noEmit，strict + noUncheckedIndexedAccess（含 scripts/）
 bun test        # 单元测试，812 pass（43 个测试文件）
-bun run e2e     # 真 PTY 端到端（17 场景；渲染类改动必跑；不需要真实网络/LLM）
-bun run verify  # 全量闸门：tsc → test → pty（17 个 PTY 场景），证据落 docs/evidence/
+bun run e2e     # 真 PTY 端到端（19 场景；渲染类改动必跑；不需要真实网络/LLM）
+bun run verify  # 全量闸门：tsc → test → pty（19 个 PTY 场景），证据落 docs/evidence/
 ```
 
 > 终端渲染类改动（动画行、宽度、覆盖语义）**只有真 PTY 能验证**。

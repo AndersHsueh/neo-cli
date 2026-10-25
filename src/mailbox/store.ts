@@ -422,8 +422,18 @@ export class Mailbox {
     if (frag) return this.finishPeer(frag, opts);
     const byName = profiles.filter((p) => p.name === wanted);
     if (byName.length > 1) {
+      // v0.3.1：dead 会话（未到 TTL）的名字不得遮蔽活会话。
+      // 同名多命中时优先 running；恰好一个 running → 用它；多个 running 仍 ambiguous。
+      const live = byName.filter(
+        (p) =>
+          identity.sessionLiveness(this.root, p.session, {
+            nowMs: this.now(),
+            deadAfterMs: this.cfg.deadAfterMs,
+          }) === "running",
+      );
+      if (live.length === 1) return this.finishPeer(live[0] as PeerProfile, opts);
       throw new MailboxError("ambiguous_target", `名字 "${wanted}" 匹配到多个会话`, {
-        candidates: byName.map((p) => describePeer(p)),
+        candidates: (live.length > 1 ? live : byName).map((p) => describePeer(p)),
       });
     }
     const named = byName[0];
@@ -432,7 +442,13 @@ export class Mailbox {
   }
 
   private finishPeer(p: PeerProfile, opts: { requireAlive?: boolean }): PeerProfile {
-    if (opts.requireAlive && !identity.isAlive(this.root, p.session)) {
+    if (
+      opts.requireAlive &&
+      identity.sessionLiveness(this.root, p.session, {
+        nowMs: this.now(),
+        deadAfterMs: this.cfg.deadAfterMs,
+      }) !== "running"
+    ) {
       throw new MailboxError("target_dead", `目标 ${p.name ?? p.session} 的进程已退出，v1 不排队、不缓存离线消息`);
     }
     return p;

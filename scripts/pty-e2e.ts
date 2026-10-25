@@ -41,6 +41,7 @@ import type { Subprocess } from "bun";
 
 // 纯函数、无副作用：与 neo 渲染层使用同一套「显示列」规则（CJK/全角算 2 列）。
 import { displayWidth } from "../src/ui/theme.ts";
+import { NEO_ROLE_POOL } from "../src/sessionName.ts";
 
 /** 本脚本统一用 stdin/stderr/stdout 全 pipe 的进程形态。 */
 type Proc = Subprocess<"pipe" | "ignore", "pipe", "pipe">;
@@ -420,6 +421,7 @@ async function startFake(
     | "resume"
     | "echo-ref"
     | "slow"
+    | "slow-500"
     | "write-then-answer",
 ): Promise<FakeServer> {
   const proc = Bun.spawn([BUN, "run", FAKE_LLM], {
@@ -1453,6 +1455,16 @@ function statusLineOf(screen: Screen): string | null {
   return null;
 }
 
+/** 顶线标题行（最后一条含 Agent: 的横线）。 */
+function titleLineOf(screen: Screen): string | null {
+  const lines = screen.lines();
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const l = (lines[i] ?? "").trimEnd();
+    if (l.trim().startsWith("─") && l.includes("Agent:")) return l;
+  }
+  return null;
+}
+
 /** 在 work 目录造一个真 git 仓库（main 分支），用于状态条分支字段断言。 */
 function initGitRepo(cwd: string): void {
   const run = (args: string[]): void => {
@@ -1586,8 +1598,8 @@ async function scenarioS12(tmpRoot: string): Promise<void> {
     await run.write("😀".repeat(60));
     await waitFor(() => run.screen.text().includes("😀"), { label: "emoji 输入上屏", run, timeoutMs: 8000 });
     const emojiLines = run.screen.lines();
-    const top = emojiLines.findLastIndex((l) => l.trim().startsWith("─") && l.includes("neo ·"));
-    const bottom = emojiLines.findIndex((l, i) => i > top && l.trim().startsWith("─") && !l.includes("neo ·"));
+    const top = emojiLines.findLastIndex((l) => l.trim().startsWith("─") && l.includes("Agent:"));
+    const bottom = emojiLines.findIndex((l, i) => i > top && l.trim().startsWith("─") && !l.includes("Agent:"));
     check(top >= 0 && bottom > top, "emoji 输入后找不到输入框边界", run.screen);
     for (const l of emojiLines.slice(top, bottom + 1)) {
       check(displayWidth(l.trimEnd()) <= DEFAULT_COLS, `emoji 输入行超宽（${displayWidth(l)} 列）`, run.screen);
@@ -1623,8 +1635,8 @@ async function scenarioS13(tmpRoot: string): Promise<void> {
     await run.write("L1\nL2\nL3\nL4\nL5\nL6\nL7\nL8\nL9\nL10");
     await waitFor(() => run.screen.text().includes("L10"), { label: "10 行输入已进入缓冲", run });
     const lines = run.screen.lines();
-    const top = lines.findLastIndex((l) => l.includes("neo ·") && l.trim().startsWith("─"));
-    const bottom = lines.findIndex((l, i) => i > top && l.trim().startsWith("─") && !l.includes("neo ·"));
+    const top = lines.findLastIndex((l) => l.includes("Agent:") && l.trim().startsWith("─"));
+    const bottom = lines.findIndex((l, i) => i > top && l.trim().startsWith("─") && !l.includes("Agent:"));
     check(top >= 0 && bottom > top, "多行输入时输入框横线找不到", run.screen);
     check(bottom - top - 1 <= 8, `输入区可视行数超过 8（${bottom - top - 1}）`, run.screen);
     check(lines.some((l) => l.includes("L1")), "滚动后第一行仍应可回看（窗口只滚动，不丢内容）", run.screen);
@@ -1703,7 +1715,7 @@ async function scenarioS15(tmpRoot: string): Promise<void> {
       const lines = run.screen.lines();
       for (let i = lines.length - 1; i >= 0; i--) {
         const l = lines[i] ?? "";
-        if (l.trim().startsWith("─") && l.includes("neo ·")) return l;
+        if (l.trim().startsWith("─") && l.includes("Agent:")) return l;
       }
       return null;
     };
@@ -1728,7 +1740,7 @@ async function scenarioS15(tmpRoot: string): Promise<void> {
     );
     const lines = run.screen.lines();
     // 只看 live 帧（最后一条顶线到状态行），历史行可能保留 resize 前的宽度
-    const top = lines.findLastIndex((l) => l.trim().startsWith("─") && l.includes("neo ·"));
+    const top = lines.findLastIndex((l) => l.trim().startsWith("─") && l.includes("Agent:"));
     check(top >= 0, "resize 后找不到输入框顶线", run.screen);
     const frame = lines.slice(top);
     for (const l of frame) {
@@ -1924,6 +1936,71 @@ async function scenarioS18(tmpRoot: string): Promise<void> {
   }
 }
 
+/** S19：随机代号 + Agent 标题 + /rename neo 初始 Mr.Anderson + busy 后缀。 */
+async function scenarioS19(tmpRoot: string): Promise<void> {
+  const dirs = await makeDirs(tmpRoot, "s19-agent-title");
+  const fake = await startFake("slow-500");
+  const run = await startNeo({
+    fake,
+    dirs,
+    name: "s19",
+    autoName: false,
+    args: BASE_ARGS,
+    cols: DEFAULT_COLS,
+    rows: DEFAULT_ROWS,
+  });
+  try {
+    await waitPrompt(run);
+    const title0 = titleLineOf(run.screen);
+    check(title0 !== null, "新会话顶线没有 Agent 标题", run.screen);
+    const clean0 = title0!.replace(/^─+/, "").replace(/─+$/, "").trim();
+    const name0 = clean0.replace(/^Agent:\s*/, "").trim();
+    const allowed = new Set<string>([...NEO_ROLE_POOL, "Mr.Anderson", "N E O"]);
+    check(allowed.has(name0), `顶线名字不在角色池：${JSON.stringify(name0)}（${title0}）`, run.screen);
+
+    // /rename neo：初态必须是 Mr.Anderson（动画切到 N E O 由单测 fake timer 覆盖）
+    await run.type("/rename neo");
+    // 先等命令真正执行完（随机名恰好是 neo 时标题一开始就是 Mr.Anderson，不能拿标题当完成信号）
+    await waitFor(() => run.screen.text().includes("本会话名字 → neo"), {
+      label: "/rename neo 成功提示",
+      run,
+      timeoutMs: 8000,
+    });
+    await waitFor(() => titleLineOf(run.screen)?.includes("Agent: Mr.Anderson") ?? false, {
+      label: "/rename neo 后标题变为 Agent: Mr.Anderson",
+      run,
+      timeoutMs: 8000,
+    });
+
+    // busy 后缀照常拼接
+    await run.type("你好");
+    await waitFor(() => run.screen.text().includes("运行中"), { label: "busy 时出现运行中", run, timeoutMs: 8000 });
+    await waitFor(() => titleLineOf(run.screen)?.includes("运行中") ?? false, {
+      label: "busy 后缀拼在 Agent 标题后",
+      run,
+      timeoutMs: 8000,
+    });
+    await waitFor(() => run.screen.text().includes("慢回答完成。"), { label: "回答完成", run, timeoutMs: 15_000 });
+    await waitPrompt(run, "回到提示符");
+
+    // 再改名离开 neo：动画停止，标题回落普通 dim 名字
+    await run.type("/rename Trinity");
+    await waitFor(() => titleLineOf(run.screen)?.includes("Agent: Trinity") ?? false, {
+      label: "改名 Trinity 后标题同步",
+      run,
+      timeoutMs: 8000,
+    });
+    maybeDumpScreen(run.screen);
+    await run.type("/exit");
+    await run.waitExit();
+  } catch (e) {
+    throw attachScreen(e, run.screen, run.stderr);
+  } finally {
+    await run.close();
+    await fake.stop();
+  }
+}
+
 /* ------------------------------------------------------------------ */
 /* 主流程                                                              */
 /* ------------------------------------------------------------------ */
@@ -2014,7 +2091,7 @@ const SCENARIOS: Scenario[] = [
     id: "s13",
     title: "S13 输入框多行滚动：窗口/横线/状态行",
     fn: scenarioS13,
-    focus: ["L10", "neo ·"],
+    focus: ["L10", "Agent:"],
   },
   {
     id: "s14",
@@ -2026,7 +2103,7 @@ const SCENARIOS: Scenario[] = [
     id: "s15",
     title: "S15 resize：100→60 列后帧不超宽/不串行",
     fn: scenarioS15,
-    focus: ["这是一段用于测试", "neo ·"],
+    focus: ["这是一段用于测试", "Agent:"],
   },
   {
     id: "s16",
@@ -2045,6 +2122,12 @@ const SCENARIOS: Scenario[] = [
     title: "S18 --resume 真续接 + 活进程拒绝 + 列表隐藏",
     fn: scenarioS18,
     focus: ["已恢复会话", "另一个进程"],
+  },
+  {
+    id: "s19",
+    title: "S19 随机代号 + Agent 标题 + /rename neo 动画初态",
+    fn: scenarioS19,
+    focus: ["Agent:", "Mr.Anderson"],
   },
 ];
 

@@ -222,22 +222,42 @@ function normalizeName(name: string): string {
   return n;
 }
 
-/** 撞名自动加后缀 -2、-3…（只扫存活会话；dead 名字可复用）。 */
-export function pickUniqueName(root: string, base: string, opts: { nowMs?: number; excludeSession?: string } = {}): string {
-  const wanted = normalizeName(base);
+/** 「运行中」会话占用的名字集合（统一口径：sessionLiveness === running）。 */
+export function runningTakenNames(
+  root: string,
+  opts: { nowMs?: number; deadAfterMs?: number; excludeSession?: string } = {},
+): Set<string> {
   const nowMs = opts.nowMs ?? Date.now();
-  const taken = new Set<string>();
+  const out = new Set<string>();
   for (const p of listProfiles(root)) {
     if (opts.excludeSession && p.session === opts.excludeSession) continue;
-    if (!isAlive(root, p.session)) continue;
-    if (p.name) taken.add(p.name);
+    if (!p.name) continue;
+    if (sessionLiveness(root, p.session, { nowMs, deadAfterMs: opts.deadAfterMs }) === "running") {
+      out.add(p.name);
+    }
   }
+  return out;
+}
+
+/** 撞名自动加后缀 -2、-3…（只扫 running 会话；dead 名字可复用）。 */
+export function pickUniqueName(
+  root: string,
+  base: string,
+  opts: { nowMs?: number; deadAfterMs?: number; excludeSession?: string } = {},
+): string {
+  const wanted = normalizeName(base);
+  const taken = runningTakenNames(root, opts);
   if (!taken.has(wanted)) return wanted;
   for (let i = 2; i < 10_000; i++) {
     const candidate = `${wanted}-${i}`;
     if (!taken.has(candidate)) return candidate;
   }
   throw new MailboxError("invalid_target", `名字 ${wanted} 的候选后缀已用尽`);
+}
+
+/** 存活会话已占用的名字集合（随机代号池排除用；dead 不占名）。 */
+export function takenAliveNames(root: string, opts: { nowMs?: number; deadAfterMs?: number } = {}): Set<string> {
+  return runningTakenNames(root, opts);
 }
 
 /* ------------------------------------------------------------------ */
@@ -269,7 +289,21 @@ export function createIdentity(opts: CreateIdentityOpts): Identity {
   const nowMs = opts.nowMs ?? Date.now();
   ensureSessionLayout(opts.root, opts.sessionId);
   const old = readProfile(opts.root, opts.sessionId);
-  const wantedName = opts.name ? pickUniqueName(opts.root, opts.name, { nowMs }) : (old?.name ?? null);
+  // 崩溃残留：先用旧 profile 判定并回收 .alive，再写新 profile 抢锁。
+  reclaimDeadLock(opts.root, opts.sessionId, {
+    nowMs,
+    deadAfterMs: opts.deadAfterMs,
+  });
+  // 旧名也走一次查重：dead 名可被池重新分配后，adopt 不能造出两个 running 同名；
+  // excludeSession 保证「自己」的残留锁/旧 profile 不会把自己撞成 -2（崩溃 resume critical）。
+  const baseName = opts.name ?? old?.name ?? null;
+  const wantedName = baseName
+    ? pickUniqueName(opts.root, baseName, {
+        nowMs,
+        deadAfterMs: opts.deadAfterMs,
+        excludeSession: opts.sessionId,
+      })
+    : null;
   const nowIso = isoNow(nowMs);
 
   const profile: PeerProfile = {
@@ -284,6 +318,8 @@ export function createIdentity(opts: CreateIdentityOpts): Identity {
   };
   writeProfile(opts.root, profile);
 
+  // 写 profile 之后再抢锁：避免两个进程同时启动时，对方在「锁已建、profile 未写」的窗口里
+  // 把本进程误判成 dead 并抢走锁。takeover 会按 pid/心跳回收真正的残留锁。
   acquireAlive(opts.root, opts.sessionId, {
     takeover: opts.takeover ?? true,
     deadAfterMs: opts.deadAfterMs,
@@ -302,6 +338,29 @@ export function createIdentity(opts: CreateIdentityOpts): Identity {
     }, nowMs);
   }
   return { profile, state: readState(opts.root, opts.sessionId) ?? state };
+}
+
+/**
+ * 在「写新 profile」之前回收自己的残留锁。
+ * 必须用旧 profile 的 pid/心跳判断：否则先 writeProfile 会把 pid 改成新进程，
+ * 之后 acquireAlive 只看到「pid 活 + 心跳新鲜」→ 双开误报（崩溃 resume critical）。
+ * 只处理 profile 已存在且判定 dead 的情况；无 profile 的窗口留给 acquireAlive。
+ */
+export function reclaimDeadLock(
+  root: string,
+  sessionId: string,
+  opts: { nowMs?: number; deadAfterMs?: number; pidAlive?: (pid: number) => boolean } = {},
+): boolean {
+  if (!isAlive(root, sessionId)) return false;
+  const profile = readProfile(root, sessionId);
+  if (!profile) return false;
+  if (sessionLiveness(root, sessionId, opts) === "running") return false;
+  try {
+    rmSync(aliveDir(root, sessionId), { recursive: true, force: true });
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 /** /rename：只改显示名，不动目录与 session-id。 */

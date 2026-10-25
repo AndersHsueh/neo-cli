@@ -1,21 +1,21 @@
 # neo 测试约定
 
-> **最后更新:2026-10-25**（v0.2.4 输入层交付；v0.2.3 TUI 补漏；v0.2.0 跨会话消息；v0.1.12 记忆旧件清理后重写）
+> **最后更新:2026-10-26**（v0.3.1 会话代号 + Agent 标题动画 + resume 真续接；v0.3.0 TUI；v0.2.4 输入层；v0.2.0 跨会话消息）
 
 ## §1 当前基线
 
 ```bash
 bunx tsc --noEmit     # exit 0（strict + noUncheckedIndexedAccess）
-bun test              # 839 pass / 0 fail（46 个测试文件，约 6s）
-bash scripts/verify.sh # 全量闸门：上两条 + 真 PTY E2E（17 场景），输出落 docs/evidence/
+bun test              # 873 pass / 0 fail（52 个测试文件，约 6s）
+bash scripts/verify.sh # 全量闸门：上两条 + 真 PTY E2E（19 场景），输出落 docs/evidence/
 ```
 
-v0.3.0 TUI 后的基线：**827 pass / 0 fail / 45 文件**（v0.2.4 为 660/37，v0.2.3 为 569/32，v0.2.2 为 530/27）。
+v0.3.1 后的基线：**873 pass / 0 fail / 52 文件**（v0.3.0 为 839/46，v0.2.4 为 660/37，v0.2.3 为 569/32，v0.2.2 为 530/27）。
 改功能前先在干净树上跑一遍，数字对位后再动手。
 
 ### TTY-only 行为的验证方式（v0.2.3 起）
 
-终端渲染类改动（动画行覆盖、`●` 前缀、宽度、`/last`、`--resume` 回放）**只有真 PTY 能验证**，
+终端渲染类改动（动画行覆盖、`●` 前缀、宽度、`/last`、`--resume` 回放/拒绝、Agent 标题、代号列表隐藏）**只有真 PTY 能验证**，
 bun test 里的 fake IO 测不出事件顺序与覆盖语义。可复用脚本：
 
 | 脚本 | 用途 |
@@ -80,6 +80,18 @@ bun test 里的 fake IO 测不出事件顺序与覆盖语义。可复用脚本�
 | `toollog.test.ts` | D3：失败摘要（stderr/exit code）、时长格式、`/last` 格式化、缓存上限 20、失败详情的行数预算 |
 | `transcript.test.ts` | D4：轮次切取、角色过滤、`maxLines` 截断提示、多行用户输入、markdown 渲染 |
 | `flash-notice.test.ts` | D5：提示符重绘注入、不打印 `❯`、非 TTY 不写、无 restorer 退化 |
+
+### v0.3.1 新增（52 文件 / 873 例）
+
+| 文件 | 覆盖 |
+|---|---|
+| `session-name.test.ts` | 角色池选择：显式名/resume 旧名/固定 rng 候选序/撞名换候选/池耗尽 fallback/空池 |
+| `title.test.ts` | Neo 标题状态机：fake timer 的 10–20s 边界、Mr.Anderson ↔ N E O、3 帧×80ms、每帧宽度、stop 清理、rename |
+| `session-adopt.test.ts` | `--resume` 真续接：adoptSession 沿用 id/path、续写同一文件不 fork |
+| `session-liveness.test.ts` | running 判定（pid/心跳）、pid 死/心跳超时→dead、残留锁回收、同 id 保留 name |
+| `mailbox-adopt.test.ts` | 交互 `/resume`：接管目标 name/inbox、退役当前身份、运行中目标拒绝 |
+| `mailbox-name-resolve.test.ts` | dead+alive 同名 → 优先 running；多 running 仍 ambiguous；takenAliveNames |
+| `tui-composer.test.ts`（扩展） | TitleView 普通名/busy 后缀/N E O 绿色 ANSI/窄终端不超宽 |
 
 ### v0.3.0 新增（46 文件 / 839 例）
 

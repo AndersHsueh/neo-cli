@@ -250,3 +250,11 @@ grep -E -A3 "^## \[[0-9-]+\] todo \|" wiki/log.md
 ## [2026-10-25] wiki | 新建 [[输入层-v0.2.4]]，[[TUI进化路线-2026Q4]] 标记第一段完成，踩坑补 readline 三坑（非 TTY 不跑行编辑器/裸 Tab 插字面量/Ctrl+J 顺序），INDEX 版本行同步
 ## [2026-10-25] milestone | v0.3.0 TUI 交付：底部常驻状态条 + 自绘输入框（live 帧），用例 660→839（46 文件），PTY 10→17 场景，verify.sh ALL GREEN，红态 0/7
 ## [2026-10-25] wiki | 新建 [[TUI状态栏-输入框-v0.3.0]]，[[TUI进化路线-2026Q4]] 标记常驻状态完成并拆出 v0.3.1 transcript / v0.3.2 diff，踩坑补 v0.3.0 八条，INDEX 版本行与主题目录同步
+## [2026-10-25] wiki | 自动记忆：project/TUI状态栏-输入框-v0.3.0.md（append）
+## [2026-10-25] wiki | 自动记忆：project/neo-开发踩坑-续1.md（create）
+## [2026-10-25] wiki | 自动记忆：project/TUI状态栏-输入框-v0.3.0.md（append）
+## [2026-10-25] wiki | 自动记忆：project/TUI状态栏-输入框-v0.3.0.md（append）
+## [2026-10-25] wiki | 自动记忆：project/会话随机命名-黑客帝国角色.md（create）
+## [2026-10-25] wiki | 自动记忆：project/neo-开发踩坑-续2.md（create）
+## [2026-10-25] wiki | 自动记忆：project/会话随机命名-黑客帝国角色.md（append）
+## [2026-10-25] wiki | 自动记忆：project/neo-开发踩坑-续2.md（append）

@@ -36,6 +36,8 @@ import { Composer, type ComposerStatus } from "./tui/composer.ts";
 import { TranscriptDock, type DockHost } from "./tui/dock.ts";
 import { formatTokens } from "./tui/status.ts";
 import { getBranch } from "./git.ts";
+import { chooseSessionName } from "./sessionName.ts";
+import { TitleAnimator } from "./tui/title.ts";
 import { formatToolCall } from "./ui/toolLog.ts";
 import { transcriptLines } from "./ui/transcript.ts";
 import { banner, c, rule, truncate } from "./ui/theme.ts";
@@ -80,14 +82,22 @@ import { appendLog } from "./wiki/write.ts";
 import { discoverSkills, isValidSkillName, formatSkillLine, normalizeDescription } from "./skills.ts";
 import { adoptSession, applyRestored, createSession, listSessions, loadSession, saveSession, type SessionMeta } from "./session.ts";
 import { Mailbox } from "./mailbox/store.ts";
-import { createIdentity, releaseAlive, renameSession, sessionLiveness, sweepSessions } from "./mailbox/identity.ts";
+import {
+  createIdentity,
+  readProfile,
+  releaseAlive,
+  renameSession,
+  sessionLiveness,
+  sweepSessions,
+  takenAliveNames,
+} from "./mailbox/identity.ts";
 import * as mailboxState from "./mailbox/state.ts";
 import { decideInbound, formatIncomingFrame, formatNotice, formatNoticePreview, formatPreview } from "./mailbox/inbound.ts";
 import { makeListPeersTool, makeSendMessageTool } from "./tools/mailbox.ts";
 import { mailboxRoot, type Envelope } from "./mailbox/types.ts";
 import type { ToolCtx } from "./tools/types.ts";
 
-const VERSION = "0.3.0";
+const VERSION = "0.3.1";
 
 /** /auto 列表里各实现的说明。 */
 const DESC: Record<string, string> = {
@@ -400,6 +410,7 @@ async function main(): Promise<number> {
   let restored: Message[] | null = null;
   let meta: SessionMeta | null = null;
   const resumeRoot = mailboxRoot();
+  let sessionLabel: string | null = null;
   const isRunningSession = (id: string): boolean =>
     sessionLiveness(resumeRoot, id, { deadAfterMs: cfg.mailbox.deadAfterMs }) === "running";
   if (args.resume !== null || args.continueLast) {
@@ -436,6 +447,16 @@ async function main(): Promise<number> {
     }
   }
 
+  // resume 命中时：读旧信箱 profile 的名字（真续接保证 id 一致；读不到则当无旧名）。
+  let resumePreviousName: string | null = null;
+  if (meta) {
+    try {
+      resumePreviousName = readProfile(resumeRoot, meta.id)?.name ?? null;
+    } catch {
+      resumePreviousName = null;
+    }
+  }
+
   // 分类器。默认规则版；用 --auto 可换成 off 或 llm。
   const classifier = new Classifier(cfg, (args.auto ?? "rule") as ClassifierName);
 
@@ -466,19 +487,39 @@ async function main(): Promise<number> {
   if (mailboxEnabled) {
     try {
       mailbox = new Mailbox({ sessionId: sess.meta.id, config: cfg.mailbox });
-      createIdentity({
+      const chosen = chooseSessionName({
+        explicit: args.name,
+        previous: resumePreviousName,
+        taken: takenAliveNames(mailbox.root, { deadAfterMs: cfg.mailbox.deadAfterMs }),
+      });
+      const ident = createIdentity({
         root: mailbox.root,
         sessionId: sess.meta.id,
         cwd: cfg.cwd,
         mode: args.mode,
-        name: args.name,
+        name: chosen?.name ?? null,
+        deadAfterMs: cfg.mailbox.deadAfterMs,
       });
+      sessionLabel = ident.profile.name;
+      if (chosen && ident.profile.name && chosen.name !== ident.profile.name) {
+        ui.info(`代号 ${chosen.name} 已被占用，本会话使用 ${ident.profile.name}`);
+      }
       sweepSessions(mailbox.root, { ttlMs: cfg.mailbox.sessionTtlMs });
     } catch (e) {
       // 信箱是增强项：初始化失败（双开 / 权限）只降级，不阻塞会话启动
       ui.warn(`跨会话信箱未启用：${(e as Error).message}`);
       mailbox = null;
     }
+  }
+
+  // 信箱不可用：本地仍选一个池内名，仅用于标题显示（不落盘、不参与寻址）。
+  if (mailboxEnabled && sessionLabel === null) {
+    const local = chooseSessionName({
+      explicit: args.name,
+      previous: resumePreviousName,
+      taken: new Set(),
+    });
+    sessionLabel = local?.name ?? "neo";
   }
 
   /** 最近一次入站：对端 session → 消息 id；send_message 缺省 reply_to 时自动补任务号。 */
@@ -706,6 +747,7 @@ async function main(): Promise<number> {
 
   // ---- 共享：队列 / drain / 输入源抽象（TTY composer 与 readline 共用）----
   let composer: Composer | null = null;
+  let titleAnimator: TitleAnimator | null = null;
   let externalShellActive = false;
   let promptInput: () => void = () => {};
   let closeInput: () => void = () => {};
@@ -829,6 +871,10 @@ async function main(): Promise<number> {
               queue.push({ text: formatIncomingFrame(env), attachments: [], origin: "mailbox", from: env.from.session });
             },
             () => inboundRefs.clear(),
+            (name) => {
+              sessionLabel = name;
+              titleAnimator?.setName(name);
+            },
           );
           continue;
         }
@@ -1018,7 +1064,6 @@ async function main(): Promise<number> {
         active: turnActive,
         tokensTotal: agent.cumulative.prompt + agent.cumulative.completion,
       }),
-      getTitle: () => `neo · ${basename(cfg.cwd)}`,
       commands: COMMANDS,
       files: () => fileIndex.list(),
       onSubmit: (text, attachments) => submitUserLine(text, attachments as Attachment[]),
@@ -1048,6 +1093,9 @@ async function main(): Promise<number> {
       onResize: () => dock?.resize(),
     });
     composerRef = composer;
+    titleAnimator = new TitleAnimator({});
+    titleAnimator.setName(sessionLabel ?? "neo");
+    composer.setTitleAnimator(titleAnimator);
     ui.setAsker((q: string) => composer!.ask(q));
     selectDeps = {
       isTTY: true,
@@ -1584,6 +1632,7 @@ async function handleCommand(
   mailbox: Mailbox | null,
   injectMailbox?: (env: Envelope) => void,
   onMailboxRekey?: () => void,
+  onNameChange?: (name: string) => void,
 ): Promise<void> {
   const [cmdRaw, ...rest] = line.slice(1).split(/\s+/);
   const cmd = (cmdRaw ?? "").toLowerCase();
@@ -1960,6 +2009,7 @@ async function handleCommand(
       }
       try {
         const p = renameSession(mailbox.root, mailbox.sessionId, name);
+        onNameChange?.(p.name ?? "");
         ui.success(`本会话名字 → ${p.name}`);
       } catch (e) {
         ui.warn(`改名字失败：${(e as Error).message}`);
@@ -2339,9 +2389,25 @@ async function handleCommand(
       }
       // 先接管信箱身份；失败则不改对话/持久化，避免身份与会话不一致。
       if (mailbox) {
+        const beforeName = readProfile(mailbox.root, full.meta.id)?.name ?? null;
         try {
           const p = mailbox.adopt(full.meta.id);
+          if (beforeName && p.name && beforeName !== p.name) {
+            ui.info(`目标代号 ${beforeName} 已被占用，恢复为 ${p.name}`);
+          }
           onMailboxRekey?.();
+          if (p.name) {
+            onNameChange?.(p.name);
+          } else {
+            // 目标 profile 无名字：按 A2 随机一个池内名并写回（不随机覆盖已有名字）。
+            const chosen = chooseSessionName({
+              taken: takenAliveNames(mailbox.root, { deadAfterMs: cfg.mailbox.deadAfterMs }),
+            });
+            if (chosen) {
+              const renamed = renameSession(mailbox.root, mailbox.sessionId, chosen.name);
+              onNameChange?.(renamed.name ?? "");
+            }
+          }
           ui.info(`跨会话信箱身份已切换到 ${full.meta.id}${p.name ? `（${p.name}）` : ""}`);
         } catch (e) {
           ui.warn(`无法恢复 ${full.meta.id}：${(e as Error).message}`);
@@ -2458,9 +2524,8 @@ function printSessions(ui: Console, opts: PrintSessionsOpts = {}): void {
   const running = all.filter(
     (x) => sessionLiveness(root, x.id, { deadAfterMs: opts.deadAfterMs }) === "running",
   );
-  const available = all.filter(
-    (x) => x.id !== opts.currentId && !running.some((r) => r.id === x.id),
-  );
+  const runningIds = new Set(running.map((r) => r.id));
+  const available = all.filter((x) => x.id !== opts.currentId && !runningIds.has(x.id));
   const list = available.slice(0, 15);
   ui.blank();
   if (list.length === 0) {

@@ -10,6 +10,7 @@ import {
   createIdentity,
   isAlive,
   readProfile,
+  writeProfile,
 } from "../src/mailbox/identity.ts";
 import { readState } from "../src/mailbox/state.ts";
 import { aliveDir } from "../src/mailbox/types.ts";
@@ -55,6 +56,21 @@ describe("R3 mailbox.adopt（交互 /resume）", () => {
     expect(mb.sessionId).toBe(cur);
     expect(isAlive(root, cur)).toBe(true);
     expect(readProfile(root, cur)?.name).toBe("Morpheus");
+  });
+
+  test("R3d adopt 时目标旧名与另一个 running 会话重名 → 加后缀而不是造出双 running 同名", () => {
+    const root = sandbox();
+    const a = "si-dup-a";
+    const b = "si-dup-b";
+    createIdentity({ root, sessionId: a, cwd: "/tmp/a", name: "Trinity", nowMs: Date.now() - 5000 });
+    createIdentity({ root, sessionId: b, cwd: "/tmp/b", name: "Morpheus", nowMs: Date.now() - 4000 });
+    // 把 B 改成和 A 同名（模拟 dead 名被池重新分配后，A 被 /resume adopt）
+    const pb = readProfile(root, b)!;
+    pb.name = "Trinity";
+    writeProfile(root, pb);
+    rmSync(aliveDir(root, a), { recursive: true, force: true });
+    const mb = new Mailbox({ root, sessionId: b });
+    expect(mb.adopt(a).name).toBe("Trinity-2");
   });
 
   test("R3c 同 id adopt 是 no-op", () => {
