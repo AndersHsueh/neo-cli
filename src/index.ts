@@ -97,7 +97,7 @@ import { makeListPeersTool, makeSendMessageTool } from "./tools/mailbox.ts";
 import { mailboxRoot, type Envelope } from "./mailbox/types.ts";
 import type { ToolCtx } from "./tools/types.ts";
 
-const VERSION = "0.3.3";
+const VERSION = "0.3.4";
 
 /** /auto 列表里各实现的说明。 */
 const DESC: Record<string, string> = {
