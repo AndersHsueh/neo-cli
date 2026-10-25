@@ -27,7 +27,7 @@
  * 所有请求体仅在内存中读取、不落盘；不记录日志（避免把测试数据写进仓库）。
  */
 
-type Scenario = "tool-then-answer" | "narration" | "resume" | "echo-ref" | "slow" | "slow-500" | "write-then-answer";
+type Scenario = "tool-then-answer" | "narration" | "resume" | "echo-ref" | "slow" | "slow-500" | "slow-800" | "write-then-answer";
 
 const SCENARIOS: readonly Scenario[] = [
   "tool-then-answer",
@@ -36,6 +36,7 @@ const SCENARIOS: readonly Scenario[] = [
   "echo-ref",
   "slow",
   "slow-500",
+  "slow-800",
   "write-then-answer",
 ];
 
@@ -219,6 +220,7 @@ function framesFor(scenario: Scenario, messages: WireMessage[]): string[] {
 
     case "slow":
     case "slow-500":
+    case "slow-800":
       // v0.3.0 S11：慢回答（首帧前等 1.3s，>1s 足够让状态条的 0:01 出现），让忙碌态/排队可观察。
       // v0.3.1：slow-500 给 S19 用（只需观察忙碌标题，缩短 PTY 时长）。
       return [...contentFrames("慢回答完成。"), ...finishFrames("stop")];
@@ -252,6 +254,7 @@ function sseResponse(frames: string[]): Response {
       try {
         if (SCENARIO === "slow") await Bun.sleep(1300);
         if (SCENARIO === "slow-500") await Bun.sleep(500);
+        if (SCENARIO === "slow-800") await Bun.sleep(800);
         // 每帧之间让出事件循环：既模拟真实流式，也让 PTY 侧能观察到中间态。
         for (const f of frames) {
           controller.enqueue(encoder.encode(f));

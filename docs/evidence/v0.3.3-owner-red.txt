@@ -1,0 +1,5 @@
+== v0.3.2 (a6ddfbc) 红态：owner 新鲜保护未生效，P2 接管并写走 profile ==
+{"p2":"took-over","name":"Neo","cwd":"/intruder"}
+
+== v0.3.3 (当前工作树) 绿态：P2 被拒绝，P1 的 profile 保持 ==
+{"p2":"blocked","name":"Trinity","cwd":"/orig"}

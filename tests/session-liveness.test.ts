@@ -4,7 +4,7 @@
  * pid 死 / 心跳 >120s → dead，可立刻恢复并清残留锁。
  */
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -15,7 +15,7 @@ import {
   sessionLiveness,
   writeProfile,
 } from "../src/mailbox/identity.ts";
-import { aliveOwnerPath, profilePath, statePath } from "../src/mailbox/types.ts";
+import { aliveDir, aliveOwnerPath, profilePath, statePath } from "../src/mailbox/types.ts";
 
 const roots: string[] = [];
 function sandbox(): string {
@@ -26,6 +26,10 @@ function sandbox(): string {
 function ageFiles(paths: string[], msAgo: number): void {
   const t = new Date(Date.now() - msAgo);
   for (const p of paths) utimesSync(p, t, t);
+}
+function ageOwner(root: string, id: string, msAgo: number): void {
+  const p = JSON.parse(readFileSync(aliveOwnerPath(root, id), "utf8")) as { pid: number; at: number };
+  writeFileSync(aliveOwnerPath(root, id), JSON.stringify({ pid: p.pid, at: Date.now() - msAgo }), "utf8");
 }
 const pidAliveYes = (): boolean => true;
 const pidAliveNo = (): boolean => false;
@@ -75,8 +79,9 @@ describe("R2 会话活/死判定", () => {
     acquireAlive(root, id, { takeover: true, pidAlive: pidAliveNo });
     expect(isAlive(root, id)).toBe(true);
 
-    // pid 活但心跳超时 → 回收
+    // pid 活但心跳/owner 都超时 → 回收（卡死/休眠）
     ageFiles([profilePath(root, id), statePath(root, id)], 200_000);
+    ageOwner(root, id, 200_000);
     acquireAlive(root, id, { takeover: true, pidAlive: pidAliveYes });
     expect(isAlive(root, id)).toBe(true);
   });
@@ -112,6 +117,34 @@ describe("R2 会话活/死判定", () => {
     expect(p.cwd).toBe("/orig");
     expect(p.mode).toBe("ask");
     expect(p.pid).toBe(process.pid);
+    expect(isAlive(root, id)).toBe(true);
+    const owner = JSON.parse(readFileSync(aliveOwnerPath(root, id), "utf8")) as { pid: number };
+    expect(owner.pid).toBe(process.pid); // 失败方没有抢走 owner
+  });
+
+  test("R2i 启动窗口：owner 新鲜 + 旧 state 心跳 → 第二个 createIdentity 不得接管（v0.3.3 critical）", () => {
+    const root = sandbox();
+    const id = "si-start-window";
+    createIdentity({ root, sessionId: id, cwd: "/orig", name: "Trinity" });
+    // 模拟崩溃残留的旧 state/profile + P1 刚 acquire（owner 新鲜、pid 活）
+    ageFiles([profilePath(root, id), statePath(root, id)], 3_600_000);
+    rmSync(aliveDir(root, id), { recursive: true, force: true });
+    acquireAlive(root, id, { nowMs: Date.now(), pidAlive: pidAliveYes });
+    expect(() =>
+      createIdentity({ root, sessionId: id, cwd: "/intruder", name: "Neo" }),
+    ).toThrow();
+    const p = readProfile(root, id)!;
+    expect(p.name).toBe("Trinity");
+    expect(p.cwd).toBe("/orig");
+  });
+
+  test("R2j 无 owner/无 profile 但 state 心跳新鲜 → 保守拒绝双开", () => {
+    const root = sandbox();
+    const id = "si-no-owner";
+    createIdentity({ root, sessionId: id, cwd: "/tmp", name: "Trinity" });
+    rmSync(profilePath(root, id), { force: true });
+    rmSync(aliveOwnerPath(root, id), { force: true });
+    expect(() => createIdentity({ root, sessionId: id, cwd: "/intruder", name: "Neo" })).toThrow();
   });
 
   test("R2f createIdentity 同 id 续接：name 保留；显式 name 覆盖", () => {

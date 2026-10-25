@@ -222,8 +222,13 @@ export function acquireAlive(root: string, sessionId: string, opts: AcquireAlive
   //  - 刚抢到锁、profile/state 还没写出来（owner 新鲜 + 心跳缺失）。
   // pid 死 → 崩溃残留立刻回收；pid 活但心跳超时（卡死/休眠）也回收（用户裁决）。
   const hbFresh = Number.isFinite(age) && age <= deadAfterMs;
-  const startingFresh = !Number.isFinite(age) && Number.isFinite(ownerAge) && ownerAge <= deadAfterMs;
-  const running = pid !== undefined && pidAlive(pid) && (hbFresh || startingFresh);
+  const ownerFresh = Number.isFinite(ownerAge) && ownerAge <= deadAfterMs;
+  // 持有者仍running：
+  //  - 心跳新鲜；或 owner 新鲜（刚抢到锁、state/profile 还是崩溃前的旧文件，P1 启动窗口）→ 拒绝双开；
+  //  - 无 owner 且无 profile 但 state 心跳新鲜 → 保守拒绝（不能确定 pid 时宁可等）；
+  //  - pid 死 → 崩溃残留立刻回收；pid 活但心跳超时且 owner 也旧 → 卡死/休眠，按用户裁决回收。
+  const running =
+    pid !== undefined ? pidAlive(pid) && (hbFresh || ownerFresh) : hbFresh;
   if (running) {
     throw new MailboxError(
       "session_alive",

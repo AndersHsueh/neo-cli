@@ -13,6 +13,7 @@ import * as identity from "../src/mailbox/identity.ts";
 import * as st from "../src/mailbox/state.ts";
 import {
   DEFAULT_MAILBOX_CONFIG,
+  aliveOwnerPath,
   delegationsPath,
   statePath,
   type Delegation,
@@ -400,6 +401,8 @@ describe("F 身份与清理", () => {
 
     const old = new Date(nowMs - 200_000);
     utimesSync(statePath(root, SELF), old, old);
+    // 模拟 v0.3.1 老锁（无 owner.json）：回退到 profile pid + 心跳判活
+    rmSync(aliveOwnerPath(root, SELF), { force: true });
     identity.createIdentity({ root, sessionId: SELF, cwd: "/tmp/proj", nowMs });
     expect(identity.isAlive(root, SELF)).toBe(true);
   });

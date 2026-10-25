@@ -41,7 +41,6 @@ import type { Subprocess } from "bun";
 
 // 纯函数、无副作用：与 neo 渲染层使用同一套「显示列」规则（CJK/全角算 2 列）。
 import { displayWidth } from "../src/ui/theme.ts";
-import { NEO_ROLE_POOL } from "../src/sessionName.ts";
 
 /** 本脚本统一用 stdin/stderr/stdout 全 pipe 的进程形态。 */
 type Proc = Subprocess<"pipe" | "ignore", "pipe", "pipe">;
@@ -422,6 +421,7 @@ async function startFake(
     | "echo-ref"
     | "slow"
     | "slow-500"
+    | "slow-800"
     | "write-then-answer",
 ): Promise<FakeServer> {
   const proc = Bun.spawn([BUN, "run", FAKE_LLM], {
@@ -1938,9 +1938,13 @@ async function scenarioS18(tmpRoot: string): Promise<void> {
 
     const e = await startNeo({ fake, dirs, name: "s18-e", autoName: false, args: [...BASE_ARGS, "--resume", cId!], cols: DEFAULT_COLS, rows: DEFAULT_ROWS });
     d.push(e);
+    await waitFor(() => e.screen.text().includes("另一个进程"), {
+      label: "--resume 运行中会话报错",
+      run: e,
+      timeoutMs: 10_000,
+    });
     const code = await e.waitExit(10_000);
     check(code === 2, `--resume 运行中会话退出码应为 2（实际 ${code}）`, e.screen);
-    check(e.screen.text().includes("另一个进程"), "--resume 运行中会话缺少明确报错", e.screen);
   } finally {
     for (const r of d) await r.close();
     await c.close();
@@ -1951,13 +1955,15 @@ async function scenarioS18(tmpRoot: string): Promise<void> {
 /** S19：随机代号 + Agent 标题 + /rename neo 初始 Mr.Anderson + busy 后缀。 */
 async function scenarioS19(tmpRoot: string): Promise<void> {
   const dirs = await makeDirs(tmpRoot, "s19-agent-title");
-  const fake = await startFake("slow-500");
+  const fake = await startFake("slow-800");
   const run = await startNeo({
     fake,
     dirs,
     name: "s19",
     autoName: false,
-    args: BASE_ARGS,
+    // 先用确定名字起会话，避免随机名恰好是 neo 时 10–20s 动画造成假红；
+    // 随机代号由 session-name 单测覆盖。
+    args: [...BASE_ARGS, "--name", "Trinity"],
     cols: DEFAULT_COLS,
     rows: DEFAULT_ROWS,
   });
@@ -1966,8 +1972,7 @@ async function scenarioS19(tmpRoot: string): Promise<void> {
     const title0 = titleLineOf(run.screen);
     check(title0 !== null, "新会话顶线没有 Agent 标题", run.screen);
     const name0 = titleNameOf(run.screen) ?? "";
-    const allowed = new Set<string>([...NEO_ROLE_POOL, "Mr.Anderson", "N E O"]);
-    check(allowed.has(name0), `顶线名字不在角色池：${JSON.stringify(name0)}（${title0}）`, run.screen);
+    check(name0 === "Trinity", `顶线名字应为显式 Trinity：${JSON.stringify(name0)}（${title0}）`, run.screen);
 
     // /rename neo：初态必须是 Mr.Anderson（动画切到 N E O 由单测 fake timer 覆盖）
     await run.type("/rename neo");

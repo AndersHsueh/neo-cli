@@ -97,7 +97,7 @@ import { makeListPeersTool, makeSendMessageTool } from "./tools/mailbox.ts";
 import { mailboxRoot, type Envelope } from "./mailbox/types.ts";
 import type { ToolCtx } from "./tools/types.ts";
 
-const VERSION = "0.3.2";
+const VERSION = "0.3.3";
 
 /** /auto 列表里各实现的说明。 */
 const DESC: Record<string, string> = {
@@ -190,9 +190,16 @@ function parseArgs(argv: string[]): Args {
       case "--plan":
         a.mode = "plan";
         break;
-      case "--resume":
-        a.resume = argv[++i] ?? "last";
+      case "--resume": {
+        const next = argv[i + 1];
+        if (next !== undefined && !next.startsWith("-") && next.trim() !== "") {
+          a.resume = next;
+          i += 1;
+        } else {
+          a.resume = "last"; // --resume 后面直接跟 flag/结束 → 取最近可恢复
+        }
         break;
+      }
       case "--name":
         a.name = argv[++i] ?? "";
         break;
@@ -510,7 +517,16 @@ async function main(): Promise<number> {
       }
       sweepSessions(mailbox.root, { ttlMs: cfg.mailbox.sessionTtlMs });
     } catch (e) {
-      // 信箱是增强项：初始化失败（双开 / 权限）只降级，不阻塞会话启动
+      // resume 命中时失败 = 不能安全接手该会话（通常另一个进程刚抢到锁）：
+      // sess 已 adopt 原 session-id，继续跑会双写同一会话文件，必须致命退出。
+      if (meta) {
+        console.error(
+          c.err(`✖ 无法恢复会话 ${sess.meta.id}：${(e as Error).message}`) +
+            c.dim("\n  另一个进程可能正在恢复/运行该会话；请稍后重试或先退出那个进程。"),
+        );
+        return 2;
+      }
+      // 新建会话：信箱是增强项，初始化失败只降级，不阻塞启动
       ui.warn(`跨会话信箱未启用：${(e as Error).message}`);
       mailbox = null;
     }

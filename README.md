@@ -189,7 +189,7 @@ deepseek-flash · balanced · ask · ⎇ main · ctx ▓▓░░░ 42% · 0:42
   代号为 `neo` 时，标题每 10–20 秒在 `Mr.Anderson`（dim）与 `N E O`（Matrix 绿）之间切换，
   切换前 3 帧 ×80ms 字符雨；`neo` 本身仍是普通可寻址名字。
 - `--resume`（v0.3.1 起）真续接同一 session-id/文件/信箱身份；运行中的会话不列出、不允许恢复。
-- v0.3.2 hotfix：并发 `--resume` 抢锁失败不再覆盖存活会话 profile（`.alive/owner.json` + 先抢锁后写 profile）。
+- v0.3.2/0.3.3 hotfix：并发 `--resume` 抢锁失败不再覆盖存活会话 profile（`.alive/owner.json` + 先抢锁后写 profile）；resume 身份失败直接 exit 2；owner 新鲜保护启动窗口。
 - `Ctrl+O` transcript 视图与轮次 diff 留 v0.3.2 / v0.3.3。
 
 > M0 探针（raw mode / 按键 / live 帧 / 交错 / 终端恢复）见
