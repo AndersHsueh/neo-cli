@@ -1465,6 +1465,18 @@ function titleLineOf(screen: Screen): string | null {
   return null;
 }
 
+/** 顶线标题里的显示名（Agent: <name>）。 */
+function titleNameOf(screen: Screen): string | null {
+  const line = titleLineOf(screen);
+  if (!line) return null;
+  return line
+    .replace(/^─+/, "")
+    .replace(/─+$/, "")
+    .trim()
+    .replace(/^Agent:\s*/, "")
+    .trim();
+}
+
 /** 在 work 目录造一个真 git 仓库（main 分支），用于状态条分支字段断言。 */
 function initGitRepo(cwd: string): void {
   const run = (args: string[]): void => {
@@ -1953,8 +1965,7 @@ async function scenarioS19(tmpRoot: string): Promise<void> {
     await waitPrompt(run);
     const title0 = titleLineOf(run.screen);
     check(title0 !== null, "新会话顶线没有 Agent 标题", run.screen);
-    const clean0 = title0!.replace(/^─+/, "").replace(/─+$/, "").trim();
-    const name0 = clean0.replace(/^Agent:\s*/, "").trim();
+    const name0 = titleNameOf(run.screen) ?? "";
     const allowed = new Set<string>([...NEO_ROLE_POOL, "Mr.Anderson", "N E O"]);
     check(allowed.has(name0), `顶线名字不在角色池：${JSON.stringify(name0)}（${title0}）`, run.screen);
 
@@ -1985,8 +1996,8 @@ async function scenarioS19(tmpRoot: string): Promise<void> {
 
     // 再改名离开 neo：动画停止，标题回落普通 dim 名字
     await run.type("/rename Trinity");
-    await waitFor(() => titleLineOf(run.screen)?.includes("Agent: Trinity") ?? false, {
-      label: "改名 Trinity 后标题同步",
+    await waitFor(() => titleNameOf(run.screen) === "Trinity", {
+      label: "改名 Trinity 后标题精确同步（不是 Trinity-2）",
       run,
       timeoutMs: 8000,
     });

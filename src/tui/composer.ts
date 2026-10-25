@@ -493,7 +493,12 @@ export class Composer {
     if (total > viewH) {
       const range = `${scroll + 1}-${Math.min(scroll + viewH, total)}/${total} 行`;
       if (typeof ruleTitle === "string") ruleTitle = ruleTitle ? `${ruleTitle} · ${range}` : range;
-      else if (ruleTitle) ruleTitle = { ...ruleTitle, text: `${ruleTitle.text} · ${range}` };
+      else if (ruleTitle) {
+        ruleTitle = {
+          ...ruleTitle,
+          suffix: ruleTitle.suffix ? `${ruleTitle.suffix} · ${range}` : range,
+        };
+      }
       else ruleTitle = range;
     }
     const rule = this.topRule(width, ruleTitle, kind !== "ask" && this.busy);
@@ -549,7 +554,8 @@ export class Composer {
       return this.ruleWithPlainLabel(width, full);
     }
     const prefix = `${label.prefix}: `;
-    const suffix = busy ? " · 运行中" : "";
+    const suffixText = [label.suffix, busy ? "运行中" : null].filter(Boolean).join(" · ");
+    const suffix = suffixText ? ` · ${suffixText}` : "";
     const budget = Math.max(4, width - 8);
     let name = label.text;
     if (displayWidth(`${prefix}${name}${suffix}`) > budget) {

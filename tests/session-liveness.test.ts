@@ -4,7 +4,7 @@
  * pid 死 / 心跳 >120s → dead，可立刻恢复并清残留锁。
  */
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync, utimesSync } from "node:fs";
+import { mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -15,7 +15,7 @@ import {
   sessionLiveness,
   writeProfile,
 } from "../src/mailbox/identity.ts";
-import { profilePath, statePath } from "../src/mailbox/types.ts";
+import { aliveOwnerPath, profilePath, statePath } from "../src/mailbox/types.ts";
 
 const roots: string[] = [];
 function sandbox(): string {
@@ -89,6 +89,7 @@ describe("R2 会话活/死判定", () => {
     const p = readProfile(root, id)!;
     p.pid = 999999;
     writeProfile(root, p);
+    writeFileSync(aliveOwnerPath(root, id), JSON.stringify({ pid: 999999, at: Date.now() }));
 
     createIdentity({ root, sessionId: id, cwd: "/tmp", name: "Trinity", nowMs: Date.now() + 1000 });
     expect(readProfile(root, id)?.name).toBe("Trinity");
@@ -97,6 +98,20 @@ describe("R2 会话活/死判定", () => {
     rmSync(join(root, id, ".alive"), { recursive: true, force: true });
     createIdentity({ root, sessionId: id, cwd: "/tmp", nowMs: Date.now() + 2000 });
     expect(readProfile(root, id)?.name).toBe("Trinity");
+  });
+
+  test("R2h createIdentity 抢锁失败不覆盖存活会话的 profile（v0.3.2 critical）", () => {
+    const root = sandbox();
+    const id = "si-live-profile";
+    createIdentity({ root, sessionId: id, cwd: "/orig", mode: "ask", name: "Trinity" });
+    expect(() =>
+      createIdentity({ root, sessionId: id, cwd: "/intruder", mode: "auto-edit", name: "Neo" }),
+    ).toThrow();
+    const p = readProfile(root, id)!;
+    expect(p.name).toBe("Trinity");
+    expect(p.cwd).toBe("/orig");
+    expect(p.mode).toBe("ask");
+    expect(p.pid).toBe(process.pid);
   });
 
   test("R2f createIdentity 同 id 续接：name 保留；显式 name 覆盖", () => {

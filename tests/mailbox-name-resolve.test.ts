@@ -55,6 +55,15 @@ describe("N2 同名 dead/alive 寻址", () => {
     expect(() => mb.resolvePeer("Seraph")).toThrow();
   });
 
+  test("N2e 名字优先于 session-id 片段：短名不会被 base36 id 抢走", () => {
+    const root = sandbox();
+    // id 里含 "neo"，但它的名字不是 neo；另一个会话精确叫 neo
+    createIdentity({ root, sessionId: "si-neo-frag", cwd: "/tmp/f", name: "Trinity" });
+    createIdentity({ root, sessionId: "si-name-neo", cwd: "/tmp/n", name: "neo" });
+    const mb = new Mailbox({ root, sessionId: "self" });
+    expect(mb.resolvePeer("neo").session).toBe("si-name-neo");
+  });
+
   test("N2d requireAlive 与同名优先共用 running 口径：pid 死残留不算活", () => {
     const root = sandbox();
     createIdentity({ root, sessionId: "stale-1", cwd: "/tmp", name: "Ghost" });

@@ -97,7 +97,7 @@ import { makeListPeersTool, makeSendMessageTool } from "./tools/mailbox.ts";
 import { mailboxRoot, type Envelope } from "./mailbox/types.ts";
 import type { ToolCtx } from "./tools/types.ts";
 
-const VERSION = "0.3.1";
+const VERSION = "0.3.2";
 
 /** /auto 列表里各实现的说明。 */
 const DESC: Record<string, string> = {
@@ -194,7 +194,7 @@ function parseArgs(argv: string[]): Args {
         a.resume = argv[++i] ?? "last";
         break;
       case "--name":
-        a.name = argv[++i] ?? null;
+        a.name = argv[++i] ?? "";
         break;
       case "-c":
       case "--continue":
@@ -291,6 +291,10 @@ ${c.bold("环境变量")}
 
 async function main(): Promise<number> {
   const args = parseArgs(process.argv.slice(2));
+  if (args.name !== null && (args.name.trim() === "" || args.name.startsWith("-"))) {
+    console.error(c.err("✖ --name 需要一个名字（不能为空或以 - 开头）"));
+    return 2;
+  }
 
   // 参数合法性先于 --help/--version 校验。
   // 否则 `--auto bogus --version` 会打印版本后返回 0，
@@ -2008,7 +2012,9 @@ async function handleCommand(
         break;
       }
       try {
-        const p = renameSession(mailbox.root, mailbox.sessionId, name);
+        const p = renameSession(mailbox.root, mailbox.sessionId, name, {
+          deadAfterMs: cfg.mailbox.deadAfterMs,
+        });
         onNameChange?.(p.name ?? "");
         ui.success(`本会话名字 → ${p.name}`);
       } catch (e) {
@@ -2404,7 +2410,9 @@ async function handleCommand(
               taken: takenAliveNames(mailbox.root, { deadAfterMs: cfg.mailbox.deadAfterMs }),
             });
             if (chosen) {
-              const renamed = renameSession(mailbox.root, mailbox.sessionId, chosen.name);
+              const renamed = renameSession(mailbox.root, mailbox.sessionId, chosen.name, {
+                deadAfterMs: cfg.mailbox.deadAfterMs,
+              });
               onNameChange?.(renamed.name ?? "");
             }
           }
@@ -2524,12 +2532,13 @@ function printSessions(ui: Console, opts: PrintSessionsOpts = {}): void {
   const running = all.filter(
     (x) => sessionLiveness(root, x.id, { deadAfterMs: opts.deadAfterMs }) === "running",
   );
-  const runningIds = new Set(running.map((r) => r.id));
+  const runningOther = running.filter((r) => r.id !== opts.currentId);
+  const runningIds = new Set(runningOther.map((r) => r.id));
   const available = all.filter((x) => x.id !== opts.currentId && !runningIds.has(x.id));
   const list = available.slice(0, 15);
   ui.blank();
   if (list.length === 0) {
-    if (running.length > 0) ui.info("没有可恢复的会话（运行中的会话不列出）。");
+    if (runningOther.length > 0) ui.info("没有可恢复的会话（运行中的会话不列出）。");
     else ui.info("还没有历史会话。");
   } else {
     ui.kv("历史会话", String(list.length));
@@ -2541,8 +2550,8 @@ function printSessions(ui: Console, opts: PrintSessionsOpts = {}): void {
     }
     ui.line(c.dim("  用 /resume <id> 或 neo --resume <id> 恢复"));
   }
-  if (running.length > 0) {
-    ui.line(c.dim(`  另有 ${running.length} 个运行中会话未列出（/peers 查看）`));
+  if (runningOther.length > 0) {
+    ui.line(c.dim(`  另有 ${runningOther.length} 个运行中会话未列出（/peers 查看）`));
   }
   ui.blank();
 }

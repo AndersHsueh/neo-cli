@@ -151,6 +151,9 @@ export class Mailbox {
       mode: curProfile?.mode,
       name: null, // null = 保留目标旧名字（createIdentity 的 old?.name 路径）
       nowMs: this.now(),
+      deadAfterMs: this.cfg.deadAfterMs,
+      // 当前身份马上退役；把它排除在查重外，避免目标旧名撞上「即将清空」的当前名 → 白白 -2。
+      excludeSessions: [cur],
     });
     // 当前身份退役：释放锁 + 清名（profile/state 都清，避免 observePeer 走 state.name）
     identity.releaseAlive(this.root, cur);
@@ -412,14 +415,7 @@ export class Mailbox {
 
     const exact = profiles.find((p) => p.session === wanted);
     if (exact) return this.finishPeer(exact, opts);
-    const fragment = profiles.filter((p) => p.session.includes(wanted));
-    if (fragment.length > 1) {
-      throw new MailboxError("ambiguous_target", `target "${wanted}" 匹配到多个 session`, {
-        candidates: fragment.map((p) => describePeer(p)),
-      });
-    }
-    const frag = fragment[0];
-    if (frag) return this.finishPeer(frag, opts);
+    // v0.3.2：名字优先于 session-id 片段（否则 neo/Trinity 这类短名可能被 base36 id 抢走）。
     const byName = profiles.filter((p) => p.name === wanted);
     if (byName.length > 1) {
       // v0.3.1：dead 会话（未到 TTL）的名字不得遮蔽活会话。
@@ -438,6 +434,14 @@ export class Mailbox {
     }
     const named = byName[0];
     if (named) return this.finishPeer(named, opts);
+    const fragment = profiles.filter((p) => p.session.includes(wanted));
+    if (fragment.length > 1) {
+      throw new MailboxError("ambiguous_target", `target "${wanted}" 匹配到多个 session`, {
+        candidates: fragment.map((p) => describePeer(p)),
+      });
+    }
+    const frag = fragment[0];
+    if (frag) return this.finishPeer(frag, opts);
     throw new MailboxError("invalid_target", `找不到目标会话 "${wanted}"`);
   }
 

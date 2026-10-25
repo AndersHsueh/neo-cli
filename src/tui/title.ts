@@ -18,6 +18,8 @@ export interface TitleView {
   text: string;
   /** true 时用 Matrix 绿渲染。 */
   matrix: boolean;
+  /** 与名字分段着色的附加信息（如输入滚动范围），恒 dim。 */
+  suffix?: string;
 }
 
 export type TitleTimer = ReturnType<typeof setTimeout>;
@@ -183,7 +185,8 @@ export class TitleAnimator {
     const count = this.flashFrames;
     const frames: string[] = [];
     for (let i = 0; i < count; i += 1) {
-      const locked = i === count - 1 ? n : Math.floor(((i + 1) * n) / count);
+      // 每一帧都至少留一个未收敛位，避免第 3 帧提前等于目标（实际只有 2 帧雨）。
+      const locked = Math.floor(((i + 1) * n) / (count + 1));
       let s = "";
       for (let j = 0; j < n; j += 1) {
         const ch = chars[j] as string;

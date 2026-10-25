@@ -88,27 +88,45 @@ describe("T2 Neo 动画", () => {
     expect(displayWidth(anim.getView().text)).toBe(11);
     fire();
     fire();
+    fire(); // 第 4 帧雨结束 → 终态 Mr.Anderson
     expect(anim.getView()).toEqual({ prefix: "Agent", text: "Mr.Anderson", matrix: false });
     anim.stop();
   });
 
-  test("T2b 每帧字符雨显示宽度 == 目标宽度（防顶线抖动）", () => {
+  test("T2b 三帧雨每帧 != 目标、显示宽度 == 目标（防顶线抖动）", () => {
     const { anim, fire } = harness();
-    const widths: number[] = [];
+    const views: string[] = [];
     anim.setName("neo");
-    anim.start(() => widths.push(displayWidth(anim.getView().text)));
-    // 起始 Mr.Anderson + 三帧后 N E O：收集中间每帧宽度
-    fire();
-    fire();
-    fire();
-    expect(widths.slice(-4).every((w) => w === 5 || w === 11)).toBe(true);
-    expect(widths.at(-1)).toBe(5);
+    anim.start(() => views.push(anim.getView().text));
+    fire(); // 切换 → 帧 1
+    fire(); // 帧 2
+    fire(); // 帧 3
+    const rain = views.slice(-3);
+    expect(rain.length).toBe(3);
+    for (const t of rain) {
+      expect(displayWidth(t)).toBe(5);
+      expect(t).not.toBe("N E O"); // 三帧都必须是未收敛的雨
+    }
+    fire(); // 终态
+    expect(anim.getView().text).toBe("N E O");
     anim.stop();
   });
 
+  test("T2e flash 中途 stop / setName：立即停表，不再有回调", () => {
+    const { anim, timers, fire } = harness();
+    anim.setName("neo");
+    anim.start(() => {});
+    fire(); // 进入 flash
+    anim.stop();
+    expect(anim.isStarted()).toBe(false);
+    expect(timers.filter((t) => !t.cleared).length).toBe(0);
+    anim.setName("Trinity");
+    expect(anim.getView()).toEqual({ prefix: "Agent", text: "Trinity", matrix: false });
+  });
+
   test("T2c 切换间隔每次重新随机（两次间隔不同）", () => {
-    // 第 1 次间隔 0 → 10s；随后 3 次字符雨随机字符消耗 0.5；第 2 次间隔 0.999 → 19990ms
-    let vals = [0, 0.5, 0.5, 0.5, 0.999];
+    // 第 1 次间隔 0 → 10s；随后 5 次字符雨随机字符消耗 0.5；第 2 次间隔 0.999 → 19990ms
+    let vals = [0, 0.5, 0.5, 0.5, 0.5, 0.5, 0.999];
     const { anim, pending, fire } = harness({ rng: () => vals.shift() ?? 0.5 });
     anim.setName("neo");
     anim.start(() => {});

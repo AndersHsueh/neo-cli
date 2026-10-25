@@ -1,0 +1,5 @@
+== v0.3.1 (f28acf9) 红态：并发抢锁失败后 profile 被覆盖 ==
+{"name":"Neo","cwd":"/intruder","mode":"auto-edit"}
+
+== v0.3.2 (当前工作树) 绿态：profile 保持原值 ==
+{"name":"Trinity","cwd":"/orig","mode":"ask"}

@@ -340,6 +340,11 @@ export function aliveDir(root: string, sessionId: string): string {
   return join(sessionDir(root, sessionId), ".alive");
 }
 
+/** `.alive` 锁的 owner 元数据（pid/时间）；用于并发抢锁时识别「刚启动还没写 profile」的持有者。 */
+export function aliveOwnerPath(root: string, sessionId: string): string {
+  return join(aliveDir(root, sessionId), "owner.json");
+}
+
 export function messagePath(root: string, sessionId: string, messageId: string): string {
   return join(inboxDir(root, sessionId), `${messageId}.json`);
 }

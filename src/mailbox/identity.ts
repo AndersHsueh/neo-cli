@@ -13,10 +13,12 @@
 import {
   existsSync,
   mkdirSync,
+  readFileSync,
   readdirSync,
   renameSync,
   rmSync,
   statSync,
+  writeFileSync,
   type Dirent,
 } from "node:fs";
 
@@ -26,6 +28,7 @@ import {
   PROGRESS_TIMEOUT_MS,
   SESSION_TTL_MS,
   aliveDir,
+  aliveOwnerPath,
   heldDir,
   inboxDir,
   profilePath,
@@ -148,6 +151,29 @@ export function sessionLiveness(root: string, sessionId: string, opts: LivenessO
   return pidAlive && age <= deadAfterMs ? "running" : "dead";
 }
 
+interface AliveOwner {
+  pid: number;
+  at: number;
+}
+
+function readAliveOwner(root: string, sessionId: string): AliveOwner | null {
+  try {
+    const raw = JSON.parse(readFileSync(aliveOwnerPath(root, sessionId), "utf8")) as Partial<AliveOwner>;
+    if (typeof raw.pid === "number" && typeof raw.at === "number") return { pid: raw.pid, at: raw.at };
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+function writeAliveOwner(root: string, sessionId: string, nowMs: number): void {
+  try {
+    writeFileSync(aliveOwnerPath(root, sessionId), JSON.stringify({ pid: process.pid, at: nowMs }), "utf8");
+  } catch {
+    // owner 只是并发提示；写失败退回 profile/心跳判定
+  }
+}
+
 export interface AcquireAliveOpts {
   /** 心跳超过 deadAfterMs 时是否允许回收残留锁。 */
   takeover?: boolean;
@@ -166,8 +192,10 @@ export interface AcquireAliveOpts {
 export function acquireAlive(root: string, sessionId: string, opts: AcquireAliveOpts = {}): void {
   ensureSessionLayout(root, sessionId);
   const dir = aliveDir(root, sessionId);
+  const nowMs = opts.nowMs ?? Date.now();
   const tryMkdir = (): void => {
     mkdirSync(dir); // 非递归：父目录已在，EEXIST 才代表被持锁
+    writeAliveOwner(root, sessionId, nowMs);
   };
   try {
     tryMkdir();
@@ -182,21 +210,24 @@ export function acquireAlive(root: string, sessionId: string, opts: AcquireAlive
   if (!opts.takeover) {
     throw new MailboxError("session_alive", `会话 ${sessionId} 已有活进程（.alive 存在）`);
   }
-  const nowMs = opts.nowMs ?? Date.now();
   const deadAfterMs = opts.deadAfterMs ?? DEAD_AFTER_MS;
-  // pid 已不存在 = 崩溃残留：立刻回收，不必等心跳超时（用户裁决 2026-10-26）。
-  const profile = readProfile(root, sessionId);
   const pidAlive = opts.pidAlive ?? isProcessAlive;
-  if (profile && !pidAlive(profile.pid)) {
-    rmSync(dir, { recursive: true, force: true });
-    tryMkdir();
-    return;
-  }
+  const owner = readAliveOwner(root, sessionId);
+  const profile = readProfile(root, sessionId);
+  const pid = owner?.pid ?? profile?.pid;
   const age = heartbeatAgeMs(root, sessionId, nowMs);
-  if (age <= deadAfterMs) {
+  const ownerAge = owner ? Math.max(0, nowMs - owner.at) : Number.POSITIVE_INFINITY;
+  // 持有者仍running：
+  //  - 心跳新鲜；或
+  //  - 刚抢到锁、profile/state 还没写出来（owner 新鲜 + 心跳缺失）。
+  // pid 死 → 崩溃残留立刻回收；pid 活但心跳超时（卡死/休眠）也回收（用户裁决）。
+  const hbFresh = Number.isFinite(age) && age <= deadAfterMs;
+  const startingFresh = !Number.isFinite(age) && Number.isFinite(ownerAge) && ownerAge <= deadAfterMs;
+  const running = pid !== undefined && pidAlive(pid) && (hbFresh || startingFresh);
+  if (running) {
     throw new MailboxError(
       "session_alive",
-      `会话 ${sessionId} 的 .alive 残留但心跳仍新鲜（${Math.round(age / 1000)}s），拒绝双开`,
+      `会话 ${sessionId} 已有活进程（owner pid ${pid}，心跳 ${Number.isFinite(age) ? `${Math.round(age / 1000)}s` : "未建立"}），拒绝双开`,
     );
   }
   rmSync(dir, { recursive: true, force: true });
@@ -225,12 +256,14 @@ function normalizeName(name: string): string {
 /** 「运行中」会话占用的名字集合（统一口径：sessionLiveness === running）。 */
 export function runningTakenNames(
   root: string,
-  opts: { nowMs?: number; deadAfterMs?: number; excludeSession?: string } = {},
+  opts: { nowMs?: number; deadAfterMs?: number; excludeSession?: string; excludeSessions?: string[] } = {},
 ): Set<string> {
   const nowMs = opts.nowMs ?? Date.now();
+  const excluded = new Set<string>(opts.excludeSessions ?? []);
+  if (opts.excludeSession) excluded.add(opts.excludeSession);
   const out = new Set<string>();
   for (const p of listProfiles(root)) {
-    if (opts.excludeSession && p.session === opts.excludeSession) continue;
+    if (excluded.has(p.session)) continue;
     if (!p.name) continue;
     if (sessionLiveness(root, p.session, { nowMs, deadAfterMs: opts.deadAfterMs }) === "running") {
       out.add(p.name);
@@ -243,7 +276,7 @@ export function runningTakenNames(
 export function pickUniqueName(
   root: string,
   base: string,
-  opts: { nowMs?: number; deadAfterMs?: number; excludeSession?: string } = {},
+  opts: { nowMs?: number; deadAfterMs?: number; excludeSession?: string; excludeSessions?: string[] } = {},
 ): string {
   const wanted = normalizeName(base);
   const taken = runningTakenNames(root, opts);
@@ -274,6 +307,8 @@ export interface CreateIdentityOpts {
   nowMs?: number;
   takeover?: boolean;
   deadAfterMs?: number;
+  /** 额外排除的 session（adopt 时排除「即将退役的当前身份」）。 */
+  excludeSessions?: string[];
 }
 
 export interface Identity {
@@ -289,11 +324,6 @@ export function createIdentity(opts: CreateIdentityOpts): Identity {
   const nowMs = opts.nowMs ?? Date.now();
   ensureSessionLayout(opts.root, opts.sessionId);
   const old = readProfile(opts.root, opts.sessionId);
-  // 崩溃残留：先用旧 profile 判定并回收 .alive，再写新 profile 抢锁。
-  reclaimDeadLock(opts.root, opts.sessionId, {
-    nowMs,
-    deadAfterMs: opts.deadAfterMs,
-  });
   // 旧名也走一次查重：dead 名可被池重新分配后，adopt 不能造出两个 running 同名；
   // excludeSession 保证「自己」的残留锁/旧 profile 不会把自己撞成 -2（崩溃 resume critical）。
   const baseName = opts.name ?? old?.name ?? null;
@@ -302,6 +332,7 @@ export function createIdentity(opts: CreateIdentityOpts): Identity {
         nowMs,
         deadAfterMs: opts.deadAfterMs,
         excludeSession: opts.sessionId,
+        excludeSessions: opts.excludeSessions,
       })
     : null;
   const nowIso = isoNow(nowMs);
@@ -316,15 +347,18 @@ export function createIdentity(opts: CreateIdentityOpts): Identity {
     started_at: old?.started_at ?? nowIso,
     updated_at: nowIso,
   };
-  writeProfile(opts.root, profile);
-
-  // 写 profile 之后再抢锁：避免两个进程同时启动时，对方在「锁已建、profile 未写」的窗口里
-  // 把本进程误判成 dead 并抢走锁。takeover 会按 pid/心跳回收真正的残留锁。
+  // 先抢锁、成功后再写 profile：抢锁失败绝不覆盖存活会话的 profile（v0.3.2 critical）。
   acquireAlive(opts.root, opts.sessionId, {
     takeover: opts.takeover ?? true,
     deadAfterMs: opts.deadAfterMs,
     nowMs,
   });
+  try {
+    writeProfile(opts.root, profile);
+  } catch (e) {
+    releaseAlive(opts.root, opts.sessionId);
+    throw e;
+  }
 
   let state = readState(opts.root, opts.sessionId);
   if (!state) {
@@ -340,34 +374,22 @@ export function createIdentity(opts: CreateIdentityOpts): Identity {
   return { profile, state: readState(opts.root, opts.sessionId) ?? state };
 }
 
-/**
- * 在「写新 profile」之前回收自己的残留锁。
- * 必须用旧 profile 的 pid/心跳判断：否则先 writeProfile 会把 pid 改成新进程，
- * 之后 acquireAlive 只看到「pid 活 + 心跳新鲜」→ 双开误报（崩溃 resume critical）。
- * 只处理 profile 已存在且判定 dead 的情况；无 profile 的窗口留给 acquireAlive。
- */
-export function reclaimDeadLock(
+/** /rename：只改显示名，不动目录与 session-id。 */
+export function renameSession(
   root: string,
   sessionId: string,
-  opts: { nowMs?: number; deadAfterMs?: number; pidAlive?: (pid: number) => boolean } = {},
-): boolean {
-  if (!isAlive(root, sessionId)) return false;
-  const profile = readProfile(root, sessionId);
-  if (!profile) return false;
-  if (sessionLiveness(root, sessionId, opts) === "running") return false;
-  try {
-    rmSync(aliveDir(root, sessionId), { recursive: true, force: true });
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-/** /rename：只改显示名，不动目录与 session-id。 */
-export function renameSession(root: string, sessionId: string, name: string, nowMs: number = Date.now()): PeerProfile {
+  name: string,
+  opts: { nowMs?: number; deadAfterMs?: number } | number = {},
+): PeerProfile {
+  const o = typeof opts === "number" ? { nowMs: opts } : opts;
+  const nowMs = o.nowMs ?? Date.now();
   const profile = readProfile(root, sessionId);
   if (!profile) throw new MailboxError("not_found", `会话 ${sessionId} 的 profile 不存在`);
-  const unique = pickUniqueName(root, name, { nowMs, excludeSession: sessionId });
+  const unique = pickUniqueName(root, name, {
+    nowMs,
+    deadAfterMs: o.deadAfterMs,
+    excludeSession: sessionId,
+  });
   profile.name = unique;
   profile.updated_at = isoNow(nowMs);
   writeProfile(root, profile);

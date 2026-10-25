@@ -258,3 +258,6 @@ grep -E -A3 "^## \[[0-9-]+\] todo \|" wiki/log.md
 ## [2026-10-25] wiki | 自动记忆：project/neo-开发踩坑-续2.md（create）
 ## [2026-10-25] wiki | 自动记忆：project/会话随机命名-黑客帝国角色.md（append）
 ## [2026-10-25] wiki | 自动记忆：project/neo-开发踩坑-续2.md（append）
+## [2026-10-26] milestone | v0.3.2 hotfix：并发 resume 抢锁失败覆盖存活 profile（critical，acquireAlive→writeProfile + owner.json）；deadAfterMs 贯穿 adopt/rename；用例 873→876，PTY 19/19
+## [2026-10-26] wiki | v0.3.2 回填 [[会话代号与标题动画-v0.3.1]]（critical 红/绿证据）与 INDEX/版本基线
+

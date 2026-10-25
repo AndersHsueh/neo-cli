@@ -58,7 +58,7 @@ describe("R3 mailbox.adopt（交互 /resume）", () => {
     expect(readProfile(root, cur)?.name).toBe("Morpheus");
   });
 
-  test("R3d adopt 时目标旧名与另一个 running 会话重名 → 加后缀而不是造出双 running 同名", () => {
+  test("R3d adopt 时目标旧名与「即将退役的当前会话」重名 → 不加无意义后缀", () => {
     const root = sandbox();
     const a = "si-dup-a";
     const b = "si-dup-b";
@@ -70,7 +70,8 @@ describe("R3 mailbox.adopt（交互 /resume）", () => {
     writeProfile(root, pb);
     rmSync(aliveDir(root, a), { recursive: true, force: true });
     const mb = new Mailbox({ root, sessionId: b });
-    expect(mb.adopt(a).name).toBe("Trinity-2");
+    // 当前身份 B 马上退役/清名，因此 A 的旧名应保持 Trinity，而不是白撞成 Trinity-2
+    expect(mb.adopt(a).name).toBe("Trinity");
   });
 
   test("R3c 同 id adopt 是 no-op", () => {
