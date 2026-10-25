@@ -75,6 +75,20 @@ export function createSession(model: string, cwd: string): { meta: SessionMeta; 
   };
 }
 
+/**
+ * 接管已有会话文件（--resume 真续接）：沿用原 id / path / createdAt，不新建文件。
+ * cwd 保留会话原始记录（便于提示“原目录”），model 用当前配置。
+ */
+export function adoptSession(meta: SessionMeta, model: string): { meta: SessionMeta } {
+  return {
+    meta: {
+      ...meta,
+      model,
+      updatedAt: new Date().toISOString(),
+    },
+  };
+}
+
 export function listSessions(limit = 20): SessionMeta[] {
   const dir = sessionsDir();
   if (!existsSync(dir)) return [];

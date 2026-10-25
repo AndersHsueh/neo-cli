@@ -126,6 +126,48 @@ export class Mailbox {
     return profile;
   }
 
+  /**
+   * 接管一个已死会话的信箱身份（交互 /resume 用）：
+   *  - 目标运行中 → 拒绝（resume_conflict）；
+   *  - 保留目标的 name / inbox / outstanding，更新 pid/mode；
+   *  - 当前身份退役（释放 .alive、清空名字），避免同名占用/寻址歧义；
+   *  - 最后把 sessionId 切到目标。
+   */
+  adopt(newSessionId: string): PeerProfile {
+    if (newSessionId === this.sessionId) return this.profile();
+    if (identity.sessionLiveness(this.root, newSessionId, {
+      nowMs: this.now(),
+      deadAfterMs: this.cfg.deadAfterMs,
+    }) === "running") {
+      throw new MailboxError("resume_conflict", `会话 ${newSessionId} 正在另一个进程中运行，不能恢复`);
+    }
+    const cur = this.sessionId;
+    const curProfile = identity.readProfile(this.root, cur);
+    // 先接管目标（失败则当前身份原样保留）
+    identity.createIdentity({
+      root: this.root,
+      sessionId: newSessionId,
+      cwd: curProfile?.cwd ?? process.cwd(),
+      mode: curProfile?.mode,
+      name: null, // null = 保留目标旧名字（createIdentity 的 old?.name 路径）
+      nowMs: this.now(),
+    });
+    // 当前身份退役：释放锁 + 清名（profile/state 都清，避免 observePeer 走 state.name）
+    identity.releaseAlive(this.root, cur);
+    if (curProfile) {
+      curProfile.name = null;
+      curProfile.updated_at = st.isoNow(this.now());
+      identity.writeProfile(this.root, curProfile);
+    }
+    st.mutateState(this.root, cur, (s) => {
+      s.name = null;
+    }, this.now());
+    this.sessionId = newSessionId;
+    this.lastDelivered = null;
+    this.lastSent.clear();
+    return this.profile();
+  }
+
   state(): SessionState | null {
     return st.readState(this.root, this.sessionId);
   }

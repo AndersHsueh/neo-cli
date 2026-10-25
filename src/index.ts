@@ -78,13 +78,13 @@ import {
 import { resolveWikiLayout } from "./wiki/paths.ts";
 import { appendLog } from "./wiki/write.ts";
 import { discoverSkills, isValidSkillName, formatSkillLine, normalizeDescription } from "./skills.ts";
-import { applyRestored, createSession, listSessions, loadSession, saveSession, type SessionMeta } from "./session.ts";
+import { adoptSession, applyRestored, createSession, listSessions, loadSession, saveSession, type SessionMeta } from "./session.ts";
 import { Mailbox } from "./mailbox/store.ts";
-import { createIdentity, releaseAlive, renameSession, sweepSessions } from "./mailbox/identity.ts";
+import { createIdentity, releaseAlive, renameSession, sessionLiveness, sweepSessions } from "./mailbox/identity.ts";
 import * as mailboxState from "./mailbox/state.ts";
 import { decideInbound, formatIncomingFrame, formatNotice, formatNoticePreview, formatPreview } from "./mailbox/inbound.ts";
 import { makeListPeersTool, makeSendMessageTool } from "./tools/mailbox.ts";
-import type { Envelope } from "./mailbox/types.ts";
+import { mailboxRoot, type Envelope } from "./mailbox/types.ts";
 import type { ToolCtx } from "./tools/types.ts";
 
 const VERSION = "0.3.0";
@@ -390,31 +390,49 @@ async function main(): Promise<number> {
   }
 
   if (args.listSessions) {
-    printSessions(ui);
+    printSessions(ui, { root: mailboxRoot(), deadAfterMs: cfg.mailbox.deadAfterMs });
     return 0;
   }
 
-  // ---- 恢复会话 ----
+  // ---- 恢复会话（真续接：沿用原 session-id / 文件 / 信箱身份）----
+  // 活/死判定（2026-10-26 用户裁决）：running = .alive + pid 存活 + 心跳 <= deadAfterMs；
+  // pid 已死或心跳超时（事件循环卡死/休眠）→ 视为已死，允许恢复并回收残留锁。
   let restored: Message[] | null = null;
   let meta: SessionMeta | null = null;
+  const resumeRoot = mailboxRoot();
+  const isRunningSession = (id: string): boolean =>
+    sessionLiveness(resumeRoot, id, { deadAfterMs: cfg.mailbox.deadAfterMs }) === "running";
   if (args.resume !== null || args.continueLast) {
     const target = args.resume ?? "last";
     if (target === "last") {
-      const last = listSessions(1)[0];
-      if (!last) {
-        ui.warn("没有可恢复的历史会话。");
-      } else {
-        const full = loadSession(last.id);
-        restored = full?.messages ?? null;
-        meta = full?.meta ?? last;
+      // 跳过运行中的会话：取最近一个「可恢复」的，而不是先取最近再报错。
+      const available = listSessions(50).find((x) => !isRunningSession(x.id));
+      if (!available) {
+        console.error(c.err("✖ 没有可恢复的会话（运行中的会话不列出）。"));
+        return 2;
       }
+      const full = loadSession(available.id);
+      if (!full) {
+        console.error(c.err(`✖ 会话 ${available.id} 读取失败，无法恢复。`));
+        return 2;
+      }
+      restored = full.messages;
+      meta = full.meta;
     } else {
       const full = loadSession(target);
-      if (!full) ui.warn(`未找到会话 ${target}`);
-      else {
-        restored = full.messages;
-        meta = full.meta;
+      if (!full) {
+        console.error(c.err(`✖ 未找到会话 ${target}`));
+        return 2;
       }
+      if (isRunningSession(full.meta.id)) {
+        console.error(
+          c.err(`✖ 会话 ${full.meta.id} 正在另一个进程中运行，不能恢复。`) +
+            c.dim("\n  请先退出那个进程；/peers 可查看存活会话（v0.3.x 才会提供 attach）。"),
+        );
+        return 2;
+      }
+      restored = full.messages;
+      meta = full.meta;
     }
   }
 
@@ -422,7 +440,8 @@ async function main(): Promise<number> {
   const classifier = new Classifier(cfg, (args.auto ?? "rule") as ClassifierName);
 
   // 会话文件先建：记忆桥需要 sessionId 作为审计键，必须在 Agent 构造前就位。
-  const sess = createSession(cfg.model, cfg.cwd);
+  // --resume：沿用被恢复会话的 id/path（真续接），而不是新开一个 fork。
+  const sess = meta ? adoptSession(meta, cfg.model) : createSession(cfg.model, cfg.cwd);
 
   // 记忆桥（v0.2 记忆激活）：
   //  - -p / 非交互 = oneshot：只用项目级记忆（服务器脚本场景，不混入操作员个人记忆）；
@@ -611,6 +630,10 @@ async function main(): Promise<number> {
   if (restored && restored.length > 0) {
     agent.messages = applyRestored(agent.messages[0], restored);
     ui.info(`已恢复会话 ${meta?.id ?? ""}（${restored.length} 条消息）`);
+    // 用户裁决：恢复对话/名字/信箱，但不偷偷切换工作目录。
+    if (meta?.cwd && meta.cwd !== cfg.cwd) {
+      ui.info(`会话原目录 ${meta.cwd}，本次按 ${cfg.cwd} 运行`);
+    }
   }
 
   // 覆盖系统提示：注入项目记忆文件（若存在）
@@ -2260,23 +2283,26 @@ async function handleCommand(
     }
 
     case "resume": {
-      // /resume [id] —— 交互中恢复历史会话。无参时列出最近会话供选择。
-      // 恢复 = 替换对话历史 + 把持久化重定向到该会话文件：
-      // 这里的 meta 是 sess.meta 的同一引用，原地改写后 drain() 里的
-      // persist() 会把后续对话写回被恢复的会话，而不是当前会话。
+      // /resume [id] —— 交互中恢复历史会话（真续接：沿用目标 session-id/文件/信箱身份）。
+      // 运行中的会话不列出、也不允许恢复（2026-10-26 裁决）。
+      const resumeRoot = mailbox?.root ?? mailboxRoot();
+      const isRunning = (id: string): boolean =>
+        sessionLiveness(resumeRoot, id, { deadAfterMs: cfg.mailbox.deadAfterMs }) === "running";
       let targetId = arg;
       if (targetId === "last") {
-        const last = listSessions(1)[0];
-        if (!last) {
-          ui.warn("没有可恢复的历史会话。");
+        const available = listSessions(50).find((x) => x.id !== meta.id && !isRunning(x.id));
+        if (!available) {
+          ui.info("没有可恢复的会话（运行中的会话不列出）。");
           break;
         }
-        targetId = last.id;
+        targetId = available.id;
       }
       if (!targetId) {
-        const list = listSessions(8);
+        const list = listSessions(50)
+          .filter((x) => x.id !== meta.id && !isRunning(x.id))
+          .slice(0, 8);
         if (list.length === 0) {
-          ui.info("还没有历史会话。");
+          ui.info("没有可恢复的会话（运行中的会话不列出）。");
           break;
         }
         // 预览取该会话首条用户消息 —— id 是时间戳，辨识度全靠它
@@ -2307,17 +2333,25 @@ async function handleCommand(
         ui.warn("该会话没有任何消息，无法恢复。");
         break;
       }
-      agent.messages = applyRestored(agent.messages[0], full.messages);
-      Object.assign(meta, full.meta, { model: cfg.model });
-      // 身份 = 当前 session-id（PRD v1.2 裁决）：/resume 换 id 时信箱目录/锁/state 同步改键。
+      if (isRunning(full.meta.id)) {
+        ui.warn(`会话 ${full.meta.id} 正在另一个进程中运行，不能恢复（/peers 可查看存活会话）。`);
+        break;
+      }
+      // 先接管信箱身份；失败则不改对话/持久化，避免身份与会话不一致。
       if (mailbox) {
         try {
-          mailbox.rekey(meta.id);
+          const p = mailbox.adopt(full.meta.id);
           onMailboxRekey?.();
-          ui.info(`跨会话信箱身份已迁移 → ${meta.id}`);
+          ui.info(`跨会话信箱身份已切换到 ${full.meta.id}${p.name ? `（${p.name}）` : ""}`);
         } catch (e) {
-          ui.warn(`跨会话信箱身份未迁移：${(e as Error).message}（本会话继续以旧 session-id 参与协作）`);
+          ui.warn(`无法恢复 ${full.meta.id}：${(e as Error).message}`);
+          break;
         }
+      }
+      agent.messages = applyRestored(agent.messages[0], full.messages);
+      Object.assign(meta, full.meta, { model: cfg.model });
+      if (full.meta.cwd && full.meta.cwd !== cfg.cwd) {
+        ui.info(`会话原目录 ${full.meta.cwd}，本次按 ${cfg.cwd} 运行`);
       }
       ui.success(`已恢复会话 ${full.meta.id}（${full.messages.length} 条消息）`);
       // v0.2.3 D4：恢复后回放，避免「上下文都在、屏幕上什么都没有」
@@ -2347,7 +2381,11 @@ async function handleCommand(
     }
 
     case "sessions":
-      printSessions(ui);
+      printSessions(ui, {
+        root: mailbox?.root ?? mailboxRoot(),
+        deadAfterMs: cfg.mailbox.deadAfterMs,
+        currentId: meta.id,
+      });
       break;
 
     case "exit":
@@ -2408,22 +2446,39 @@ async function runShell(
   ui.blank();
 }
 
-function printSessions(ui: Console): void {
-  const list = listSessions(15);
+interface PrintSessionsOpts {
+  root?: string;
+  deadAfterMs?: number;
+  currentId?: string;
+}
+
+function printSessions(ui: Console, opts: PrintSessionsOpts = {}): void {
+  const all = listSessions(50);
+  const root = opts.root ?? mailboxRoot();
+  const running = all.filter(
+    (x) => sessionLiveness(root, x.id, { deadAfterMs: opts.deadAfterMs }) === "running",
+  );
+  const available = all.filter(
+    (x) => x.id !== opts.currentId && !running.some((r) => r.id === x.id),
+  );
+  const list = available.slice(0, 15);
   ui.blank();
   if (list.length === 0) {
-    ui.info("还没有历史会话。");
-    ui.blank();
-    return;
+    if (running.length > 0) ui.info("没有可恢复的会话（运行中的会话不列出）。");
+    else ui.info("还没有历史会话。");
+  } else {
+    ui.kv("历史会话", String(list.length));
+    for (const s of list) {
+      ui.line(
+        `  ${c.accent(s.id)} ${c.dim(s.updatedAt.slice(0, 16).replace("T", " "))} ` +
+          `${c.muted(`${s.turns} 轮`)} ${c.dim(s.model)}`,
+      );
+    }
+    ui.line(c.dim("  用 /resume <id> 或 neo --resume <id> 恢复"));
   }
-  ui.kv("历史会话", String(list.length));
-  for (const s of list) {
-    ui.line(
-      `  ${c.accent(s.id)} ${c.dim(s.updatedAt.slice(0, 16).replace("T", " "))} ` +
-        `${c.muted(`${s.turns} 轮`)} ${c.dim(s.model)}`,
-    );
+  if (running.length > 0) {
+    ui.line(c.dim(`  另有 ${running.length} 个运行中会话未列出（/peers 查看）`));
   }
-  ui.line(c.dim("  用 /resume <id> 或 neo --resume <id> 恢复"));
   ui.blank();
 }
 

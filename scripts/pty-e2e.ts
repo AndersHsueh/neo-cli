@@ -490,6 +490,8 @@ interface NeoOptions {
   rows?: number;
   /** 用于日志与临时文件命名。 */
   name: string;
+  /** 是否自动加 --name（默认 true；resume 场景传 false 以测「无 --name 时保留旧名」）。 */
+  autoName?: boolean;
   /** 启动 1.5s 后把 PTY 改窄（测 resize 下帧/输入框不串行）。 */
   resizeToCols?: number;
 }
@@ -519,7 +521,7 @@ async function startNeo(opts: NeoOptions): Promise<NeoRun> {
   // --name 用唯一值：既隔离信箱身份，也作为兜底清理时 pkill -f 的匹配串
   //（此时别处同名 neo 不会被误杀）。
   const runId = `ptye2e-${name}-${Math.random().toString(36).slice(2, 8)}`;
-  const args = ["--name", runId, ...(opts.args ?? [])];
+  const args = [...(opts.autoName === false ? [] : ["--name", runId]), ...(opts.args ?? [])];
 
   const wrapper = join(dirs.root, `run-neo-${name}.sh`);
   const fifo = join(dirs.root, `stdin-${name}.fifo`);
@@ -1838,6 +1840,90 @@ async function scenarioS17(tmpRoot: string): Promise<void> {
   }
 }
 
+/** S18：--resume 真续接（同 session-id/文件/名字）+ 活进程拒绝 + /resume 列表隐藏运行中。 */
+async function scenarioS18(tmpRoot: string): Promise<void> {
+  const dirs = await makeDirs(tmpRoot, "s18-resume");
+  const fake = await startFake("resume");
+  const countSessions = (): number =>
+    readdirSync(dirs.sessions).filter((f) => f.endsWith(".json")).length;
+  const newestId = (): string | null => {
+    const p = latestSessionFile(dirs.sessions);
+    return p ? (p.split("/").pop() ?? "").replace(/\.json$/, "") : null;
+  };
+
+  // 1) 会话 A：显式名字 Trinity，落盘会话文件 + 邮箱 profile
+  const a = await startNeo({ fake, dirs, name: "s18-a", autoName: false, args: [...BASE_ARGS, "--name", "Trinity"], cols: DEFAULT_COLS, rows: DEFAULT_ROWS });
+  let aId: string | null = null;
+  try {
+    await waitPrompt(a);
+    await a.type("会话A的问题");
+    await waitFor(() => a.screen.text().includes("会话恢复测试答案。"), { label: "A 轮完成", run: a });
+    await waitPrompt(a, "A 回到提示符");
+    aId = newestId();
+    check(aId !== null, "A 没有落盘会话文件", a.screen);
+    const profile = JSON.parse(readFileSync(join(dirs.mailbox, aId!, "profile.json"), "utf8")) as { name?: string | null };
+    check(profile.name === "Trinity", `A 的 profile 名字不是 Trinity：${JSON.stringify(profile.name)}`, a.screen);
+    await a.type("/exit");
+    await a.waitExit();
+  } finally {
+    await a.close();
+  }
+  const filesAfterA = countSessions();
+
+  // 2) --resume last：沿用同一 session-id/文件/名字
+  const b = await startNeo({ fake, dirs, name: "s18-b", autoName: false, args: [...BASE_ARGS, "--resume", "last"], cols: DEFAULT_COLS, rows: DEFAULT_ROWS });
+  try {
+    await waitPrompt(b);
+    await waitFor(() => b.screen.text().includes("已恢复会话"), { label: "B 恢复会话", run: b, timeoutMs: 10_000 });
+    check(b.screen.text().includes(aId!), `B 恢复的不是 A 的 session-id（期望 ${aId}）`, b.screen);
+    await b.type("恢复后的新问题");
+    await waitFor(() => b.screen.text().includes("会话恢复测试答案。"), { label: "B 轮完成", run: b });
+    await waitPrompt(b, "B 回到提示符");
+    await b.type("/exit");
+    await b.waitExit();
+  } finally {
+    await b.close();
+  }
+  check(countSessions() === filesAfterA, "真续接失败：--resume 产生了新的会话文件", b.screen);
+  const profileB = JSON.parse(readFileSync(join(dirs.mailbox, aId!, "profile.json"), "utf8")) as { name?: string | null };
+  check(profileB.name === "Trinity", `真续接后名字被改：${JSON.stringify(profileB.name)}`, b.screen);
+
+  // 3) 活进程：C 占住会话；D 的 /resume 列表不得出现 C；E 显式 --resume C 必须拒绝
+  const c = await startNeo({ fake, dirs, name: "s18-c", autoName: false, args: [...BASE_ARGS, "--name", "LiveTank"], cols: DEFAULT_COLS, rows: DEFAULT_ROWS });
+  let cId: string | null = null;
+  const d: Awaited<ReturnType<typeof startNeo>>[] = [];
+  try {
+    await waitPrompt(c);
+    await c.type("占住这个会话");
+    await waitFor(() => c.screen.text().includes("会话恢复测试答案。"), { label: "C 轮完成", run: c });
+    await waitPrompt(c, "C 回到提示符");
+    cId = newestId();
+    check(cId !== null && cId !== aId, "C 的 session-id 获取失败", c.screen);
+
+    const dRun = await startNeo({ fake, dirs, name: "s18-d", autoName: false, args: [...BASE_ARGS, "--name", "Helper"], cols: DEFAULT_COLS, rows: DEFAULT_ROWS });
+    d.push(dRun);
+    await waitPrompt(dRun);
+    await dRun.type("/resume");
+    await waitFor(() => dRun.screen.text().includes("恢复哪个会话？"), { label: "D 打开 /resume 列表", run: dRun, timeoutMs: 10_000 });
+    check(dRun.screen.text().includes(aId!), "D 的 /resume 列表缺少可恢复的 A", dRun.screen);
+    check(!dRun.screen.text().includes(cId!), "D 的 /resume 列表列出了运行中的 C", dRun.screen);
+    await dRun.write("\x1b"); // Esc 取消
+    await waitFor(() => dRun.screen.text().includes("已取消。"), { label: "D 取消恢复", run: dRun });
+    await dRun.type("/exit");
+    await dRun.waitExit();
+
+    const e = await startNeo({ fake, dirs, name: "s18-e", autoName: false, args: [...BASE_ARGS, "--resume", cId!], cols: DEFAULT_COLS, rows: DEFAULT_ROWS });
+    d.push(e);
+    const code = await e.waitExit(10_000);
+    check(code === 2, `--resume 运行中会话退出码应为 2（实际 ${code}）`, e.screen);
+    check(e.screen.text().includes("另一个进程"), "--resume 运行中会话缺少明确报错", e.screen);
+  } finally {
+    for (const r of d) await r.close();
+    await c.close();
+    await fake.stop();
+  }
+}
+
 /* ------------------------------------------------------------------ */
 /* 主流程                                                              */
 /* ------------------------------------------------------------------ */
@@ -1953,6 +2039,12 @@ const SCENARIOS: Scenario[] = [
     title: "S17 双 Ctrl+C：第一次提示、第二次退出",
     fn: scenarioS17,
     focus: ["再按 Ctrl+C 退出"],
+  },
+  {
+    id: "s18",
+    title: "S18 --resume 真续接 + 活进程拒绝 + 列表隐藏",
+    fn: scenarioS18,
+    focus: ["已恢复会话", "另一个进程"],
   },
 ];
 

@@ -120,11 +120,41 @@ export function heartbeatAgeMs(root: string, sessionId: string, nowMs: number = 
   return Number.POSITIVE_INFINITY;
 }
 
+export type SessionLiveness = "running" | "dead";
+
+export interface LivenessOpts {
+  nowMs?: number;
+  deadAfterMs?: number;
+  pidAlive?: (pid: number) => boolean;
+}
+
+/**
+ * 会话是否「运行中」。
+ *
+ * 规则（2026-10-26 用户裁决）：
+ *  - running = .alive 存在 且 profile.pid 存活 且 心跳年龄 <= deadAfterMs（默认 120s）；
+ *  - pid 已死 / 心跳 >120s（事件循环卡死/机器休眠）/ 无 profile → dead，可立刻恢复并清残留锁。
+ * 注意：心跳是独立 15s tick，长 turn 不会让它变旧；>120s 说明进程已经不可响应。
+ */
+export function sessionLiveness(root: string, sessionId: string, opts: LivenessOpts = {}): SessionLiveness {
+  if (!sessionExists(root, sessionId)) return "dead";
+  if (!isAlive(root, sessionId)) return "dead";
+  const profile = readProfile(root, sessionId);
+  if (!profile) return "dead";
+  const nowMs = opts.nowMs ?? Date.now();
+  const deadAfterMs = opts.deadAfterMs ?? DEAD_AFTER_MS;
+  const age = heartbeatAgeMs(root, sessionId, nowMs);
+  const pidAlive = (opts.pidAlive ?? isProcessAlive)(profile.pid);
+  return pidAlive && age <= deadAfterMs ? "running" : "dead";
+}
+
 export interface AcquireAliveOpts {
   /** 心跳超过 deadAfterMs 时是否允许回收残留锁。 */
   takeover?: boolean;
   deadAfterMs?: number;
   nowMs?: number;
+  /** 进程存活判定注入（测试用；默认 process.kill(pid,0)）。 */
+  pidAlive?: (pid: number) => boolean;
 }
 
 /**
@@ -154,6 +184,14 @@ export function acquireAlive(root: string, sessionId: string, opts: AcquireAlive
   }
   const nowMs = opts.nowMs ?? Date.now();
   const deadAfterMs = opts.deadAfterMs ?? DEAD_AFTER_MS;
+  // pid 已不存在 = 崩溃残留：立刻回收，不必等心跳超时（用户裁决 2026-10-26）。
+  const profile = readProfile(root, sessionId);
+  const pidAlive = opts.pidAlive ?? isProcessAlive;
+  if (profile && !pidAlive(profile.pid)) {
+    rmSync(dir, { recursive: true, force: true });
+    tryMkdir();
+    return;
+  }
   const age = heartbeatAgeMs(root, sessionId, nowMs);
   if (age <= deadAfterMs) {
     throw new MailboxError(
