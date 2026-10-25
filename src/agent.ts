@@ -124,6 +124,10 @@ export interface TurnStats {
   iterations: number;
   finishReason: string | null;
   aborted: boolean;
+  /** 本轮是否发生 LLM 错误（`-p --output-format json` 的退出码依据）。 */
+  hadError: boolean;
+  /** 人类可读的错误原因；无错误为 null。 */
+  errorMessage: string | null;
   /** 本轮因分类而发生的档位切换，无则 null。 */
   tierSwitch: { from: ModelTier; to: ModelTier; reason: string; degraded?: string } | null;
 }
@@ -493,6 +497,7 @@ export class Agent {
     let completionTokens = 0;
     let reasoningTokens = 0;
     let hadError = false;
+    let errorMessage: string | null = null;
     /**
      * 空正文自动重试的 user 提示；非 null 表示本轮已重试过一次（至多一次，
      * 防止「模型持续空回复」变成死循环）。成功或放弃后都从历史摘除。
@@ -765,11 +770,14 @@ export class Agent {
               iterations,
               finishReason: "aborted",
               aborted: true,
+              hadError: false,
+              errorMessage: null,
               tierSwitch,
             };
             return this.lastStats;
           }
           hadError = true;
+          errorMessage = err.message;
           this.opt.console.error(`LLM 请求失败: ${err.message}`);
           this.opt.onEvent?.({ type: "error", data: err.message });
           break;
@@ -798,6 +806,8 @@ export class Agent {
       iterations,
       finishReason,
       aborted: false,
+      hadError,
+      errorMessage,
       tierSwitch,
     };
 
@@ -806,7 +816,6 @@ export class Agent {
 
     this.opt.onEvent?.({ type: "turn_end", data: this.lastStats });
     this.emitMemoryCapture(turnStart, "turn");
-    void hadError;
     return this.lastStats;
   }
 

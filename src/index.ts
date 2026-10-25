@@ -126,6 +126,10 @@ interface Args {
   continueLast: boolean;
   help: boolean;
   version: boolean;
+  /** -p 输出格式：text（默认）| json（P0-6，供 CI/编排器消费）。 */
+  outputFormat: "text" | "json";
+  /** 参数值非法（如 --output-format bogus）：main 直接返回 2。 */
+  badArgs: boolean;
   rest: string[];
 }
 
@@ -145,6 +149,8 @@ function parseArgs(argv: string[]): Args {
     continueLast: false,
     help: false,
     version: false,
+    outputFormat: "text",
+    badArgs: false,
     rest: [],
   };
   for (let i = 0; i < argv.length; i++) {
@@ -214,6 +220,16 @@ function parseArgs(argv: string[]): Args {
       case "--no-reasoning":
         a.noReasoning = true;
         break;
+      case "--output-format": {
+        const v = (argv[++i] ?? "").trim();
+        if (v !== "text" && v !== "json") {
+          console.error(`✖ --output-format 只支持 text | json（收到 "${v}"）`);
+          a.badArgs = true;
+        } else {
+          a.outputFormat = v;
+        }
+        break;
+      }
       default:
         a.rest.push(v);
     }
@@ -235,6 +251,7 @@ ${c.bold("用法")}
 
 ${c.bold("选项")}
   -p, --print <text>    单次模式
+      --output-format <fmt>  -p 输出格式：text（默认）| json（CI 可解析，stdout 单行）
   -m, --model <id>      直接指定模型 ID（绕过档位）
   -P, --provider <name> 切换 provider
   -t, --tier <name>     模型档位：${MODEL_TIERS.join(" / ")}
@@ -301,6 +318,7 @@ ${c.bold("环境变量")}
 
 async function main(): Promise<number> {
   const args = parseArgs(process.argv.slice(2));
+  if (args.badArgs) return 2;
   if (args.name !== null && (args.name.trim() === "" || args.name.startsWith("-"))) {
     console.error(c.err("✖ --name 需要一个名字（不能为空或以 - 开头）"));
     return 2;
@@ -389,10 +407,25 @@ async function main(): Promise<number> {
     rerender: () => composerRef?.rerender(),
   };
   const dock = interactiveTTY ? new TranscriptDock(dockHost) : null;
+  /**
+   * -p --output-format json：stdout 只留一行 JSON，所有 UI/工具/流式输出改走 stderr。
+   * 这是 P0-6 的关键约束 —— 否则 stdout 不可解析，CI 无法消费。
+   */
+  const jsonMode = args.print !== null && args.outputFormat === "json";
   const ui = new Console(
     cfg.theme === "matrix",
     cfg.toolcallInfoDetails,
-    dock ? { dock } : {},
+    dock
+      ? { dock }
+      : jsonMode
+        ? {
+            stdoutIsTTY: false,
+            stdinIsTTY: false,
+            write: (s: string) => {
+              process.stderr.write(s);
+            },
+          }
+        : {},
   );
 
   // default_provider 指向未接入的协议时，必须在启动就拦下。
@@ -742,6 +775,44 @@ async function main(): Promise<number> {
     persist(agent.messages, sess.meta);
     // 单次模式：把记忆写队列在退出前冲刷掉（仅项目级；带超时，不阻塞关闭）
     await memory.flush();
+
+    // 退出码约定（P0-6）：0 成功 / 1 LLM 或 agent 失败 / 2 用法错误 / 130 用户中断
+    const exitCode = stats.aborted ? 130 : stats.hadError ? 1 : 0;
+
+    if (jsonMode) {
+      const answer = [...agent.messages]
+        .reverse()
+        .find(
+          (m) =>
+            m.role === "assistant" &&
+            !m.tool_calls &&
+            (contentText(m.content) ?? "").trim() !== "",
+        );
+      const payload = {
+        v: 1,
+        ok: exitCode === 0,
+        exit_code: exitCode,
+        answer: answer ? contentText(answer.content) : null,
+        error: stats.errorMessage,
+        finish_reason: stats.finishReason,
+        aborted: stats.aborted,
+        duration_ms: stats.durationMs,
+        usage: {
+          prompt: stats.promptTokens,
+          completion: stats.completionTokens,
+          reasoning: stats.reasoningTokens,
+        },
+        tool_calls: stats.toolCalls,
+        iterations: stats.iterations,
+        model: cfg.model,
+        provider: cfg.providerName,
+        session_id: sess.meta.id,
+        tier_switch: stats.tierSwitch,
+      };
+      process.stdout.write(`${JSON.stringify(payload)}\n`);
+      return exitCode;
+    }
+
     if (!stats.aborted) {
       ui.blank();
       if (stats.tierSwitch) {
@@ -755,7 +826,7 @@ async function main(): Promise<number> {
         ui.blank();
       }
     }
-    return stats.aborted ? 130 : 0;
+    return exitCode;
   }
 
   // 也允许 `neo 你的问题` 直接作为首轮输入（非交互）
