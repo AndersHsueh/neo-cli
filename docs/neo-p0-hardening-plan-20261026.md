@@ -211,10 +211,12 @@
 | P0-4 checkpoint/undo | ✅ 完成 | `6c10784` | 还原/删除/逆序/裁剪/坏行/越界/超大文件 8 场景；`/undo`、`/checkpoints` 已登记 |
 | P0-6 `-p` JSON + 退出码 | ✅ 完成 | `795fe31` | 真 CLI spawn：成功 0 / 失败 1 / 用法 2；stdout 单行无 ANSI；text 回归 |
 
-**最终验证**：`bash scripts/verify.sh` → `ALL GREEN`（tsc 0 错误；`bun test` **913 pass / 0 fail**，57 文件；PTY e2e **19/19**）。基线 881 → 913（+32 个用例）。
+**最终验证**：`bash scripts/verify.sh` → `ALL GREEN`（tsc 0 错误；`bun test` **925 pass / 0 fail**，57 文件；PTY e2e **19/19**）。基线 881 → 925（+44 个用例）。
+
+**独立复验**：审计子代理跑对抗探针后报告 2 个回归（压缩短历史、grep 依赖树）+ 5 个边界问题；已在 `7f15747` 修复并复跑探针（P0-1 36/36、P0-2 13/13、P0-5 23/23、P0-6 18/18）。
 
 **与计划的偏差**：
 - P0-5 未安装 ripgrep（本机原本没有），按默认方案用 git 枚举 + 内置匹配器；有 rg 时未做加速分支（避免引入未在本机验证的代码路径）。
 - P0-4 未扩大 shell 覆盖（按拍板默认值）。
 - 未改 `package.json` 版本、未 push；release note 草稿见 `docs/release-notes/v0.3.5.md`。
-- 独立审计子代理的复验报告在 `/tmp/p0-verify/report.md`（若已生成）。
+- 独立审计子代理的复验报告在 `/tmp/p0-verify/report.md`；其指出的预存在 bug「真 TTY 下 `-p` 零输出」也已顺带修复（非本次 6 项范围，单独说明）。
