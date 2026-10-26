@@ -1,17 +1,18 @@
 # neo 测试约定
 
-> **最后更新:2026-10-26**（v0.3.5 P0 可靠性加固 + 独立复验修复；v0.3.4 banner；v0.3.1 会话代号 + resume；v0.3.0 TUI）
+> **最后更新:2026-10-26**（v0.4.0 平台适配层：跨平台 shell + 环境探测/注入 + 跨平台测试修正；v0.3.5 P0 加固；v0.3.4 banner；v0.3.1 会话代号 + resume；v0.3.0 TUI）
 
 ## §1 当前基线
 
 ```bash
-bunx tsc --noEmit     # exit 0（strict + noUncheckedIndexedAccess）
-bun test              # 873 pass / 0 fail（52 个测试文件，约 6s）
+bun x tsc --noEmit    # exit 0（strict + noUncheckedIndexedAccess；不用 bunx：部分 bun 安装没有独立 bunx 入口）
+bun test              # 974 pass / 0 fail（59 个测试文件，约 13s）
 bash scripts/verify.sh # 全量闸门：上两条 + 真 PTY E2E（19 场景），输出落 docs/evidence/
 ```
 
-v0.3.5 后的基线：**925 pass / 0 fail / 57 文件**（v0.3.4 为 881/53，v0.3.0 为 839/46，v0.2.4 为 660/37，v0.2.3 为 569/32）。
-改功能前先在干净树上跑一遍，数字对位后再动手。
+v0.4.0 后的基线：**974 pass / 0 fail / 59 文件**（v0.3.5 为 925/57，v0.3.4 为 881/53，v0.3.0 为 839/46，v0.2.4 为 660/37，v0.2.3 为 569/32）。
+**macOS 与 Ubuntu 24.04（sp7）双平台同构全绿**（974 pass / PTY 19/19），证据见
+`docs/evidence/v0.4.0-*` 与 `v0.4.0-sp7-*`。改功能前先在干净树上跑一遍，数字对位后再动手。
 
 ### TTY-only 行为的验证方式（v0.2.3 起）
 
@@ -22,7 +23,8 @@ bun test 里的 fake IO 测不出事件顺序与覆盖语义。可复用脚本�
 |---|---|
 | `scripts/fake-llm.ts` | 无状态假 OpenAI SSE 端点（按 `messages` 有无 tool 消息决定下一帧，可反复跑），`SCENARIO` 选场景 |
 | `scripts/pty-e2e.ts` | 用系统 `script(1)` 起真 PTY 跑 neo，喂脚本化输入 + 最小屏幕缓冲断言屏幕文本 |
-| `scripts/verify.sh` | 全量闸门：tsc → bun test → pty-e2e，各阶段输出写 `docs/evidence/v0.2.4-<stage>.txt` |
+| `scripts/verify.sh` | 全量闸门：tsc → bun test → pty-e2e，各阶段输出写 `docs/evidence/<版本>-<stage>.txt` |
+| `scripts/env-probe.ts` | v0.4.0 平台探针：打印 shell spec + 环境块 + wiki 块（`--json` 原始快照），排查「这台机器上 shell/环境判断不对」先跑它 |
 | `scripts/readline-probe.ts` | bun readline 行为探针（completer / Tab / Ctrl+J / rl.line 多行），改输入层前先跑它 |
 | `scripts/tui-probe.ts` | v0.3.0 TUI 探针（raw mode / 按键形态 / 底部 live 帧 / 异步交错 / 终端恢复），改渲染前先跑它 |
 
@@ -80,6 +82,20 @@ bun test 里的 fake IO 测不出事件顺序与覆盖语义。可复用脚本�
 | `toollog.test.ts` | D3：失败摘要（stderr/exit code）、时长格式、`/last` 格式化、缓存上限 20、失败详情的行数预算 |
 | `transcript.test.ts` | D4：轮次切取、角色过滤、`maxLines` 截断提示、多行用户输入、markdown 渲染 |
 | `flash-notice.test.ts` | D5：提示符重绘注入、不打印 `❯`、非 TTY 不写、无 restorer 退化 |
+
+### v0.4.0 新增（59 文件 / 974 例，+49）
+
+| 文件 | 覆盖 |
+|---|---|
+| `shell.test.ts` | 三平台 shell 解析（darwin/linux/win32 全注入模拟）：探测优先级、$SHELL 失效回退、settings 覆盖、未知 shell 只给 `-c`、全缺失结构化错误；argv 构造；登录 PATH preamble（POSIX/fish/cmd 分支）；错误提示；`src` 防漂移守卫（不得再出现写死 `/bin/zsh`） |
+| `env.test.ts` | 机器指纹/版本解析/字节格式化；静态探测（Ubuntu/Windows 分支、工具链、容器、权限、GUI）；动态磁盘/内存；快照读写/损坏容错/TTL；`loadEnv` 的 persist/缓存/disabled/旧 shell 覆盖；prompt 主/紧凑版与 token 预算；wiki 生成块合并（替换保人工区、无块追加、缺结构补齐、幂等）与 `syncEnvPage`（创建→幂等→关键变化才记 log） |
+
+### 跨平台测试纪律（v0.4.0 起）
+
+- 不写死开发者机器路径：用 `import.meta.dir` / `tmpdir()`。
+- 不依赖开发机 `settings.json`：PTY 场景在临时 cwd 写确定性配置。
+- 外部命令输出断言固定 `LC_ALL=C`（git 报错在中文 locale 下会变）。
+- 新增「平台相关」逻辑时，优先把 platform/env/fs/which 做成注入参数，用单测覆盖三平台，而不是只在当前机器上跑。
 
 ### v0.3.5 新增（57 文件 / 925 例，+44）
 

@@ -15,6 +15,19 @@ bun run src/index.ts                     # 交互模式
 bun run src/index.ts -p "用 glob 找出所有 .ts 文件"   # 单次模式
 ```
 
+## 平台支持
+
+| 平台 | shell | 状态 |
+| --- | --- | --- |
+| macOS | `$SHELL`（默认 zsh） | ✅ 实测（tsc / 974 测试 / PTY 19/19） |
+| Ubuntu / Debian | `$SHELL`（默认 bash） | ✅ 实测（sp7, Ubuntu 24.04.4 LTS） |
+| 其它 POSIX（dash/ksh/fish） | 自动探测 | ✅ 解析器支持；fish 不吃登录 PATH preamble |
+| Windows 11 | `pwsh` → `powershell` → `cmd` | 🟡 **实验性，未实机验证**（见 PD-1） |
+
+Windows 启动用 `neo.cmd`（需要 Bun 在 PATH）；Linux/macOS 用 `neo.sh` 或 `bun run src/index.ts`。
+shell 探测顺序：`settings.shell.path` → `NEO_SHELL` → `$SHELL` → 平台默认 → `which` → `/bin/sh`；
+启动横幅后会显示实际使用的 shell。环境探测（`/env`）不需要模型，纯脚本采集，约 10ms。
+
 ## 配置
 
 `settings.json`（已在 `.gitignore` 中，不会误提交）：
@@ -74,6 +87,31 @@ bun run src/index.ts -p "用 glob 找出所有 .ts 文件"   # 单次模式
 | `show_reasoning` | 是否显示模型思维链 |
 | `toolcall_info_details` | 工具调用详情：`false`（默认）紧凑单行 + 动画；`true` 旧版 header + 缩进结果块（非 TTY 环境始终显示详情） |
 | `theme` | 配色主题 |
+| `shell` | 跨平台 shell 覆盖（`path` / `login` / `args`），见下 |
+| `env` | 环境探测与注入（`enabled` / `probe_ttl_hours` / `prompt` / `wiki_page`），见下 |
+
+### shell / env —— 平台适配层（v0.4.0）
+
+```json
+"shell": { "path": null, "login": true, "args": null },
+"env":   { "enabled": true, "probe_ttl_hours": 12, "prompt": true, "wiki_page": true }
+```
+
+- `shell.path`：绝对路径覆盖（不填=自动探测）；`shell.login`：是否登录 shell（默认 true，
+  登录模式会前置父进程 PATH，保证 neo 能用的命令在 shell 工具里也能用）；
+  `shell.args`：整体覆盖参数前缀（逃生口）。
+- `env`：环境探测。静态快照写 `~/.neo/env/<machineKey>.json`（TTL 默认 12h）；
+  `prompt` 控制是否注入系统提示词；`wiki_page` 控制是否渲染 `~/.neo/wiki/wiki/环境.md`。
+  `-p`/非交互模式**只注入不落盘**。环境变量：`NEO_SHELL`、`NEO_ENV_DISABLE=1`。
+- 环境块示例（模型在每轮对话里能看到的真实平台信息）：
+
+```
+- 平台：Ubuntu 24.04.4 LTS · x64（linux 6.17.0-23-generic）
+- shell：/bin/bash（bash，登录 shell；命令必须兼容 bash，不要使用其它 shell 专有语法）
+- 资源：4 核 · 内存 3.4G
+- 工具：bun 1.4.4 · node 26.9.0 · git 2.43.0 · python3 3.12.3（未列出的工具不要假设已安装）
+- 约束：远程 SSH 会话 · 无 GUI（不要建议打开浏览器/编辑器） · 非 root（需要提权时先说明）
+```
 
 ### model_routes —— 档位与 provider 是两个正交轴
 
@@ -154,6 +192,7 @@ provider 里的 `*_model_name` 表示「**这个 provider** 在各档位上用�
 /auto      切换分类器      /why       上次分类判定与理由
 /provider  切换 provider   /tier      切换档位（显示生效路由）
 /model     查看/切模型     /tools     工具列表
+/env [refresh] 环境快照（平台/shell/资源/工具链）；refresh 重采并写 wiki 页
 /mode      权限模式        /init      生成 AGENTS.md
 /peers [name]  跨会话状态：列出存活会话 / 查单个
 /inbox     查看 held 消息；/inbox release <id> 放行一条
@@ -277,7 +316,7 @@ bun run verify  # 全量闸门：tsc → test → pty（19 个 PTY 场景），�
 | `list_dir` | 否 | 列目录，含大小与修改时间 |
 | `glob` | 否 | glob 找文件 |
 | `grep` | 否 | 正则搜内容，`path` 可传目录或单文件 |
-| `shell` | 是 | 执行命令，带超时与退出码 |
+| `shell` | 是 | 执行命令，带超时与退出码；shell 按平台自动选择（macOS/Linux/Windows） |
 | `web_fetch` | 否 | 抓网页转纯文本 |
 | `use_skill` | 否 | 按需加载技能正文（三层渐进披露） |
 | `task` | 否 | 派生子代理跑隔离子任务（深度结构性 ≤1） |

@@ -530,6 +530,9 @@ async function startNeo(opts: NeoOptions): Promise<NeoRun> {
   const mkfifo = Bun.which("mkfifo") ?? "/usr/bin/mkfifo";
   const cat = Bun.which("cat") ?? "/bin/cat";
 
+  // 确定性配置写到临时 cwd：config.loadConfig 的第一优先级就是 <cwd>/settings.json。
+  await writeFile(join(dirs.work, "settings.json"), JSON.stringify(PTY_SETTINGS, null, 2), "utf8");
+
   try {
     await rm(fifo, { force: true });
   } catch {
@@ -885,6 +888,36 @@ function findLine(
  * 测试必须隔离分类器，否则会偷偷访问真实网络、结果不可复现。
  */
 const BASE_ARGS = ["--auto", "off"];
+
+/**
+ * v0.4.0 平台适配层：PTY 场景必须与「开发机根目录的 settings.json」解耦。
+ *
+ * 之前 S16 断言菜单里的路由提示为 glm-5.3-flash —— 那是本机 settings.json 的
+ * provider 配置。macOS 根目录有 settings.json 时能过；Ubuntu/CI 检出没有
+ * （settings.json 已 gitignore）就会回落到 settings.example.json，菜单显示
+ * example / your-model-id → S16 红。这里在临时 cwd 写一份确定性配置，
+ * 让 PTY 验收在任何机器上同构。
+ */
+const PTY_SETTINGS = {
+  default_provider: "pty-fake",
+  default_model_tier: "default",
+  classifier_provider: "pty-fake",
+  classifier_model_name: "glm-5.3-flash",
+  providers: [
+    {
+      provider_name: "pty-fake",
+      provider_type: "openai",
+      base_url: "http://127.0.0.1:1/v1",
+      api_key: "k",
+      default_model_name: "glm-5.3-flash",
+      deep_reasoning_model_name: "glm-5.3-glacier",
+      balanced_model_name: "glm-5.3-balanced",
+      fast_model_name: "glm-5.3-flash",
+    },
+  ],
+  model_routes: { default: "pty-fake" },
+  memory: { enabled: false },
+};
 
 async function scenarioS1(tmpRoot: string): Promise<void> {
   const dirs = await makeDirs(tmpRoot, "s1-narration");

@@ -1,0 +1,105 @@
+# v0.4.0 M0 证据 — sp7（Ubuntu 24.04.4 LTS）平台事实
+# 采集时间：2026-10-26 14:20–14:32 (Asia/Shanghai)
+# 采集方式：ssh anders@manage.ani-intelligence.com（Cloudflare Tunnel，key-only）
+# 注意：本文件是只读取证，不含任何凭据。
+
+## 1. 基础
+
+```
+$ uname -srm
+Linux 6.17.0-23-generic x86_64
+
+$ . /etc/os-release; echo $PRETTY_NAME
+Ubuntu 24.04.4 LTS
+
+$ hostname; id -un; nproc
+anders-Surface-Pro-7
+anders
+4
+```
+
+## 2. shell（关键：/bin/zsh 不存在）
+
+```
+$ echo $SHELL
+/bin/bash
+
+$ ls -l /bin/zsh
+ls: 无法访问 '/bin/zsh': 没有那个文件或目录
+
+$ ls -l /bin/bash /bin/sh
+-rwxr-xr-x 1 root root 1446024  3月 31  2024 /bin/bash
+lrwxrwxrwx 1 root root       4  3月 31  2024 /bin/sh -> dash
+
+$ cat /etc/shells（仅 bash/sh/dash，无 zsh）
+```
+
+## 3. 登录 shell vs 非登录 shell 的 PATH（修 PATH 保真的依据）
+
+非登录（sshd `bash -c` 默认）：
+
+```
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/games:/usr/local/games:/snap/bin
+bun: 未找到（command -v bun 为空）
+node=/usr/bin/node (v24.15.0)
+git=/usr/bin/git (2.43.0)
+python3=/usr/bin/python3
+```
+
+登录（`bash -lc`，耗时 32ms，正常）：
+
+```
+LOGIN_PATH=/home/anders/.local/bin:/home/anders/local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/games:/usr/local/games:/snap/bin
+bun=/home/anders/.local/bin/bun (1.4.4)
+node=/home/anders/.local/bin/node（nvm 提供，v26.9.0；系统 /usr/bin/node 是 v24.15.0）
+git=/usr/bin/git
+python3=/usr/bin/python3
+```
+
+结论：
+- 登录 shell 能拿到 `~/.local/bin/bun`（`.profile` + `.bash_profile` 追加），非登录不能；
+- 旧实现虽然传了 `env: {...process.env}`，但 `-l` 会重置 PATH —— 必须做「父进程 PATH 前置」，
+  否则在服务器上 `shell` 工具里 `bun` 不可见（即使 shell 路径修对了）；
+- login 模式实测 32ms，可接受，默认 `login:true`。
+
+## 4. 资源与磁盘
+
+```
+内存：total 3.4Gi / used 1.6Gi / available 1.8Gi
+磁盘：/dev/nvme0n1p2 116G 已用 67G 可用 44G 61% /
+```
+
+## 5. 运行时与工具
+
+```
+bun=未在非登录 PATH；登录 shell /home/anders/.local/bin/bun 1.4.4
+node=/usr/bin/node v24.15.0（系统），nvm v26.9.0
+npm=/usr/bin/npm
+git=2.43.0
+python3=3.12.3
+script(1)=util-linux 2.39.3（PTY 验证可用）
+无 rg / docker / zsh
+```
+
+## 6. 网络（部署与依赖安装可行性）
+
+```
+gitee=200  npm=200  bun.sh=200
+```
+
+## 7. 已存在的 neo 检出
+
+```
+/home/anders/projects/neo-agent  （HEAD ca93568，node_modules 已装 38M）
+/home/anders/.neo/settings.json  （provider 配置，2026-10-26 01:20 写入）
+/home/anders/.neo/sessions/*.json（两条 01:21 的冒烟会话，cwd 指向该检出）
+```
+
+## 8. 其他平台事实
+
+```
+容器：无（/.dockerenv 不存在，非 Docker）
+GUI：SSH 会话下无 DISPLAY
+权限：uid=1000，非 root，sudo 存在（需密码）
+时区：Asia/Shanghai
+```

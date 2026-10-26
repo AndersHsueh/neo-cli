@@ -16,6 +16,10 @@
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { homedir } from "node:os";
+import { fileURLToPath } from "node:url";
+
+import type { EnvConfig } from "./env/types.ts";
+import type { ShellConfig } from "./shell.ts";
 
 import {
   DEFAULT_MAILBOX_CONFIG,
@@ -171,6 +175,10 @@ export interface Config {
    * 测试场景下 cfg.memory 总有值；真启动路径下 loadConfig 必填默认。
    */
   memory: MemoryConfig;
+  /** 跨平台 shell 覆盖（v0.4.0 平台适配层；不填=自动探测）。 */
+  shell?: ShellConfig;
+  /** 环境探测/注入配置（v0.4.0；不填=默认开启、TTL 12h、注入+写 wiki 页）。 */
+  env?: EnvConfig;
 }
 
 /**
@@ -238,6 +246,48 @@ export interface PasteConfig {
 }
 
 /** paste.* 解析：settings.json > 内置默认（3 行 / 300 字符 / 8MB）。 */
+/**
+ * 解析 settings.shell（v0.4.0 平台适配层）。
+ *
+ * 只做形状校验：路径是否可执行由 shell.ts 在运行时探测（配置写错不崩，
+ * 回退到自动探测并给出 warnings）。全缺省 = undefined（纯自动探测）。
+ */
+function resolveShellConfig(raw: unknown): ShellConfig | undefined {
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return undefined;
+  const r = raw as Raw;
+  const out: ShellConfig = {};
+  const path = r["path"];
+  if (typeof path === "string" && path.trim() !== "") out.path = path.trim();
+  if (typeof r["login"] === "boolean") out.login = r["login"];
+  const args = r["args"];
+  if (Array.isArray(args)) {
+    const clean = args.filter((a): a is string => typeof a === "string");
+    if (clean.length > 0) out.args = clean;
+  }
+  return Object.keys(out).length > 0 ? out : undefined;
+}
+
+/**
+ * 解析 settings.env（v0.4.0 平台适配层）。
+ *
+ * 默认全开：enabled=true、TTL 12h、注入提示词、写用户级 wiki 页。
+ * -p/非交互模式是否落盘由组合根决定，不在此处。
+ */
+function resolveEnvConfig(raw: unknown): EnvConfig | undefined {
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return undefined;
+  const r = raw as Raw;
+  const out: EnvConfig = {};
+  if (typeof r["enabled"] === "boolean") out.enabled = r["enabled"];
+  if (typeof r["probe_ttl_hours"] === "number" && Number.isFinite(r["probe_ttl_hours"])) {
+    out.probeTtlHours = Math.max(0, r["probe_ttl_hours"]);
+  }
+  if (typeof r["prompt"] === "boolean") out.prompt = r["prompt"];
+  if (typeof r["wiki_page"] === "boolean") out.wikiPage = r["wiki_page"];
+  const dir = r["dir"];
+  if (typeof dir === "string" && dir.trim() !== "") out.dir = dir.trim();
+  return Object.keys(out).length > 0 ? out : undefined;
+}
+
 function resolvePasteConfig(raw: Raw | undefined): PasteConfig {
   const r = raw ?? {};
   return {
@@ -417,7 +467,8 @@ function providerFromLegacy(raw: Raw): ProviderConfig | null {
 
 export function loadConfig(overrides: Partial<Config> = {}): Config {
   const here = process.cwd();
-  const pkgRoot = resolve(dirname(new URL(import.meta.url).pathname), "..");
+  // v0.4.0：Windows 上 URL.pathname 是 /C:/... 形态，必须用 fileURLToPath 还原盘符路径。
+  const pkgRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
   const candidates = [
     join(here, "settings.json"),
@@ -573,6 +624,8 @@ export function loadConfig(overrides: Partial<Config> = {}): Config {
     settingsPath: found,
     skillsStore: str(raw["skills_store"], join(homedir(), ".neo", "skills")),
     memory: resolveMemoryConfig(raw["memory"] as Raw | undefined),
+    shell: resolveShellConfig(raw["shell"]),
+    env: resolveEnvConfig(raw["env"]),
     paste: resolvePasteConfig(raw["paste"] as Raw | undefined),
     mailbox: resolveMailboxSettings(raw),
     crossSessionInbound: resolveInboundPolicy(raw["cross_session_inbound"]),

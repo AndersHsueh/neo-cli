@@ -17,12 +17,14 @@ import { Agent, type AgentIO } from "../agent.ts";
 import { contentText } from "../llm.ts";
 import { applyTier, tierAvailable, type Config, type ModelTier } from "../config.ts";
 import { TIER_ORDER } from "../classifier/types.ts";
+import { getEnvForPrompt } from "../env/probe.ts";
+import { formatEnvPrompt } from "../env/render.ts";
 import { ToolError, type ToolCtx, type ToolImpl } from "./types.ts";
 
 /** 子代理迭代上限。子代理是单一任务，跑满主代理的 80 次迭代意味着早已跑偏。 */
 const SUB_MAX_ITERATIONS = 24;
 
-function subSystemPrompt(prompt: string): string {
+function subSystemPrompt(prompt: string, envText = ""): string {
   return [
     "你是主代理派生的子代理，独立完成一项自包含任务。",
     "你没有与用户的对话历史，任务描述包含你需要的全部信息。",
@@ -32,6 +34,7 @@ function subSystemPrompt(prompt: string): string {
     "1. 结论（一句话先行）",
     "2. 关键发现/改动，附 文件:行号 引用",
     "3. 未解决或存疑的点",
+    ...(envText ? ["", "## 环境", "", envText] : []),
     "",
     "## 任务",
     prompt,
@@ -199,11 +202,21 @@ export async function runSubagent(
     throw new ToolError(`子代理档位应用失败：${applied.error}`);
   }
 
+  // v0.4.0 平台适配层：子代理同样会调用 shell，必须知道真实平台/shell（紧凑版，省 token）。
+  let subEnvText = "";
+  if (cfg.env?.prompt !== false) {
+    try {
+      const snap = getEnvForPrompt(cfg);
+      if (snap) subEnvText = formatEnvPrompt(snap, { compact: true });
+    } catch {
+      subEnvText = "";
+    }
+  }
   const sub = new Agent({
     cfg: subCfg,
     console: new SilentConsole(main.io),
     mode: main.mode,
-    systemPrompt: subSystemPrompt(trimmed),
+    systemPrompt: subSystemPrompt(trimmed, subEnvText),
     chatStream: main.injectedStreamFn,
     isSubagent: true,
     // 子代理的写操作也进父会话的检查点（/undo 能一起恢复）

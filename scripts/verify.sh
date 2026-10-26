@@ -18,7 +18,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
 EVIDENCE_DIR="$ROOT/docs/evidence"
-EVIDENCE_PREFIX="v0.3.5"
+EVIDENCE_PREFIX="v0.4.0"
 mkdir -p "$EVIDENCE_DIR"
 
 STARTED_AT="$(date '+%Y-%m-%d %H:%M:%S %z')"
@@ -60,7 +60,7 @@ run_stage() {
 }
 
 # 1) 类型检查：零错误是后续所有阶段的前提。
-run_stage tsc bunx tsc --noEmit
+run_stage tsc bun x tsc --noEmit
 
 # 2) 单测：纯逻辑层（渲染/宽度/工具回看/回放等）的回归网。
 run_stage tests bun test

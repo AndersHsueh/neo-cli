@@ -29,7 +29,7 @@ import { Agent, type PermissionMode } from "./agent.ts";
 import { HotkeyRouter, doubleStrike } from "./hotkeys.ts";
 import { PasteCollector, shouldFold, assemblePaste } from "./paste.ts";
 import { makeTextAttachment, makeImageAttachment, bindAttachments, resolveLine, type Attachment, type QueuedLine } from "./attachments.ts";
-import { readClipboardImage } from "./clipboard.ts";
+import { clipboardImagePlatform, readClipboardImage } from "./clipboard.ts";
 import { select, type SelectDeps } from "./ui/select.ts";
 import { Console } from "./ui/console.ts";
 import { Composer, type ComposerStatus } from "./tui/composer.ts";
@@ -78,6 +78,11 @@ import {
   listRawFiles,
 } from "./wiki/ingest.ts";
 import { resolveWikiLayout } from "./wiki/paths.ts";
+import { describeShell, getShell, prepareShellInvocation, shellErrorHint } from "./shell.ts";
+import { loadEnv } from "./env/probe.ts";
+import { formatEnvForCli } from "./env/render.ts";
+import { syncEnvPage } from "./env/wiki.ts";
+import { ensureScopeLayout } from "./memory/layout.ts";
 import { appendLog } from "./wiki/write.ts";
 import { discoverSkills, isValidSkillName, formatSkillLine, normalizeDescription } from "./skills.ts";
 import { adoptSession, applyRestored, createSession, listSessions, loadSession, saveSession, type SessionMeta } from "./session.ts";
@@ -98,7 +103,7 @@ import { mailboxRoot, type Envelope } from "./mailbox/types.ts";
 import { CheckpointStore } from "./checkpoint.ts";
 import type { ToolCtx } from "./tools/types.ts";
 
-const VERSION = "0.3.5";
+const VERSION = "0.4.0";
 
 /** /auto 列表里各实现的说明。 */
 const DESC: Record<string, string> = {
@@ -283,6 +288,7 @@ ${c.bold("交互命令")}
   /compact         压缩上下文      /cost        token 统计
   /provider        切换 provider   /model       查看/切模型
   /tools           工具列表        /mode        权限模式
+  /env [refresh]   环境快照（平台/shell/资源/工具链）；refresh 重采并写 wiki 页
   /peers [name]    跨会话状态：列出存活会话 / 查单个
   /inbox           查看 held 消息；/inbox release <id> 放行一条
   /rename <name>   设置本会话名字（跨会话寻址；撞名自动加后缀）
@@ -781,6 +787,27 @@ async function main(): Promise<number> {
   // 上次进程遗留的 journal：启动时有界恢复（不阻塞主流程）
   memory.recoverPending();
 
+  // v0.4.0 平台适配层：环境快照落用户级 wiki。
+  // -p / 非交互模式只注入不落盘（用户裁决）；失败非致命，不阻塞会话。
+  if (
+    memoryMode === "interactive" &&
+    cfg.memory.enabled &&
+    cfg.memory.scopeMode !== "project" &&
+    cfg.env?.enabled !== false &&
+    cfg.env?.wikiPage !== false
+  ) {
+    try {
+      const loaded = loadEnv({ cfg, persist: true });
+      if (loaded) {
+        const layout = ensureScopeLayout("user", cfg.cwd, cfg.memory.userWikiDir);
+        const r = syncEnvPage(layout, loaded.snapshot);
+        if (r.action === "created") ui.info(`已生成环境快照 ${r.pagePath}`);
+      }
+    } catch (e) {
+      console.error(`环境快照落盘失败 ${(e as Error).message}（session 不阻塞）`);
+    }
+  }
+
   // ---- 单次模式 ----
   if (args.print !== null) {
     const prompt = args.print || args.rest.join(" ");
@@ -870,6 +897,10 @@ async function main(): Promise<number> {
   // ---- 交互模式 ----
   if (process.stdin.isTTY) {
     ui.line(banner(cfg.model, cfg.baseUrl, cfg.providerName, cfg.modelTier, toolNames().join(" ")));
+    // v0.4.0 平台适配层：一眼可见实际使用的 shell，解析告警不静默。
+    const bootShell = getShell(cfg);
+    ui.line(c.dim(`  shell ${describeShell(bootShell)}`));
+    for (const w of bootShell.warnings) ui.warn(w);
     // v0.2.3 D4：--resume 之后屏幕不能是空的 —— 回放最近几轮，人和上下文对齐
     if (restored && restored.length > 0) replayTranscript(ui, agent.messages);
   }
@@ -888,6 +919,7 @@ async function main(): Promise<number> {
   let selectActive = false;
   let selectCancel: (() => void) | undefined;
   let questionPending = false;
+  let clipboardUnsupportedNotified = false;
 
   // 输入串行化：粘贴多行或快速回车时，readline 的 line 事件会并发触发。
   // 用队列 + 单 worker 保证处理顺序与输出不交错。
@@ -1005,6 +1037,7 @@ async function main(): Promise<number> {
               sessionLabel = name;
               titleAnimator?.setName(name);
             },
+            memoryMode,
           );
           continue;
         }
@@ -1207,6 +1240,8 @@ async function main(): Promise<number> {
         return { chip: att.chip, attachment: att };
       },
       pasteImage: async () => {
+        // v0.4.0：Linux 暂无剪贴板图片实现（PD-2），直接当作无图。
+        if (clipboardImagePlatform() === "unsupported") return null;
         const img = await readClipboardImage();
         if (!img) return null;
         if (img.data.length > cfg.paste.imageMaxBytes) {
@@ -1576,6 +1611,14 @@ async function main(): Promise<number> {
   // C5：无图 → info 一行，不报错（用户可能只是想贴文本）。C6：8MB 上限。
   const onPasteImage = (): void => {
     if (draining || queue.length > 0 || selectActive || questionPending) return; // C1
+    // v0.4.0 平台适配层：Linux 无剪贴板图片后端（PD-2），给一次性说明而不是伪装「无图」。
+    if (clipboardImagePlatform() === "unsupported") {
+      if (!clipboardUnsupportedNotified) {
+        clipboardUnsupportedNotified = true;
+        ui.info("当前平台暂不支持剪贴板贴图（Linux 记入 PD-2：wl-paste / xclip）");
+      }
+      return;
+    }
     void (async (): Promise<void> => {
       let img: Awaited<ReturnType<typeof readClipboardImage>> = null;
       let err: string | null = null;
@@ -1764,6 +1807,7 @@ async function handleCommand(
   injectMailbox?: (env: Envelope) => void,
   onMailboxRekey?: () => void,
   onNameChange?: (name: string) => void,
+  memoryMode: "interactive" | "oneshot" = "interactive",
 ): Promise<void> {
   const [cmdRaw, ...rest] = line.slice(1).split(/\s+/);
   const cmd = (cmdRaw ?? "").toLowerCase();
@@ -2105,6 +2149,39 @@ async function handleCommand(
       for (const t of toolNames()) ui.line(`  ${c.tool("⚡")} ${c.text(t)}`);
       ui.blank();
       break;
+
+    case "env": {
+      const refresh = arg === "refresh";
+      const loaded = loadEnv({ cfg, persist: memoryMode === "interactive", force: refresh });
+      if (!loaded) {
+        ui.warn("环境探测已关闭（settings.env.enabled=false 或 NEO_ENV_DISABLE=1）");
+        break;
+      }
+      ui.blank();
+      ui.line(
+        formatEnvForCli(loaded.snapshot, {
+          snapshotPath: loaded.snapshotPath,
+          fromCache: loaded.fromCache,
+          probeMs: loaded.probeMs,
+          persisted: loaded.persisted,
+        }),
+      );
+      if (memoryMode === "interactive" && cfg.env?.wikiPage !== false) {
+        try {
+          const layout = ensureScopeLayout("user", cfg.cwd, cfg.memory.userWikiDir);
+          const r = syncEnvPage(layout, loaded.snapshot);
+          ui.info(
+            r.action === "unchanged"
+              ? `环境页已是最新 ${r.pagePath}`
+              : `环境页已${r.action === "created" ? "创建" : "更新"} ${r.pagePath}${r.logged ? "（已记 log）" : ""}`,
+          );
+        } catch (e) {
+          ui.warn(`环境页写入失败：${(e as Error).message}`);
+        }
+      }
+      ui.blank();
+      break;
+    }
 
     case "peers": {
       if (!mailbox) {
@@ -2676,15 +2753,19 @@ async function runShell(
   ui.blank();
   ui.line(`${c.dim("$")} ${c.text(cmd)}`);
   try {
-    const proc = Bun.spawn(["/bin/zsh", "-lc", cmd], {
+    // v0.4.0 平台适配层：与 shell 工具共用同一解析器（含 PATH 保真）。
+    const spec = getShell(cfg);
+    const invocation = prepareShellInvocation(spec, cmd);
+    const proc = Bun.spawn(invocation.argv, {
       cwd: cfg.cwd,
       stdout: "inherit",
       stderr: "inherit",
+      env: invocation.env,
     });
     const code = await proc.exited;
     if (code !== 0) ui.line(c.dim(`exit ${code}`));
   } catch (e) {
-    ui.error(`执行失败: ${(e as Error).message}`);
+    ui.error(`执行失败: ${shellErrorHint(e, getShell(cfg))}`);
   }
   ui.blank();
 }

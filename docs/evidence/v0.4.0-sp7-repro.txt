@@ -1,0 +1,55 @@
+# v0.4.0 M0 证据 — sp7 上复现「shell 完全不可用」
+# 采集时间：2026-10-26 14:32 (Asia/Shanghai)
+# 机器：sp7 / Ubuntu 24.04.4 LTS / 无 zsh / SHELL=/bin/bash
+# 代码：/home/anders/projects/neo-agent（v0.3.4-era 检出，同样写死 /bin/zsh）
+
+## 复现命令
+
+```bash
+export PATH="$HOME/.local/bin:$PATH"
+cd "$HOME/projects/neo-agent"
+bun -e 'try { Bun.spawn(["/bin/zsh", "-lc", "echo hi"], …) } catch (e) { … }'
+bun -e 'import { dispatch } from "./src/tools/index.ts"; await dispatch("shell", …)'
+```
+
+## 结果
+
+### 1) 直接复现 Bun.spawn
+
+```
+THROW: Error: ENOENT: no such file or directory, posix_spawn '/bin/zsh'
+```
+
+### 2) 端到端复现 dispatch("shell", "echo hi")
+
+```json
+{
+  "ok": false,
+  "output": "工具执行失败: ENOENT: no such file or directory, posix_spawn '/bin/zsh'",
+  "truncated": false
+}
+```
+
+### 3) 同机对照（bash 正常）
+
+```
+$ bash -lc 'echo bash-ok; git --version'
+bash-ok
+git version 2.43.0
+```
+
+### 4) 环境事实
+
+```
+SHELL=/bin/bash
+OS=Ubuntu 24.04.4 LTS
+Linux 6.17.0-23-generic x86_64
+bun=1.4.4
+node=v26.9.0（登录 shell 的 nvm 版本）
+git=2.43.0
+```
+
+## 结论
+
+在 Ubuntu（默认无 zsh）上，`shell` 工具**每一条命令**都会失败，不是个别命令；
+`!cmd` 直通走同一行写死代码，同样全灭。修复后才谈得上「agent 在服务器上可用」。

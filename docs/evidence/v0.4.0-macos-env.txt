@@ -1,0 +1,64 @@
+# v0.4.0 M0 证据 — macOS (darwin 27.0.0 arm64) 平台事实
+# 采集时间：2026-10-26 15:20:05 +0800
+# 工具：bun run scripts/env-probe.ts（只读，不写文件）
+
+=== shell spec
+{
+  "path": "/bin/zsh",
+  "args": [
+    "-l",
+    "-c"
+  ],
+  "kind": "zsh",
+  "login": true,
+  "source": "env:SHELL",
+  "warnings": []
+}
+
+=== system prompt「## 环境」段（主代理）
+- 平台：macOS (Darwin 27.0.0) · arm64（darwin 27.0.0）
+- shell：/bin/zsh（zsh，登录 shell；命令必须兼容 zsh，不要使用其它 shell 专有语法）
+- 资源：14 核 · 内存 48G
+- 工具：bun 1.3.13 · node 24.13.1 · git 2.50.1 · python3 3.9.6（未列出的工具不要假设已安装）
+- 约束：非 root（需要提权时先说明）
+
+=== 子代理紧凑版
+- 平台：macOS (Darwin 27.0.0) · arm64（darwin 27.0.0）
+- shell：/bin/zsh（zsh，登录 shell；命令必须兼容 zsh，不要使用其它 shell 专有语法）
+- 工具：bun 1.3.13 · node 24.13.1 · git 2.50.1 · python3 3.9.6（未列出的工具不要假设已安装）
+- 约束：非 root（需要提权时先说明）
+
+=== /env 输出
+环境快照  m4p-darwin-arm64-ab6979ac
+  采集      2026-10-26T07:20:05.829Z
+  平台      macOS (Darwin 27.0.0) · darwin 27.0.0 · arm64 · 14 核
+  shell     /bin/zsh（zsh，登录 shell，来源 env:SHELL，版本 5.9）
+  内存      48G 总 / 3.4G 可用
+  磁盘      /Users/xueyuheng/research/000-alice-new/neo 可用 143G / 共 926G
+  工具      bun 1.3.13 · node 24.13.1 · npm · pnpm · git 2.50.1 · python3 3.9.6 · go · rustc · cargo · java · jq · make · gcc · clang · vim · curl
+  标记      GUI · 非 root · sudo · Asia/Shanghai
+
+=== wiki 生成块
+<!-- neo:env:start -->
+> 本块由 neo 自动生成（/env refresh 可重采）；请勿手工编辑块内内容。
+
+| 项 | 值 |
+| --- | --- |
+| 主机名 | M4P |
+| 机器指纹 | `m4p-darwin-arm64-ab6979ac` |
+| OS | macOS (Darwin 27.0.0)（darwin 27.0.0 arm64） |
+| 内核 | 27.0.0 |
+| shell | /bin/zsh（zsh，登录 shell，来源 env:SHELL） |
+| shell 版本 | 5.9 |
+| CPU | 14 核 · Apple M4 Pro |
+| 内存 | 48G（当前可用 3.4G） |
+| 磁盘 | /Users/xueyuheng/research/000-alice-new/neo：可用 143G / 共 926G |
+| 工具链 | bun 1.3.13 · node 24.13.1 · npm · pnpm · git 2.50.1 · python3 3.9.6 · go · rustc · cargo · java · jq · make · gcc · clang · vim · curl |
+| 运行环境 | Bun 1.3.13 · Node 24.3.0 · 有 GUI |
+| 终端 | TERM=dumb |
+| 区域 | zh_CN.UTF-8 · Asia/Shanghai |
+| 权限 | uid=501 · 非 root · sudo 可用 |
+| 采集时间 | 2026-10-26T07:20:05.829Z（快照采集；可用内存/磁盘为本次会话观测） |
+
+<!-- neo:env:fingerprint:b5e6dea7fbce -->
+<!-- neo:env:end -->

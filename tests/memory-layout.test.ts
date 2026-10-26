@@ -208,7 +208,8 @@ describe("D 互斥锁（修复 recursive:true 吞 EEXIST 的存量 bug）", () =
 describe("D5 跨进程锁", () => {
   test("D5 父进程持锁时子进程拿不到；释放后子进程可拿", () => {
     const lockDir = join(SANDBOX, "locks", "xproc.lock");
-    const projectRoot = "/Users/xueyuheng/research/000-alice-new/neo";
+    // v0.4.0 平台适配层：原来写死 macOS 绝对路径，Ubuntu 上子进程 import 失败。
+    const projectRoot = join(import.meta.dir, "..");
     const script = `import { tryAcquireLock, releaseLock } from ${JSON.stringify(join(projectRoot, "src/memory/locks.ts"))}; const r = tryAcquireLock(${JSON.stringify(lockDir)}); if (r) { console.log("ACQUIRED"); releaseLock(r); } else { console.log("BUSY"); }`;
     const hold = acquireLock(lockDir);
     const busy = Bun.spawnSync([process.execPath, "-e", script]);

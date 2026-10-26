@@ -1,0 +1,6 @@
+──── stage: tsc ────
+command: bun x tsc --noEmit
+started: 2026-10-26 15:14:12 +0800
+repo:    /home/anders/projects/neo-agent
+bun:     1.4.4
+──────────────────────────

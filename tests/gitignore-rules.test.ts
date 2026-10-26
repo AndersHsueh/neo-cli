@@ -43,7 +43,14 @@ const ROOT = join(import.meta.dir, "..");
  */
 function git(args: string[], cwd = ROOT): { ok: boolean; out: string } {
   try {
-    const out = execFileSync("git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+    // v0.4.0：固定 LC_ALL=C —— 断言的 "beyond a symbolic link" 是英文消息，
+    // Ubuntu 中文 locale 会输出「位于符号链接中」，跨平台测试必须钉死语言。
+    const out = execFileSync("git", args, {
+      cwd,
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "pipe"],
+      env: { ...process.env, LC_ALL: "C", LANG: "C" },
+    });
     return { ok: true, out };
   } catch (e) {
     const err = e as { stdout?: string; stderr?: string; status?: number };

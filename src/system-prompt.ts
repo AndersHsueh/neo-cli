@@ -8,6 +8,8 @@ import type { Config } from "./config.ts";
 import { toolNames } from "./tools/index.ts";
 import { buildSkillIndex, discoverSkills, isRealDir } from "./skills.ts";
 import { resolveUserWikiLayout, resolveWikiLayout } from "./wiki/paths.ts";
+import { getEnvForPrompt } from "./env/probe.ts";
+import { formatEnvPrompt } from "./env/render.ts";
 
 const IGNORE_DIRS = new Set([
   "node_modules",
@@ -60,6 +62,18 @@ export function buildSystemPrompt(cfg: Config, opts: { mailbox?: boolean } = {})
 
   const tools = toolNames().join(", ");
   const mailboxText = opts.mailbox ? buildMailboxSection() : "";
+
+  // v0.4.0 平台适配层：环境块由脚本探测（不经过模型）。
+  // env.prompt=false 可关闭；探测失败静默省略，不阻塞系统提示词构建。
+  let envText = "";
+  if (cfg.env?.prompt !== false) {
+    try {
+      const snap = getEnvForPrompt(cfg);
+      if (snap) envText = formatEnvPrompt(snap);
+    } catch {
+      envText = "";
+    }
+  }
 
   // 约束 9：索引插在「## 工具」之后、「## 环境」之前 ——
   // 「## 环境」段的 `- 模型：xxx` 由 agent.ts 的 noteModelChange 用正则改写，
@@ -118,7 +132,7 @@ ${opts.mailbox ? "- send_message：给另一个存活的 neo 会话投递纯文�
 
 - 工作目录：${cfg.cwd}
 - 模型：${cfg.model}（provider ${cfg.providerName}，档位 ${cfg.modelTier}；这是推理模型，你的思维链会先于正文输出，这是正常的）
-${treeText}
+${envText ? `${envText}\n` : ""}${treeText}
 `;
 }
 

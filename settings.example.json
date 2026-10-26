@@ -38,6 +38,19 @@
   "max_tool_iterations": 80,
   "tool_output_limit": 30000,
 
+  "shell": {
+    "path": null,
+    "login": true,
+    "args": null
+  },
+
+  "env": {
+    "enabled": true,
+    "probe_ttl_hours": 12,
+    "prompt": true,
+    "wiki_page": true
+  },
+
   "retry": {
     "max_attempts": 3,
     "base_delay_ms": 500,

@@ -15,6 +15,7 @@ import { insideRawDir } from "../wiki/paths.ts";
 import { ToolError, type ToolCtx, type ToolImpl, type DispatchResult } from "./types.ts";
 import { shellMarks } from "./shellMarks.ts";
 import { listSearchFiles } from "./fileList.ts";
+import { getShell, prepareShellInvocation, shellErrorHint } from "../shell.ts";
 
 // 基础类型与注册表在 ./types.ts（叶子模块，解开 task → agent → tools 循环依赖）。
 // 这里 re-export 保持既有导入路径不变。
@@ -551,6 +552,15 @@ function grepFile(file: string, re: RegExp, pattern: string, limit: number, labe
 /* shell                                                               */
 /* ------------------------------------------------------------------ */
 
+/** 管道模式 spawn（独立函数是为了让 TS 推断出具体的 pipe 返回类型）。 */
+function spawnPiped(
+  argv: string[],
+  cwd: string,
+  env: Record<string, string | undefined>,
+) {
+  return Bun.spawn(argv, { cwd, stdout: "pipe", stderr: "pipe", env });
+}
+
 const shell: ToolImpl = {
   sensitive: true,
   spec: {
@@ -558,7 +568,8 @@ const shell: ToolImpl = {
     function: {
       name: "shell",
       description:
-        "在 shell 中执行命令并返回 stdout/stderr/退出码。用于运行构建、测试、git 等。默认 120 秒超时。执行前需用户批准。",
+        "在 shell 中执行命令并返回 stdout/stderr/退出码。用于运行构建、测试、git 等。默认 120 秒超时。执行前需用户批准。" +
+        "shell 由当前平台自动选择（macOS/Linux 用 $SHELL 或 bash，Windows 用 PowerShell），命令需兼容系统提示词「## 环境」里声明的 shell。",
       parameters: {
         type: "object",
         properties: {
@@ -577,12 +588,20 @@ const shell: ToolImpl = {
     const ok = await ctx.approve("shell", `执行: ${command}`);
     if (!ok) return "用户拒绝了该命令，未执行。";
 
-    const proc = Bun.spawn(["/bin/zsh", "-lc", command], {
-      cwd: ctx.cfg.cwd,
-      stdout: "pipe",
-      stderr: "pipe",
-      env: { ...process.env, NO_COLOR: process.env.NO_COLOR ?? "1" },
+    // v0.4.0 平台适配层：shell 由 resolveShell 探测（配置/环境变量/$SHELL/平台默认），
+    // 登录 shell 会注入 PATH 保真前缀，避免「neo 能跑的 bun 在工具里 not found」。
+    const spec = getShell(ctx.cfg);
+    const invocation = prepareShellInvocation(spec, command, {
+      ...process.env,
+      NO_COLOR: process.env.NO_COLOR ?? "1",
     });
+    const proc = (() => {
+      try {
+        return spawnPiped(invocation.argv, ctx.cfg.cwd, invocation.env);
+      } catch (e) {
+        throw new ToolError(`无法启动 shell：${shellErrorHint(e, spec)}`);
+      }
+    })();
 
     const timer = setTimeout(() => {
       proc.kill(9);
