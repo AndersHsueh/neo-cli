@@ -18,7 +18,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
 EVIDENCE_DIR="$ROOT/docs/evidence"
-EVIDENCE_PREFIX="v0.4.2"
+EVIDENCE_PREFIX="v0.4.3"
 mkdir -p "$EVIDENCE_DIR"
 
 STARTED_AT="$(date '+%Y-%m-%d %H:%M:%S %z')"

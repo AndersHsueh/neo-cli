@@ -140,7 +140,7 @@ describe("/tier 命令", () => {
       timeout: 20_000,
       env: { ...process.env, NO_COLOR: "1", HOME: join(makeProject(), "fakehome") },
     });
-    expect(out).toContain("neo v0.4.2");
+    expect(out).toContain("neo v0.4.3");
     expect(out).not.toContain("未知档位");
   });
 

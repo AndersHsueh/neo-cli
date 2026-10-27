@@ -276,3 +276,5 @@ grep -E -A3 "^## \[[0-9-]+\] todo \|" wiki/log.md
 ## [2026-10-27] wiki | 新建 [[neo-v0.4.2-tier视觉]]；INDEX 当前版本/测试基线/主题目录同步
 
 ## [2026-10-27] wiki | v0.4.2 补档：`/tier deep|d|bal|b|f|auto` 简写与展示名（内部仍规范 deep_reasoning）；测试 1039/67
+## [2026-10-27] todo | 目标锚与手段分类拆三件：1/3 本次做，2（工具 capability/evidence 分类）记待办
+## [2026-10-27] query | 目标锚与回锚提示落地：改动清单、readGoalSafe 兜底 bug、D6 经 stash 验证为既有失败

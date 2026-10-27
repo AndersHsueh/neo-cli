@@ -17,9 +17,18 @@ import type { AskUserAnswer, AskUserRequest } from "./ui/askUser.ts";
 import { renderMarkdown } from "./ui/render.ts";
 import { c, colorEnabled } from "./ui/theme.ts";
 import { Classifier } from "./classifier/index.ts";
-import { dispatch, toolSpecs, toolNames, TOOL_NAMES_EXCLUDED_FOR_SUBAGENT, type ToolCtx } from "./tools/index.ts";
+import { dispatch, toolSpecs, toolNames, toolKindOf, TOOL_NAMES_EXCLUDED_FOR_SUBAGENT, type ToolCtx } from "./tools/index.ts";
 import { ToolError, type CheckpointSink } from "./tools/types.ts";
 import { isRecallMessage, type MemoryPort } from "./memory/port.ts";
+
+/**
+ * 连续 capability 调用阈值（2026-10-26）。
+ *
+ * 取 4 而不是 2/3：正常排查里连续两次 shell 很常见（`ls` 再看 `cat`），
+ * 阈值太低会把正常工作流误判成漂移，提示变成噪音、被模型学会忽略。
+ * 4 次连续只扩展手段而无事实产出，已经不像在查东西，更像在开通道。
+ */
+const CAPABILITY_STREAK_LIMIT = 4;
 import { appendTurnLog } from "./turnDiagnostics.ts";
 import { isContextOverflowError, parseContextLimitFromError } from "./contextWindow.ts";
 
@@ -140,6 +149,14 @@ export interface AgentOptions {
   askUser?: (req: AskUserRequest) => Promise<AskUserAnswer>;
   /** 强制关闭提问模态（用户 abort 时）。 */
   cancelAskUser?: () => void;
+  /**
+   * 目标锚读取（2026-10-26）。每轮请求前调用一次，结果写进临时 system 提示。
+   *
+   * 为什么是回调而不是字段：agent.ts 不 import mailbox（避免循环依赖），
+   * 且目标可能在会话中途被 /goal 改写，每轮现取才能跟上。
+   * 返回 null = 未设目标，此时提示退化为纯预算（与旧行为一致）。
+   */
+  readGoal?: () => string | null;
 }
 
 export interface TurnStats {
@@ -171,6 +188,17 @@ export class Agent {
   mode: PermissionMode;
   /** 连续工具失败计数。分类器用它判断当前档位是否撑不住。 */
   private consecutiveFailures = 0;
+  /**
+   * 距上次产出事实的 capability 调用数（2026-10-26）。
+   *
+   * 只数 capability（shell / send_message / task / use_skill），evidence 一出现就清零。
+   * 这是「手段是否已升格成目标」的**唯一可数信号**：跑偏的会话每一步都有真实进展，
+   * 心跳满格方向全错，只有「连续几次没产出关于目标的事实」能把它抓出来。
+   *
+   * 注意：计数本身不拦人，只喂给 budgetMessage 让模型看见。后台默默计数、
+   * 到阈值才提示，等于模型全程无感 —— 那和 isStuck 没区别，只是换了判据。
+   */
+  private capabilityStreak = 0;
   /**
    * compact_ctx 工具登记的压缩请求。
    * 工具执行点不是安全切点（assistant(tool_calls) 与 tool 结果尚未配对完），
@@ -817,6 +845,15 @@ export class Agent {
             this.consecutiveFailures++;
           }
 
+          // 手段/目标分层计数（2026-10-26）：evidence 产出即清零，
+          // capability 累加，neither 不影响（交付/管理动作不算漂移）。
+          const kind = toolKindOf(name);
+          if (kind === "evidence") {
+            this.capabilityStreak = 0;
+          } else if (kind === "capability") {
+            this.capabilityStreak++;
+          }
+
           this.messages.push({
             role: "tool",
             tool_call_id: call.id,
@@ -1052,16 +1089,55 @@ export class Agent {
   }
 
   /**
-   * 构造本轮预算提示。
+   * 构造本轮预算 + 目标提示。
    *
    * 每次请求前注入、请求后移除，模型因此始终知道「这是第几次、还剩几次」。
    * 剩余 ≤ 5 时额外给出明确次数并要求收敛 —— 只写「即将耗尽」模型无法判断
    * 还能做几件事，往往会继续探索，最后被硬截断，用户拿到半截答案。
+   *
+   * 2026-10-26 追加目标锚：只报消耗量不够。跑偏的会话每步都有进展
+   * （DNS 解析成功、拿到 IP 都是真的），心跳满格方向全错。把原始目标
+   * 每轮摆在这里，是给模型一个「离目标多远」的信号，而不只是「还剩几步」。
+   * 目标由用户/宿主写入，模型只读 —— 提示里明确写出这一点，防止它自行重述。
    */
+  /**
+   * 读目标锚，任何异常都降级为 null。
+   *
+   * 目标锚是增强项：注入方（组合根 / 子代理 / 测试）抛错不得炸掉整轮。
+   * 组合根那侧也包了 try/catch，但调用方必须自己兜底 —— 否则任何注入方
+   * 的疏忽都会让主流程崩，而这条约定该由调用点保证。
+   */
+  private readGoalSafe(): string | null {
+    try {
+      const g = this.opt.readGoal?.() ?? null;
+      return g && g.trim() ? g : null;
+    } catch {
+      return null;
+    }
+  }
+
   private budgetMessage(attempt: number, max: number): Message {
     const remaining = Math.max(0, max - attempt);
     let text =
       `本轮工具调用：第 ${attempt} 次 / 上限 ${max}（已用 ${attempt - 1}，剩余 ${remaining}）。`;
+    const goal = this.readGoalSafe();
+    if (goal) {
+      text +=
+        `\n原始目标（用户设定，你不可修改）：${goal}` +
+        `\n每次调用工具前自问：这一步是在产出关于目标的事实，还是只在扩展手段？` +
+        `若连续多次只扩展手段而无新事实，停下来回到目标本身。`;
+      // 手段/目标分层计数（2026-10-26）：把偏离做成可见数字。
+      // 只在设了目标时显示 —— 没有目标就没有「离目标多远」可言。
+      if (this.capabilityStreak > 0) {
+        text += `\n距上次产出事实，已连续 ${this.capabilityStreak} 次只扩展手段（shell/发消息/派子代理/加载技能）。`;
+        if (this.capabilityStreak >= CAPABILITY_STREAK_LIMIT) {
+          text +=
+            `\n**已超过 ${CAPABILITY_STREAK_LIMIT} 次阈值**：你正在把手段当成目标。` +
+            `立刻停止扩展能力，回到原始目标：现在手上已有的事实够回答吗？` +
+            `够就直接答；不够就说明缺什么，不要再去开新通道。`;
+        }
+      }
+    }
     if (remaining <= 5) {
       text +=
         `\n预算即将耗尽，仅剩 ${remaining} 次工具调用机会。` +

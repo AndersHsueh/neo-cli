@@ -278,3 +278,124 @@ describe("运行时工具可见性", () => {
     }
   });
 });
+
+/* ------------------------------------------------------------------ */
+/* 目标锚注入（2026-10-26）                                            */
+/* ------------------------------------------------------------------ */
+
+describe("目标锚注入", () => {
+  /** 跑一轮带一次工具调用的 turn，返回每次请求的 messages 快照。 */
+  async function runOneToolTurn(opts: { readGoal?: () => string | null }): Promise<Message[][]> {
+    const calls: Message[][] = [];
+    const agent = new Agent({
+      cfg: makeCfg(),
+      console: silentConsole(),
+      mode: "ask",
+      systemPrompt: "sys",
+      ...(opts.readGoal ? { readGoal: opts.readGoal } : {}),
+      chatStream: async (_cfg, messages) => {
+        calls.push(messages.map((m) => ({ ...m })));
+        if (calls.length === 1) {
+          return result({
+            content: "",
+            toolCalls: [toolCall("c1", "list_dir", { path: join(SANDBOX, "work") })],
+            finishReason: "tool_calls",
+          });
+        }
+        return result({ content: "done" });
+      },
+    });
+    await agent.send("do work");
+    return calls;
+  }
+
+  test("设了目标：预算提示里同时含目标原文与「不可修改」约束", async () => {
+    const calls = await runOneToolTurn({ readGoal: () => "找出这篇博客的作者" });
+    const budget = calls[0]!.find((m) => m.role === "system" && String(m.content).includes("本轮工具调用"));
+    expect(budget).toBeDefined();
+    const text = String(budget!.content);
+    expect(text).toContain("找出这篇博客的作者");
+    expect(text).toContain("不可修改");
+  });
+
+  test("未设目标：提示退化为纯预算，不出现目标段（与旧行为一致）", async () => {
+    const calls = await runOneToolTurn({ readGoal: () => null });
+    const budget = calls[0]!.find((m) => m.role === "system" && String(m.content).includes("本轮工具调用"));
+    expect(budget).toBeDefined();
+    expect(String(budget!.content)).not.toContain("原始目标");
+  });
+
+  test("readGoal 抛错不影响本轮（增强项降级为无目标）", async () => {
+    const calls = await runOneToolTurn({
+      readGoal: () => {
+        throw new Error("state 读失败");
+      },
+    });
+    expect(calls.length).toBeGreaterThan(0);
+  });
+
+  test("目标提示是临时消息：不进历史（轮末摘除）", async () => {
+    const calls = await runOneToolTurn({ readGoal: () => "目标 X" });
+    const last = calls[calls.length - 1]!;
+    // 最后一次请求里仍带着预算提示（请求前注入），但历史中不应累积多条
+    const budgets = last.filter(
+      (m) => m.role === "system" && String(m.content).includes("本轮工具调用"),
+    );
+    expect(budgets.length).toBe(1);
+  });
+});
+
+/* ------------------------------------------------------------------ */
+/* 手段/目标分层计数（2026-10-26）                                      */
+/* ------------------------------------------------------------------ */
+
+describe("capability 连续计数", () => {
+  /** 连续调 N 次 shell（capability），再给答案；返回最后一次请求的 system 提示。 */
+  async function runShellStreak(n: number, goal: string | null): Promise<string> {
+    let round = 0;
+    const calls: Message[][] = [];
+    // 迭代上限必须 > n：第 n 次 capability 的计数要在**下一次请求**里才可见，
+    // 上限正好等于 n 时循环已收口，看不到阈值提示。
+    const cfg = { ...makeCfg(), maxToolIterations: n + 2 };
+    const agent = new Agent({
+      cfg,
+      console: silentConsole(),
+      mode: "ask",
+      systemPrompt: "sys",
+      ...(goal ? { readGoal: () => goal } : {}),
+      chatStream: async (_cfg, messages) => {
+        calls.push(messages.map((m) => ({ ...m })));
+        round++;
+        if (round <= n) {
+          return result({
+            content: "",
+            toolCalls: [toolCall(`c${round}`, "shell", { command: "true" })],
+            finishReason: "tool_calls",
+          });
+        }
+        return result({ content: "done" });
+      },
+    });
+    await agent.send("do work");
+    const last = calls[calls.length - 1]!;
+    const sys = last.filter((m) => m.role === "system" && String(m.content).includes("本轮工具调用"));
+    return String(sys[sys.length - 1]?.content ?? "");
+  }
+
+  test("连续 2 次 capability：提示里出现计数 2，未触发阈值", async () => {
+    const text = await runShellStreak(2, "找出作者");
+    expect(text).toContain("已连续 2 次只扩展手段");
+    expect(text).not.toContain("已超过");
+  });
+
+  test("连续 4 次 capability：触发阈值，要求回锚", async () => {
+    const text = await runShellStreak(4, "找出作者");
+    expect(text).toContain("已超过 4 次阈值");
+    expect(text).toContain("把手段当成目标");
+  });
+
+  test("未设目标：不显示计数（没有目标就没有「离目标多远」）", async () => {
+    const text = await runShellStreak(3, null);
+    expect(text).not.toContain("只扩展手段");
+  });
+});

@@ -116,7 +116,7 @@ import { CheckpointStore } from "./checkpoint.ts";
 import { formatResumeWarning, outcomeOf, type LastTurnMeta } from "./turnDiagnostics.ts";
 import type { ToolCtx } from "./tools/types.ts";
 
-const VERSION = "0.4.2";
+const VERSION = "0.4.3";
 
 /** /auto 列表里各实现的说明。 */
 const DESC: Record<string, string> = {
@@ -717,6 +717,16 @@ async function main(): Promise<number> {
     memory,
     checkpoint: checkpoints,
     sessionId: sess.meta.id,
+    // 目标锚（2026-10-26）：每轮现取，/goal 中途改写能立刻生效。
+    // 读失败按「无目标」降级 —— 目标锚是增强项，不得阻塞主流程。
+    readGoal: () => {
+      if (!mailbox) return null;
+      try {
+        return mailboxState.readGoal(mailbox.root, mailbox.sessionId)?.text ?? null;
+      } catch {
+        return null;
+      }
+    },
     // A2：每轮前按当前模型刷新窗口；溢出时把服务端解析出的上限记到 env 事实文件。
     refreshContextWindow: () => resolveAndApplyModelWindow(cfg),
     onContextLimit: (tokens) => {
@@ -2406,6 +2416,41 @@ async function handleCommand(
       ui.kv("held 消息", String(held.length));
       for (const id of held) ui.line(`  ${c.accent(id)} ${c.dim(`（/inbox release ${id}）`)}`);
       ui.blank();
+      break;
+    }
+
+    // 目标锚（2026-10-26）：只由人写，模型只读。
+    // 无参数 = 查看当前目标；/goal clear = 清除。
+    case "goal": {
+      if (!mailbox) {
+        ui.warn("跨会话信箱未启用（-p / 非交互模式不参与协作）");
+        break;
+      }
+      const text = arg.trim();
+      try {
+        if (!text) {
+          const g = mailboxState.readGoal(mailbox.root, mailbox.sessionId);
+          if (!g) {
+            ui.info("本会话尚未设置目标锚。用法：/goal <一句话目标>");
+          } else {
+            ui.kv("目标", g.text);
+            ui.kv("设定", `${g.set_at}（${g.set_by}）`);
+          }
+          ui.blank();
+          break;
+        }
+        if (text === "clear") {
+          mailboxState.setGoal(mailbox.root, mailbox.sessionId, "");
+          ui.success("目标锚已清除。");
+          break;
+        }
+        const s = mailboxState.setGoal(mailbox.root, mailbox.sessionId, text, { by: "user" });
+        ui.success(`目标锚已设置：${s.goal?.text ?? ""}`);
+        ui.line(c.dim("每轮请求前会把它连同工具预算一起告诉模型；模型不能改写它。"));
+        ui.blank();
+      } catch (e) {
+        ui.warn(`设置目标失败：${(e as Error).message}`);
+      }
       break;
     }
 

@@ -28,6 +28,7 @@ import {
   type PeerObservation,
   type Receipt,
   type SessionPhase,
+  type SessionGoal,
   type SessionState,
   type TurnOutcome,
   type WatchdogKind,
@@ -103,6 +104,7 @@ export function initialState(
     outstanding: [],
     last_human_input_at: null,
     queue_depth: 0,
+    goal: null,
   };
 }
 
@@ -210,6 +212,36 @@ export function noteHumanInput(root: string, sessionId: string, nowMs: number = 
     s.last_human_input_at = isoNow(nowMs);
     s.heartbeat_at = isoNow(nowMs);
   }, nowMs);
+}
+
+/* ------------------------------------------------------------------ */
+/* 目标锚（2026-10-26）                                                */
+/* ------------------------------------------------------------------ */
+
+/**
+ * 写入目标锚。**只应由宿主调用**（/goal 命令或组合根），模型无写入口。
+ *
+ * 空串 / 纯空白视为清除，避免「设了个空目标」把回锚提示变成噪音。
+ */
+export function setGoal(
+  root: string,
+  sessionId: string,
+  text: string,
+  opts: { by?: SessionGoal["set_by"]; nowMs?: number } = {},
+): SessionState {
+  const trimmed = text.trim();
+  return mutateState(root, sessionId, (s) => {
+    s.goal = trimmed
+      ? { text: trimmed, set_at: isoNow(opts.nowMs), set_by: opts.by ?? "user" }
+      : null;
+  }, opts.nowMs);
+}
+
+/** 读目标锚；无 state / 无字段 / 空串 → null。 */
+export function readGoal(root: string, sessionId: string): SessionGoal | null {
+  const g = readState(root, sessionId)?.goal;
+  if (!g || typeof g.text !== "string" || !g.text.trim()) return null;
+  return g;
 }
 
 export function noteOutbound(

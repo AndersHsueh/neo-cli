@@ -12,7 +12,7 @@ import type { ToolSpec } from "../llm.ts";
 import type { Config } from "../config.ts";
 import { describeSource, insideGlobalSkills, isRealDir, listSkillFiles, resolveSkill } from "../skills.ts";
 import { insideRawDir } from "../wiki/paths.ts";
-import { ToolError, type ToolCtx, type ToolImpl, type DispatchResult } from "./types.ts";
+import { ToolError, type ToolCtx, type ToolImpl, type ToolKind, type DispatchResult } from "./types.ts";
 import { webSearchTool } from "./webSearch.ts";
 import { toolTmpDir } from "../runtimeTmp.ts";
 import { shellMarks } from "./shellMarks.ts";
@@ -22,7 +22,7 @@ import { getShell, prepareShellInvocation, shellErrorHint } from "../shell.ts";
 // 基础类型与注册表在 ./types.ts（叶子模块，解开 task → agent → tools 循环依赖）。
 // 这里 re-export 保持既有导入路径不变。
 export { ToolError } from "./types.ts";
-export type { ToolCtx, ToolImpl, DispatchResult } from "./types.ts";
+export type { ToolCtx, ToolImpl, ToolKind, DispatchResult } from "./types.ts";
 
 /* ------------------------------------------------------------------ */
 /* 路径处理                                                            */
@@ -103,6 +103,7 @@ function shortArgs(args: Record<string, unknown>, keys: string[]): string {
 
 const readFile: ToolImpl = {
   sensitive: false,
+  kind: "evidence",
   spec: {
     type: "function",
     function: {
@@ -144,6 +145,7 @@ const readFile: ToolImpl = {
 
 const writeFileTool: ToolImpl = {
   sensitive: true,
+  kind: "neither",
   spec: {
     type: "function",
     function: {
@@ -187,6 +189,7 @@ const writeFileTool: ToolImpl = {
 
 const editFile: ToolImpl = {
   sensitive: true,
+  kind: "neither",
   spec: {
     type: "function",
     function: {
@@ -253,6 +256,7 @@ const editFile: ToolImpl = {
 
 const listDir: ToolImpl = {
   sensitive: false,
+  kind: "evidence",
   spec: {
     type: "function",
     function: {
@@ -327,6 +331,7 @@ const listDir: ToolImpl = {
 
 const globTool: ToolImpl = {
   sensitive: false,
+  kind: "evidence",
   spec: {
     type: "function",
     function: {
@@ -436,6 +441,7 @@ export function globToRegExp(pattern: string): RegExp {
 
 const grepTool: ToolImpl = {
   sensitive: false,
+  kind: "evidence",
   spec: {
     type: "function",
     function: {
@@ -565,6 +571,7 @@ function spawnPiped(
 
 const shell: ToolImpl = {
   sensitive: true,
+  kind: "capability",
   spec: {
     type: "function",
     function: {
@@ -682,6 +689,7 @@ export function rewriteSearchUrl(url: string): { url: string; note: string | nul
 
 const webFetch: ToolImpl = {
   sensitive: false,
+  kind: "evidence",
   spec: {
     type: "function",
     function: {
@@ -751,6 +759,7 @@ const useSkill: ToolImpl = {
   // 只读：不改任何文件。首次加载全局技能会在 <cwd>/skills/ 建一个软链，
   // 那是一次无害且会在输出里明说的操作，不构成破坏性行为。
   sensitive: false,
+  kind: "capability",
   spec: {
     type: "function",
     function: {
@@ -798,6 +807,7 @@ const useSkill: ToolImpl = {
 const compactCtx: ToolImpl = {
   // 只读操作：不碰任何文件，压缩本身是宿主代理的内部行为。
   sensitive: false,
+  kind: "neither",
   spec: {
     type: "function",
     function: {
@@ -849,6 +859,14 @@ export const TOOLS: ToolImpl[] = [
 ];
 
 const registry = new Map(TOOLS.map((t) => [t.spec.function.name, t]));
+
+/**
+ * 查工具的手段/目标分层（2026-10-26）。
+ * 未注册或未标 kind → "neither"（不参与偏离判定）。
+ */
+export function toolKindOf(name: string): ToolKind {
+  return registry.get(name)?.kind ?? "neither";
+}
 
 /**
  * 运行时注册一个工具（追加到注册表尾部）。

@@ -188,6 +188,24 @@ export interface LastTurn {
   abort_source: AbortSource;
 }
 
+/**
+ * 会话目标锚（2026-10-26）。
+ *
+ * 为什么需要：`isStuck` 判的是 `last_progress_at`，而跑偏的会话每一步都在
+ * touchProgress（DNS 解析成功、拿到 IP 都是真实进展）——心跳满格、方向全错。
+ * 进度信号 ≠ 方向信号，这里补的是后者。
+ *
+ * **模型只读**：目标只由用户 /goal 或宿主写入。漂移的第一步就是模型把
+ * 「找出作者」重述成「拿到答案」再重述成「打通外部连接」；目标若可写，
+ * 一定会被重述。目标必须是外部事实，不是模型自述。
+ */
+export interface SessionGoal {
+  /** 原始目标原文，不截断（回锚提示要用完整表述）。 */
+  text: string;
+  set_at: string;
+  set_by: "user" | "host";
+}
+
 export interface SessionState {
   version: 1;
   session: string;
@@ -204,6 +222,8 @@ export interface SessionState {
   outstanding: OutstandingDelegation[];
   last_human_input_at: string | null;
   queue_depth: number;
+  /** 目标锚（2026-10-26）。旧 state 无此字段 → 视为 null，不判 state 非法。 */
+  goal?: SessionGoal | null;
 }
 
 /* ------------------------------------------------------------------ */

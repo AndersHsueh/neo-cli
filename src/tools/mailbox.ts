@@ -24,6 +24,7 @@ export function makeSendMessageTool(deps: SendMessageDeps): ToolImpl {
   return {
     // 投递本身不直接改工作区；它只写信箱文件，属于会话协作而非文件操作。
     sensitive: false,
+    kind: "capability",
     spec: {
       type: "function",
       function: {
@@ -89,6 +90,7 @@ export interface ListPeersDeps {
 export function makeListPeersTool(deps: ListPeersDeps): ToolImpl {
   return {
     sensitive: false,
+    kind: "neither",
     spec: {
       type: "function",
       function: {

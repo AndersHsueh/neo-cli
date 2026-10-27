@@ -67,10 +67,31 @@ export interface ToolCtx {
   cancelAskUser?: () => void;
 }
 
+/**
+ * 工具的手段/目标分层（2026-10-26）。
+ *
+ * 为什么需要：跑偏的会话不是「不干活」，而是**手段逐步升格成目标**
+ * （找出作者 → 拿到答案 → 打通外部连接 → 连 DNS 找出口）。
+ * 每步都有真实进展，心跳满格方向全错。这里给工具打标签，
+ * 让宿主能数出「连续几次只扩展手段、没产出事实」。
+ *
+ * - `evidence`：产出关于世界的事实（读文件、搜索、抓网页）。
+ * - `capability`：只扩展「能做什么」，不直接产出事实（shell 外联、
+ *   发消息找外援、派子代理、加载技能）。
+ * - `neither`：交付或管理动作，不参与偏离判定（写文件、记忆、压缩、提问）。
+ *
+ * 注意 `shell` 归 capability 而非 evidence：它能 `cat` 也能 `curl`，
+ * 宿主无法在分类层面区分。规则是「**连续** N 次 capability 无 evidence」，
+ * 偶尔用 shell 查东西不会触发，连续用才会 —— 这正是要抓的形态。
+ */
+export type ToolKind = "evidence" | "capability" | "neither";
+
 export interface ToolImpl {
   spec: ToolSpec;
   /** 是否属于敏感操作（需要审批）。 */
   sensitive: boolean;
+  /** 手段/目标分层。缺省视为 "neither"（不参与偏离判定）。 */
+  kind?: ToolKind;
   execute: (args: Record<string, unknown>, ctx: ToolCtx) => Promise<string> | string;
 }
 

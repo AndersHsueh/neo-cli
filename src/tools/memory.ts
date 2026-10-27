@@ -17,6 +17,7 @@ export interface RememberDeps {
 export function makeRememberTool(deps: RememberDeps): ToolImpl {
   return {
     sensitive: false,
+    kind: "neither",
     spec: {
       type: "function",
       function: {

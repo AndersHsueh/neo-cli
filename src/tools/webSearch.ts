@@ -60,6 +60,7 @@ export function makeWebSearchTool(deps: { fetchImpl?: typeof fetch } = {}): Tool
   const doFetch = deps.fetchImpl ?? fetch;
   return {
     sensitive: false,
+    kind: "evidence",
     spec: {
       type: "function",
       function: {

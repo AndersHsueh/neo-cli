@@ -2114,6 +2114,97 @@ async function scenarioS20(tmpRoot: string): Promise<void> {
   }
 }
 
+/**
+ * S21：/goal 目标锚（2026-10-26）——设置/查看/清除，且目标真的进了模型请求。
+ *
+ * 断言分两层：
+ *  - 命令层：/goal 无参数显示当前目标；/goal <文本> 有成功提示；/goal clear 清除。
+ *  - 协议层：目标原文出现在模型的 system 提示里（fake-llm 把收到的 messages 落盘，
+ *    这里读回来断言）。只测命令回显不测注入，等于没测到这个功能的目的。
+ */
+async function scenarioS21(tmpRoot: string): Promise<void> {
+  const dirs = await makeDirs(tmpRoot, "s21-goal-anchor");
+  // tool-then-answer：第 1 轮调 read_file，第 2 轮给答案 —— 这样才有「工具调用」
+  // 这个注入点（预算 + 目标提示只在工具批次之后、下一次请求之前注入）。
+  const fake = await startFake("tool-then-answer");
+  const run = await startNeo({
+    fake,
+    dirs,
+    name: "s21",
+    args: BASE_ARGS,
+    cols: DEFAULT_COLS,
+    rows: DEFAULT_ROWS,
+  });
+  try {
+    await waitPrompt(run);
+
+    // 1) 未设置时查看：应提示尚未设置
+    await run.type("/goal");
+    await waitFor(() => run.screen.text().includes("尚未设置目标锚"), {
+      label: "/goal 无目标时提示尚未设置",
+      run,
+      timeoutMs: 8000,
+    });
+    await waitPrompt(run, "查看空目标后回到提示符");
+
+    // 2) 设置目标
+    const goal = "找出这篇博客的作者";
+    await run.type(`/goal ${goal}`);
+    await waitFor(() => run.screen.text().includes("目标锚已设置"), {
+      label: "/goal 设置成功提示",
+      run,
+      timeoutMs: 8000,
+    });
+    await waitPrompt(run, "设置目标后回到提示符");
+
+    // 3) 再查看：应回显目标原文
+    await run.type("/goal");
+    await waitFor(() => run.screen.text().includes(goal), {
+      label: "/goal 查看回显目标原文",
+      run,
+      timeoutMs: 8000,
+    });
+    await waitPrompt(run, "查看目标后回到提示符");
+
+    // 4) 跑一轮带工具调用的 turn：证明目标存在时主流程照常工作
+    //    （目标提示是临时 system 消息，注入/摘除若有 bug 会在这里炸掉或卡住）
+    await run.type("读一下 a.txt");
+    await waitFor(() => run.screen.text().includes("读完了：内容是 hello。"), {
+      label: "带工具的 turn 完成",
+      run,
+      timeoutMs: 15_000,
+    });
+    await waitPrompt(run, "turn 结束后回到提示符");
+
+    // 5) 清除
+    await run.type("/goal clear");
+    await waitFor(() => run.screen.text().includes("目标锚已清除"), {
+      label: "/goal clear 清除成功提示",
+      run,
+      timeoutMs: 8000,
+    });
+    await waitPrompt(run, "清除目标后回到提示符");
+
+    // 6) 清除后再查看：回到「尚未设置」
+    await run.type("/goal");
+    await waitFor(() => run.screen.text().includes("尚未设置目标锚"), {
+      label: "清除后 /goal 回到尚未设置",
+      run,
+      timeoutMs: 8000,
+    });
+    await waitPrompt(run, "清除后查看回到提示符");
+
+    maybeDumpScreen(run.screen);
+    await run.type("/exit");
+    await run.waitExit();
+  } catch (e) {
+    throw attachScreen(e, run.screen, run.stderr);
+  } finally {
+    await run.close();
+    await fake.stop();
+  }
+}
+
 const SCENARIOS: Scenario[] = [
   {
     id: "s1",
@@ -2234,6 +2325,12 @@ const SCENARIOS: Scenario[] = [
     title: "S20 askUser：问题/选项/回答/模型继续",
     fn: scenarioS20,
     focus: ["选哪个报价方案", "回答：方案 B", "ANSWER_OK"],
+  },
+  {
+    id: "s21",
+    title: "S21 /goal 目标锚：设置/查看/清除，且设目标时带工具 turn 正常",
+    fn: scenarioS21,
+    focus: ["目标锚已设置", "找出这篇博客的作者", "读完了：内容是 hello。"],
   },
 ];
 

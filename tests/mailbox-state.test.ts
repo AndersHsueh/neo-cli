@@ -464,3 +464,64 @@ describe("G 文件兼容", () => {
     expect(DEFAULT_MAILBOX_CONFIG.autoTurnLimit).toBe(20);
   });
 });
+
+/* ------------------------------------------------------------------ */
+/* 目标锚（2026-10-26）                                                */
+/* ------------------------------------------------------------------ */
+
+describe("H 目标锚", () => {
+  test("H1 新建会话 goal 为 null", () => {
+    const root = freshRoot();
+    seedSession(root);
+    expect(st.readGoal(root, SELF)).toBeNull();
+  });
+
+  test("H2 setGoal 写入后可读回，含 set_by 与时间戳", () => {
+    const root = freshRoot();
+    seedSession(root);
+    st.setGoal(root, SELF, "找出这篇博客的作者", { by: "user", nowMs: T0 });
+    const g = st.readGoal(root, SELF);
+    expect(g?.text).toBe("找出这篇博客的作者");
+    expect(g?.set_by).toBe("user");
+    expect(g?.set_at).toBe(new Date(T0).toISOString());
+  });
+
+  test("H3 空串 / 纯空白视为清除", () => {
+    const root = freshRoot();
+    seedSession(root);
+    st.setGoal(root, SELF, "目标 A");
+    st.setGoal(root, SELF, "   ");
+    expect(st.readGoal(root, SELF)).toBeNull();
+  });
+
+  test("H4 覆盖写：后一次 setGoal 替换前一次", () => {
+    const root = freshRoot();
+    seedSession(root);
+    st.setGoal(root, SELF, "旧目标");
+    st.setGoal(root, SELF, "新目标");
+    expect(st.readGoal(root, SELF)?.text).toBe("新目标");
+  });
+
+  test("H5 旧 state 无 goal 字段 → 视为 null，不判 state 非法", () => {
+    const root = freshRoot();
+    seedSession(root);
+    // 模拟 2026-10-26 之前写下的 state：删掉 goal 字段
+    const p = statePath(root, SELF);
+    const raw = JSON.parse(readFileSync(p, "utf8")) as Record<string, unknown>;
+    delete raw["goal"];
+    writeFileSync(p, JSON.stringify(raw), "utf8");
+    expect(st.readState(root, SELF)).not.toBeNull();
+    expect(st.readGoal(root, SELF)).toBeNull();
+  });
+
+  test("H6 setGoal 不改变 phase / turn 等既有字段", () => {
+    const root = freshRoot();
+    seedSession(root);
+    const before = st.readState(root, SELF)!;
+    st.setGoal(root, SELF, "目标");
+    const after = st.readState(root, SELF)!;
+    expect(after.phase).toBe(before.phase);
+    expect(after.turn).toEqual(before.turn);
+    expect(after.session).toBe(before.session);
+  });
+});

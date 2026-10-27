@@ -266,6 +266,7 @@ export function makeTaskTool(deps: {
     // ask 模式下子代理的写操作会在子代理内部弹审批（confirm 委托主 console），
     // 若这里也标 sensitive，用户要为同一次写操作点两次批准。
     sensitive: false,
+    kind: "capability",
     spec: {
       type: "function",
       function: {

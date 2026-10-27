@@ -15,6 +15,7 @@ export function makeAskUserTool(deps: {
 }): ToolImpl {
   return {
     sensitive: false,
+    kind: "neither",
     spec: {
       type: "function",
       function: {

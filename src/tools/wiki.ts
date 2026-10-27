@@ -57,6 +57,7 @@ function ensureUserLayout(cfg: Config): WikiLayout {
 
 export const wikiSearchTool: ToolImpl = {
   sensitive: false,
+  kind: "evidence",
   spec: {
     type: "function",
     function: {
@@ -136,6 +137,7 @@ export const wikiSearchTool: ToolImpl = {
 
 export const wikiWriteTool: ToolImpl = {
   sensitive: false,
+  kind: "neither",
   spec: {
     type: "function",
     function: {
