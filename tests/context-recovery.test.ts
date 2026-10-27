@@ -139,6 +139,29 @@ describe("A2 上下文溢出恢复", () => {
     expect(cfg.contextWindow).toBe(128_000);
   });
 
+  test("最后一次迭代溢出：不得静默按 ok 收口", async () => {
+    let calls = 0;
+    const stream = async (): Promise<StreamResult> => {
+      calls += 1;
+      throw OVERFLOW();
+    };
+    const cfg = makeCfg();
+    cfg.maxToolIterations = 1;
+    const agent = new Agent({
+      cfg,
+      console: captureConsole().ui,
+      mode: "auto-all",
+      systemPrompt: "sys",
+      chatStream: stream,
+    });
+    seedHistory(agent);
+    const stats = await agent.send("继续");
+    expect(stats.hadError).toBe(true);
+    expect(stats.errorMessage).toContain("没有产出最终回答");
+    expect(stats.aborted).toBe(false);
+    expect(calls).toBe(2); // 主请求 + 恢复分支里的压缩请求
+  });
+
   test("普通 400（非上下文）不触发压缩重试", async () => {
     let calls = 0;
     const stream = async (): Promise<StreamResult> => {

@@ -571,7 +571,7 @@ describe("D CaptureEngine", () => {
     expect(existsSync(join(user.pagesDir, "偏好-新偏好.md"))).toBe(false);
   });
 
-  test("D6 锁被占用：不落审计、journal 保留可重试", async () => {
+  test("D6 锁被占用：写 skipped 审计（回执不空等）、journal 保留可重试", async () => {
     const { engine } = engineWith([jsonOps([])]);
     const lockDir = join(JOURNAL, ".write.lock");
     mkdirSync(lockDir, { recursive: true });
@@ -579,8 +579,11 @@ describe("D CaptureEngine", () => {
     await engine.flush(3000);
     // 先释放锁，再断言（断言失败时不能把锁留给后续用例）
     rmSync(lockDir, { recursive: true, force: true });
-    // 并发冲突不写终态审计：记录留在 journal，下次 flush/启动重试
-    expect(readAudit(JOURNAL, 5).length).toBe(0);
+    // 锁冲突给一条 skipped 回执，记录仍留在 journal 供下次重试
+    const audits = readAudit(JOURNAL, 5);
+    expect(audits).toHaveLength(1);
+    expect(audits[0]?.status).toBe("deferred");
+    expect(audits[0]?.reasons[0]).toContain("写锁被占用");
     expect(pendingRecords(JOURNAL, { limit: 10 }).length).toBe(1);
   });
 
@@ -688,7 +691,6 @@ describe("D CaptureEngine", () => {
           page: "偏好-交付物版本管理.md",
           summary: "交付物版本保留偏好",
           body: "用户要求每一版报价都保留，绝不主动删除，清理由用户手动做。",
-          confidence: 0.3,
           inferred: false,
           evidence: "",
         },

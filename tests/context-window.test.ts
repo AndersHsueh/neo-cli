@@ -134,6 +134,14 @@ describe("env 模型窗口事实", () => {
     expect(readSnapshot(refreshed!.snapshotPath)?.models?.["p1|m1"]?.contextWindow).toBe(128_000);
   });
 
+  test("切模型时用 configuredContextWindow 兜底，不沿用上一个模型的探测值", () => {
+    const cfg = makeCfg({ contextWindow: 128_000, configuredContextWindow: 500_000, model: "m2" });
+    const r = resolveAndApplyModelWindow(cfg);
+    expect(r.tokens).toBe(500_000);
+    expect(r.source).toBe("config");
+    expect(cfg.contextWindow).toBe(500_000);
+  });
+
   test("/models 元数据探测并落盘", async () => {
     const server = Bun.serve({
       port: 0,

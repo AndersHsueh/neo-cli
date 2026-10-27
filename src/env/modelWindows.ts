@@ -61,7 +61,10 @@ export function readModelContext(
  */
 export function resolveAndApplyModelWindow(cfg: Config): ResolvedWindow {
   const info = readModelContext(cfg);
-  const resolved = resolveContextWindow(cfg.contextWindow, cfg.model, info);
+  // 用「配置原值」而非当前值做 fallback：cfg.contextWindow 可能已被上一个模型的
+  // env 事实覆盖，不能拿它冒充新模型的配置窗口（/model 切换场景）。
+  const fallback = cfg.configuredContextWindow ?? cfg.contextWindow;
+  const resolved = resolveContextWindow(fallback, cfg.model, info);
   cfg.contextWindow = resolved.tokens;
   cfg.contextWindowSource = resolved.source;
   return resolved;
@@ -77,7 +80,7 @@ export function recordModelContext(
     let snap = readSnapshot(file);
     if (!snap) {
       // 首次没有快照时先走一次环境探测（10ms 量级），失败就算了。
-      loadEnv({ cfg, persist: true });
+      loadEnv({ cfg, persist: true, home: envHome() });
       snap = readSnapshot(file);
     }
     if (!snap) return;

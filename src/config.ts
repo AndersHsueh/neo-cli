@@ -136,6 +136,8 @@ export interface Config {
   maxTokens: number;
   temperature: number;
   contextWindow: number;
+  /** settings/provider/globalDefaults 当时的原始窗口值（不被探测结果覆盖，B2 用）。 */
+  configuredContextWindow?: number;
   /**
    * contextWindow 的来源（v0.4.1 A2）：
    *  - config = settings 值；models_api/overflow_error = 自动探测；known = 兜底表。
@@ -640,6 +642,7 @@ export function loadConfig(overrides: Partial<Config> = {}): Config {
     maxTokens: picked.maxTokens ?? gMax,
     temperature: picked.temperature ?? gTemp,
     contextWindow: picked.contextWindow ?? gCtx,
+    configuredContextWindow: picked.contextWindow ?? gCtx,
     contextWindowSource: "config",
     globalDefaults: { maxTokens: gMax, temperature: gTemp, contextWindow: gCtx },
     compactThreshold: num(raw["compact_threshold"], num(dflt["compact_threshold"], 0.75)),
@@ -796,6 +799,7 @@ export function applyTier(
     cfg.maxTokens = defProv.maxTokens ?? cfg.globalDefaults.maxTokens;
     cfg.temperature = defProv.temperature ?? cfg.globalDefaults.temperature;
     cfg.contextWindow = defProv.contextWindow ?? cfg.globalDefaults.contextWindow;
+    cfg.configuredContextWindow = cfg.contextWindow;
     return {
       ok: true,
       degraded: true,
@@ -812,6 +816,7 @@ export function applyTier(
   cfg.maxTokens = target.maxTokens ?? cfg.globalDefaults.maxTokens;
   cfg.temperature = target.temperature ?? cfg.globalDefaults.temperature;
   cfg.contextWindow = target.contextWindow ?? cfg.globalDefaults.contextWindow;
+  cfg.configuredContextWindow = cfg.contextWindow;
   return { ok: true, degraded: false };
 }
 
@@ -868,6 +873,7 @@ export function switchProvider(cfg: Config, name: string): { ok: true } | { ok: 
   cfg.maxTokens = target.maxTokens ?? g.maxTokens;
   cfg.temperature = target.temperature ?? g.temperature;
   cfg.contextWindow = target.contextWindow ?? g.contextWindow;
+  cfg.configuredContextWindow = cfg.contextWindow;
 
   return { ok: true };
 }

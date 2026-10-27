@@ -225,7 +225,7 @@ export class CaptureEngine {
   capture(input: TurnCaptureInput): void {
     try {
       const m = this.deps.cfg.memory;
-      if (!m.enabled || !m.autoCapture.enabled) return;
+      if (!m.enabled || !m.autoCapture.enabled || m.autoCapture.mode === "off") return;
       const now = this.deps.now?.() ?? new Date();
       const rec = buildTurnRecord(input, {
         sessionId: this.deps.sessionId,
@@ -401,9 +401,17 @@ export class CaptureEngine {
     const lockDir = join(mem.journalDir, ".write.lock");
     const lock = tryAcquireLock(lockDir, { staleMs: 120_000 });
     if (!lock) {
-      // 不写审计：留 journal 下次 flush/启动再试。写 failed 会消耗重试次数，
-      // 两个会话并发时可能把记录永久放弃。
+      // 留 journal 下次 flush/启动再试；但必须写一条审计让 remember 的同步回执
+      // 立刻拿到「稍后再试」，而不是干等 15s（B3 审计修复）。
       this.debug("记忆写锁被占用，本轮回退到 journal 等待下次处理");
+      this.audit({
+        rec,
+        status: "deferred",
+        applied: 0,
+        dropped: 0,
+        reasons: ["记忆写锁被占用，已留 journal 等待下次处理"],
+        ms: Date.now() - started,
+      });
       return;
     }
 
@@ -436,12 +444,16 @@ export class CaptureEngine {
       });
 
       if (ops.length === 0) {
+        const reasons = dropped.slice(0, 10).map((d) => `op#${d.index}: ${d.reason}`);
+        if (reasons.length === 0) {
+          reasons.push(rec.kind === "explicit" ? "显式记忆提炼器返回空 ops" : "提炼器判定无值得记录的内容");
+        }
         this.audit({
           rec,
           status: "dropped",
           applied: 0,
           dropped: dropped.length,
-          reasons: dropped.slice(0, 10).map((d) => `op#${d.index}: ${d.reason}`),
+          reasons,
           ms: Date.now() - started,
         });
         return;

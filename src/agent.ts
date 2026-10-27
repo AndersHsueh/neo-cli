@@ -564,10 +564,17 @@ export class Agent {
     let nudgeMsg: Message | null = null;
     /** 上下文溢出恢复只做一次（A2），避免无限压缩-重试循环。 */
     let overflowRecovered = false;
+    /** 本轮是否已产出最终正文（用于收口「循环结束但没回答」）。 */
+    let answered = false;
+    /** 轮次内是否因用户 abort 退出（循环顶部 break 路径）。 */
+    let abortedFlag = false;
 
     for (let iter = 0; iter < maxIter; iter++) {
       iterations++;
-      if (signal.aborted) break;
+      if (signal.aborted) {
+        abortedFlag = true;
+        break;
+      }
 
       // 上下文超阈值 → 自动压缩
       const usage = estimateTokens(this.messages, specs) / this.opt.cfg.contextWindow;
@@ -726,6 +733,8 @@ export class Agent {
             // 重试成功：摘掉重试提示，别让它作为噪音留在后续轮次的历史里
             if (nudgeMsg) this.dropTransientMessage(nudgeMsg);
             this.messages.push({ role: "assistant", content: res.content });
+            answered = true;
+            retryMaxTokens = null;
             break;
           }
 
@@ -776,6 +785,8 @@ export class Agent {
         }
 
         // ---- 有工具调用 ----
+        // 放大过的输出预算只在「空正文重试」那一次生效；带工具调用后复位。
+        retryMaxTokens = null;
         this.messages.push({
           role: "assistant",
           content: res.content,
@@ -917,6 +928,16 @@ export class Agent {
       );
     }
 
+    // 收口兜底：循环结束却没有最终正文（例：最后一次迭代恰好触发溢出恢复/迭代上限），
+    // 不能静默返回 ok —— 这正是 A1 要消灭的「最后一轮没回复、没报错」。
+    if (!answered && !hadError && !emptyResponse && !abortedFlag && !signal.aborted) {
+      hadError = true;
+      if (finishReason === null) emptyResponse = true;
+      errorMessage = "本轮在重试/迭代上限处结束，没有产出最终回答";
+      this.opt.console.error(errorMessage);
+      this.opt.onEvent?.({ type: "error", data: errorMessage });
+    }
+
     this.totalPrompt += promptTokens;
     this.totalCompletion += completionTokens;
     this.totalReasoning += reasoningTokens;
@@ -929,7 +950,7 @@ export class Agent {
       toolCalls,
       iterations,
       finishReason,
-      aborted: false,
+      aborted: abortedFlag,
       hadError,
       errorMessage,
       emptyResponse,
@@ -1073,6 +1094,7 @@ export class Agent {
       onProgress: (m) => ui.updateSpinner(m),
       askUser: this.opt.askUser,
       cancelAskUser: this.opt.cancelAskUser,
+      readOnly: this.opt.mode === "plan",
     };
   }
 }

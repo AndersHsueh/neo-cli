@@ -2,7 +2,7 @@
  * v0.4.1 B4：D1 输出落盘 / D2 shell cwd / D3 web_search。
  */
 import { afterAll, describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -12,7 +12,12 @@ import type { Config } from "../src/config.ts";
 import type { ToolCtx } from "../src/tools/types.ts";
 
 const ROOT = mkdtempSync(join(tmpdir(), "neo-b4-"));
-afterAll(() => rmSync(ROOT, { recursive: true, force: true }));
+const TMP_DIR = join(ROOT, "tooltmp");
+process.env["NEO_TMP_DIR"] = TMP_DIR;
+afterAll(() => {
+  delete process.env["NEO_TMP_DIR"];
+  rmSync(ROOT, { recursive: true, force: true });
+});
 
 function makeCfg(cwd: string): Config {
   return {
@@ -31,19 +36,30 @@ function makeCtx(cwd: string): ToolCtx {
 }
 
 describe("D1 超长输出落盘", () => {
-  test("截断时把完整输出写到 <cwd>/.neo/tmp 并给出路径", () => {
+  test("截断时把完整输出写到 NEO_TMP_DIR 并给出路径（0600）", () => {
     const cwd = join(ROOT, "spill");
     mkdirSync(cwd, { recursive: true });
     const full = `HEAD-${"x".repeat(200)}-TAIL`;
     const r = limitOutput(full, 80, makeCtx(cwd));
     expect(r.truncated).toBe(true);
-    expect(r.output).toContain(".neo/tmp/tool-");
+    expect(r.output).toContain(TMP_DIR);
     expect(r.output).toContain("完整输出已落盘");
     expect(r.output).toContain("TAIL");
     const path = /落盘：(.+?)（/.exec(r.output)?.[1];
     expect(path).toBeTruthy();
     expect(existsSync(path!)).toBe(true);
     expect(readFileSync(path!, "utf8")).toBe(full);
+    expect(statSync(path!).mode & 0o777).toBe(0o600);
+  });
+
+  test("plan 模式（readOnly）不落盘", () => {
+    const cwd = join(ROOT, "spill-plan");
+    mkdirSync(cwd, { recursive: true });
+    const full = `HEAD-${"x".repeat(200)}-TAIL`;
+    const r = limitOutput(full, 80, { ...makeCtx(cwd), readOnly: true });
+    expect(r.truncated).toBe(true);
+    expect(r.output).not.toContain("完整输出已落盘");
+    expect(r.output).toContain("落盘失败");
   });
 
   test("未超限不落盘", () => {

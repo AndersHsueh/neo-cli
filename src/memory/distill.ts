@@ -119,12 +119,20 @@ export function buildDistillMessages(input: DistillInput): Message[] {
    "evidence":"「用户原话或助手结论片段」","supersedes":"可选：旧结论原文"}
 ]}`;
 
-  const rules = [
-    `最多输出 ${maxOps} 条 op；没有值得记的就输出 {"ops":[]}。`,
-    `事实类 confidence ≥ ${minConfidence}；推断类（inferred=true）confidence ≥ ${minInferredConfidence}，且必须写清推断依据。`,
-    `create 只用于清单里不存在的页；page 不存在清单里却用 append 会被丢弃。`,
-    `body 中不要包含任何密钥、token、密码。`,
-  ].join("\n");
+  const rules =
+    record.kind === "explicit"
+      ? [
+          `这是用户显式 remember：必须至少输出 1 条 op，不允许 {"ops":[]}。`,
+          `action 按页存在性选：清单里没有的页用 create，已有页用 append（校验层也会自动降级）。`,
+          `confidence 固定填 0.9，不要用 inferred=true。`,
+          `body 复述用户要记住的事实（20-1500字）；不要包含密钥、token、密码。`,
+        ].join("\n")
+      : [
+          `最多输出 ${maxOps} 条 op；没有值得记的就输出 {"ops":[]}。`,
+          `事实类 confidence ≥ ${minConfidence}；推断类（inferred=true）confidence ≥ ${minInferredConfidence}，且必须写清推断依据。`,
+          `create 只用于清单里不存在的页；page 不存在清单里却用 append 会被丢弃。`,
+          `body 中不要包含任何密钥、token、密码。`,
+        ].join("\n");
 
   return [
     { role: "system", content: SYSTEM_PROMPT },
@@ -266,7 +274,7 @@ export function validateDistillOps(raw: unknown[], input: DistillInput): Validat
     const confidence = typeof o["confidence"] === "number" ? o["confidence"] : Number.NaN;
     const inferred = o["inferred"] === true;
     const floor = isExplicit ? 0 : inferred ? minInferredConfidence : minConfidence;
-    if (!Number.isFinite(confidence) || confidence < floor) {
+    if (!isExplicit && (!Number.isFinite(confidence) || confidence < floor)) {
       dropped.push({
         index: idx,
         reason: `confidence ${Number.isFinite(confidence) ? confidence : "非法"} < 门槛 ${floor}${inferred ? "(推断)" : ""}`,

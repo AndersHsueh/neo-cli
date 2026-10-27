@@ -9,7 +9,12 @@ import { join } from "node:path";
 import { cleanupMailboxDirs, cleanupRuntime, cleanupTmpDir } from "../src/maintenance.ts";
 
 const ROOT = mkdtempSync(join(tmpdir(), "neo-maint-"));
-afterAll(() => rmSync(ROOT, { recursive: true, force: true }));
+const HOME_TMP = join(ROOT, "home-tmp");
+process.env["NEO_TMP_DIR"] = HOME_TMP;
+afterAll(() => {
+  delete process.env["NEO_TMP_DIR"];
+  rmSync(ROOT, { recursive: true, force: true });
+});
 
 const DAY = 24 * 60 * 60 * 1000;
 
@@ -64,7 +69,7 @@ describe("cleanupMailboxDirs", () => {
 describe("cleanupRuntime", () => {
   test("汇总两类清理结果", () => {
     const cwd = join(ROOT, "rt");
-    const tmp = join(cwd, ".neo", "tmp");
+    const tmp = HOME_TMP;
     mkdirSync(tmp, { recursive: true });
     writeFileSync(join(tmp, "tool-old.txt"), "12345");
     age(join(tmp, "tool-old.txt"), 9);

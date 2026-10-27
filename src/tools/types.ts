@@ -48,6 +48,8 @@ export interface ToolCtx {
   host?: CompactHost;
   /** 取消信号（Ctrl+C）。 */
   signal?: AbortSignal;
+  /** plan 模式（只读）：禁止一切写盘副作用，包括工具输出落盘。 */
+  readOnly?: boolean;
   /** 由 agent 注入，让工具能观察取消。 */
   onNotice?: (msg: string) => void;
   /**

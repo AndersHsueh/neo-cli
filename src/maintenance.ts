@@ -10,6 +10,7 @@
  */
 import { readdirSync, rmSync, statSync } from "node:fs";
 import { join } from "node:path";
+import { toolTmpDir } from "./runtimeTmp.ts";
 
 export interface CleanupOptions {
   /** 超过该年龄才删（默认 7 天）。 */
@@ -35,14 +36,13 @@ function ageOf(path: string, now: number): number | null {
   }
 }
 
-/** 清 .neo/tmp 下过期文件；返回删除数/释放字节。 */
-export function cleanupTmpDir(
-  cwd: string,
+/** 清指定 tmp 目录下过期文件；返回删除数/释放字节。 */
+export function cleanupTmpFiles(
+  dir: string,
   opts: CleanupOptions = {},
 ): { removed: number; freedBytes: number; errors: string[] } {
   const maxAge = opts.maxAgeMs ?? 7 * DAY;
   const now = opts.now ?? Date.now();
-  const dir = join(cwd, ".neo", "tmp");
   let removed = 0;
   let freedBytes = 0;
   const errors: string[] = [];
@@ -72,6 +72,14 @@ export function cleanupTmpDir(
     }
   }
   return { removed, freedBytes, errors };
+}
+
+/** 清项目内 .neo/tmp（兼容旧路径）。 */
+export function cleanupTmpDir(
+  cwd: string,
+  opts: CleanupOptions = {},
+): { removed: number; freedBytes: number; errors: string[] } {
+  return cleanupTmpFiles(join(cwd, ".neo", "tmp"), opts);
 }
 
 /** 清 mailbox 下过期（默认 7 天无心跳）的会话目录。 */
@@ -115,12 +123,14 @@ export function cleanupRuntime(
   mailboxRootPath: string,
   opts: CleanupOptions = {},
 ): CleanupResult {
-  const tmp = cleanupTmpDir(cwd, opts);
+  const current = cleanupTmpFiles(toolTmpDir(), opts);
+  // 兼容 v0.4.1 早期写进项目的 .neo/tmp
+  const legacy = cleanupTmpDir(join(cwd, ".neo", "tmp"), opts);
   const mb = cleanupMailboxDirs(mailboxRootPath, opts);
   return {
-    removedTmpFiles: tmp.removed,
+    removedTmpFiles: current.removed + legacy.removed,
     removedMailboxDirs: mb.removed,
-    freedBytes: tmp.freedBytes,
-    errors: [...tmp.errors, ...mb.errors],
+    freedBytes: current.freedBytes + legacy.freedBytes,
+    errors: [...current.errors, ...legacy.errors, ...mb.errors],
   };
 }

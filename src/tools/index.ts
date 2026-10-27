@@ -14,6 +14,7 @@ import { describeSource, insideGlobalSkills, isRealDir, listSkillFiles, resolveS
 import { insideRawDir } from "../wiki/paths.ts";
 import { ToolError, type ToolCtx, type ToolImpl, type DispatchResult } from "./types.ts";
 import { webSearchTool } from "./webSearch.ts";
+import { toolTmpDir } from "../runtimeTmp.ts";
 import { shellMarks } from "./shellMarks.ts";
 import { listSearchFiles } from "./fileList.ts";
 import { getShell, prepareShellInvocation, shellErrorHint } from "../shell.ts";
@@ -941,9 +942,9 @@ export async function dispatch(
   }
 }
 
-/** 超长输出落盘目录：<cwd>/.neo/tmp（随项目走，便于用户/模型直接读）。 */
-function spillDir(cwd: string): string {
-  return join(cwd, ".neo", "tmp");
+/** 超长输出落盘目录：~/.neo/tmp（0600；NEO_TMP_DIR 可覆盖，不放用户仓库）。 */
+function spillDir(): string {
+  return toolTmpDir();
 }
 
 /**
@@ -960,11 +961,13 @@ export function limitOutput(s: string, limit: number, ctx: ToolCtx): DispatchRes
   const omitted = s.length - head.length - tail.length;
   let path: string | null = null;
   try {
-    const dir = spillDir(ctx.cfg.cwd);
-    mkdirSync(dir, { recursive: true });
+    // plan 模式是只读承诺：不落盘，退回旧的头尾截断。
+    if (ctx.readOnly) throw new Error("plan 模式不落盘");
+    const dir = spillDir();
+    mkdirSync(dir, { recursive: true, mode: 0o700 });
     const stamp = new Date().toISOString().replace(/[:.]/g, "-");
     path = join(dir, `tool-${stamp}-${Math.random().toString(36).slice(2, 8)}.txt`);
-    writeFileSync(path, s, "utf8");
+    writeFileSync(path, s, { encoding: "utf8", mode: 0o600 });
   } catch {
     path = null;
   }

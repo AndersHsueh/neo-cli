@@ -5,6 +5,7 @@ import { describe, expect, test } from "bun:test";
 
 import { makeAskUserTool } from "../src/tools/askUser.ts";
 import type { AskUserRequest } from "../src/ui/askUser.ts";
+import { buildSystemPrompt } from "../src/system-prompt.ts";
 import type { ToolCtx } from "../src/tools/types.ts";
 import type { Config } from "../src/config.ts";
 
@@ -93,7 +94,13 @@ describe("ask_user 工具", () => {
     });
     const p = tool.execute(
       { question: "问题", options: [{ label: "A" }] },
-      ctx({ signal: ctrl.signal, askUser: async () => ({ status: "canceled" }) }),
+      ctx({
+        signal: ctrl.signal,
+        askUser: async () => ({ status: "canceled" }),
+        cancelAskUser: () => {
+          cancelCalled += 1;
+        },
+      }),
     );
     // 让 askUser 注册 abort listener 后再触发
     await new Promise((r) => setTimeout(r, 5));
@@ -101,6 +108,15 @@ describe("ask_user 工具", () => {
     const out = JSON.parse(await p);
     expect(out.status).toBe("canceled");
     expect(seen).not.toBeNull();
+    expect(cancelCalled).toBe(1);
+  });
+
+  test("提示词：非交互模式不教模型调用 ask_user（B4）", () => {
+    const cfg = { cwd: "/tmp", model: "m", providerName: "p", modelTier: "balanced", toolOutputLimit: 30_000 } as unknown as Config;
+    const on = buildSystemPrompt(cfg, { askUser: true });
+    const off = buildSystemPrompt(cfg, { askUser: false });
+    expect(on).toContain("ask_user");
+    expect(off).not.toContain("ask_user");
   });
 
   test("schema：name / required / 参数描述", () => {

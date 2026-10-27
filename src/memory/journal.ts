@@ -42,7 +42,7 @@ export interface TurnRecord {
   hintScope?: "project" | "user";
 }
 
-export type AuditStatus = "applied" | "partial" | "dropped" | "failed" | "skipped";
+export type AuditStatus = "applied" | "partial" | "dropped" | "failed" | "skipped" | "deferred";
 
 export interface AuditEntry {
   ts: string;
