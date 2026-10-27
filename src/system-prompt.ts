@@ -116,6 +116,7 @@ export function buildSystemPrompt(cfg: Config, opts: { mailbox?: boolean; askUse
 - list_dir / glob / grep：探索代码库。找东西用 grep，找文件用 glob。
 - shell：执行命令。安装依赖、跑测试、git 操作走这里。
 - web_fetch：抓网页转纯文本，查文档用。
+- web_search：用 cn.bing.com RSS 搜全网（无需 API key），返回标题/URL/摘要；搜索优先用它，再对结果 web_fetch。
 - use_skill：按需加载技能正文（技能索引见下方「技能」节）。
 - task：派生隔离子代理跑探索/多文件改动，返回结论与用量；子代理不能用 task 递归派生。
 ${opts.askUser ? "- ask_user：向用户提问（单选/多选/自由输入，Esc 取消）。仅在交互 TUI 可用；关键歧义/破坏性操作前使用。\n" : ""}

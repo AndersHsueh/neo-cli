@@ -93,6 +93,7 @@ import { ensureScopeLayout } from "./memory/layout.ts";
 import { appendLog } from "./wiki/write.ts";
 import { discoverSkills, isValidSkillName, formatSkillLine, normalizeDescription } from "./skills.ts";
 import { adoptSession, applyRestored, createSession, listSessions, loadSession, saveSession, type SessionMeta } from "./session.ts";
+import { renderSessionMarkdown } from "./sessionExport.ts";
 import { Mailbox } from "./mailbox/store.ts";
 import {
   createIdentity,
@@ -295,6 +296,7 @@ ${c.bold("交互命令")}
   /help            帮助            /clear       清空上下文
   /compact         压缩上下文      /cost        token 统计
   /context         上下文窗口/用量 /env         环境快照
+  /export [id]     导出会话 Markdown
   /provider        切换 provider   /model       查看/切模型
   /tools           工具列表        /mode        权限模式
   /env [refresh]   环境快照（平台/shell/资源/工具链）；refresh 重采并写 wiki 页
@@ -2709,6 +2711,23 @@ async function handleCommand(
       const target = arg ? resolve(cfg.cwd, arg) : join(cfg.cwd, "neo-session.json");
       writeFileSync(target, JSON.stringify({ meta, messages: agent.messages }, null, 2), "utf8");
       ui.success(`会话已保存到 ${target}`);
+      break;
+    }
+
+    case "export": {
+      const id = arg.trim();
+      const loaded = id ? loadSession(id) : null;
+      if (id && !loaded) {
+        ui.warn(`会话不存在: ${id}（用 /sessions 查看）`);
+        break;
+      }
+      const targetMeta = loaded?.meta ?? meta;
+      const targetMessages = loaded?.messages ?? agent.messages;
+      const dir = join(cfg.cwd, ".neo", "exports");
+      mkdirSync(dir, { recursive: true });
+      const file = join(dir, `${targetMeta.id}.md`);
+      writeFileSync(file, renderSessionMarkdown(targetMeta, targetMessages), "utf8");
+      ui.success(`已导出会话 ${targetMeta.id} → ${file}（${targetMessages.length} 条消息）`);
       break;
     }
 

@@ -13,6 +13,7 @@ import type { Config } from "../config.ts";
 import { describeSource, insideGlobalSkills, isRealDir, listSkillFiles, resolveSkill } from "../skills.ts";
 import { insideRawDir } from "../wiki/paths.ts";
 import { ToolError, type ToolCtx, type ToolImpl, type DispatchResult } from "./types.ts";
+import { webSearchTool } from "./webSearch.ts";
 import { shellMarks } from "./shellMarks.ts";
 import { listSearchFiles } from "./fileList.ts";
 import { getShell, prepareShellInvocation, shellErrorHint } from "../shell.ts";
@@ -574,6 +575,11 @@ const shell: ToolImpl = {
         type: "object",
         properties: {
           command: { type: "string", description: "要执行的命令" },
+          cwd: {
+            type: "string",
+            description:
+              "命令工作目录（相对项目根或绝对路径）。只影响本次调用，不改变会话 cwd；默认项目根。",
+          },
           timeout_ms: { type: "integer", description: "超时毫秒，默认 120000" },
         },
         required: ["command"],
@@ -584,8 +590,20 @@ const shell: ToolImpl = {
     const command = String(args["command"] ?? "").trim();
     if (!command) throw new ToolError("command 为空");
     const timeout = Math.max(1000, Number(args["timeout_ms"] ?? 120_000) || 120_000);
+    // v0.4.1 B4 / D2：每次调用可指定 cwd（实战里 56/66 条命令都在手写 cd）。
+    const rawCwd = args["cwd"] === undefined ? null : String(args["cwd"]);
+    let workdir = ctx.cfg.cwd;
+    if (rawCwd && rawCwd.trim() !== "") {
+      workdir = resolve(ctx.cfg.cwd, rawCwd);
+      if (!existsSync(workdir) || !statSync(workdir).isDirectory()) {
+        throw new ToolError(`cwd 不是目录: ${workdir}`);
+      }
+    }
 
-    const ok = await ctx.approve("shell", `执行: ${command}`);
+    const ok = await ctx.approve(
+      "shell",
+      workdir === ctx.cfg.cwd ? `执行: ${command}` : `执行（cwd=${workdir}）: ${command}`,
+    );
     if (!ok) return "用户拒绝了该命令，未执行。";
 
     // v0.4.0 平台适配层：shell 由 resolveShell 探测（配置/环境变量/$SHELL/平台默认），
@@ -597,7 +615,7 @@ const shell: ToolImpl = {
     });
     const proc = (() => {
       try {
-        return spawnPiped(invocation.argv, ctx.cfg.cwd, invocation.env);
+        return spawnPiped(invocation.argv, workdir, invocation.env);
       } catch (e) {
         throw new ToolError(`无法启动 shell：${shellErrorHint(e, spec)}`);
       }
@@ -824,6 +842,7 @@ export const TOOLS: ToolImpl[] = [
   grepTool,
   shell,
   webFetch,
+  webSearchTool,
   useSkill,
   compactCtx,
 ];
@@ -913,7 +932,7 @@ export async function dispatch(
   try {
     ctx.signal?.throwIfAborted();
     const out = await impl.execute(args, ctx);
-    return limitOutput(out, ctx.cfg.toolOutputLimit);
+    return limitOutput(out, ctx.cfg.toolOutputLimit, ctx);
   } catch (e) {
     if (e instanceof ToolError) return { ok: false, output: `错误: ${e.message}`, truncated: false };
     const err = e as Error;
@@ -922,16 +941,38 @@ export async function dispatch(
   }
 }
 
-function limitOutput(s: string, limit: number): DispatchResult {
+/** 超长输出落盘目录：<cwd>/.neo/tmp（随项目走，便于用户/模型直接读）。 */
+function spillDir(cwd: string): string {
+  return join(cwd, ".neo", "tmp");
+}
+
+/**
+ * 工具输出截断（v0.4.1 B4 / D1）。
+ *
+ * 旧实现只回 head/tail + 省略标记，中间内容永久丢失（实战里 xlsx dump 被截后
+ * 无法再查）。现在把**完整输出**写入 <cwd>/.neo/tmp/tool-*.txt，模型可用
+ * read_file 分段读；落盘失败才退回旧的省略提示。
+ */
+export function limitOutput(s: string, limit: number, ctx: ToolCtx): DispatchResult {
   if (s.length <= limit) return { ok: true, output: s, truncated: false };
   const head = s.slice(0, Math.floor(limit * 0.7));
   const tail = s.slice(-Math.floor(limit * 0.2));
   const omitted = s.length - head.length - tail.length;
-  return {
-    ok: true,
-    output: `${head}\n\n… [中间省略 ${omitted} 字符，因超出 tool_output_limit=${limit}] …\n\n${tail}`,
-    truncated: true,
-  };
+  let path: string | null = null;
+  try {
+    const dir = spillDir(ctx.cfg.cwd);
+    mkdirSync(dir, { recursive: true });
+    const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+    path = join(dir, `tool-${stamp}-${Math.random().toString(36).slice(2, 8)}.txt`);
+    writeFileSync(path, s, "utf8");
+  } catch {
+    path = null;
+  }
+  const notice = path
+    ? `… [输出 ${s.length} 字符，超过 tool_output_limit=${limit}；中间省略 ${omitted} 字符。` +
+      `完整输出已落盘：${path}（用 read_file offset/limit 分段读）] …`
+    : `… [中间省略 ${omitted} 字符，因超出 tool_output_limit=${limit}；落盘失败] …`;
+  return { ok: true, output: `${head}\n\n${notice}\n\n${tail}`, truncated: true };
 }
 
 export { shortArgs, abs as resolvePath, insideCwd };
