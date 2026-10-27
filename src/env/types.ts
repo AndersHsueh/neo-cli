@@ -66,6 +66,23 @@ export interface EnvStatic {
   /** 是否存在图形界面（SSH 上通常无）。 */
   gui: boolean;
   runtime: { bun: string; node: string | null; parentPath: string | null };
+  /**
+   * 已探测到的模型上下文窗口（v0.4.1 A2）。key = `${provider}|${model}`。
+   * 单独放在静态快照里，让 /env、启动与 /context 都能读到同一份事实。
+   */
+  models?: Record<string, ModelContextInfo>;
+}
+
+/** 单个模型的上下文窗口事实（可能来自 /models 元数据或溢出错误）。 */
+export interface ModelContextInfo {
+  /** 探测到的窗口；null = 只知道存在但没拿到值。 */
+  contextWindow: number | null;
+  source: "models_api" | "overflow_error" | "config" | "known";
+  updatedAt: string;
+  /** 依据（截断后的错误文案/字段名），便于 /env 展示与排障。 */
+  evidence?: string;
+  /** 成功请求里见过的最大 prompt tokens（下界证据，不代表上限）。 */
+  observedMaxPromptTokens?: number;
 }
 
 export interface EnvDynamic {

@@ -80,6 +80,12 @@ import {
 import { resolveWikiLayout } from "./wiki/paths.ts";
 import { describeShell, getShell, prepareShellInvocation, shellErrorHint } from "./shell.ts";
 import { loadEnv } from "./env/probe.ts";
+import {
+  detectAndRecordModelWindow,
+  formatModelWindowLines,
+  recordModelContext,
+  resolveAndApplyModelWindow,
+} from "./env/modelWindows.ts";
 import { formatEnvForCli } from "./env/render.ts";
 import { syncEnvPage } from "./env/wiki.ts";
 import { ensureScopeLayout } from "./memory/layout.ts";
@@ -287,6 +293,7 @@ ${c.bold("选项")}
 ${c.bold("交互命令")}
   /help            帮助            /clear       清空上下文
   /compact         压缩上下文      /cost        token 统计
+  /context         上下文窗口/用量 /env         环境快照
   /provider        切换 provider   /model       查看/切模型
   /tools           工具列表        /mode        权限模式
   /env [refresh]   环境快照（平台/shell/资源/工具链）；refresh 重采并写 wiki 页
@@ -387,6 +394,8 @@ async function main(): Promise<number> {
         return 2;
       }
     }
+    // A2：启动时用 env 事实校正窗口（配置可能配错，/model、/tier 也可能换模型）。
+    resolveAndApplyModelWindow(cfg);
   } catch (e) {
     if (e instanceof ConfigError) {
       console.error(c.err(`✖ 配置错误：${e.message}`));
@@ -449,6 +458,22 @@ async function main(): Promise<number> {
           }
         : {},
   );
+
+  // A2：交互模式下异步探测当前模型窗口（/models 元数据）；失败静默。
+  // 探测成功会写入 env 事实文件，后续启动/切模型直接命中。
+  if (interactiveTTY) {
+    void detectAndRecordModelWindow(cfg)
+      .then((info) => {
+        if (!info?.contextWindow) return;
+        const r = resolveAndApplyModelWindow(cfg);
+        if (r.source !== "config") {
+          ui.info(`模型上下文窗口：${r.tokens.toLocaleString()} tokens（${r.source}）`);
+        }
+      })
+      .catch(() => {
+        /* 探测失败不影响会话 */
+      });
+  }
 
   // default_provider 指向未接入的协议时，必须在启动就拦下。
   // 放过的话会一路走到 fetch，得到的错误跟配置问题无关，排查方向完全被带偏。
@@ -664,6 +689,15 @@ async function main(): Promise<number> {
     memory,
     checkpoint: checkpoints,
     sessionId: sess.meta.id,
+    // A2：每轮前按当前模型刷新窗口；溢出时把服务端解析出的上限记到 env 事实文件。
+    refreshContextWindow: () => resolveAndApplyModelWindow(cfg),
+    onContextLimit: (tokens) => {
+      recordModelContext(cfg, {
+        contextWindow: tokens,
+        source: "overflow_error",
+        evidence: "服务端上下文溢出错误",
+      });
+    },
     // -p 单次模式：即使终端是 TTY 也按非交互块级渲染，避免 spinner/ANSI 污染输出
     nonInteractive: args.print !== null,
     pollInbox: mailbox
@@ -1903,6 +1937,36 @@ async function handleCommand(
       break;
     }
 
+    case "context": {
+      // A2：一眼看清「配置窗口 vs 估算用量 vs 最近压缩」，用于排查长会话/窗口配错。
+      const resolved = resolveAndApplyModelWindow(cfg);
+      const usage = agent.contextUsage();
+      const est = Math.round(usage * cfg.contextWindow);
+      const last = agent.lastCompactionInfo;
+      ui.blank();
+      ui.kv("model", `${cfg.providerName}/${cfg.model}`);
+      ui.kv(
+        "window",
+        `${cfg.contextWindow.toLocaleString()} tokens ${c.dim(`(${cfg.contextWindowSource ?? resolved.source})`)}`,
+      );
+      ui.kv("threshold", `${(cfg.compactThreshold * 100).toFixed(0)}% · ${Math.round(
+        cfg.compactThreshold * cfg.contextWindow,
+      ).toLocaleString()} tokens`);
+      ui.kv("estimate", `${est.toLocaleString()} tokens ${c.dim(`(${(usage * 100).toFixed(1)}%)`)}`);
+      ui.kv("messages", String(agent.messages.length));
+      if (last) {
+        ui.kv(
+          "last compact",
+          `${last.beforeTokens.toLocaleString()} → ${last.afterTokens.toLocaleString()} tokens`,
+        );
+      } else {
+        ui.kv("last compact", c.dim("无"));
+      }
+      ui.line(c.dim("  window 来源：config=settings；models_api=网关元数据；overflow_error=服务端错误校正"));
+      ui.blank();
+      break;
+    }
+
     case "cost": {
       const cum = agent.cumulative;
       ui.blank();
@@ -2195,6 +2259,21 @@ async function handleCommand(
           persisted: loaded.persisted,
         }),
       );
+      // A2：refresh 时顺带探测当前模型窗口；平时展示 env 里已有的事实。
+      if (refresh) {
+        const info = await detectAndRecordModelWindow(cfg);
+        resolveAndApplyModelWindow(cfg);
+        if (info?.contextWindow) {
+          ui.info(`已探测 ${cfg.model} 上下文窗口：${info.contextWindow.toLocaleString()} tokens`);
+        } else {
+          ui.info("未能从 /models 探测到窗口元数据（不影响会话，溢出错误会自动学习）。");
+        }
+      }
+      const windowLines = formatModelWindowLines(cfg);
+      if (windowLines.length > 0) {
+        ui.line(c.dim("模型上下文窗口（env 事实）："));
+        for (const line of windowLines) ui.line(`  ${line}`);
+      }
       if (memoryMode === "interactive" && cfg.env?.wikiPage !== false) {
         try {
           const layout = ensureScopeLayout("user", cfg.cwd, cfg.memory.userWikiDir);

@@ -18,6 +18,7 @@ export const COMMANDS: CommandEntry[] = [
   { name: "clear", description: "清空上下文" },
   { name: "compact", description: "压缩上下文" },
   { name: "cost", description: "token 与 provider 统计" },
+  { name: "context", description: "上下文窗口/用量/最近压缩" },
   { name: "provider", description: "切换 provider" },
   { name: "tier", description: "切换模型档位" },
   { name: "fast", description: "快捷：/tier fast" },

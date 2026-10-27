@@ -136,6 +136,12 @@ export interface Config {
   maxTokens: number;
   temperature: number;
   contextWindow: number;
+  /**
+   * contextWindow 的来源（v0.4.1 A2）：
+   *  - config = settings 值；models_api/overflow_error = 自动探测；known = 兜底表。
+   *  只用于 /context 展示与排障，不参与序列化。
+   */
+  contextWindowSource?: "config" | "models_api" | "overflow_error" | "known";
   /** 顶层全局默认。provider 未覆盖某项时用它，切换 provider 时据此回滚。 */
   globalDefaults: { maxTokens: number; temperature: number; contextWindow: number };
   compactThreshold: number;
@@ -608,6 +614,7 @@ export function loadConfig(overrides: Partial<Config> = {}): Config {
     maxTokens: picked.maxTokens ?? gMax,
     temperature: picked.temperature ?? gTemp,
     contextWindow: picked.contextWindow ?? gCtx,
+    contextWindowSource: "config",
     globalDefaults: { maxTokens: gMax, temperature: gTemp, contextWindow: gCtx },
     compactThreshold: num(raw["compact_threshold"], num(dflt["compact_threshold"], 0.75)),
     maxToolIterations: num(raw["max_tool_iterations"], num(dflt["max_tool_iterations"], 80)),

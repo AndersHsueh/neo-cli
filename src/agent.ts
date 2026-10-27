@@ -20,6 +20,7 @@ import { dispatch, toolSpecs, toolNames, TOOL_NAMES_EXCLUDED_FOR_SUBAGENT, type 
 import { ToolError, type CheckpointSink } from "./tools/types.ts";
 import { isRecallMessage, type MemoryPort } from "./memory/port.ts";
 import { appendTurnLog } from "./turnDiagnostics.ts";
+import { isContextOverflowError, parseContextLimitFromError } from "./contextWindow.ts";
 
 export type PermissionMode = "ask" | "auto-edit" | "auto-all" | "plan";
 
@@ -123,6 +124,16 @@ export interface AgentOptions {
    * 会话 id（v0.4.1 A1）：只用于轮次诊断日志定位；不传时日志记 "unknown"。
    */
   sessionId?: string;
+  /**
+   * 上下文窗口探测回调（v0.4.1 A2）：从服务端溢出错误里解析到真实窗口时调用，
+   * 组合根负责持久化到 env 事实文件；agent 已先同步更新 cfg.contextWindow。
+   */
+  onContextLimit?: (tokens: number, model: string) => void;
+  /**
+   * 每轮开始前刷新上下文窗口（v0.4.1 A2）：/model、/tier 切模型后从 env 缓存
+   * 重新解析当前模型窗口，避免沿用上一个模型的值。
+   */
+  refreshContextWindow?: () => void;
 }
 
 export interface TurnStats {
@@ -216,6 +227,11 @@ export class Agent {
   get historyLength(): number {
     // 不含 system
     return Math.max(0, this.messages.length - 1);
+  }
+
+  /** 最近一次压缩的前后 token（/context 展示用）。 */
+  get lastCompactionInfo(): { beforeTokens: number; afterTokens: number } | null {
+    return this.lastCompact;
   }
 
   /**
@@ -487,6 +503,8 @@ export class Agent {
 
     // 分类在消息入队之前完成，这样本轮从一开始就用对模型
     const tierSwitch = await this.classifyTurn(text);
+    // 分类可能切 provider/model（v0.4.1 A2）：切完再解析当前模型的窗口事实。
+    this.opt.refreshContextWindow?.();
 
     // v0.2 记忆激活 §7.7.2：本轮开始前自动召回（临时 system 消息，轮末摘除）。
     // 放在 user 消息之前：既是协议上最稳的位置，也让模型先看到历史再读问题。
@@ -539,6 +557,8 @@ export class Agent {
      * 防止「模型持续空回复」变成死循环）。成功或放弃后都从历史摘除。
      */
     let nudgeMsg: Message | null = null;
+    /** 上下文溢出恢复只做一次（A2），避免无限压缩-重试循环。 */
+    let overflowRecovered = false;
 
     for (let iter = 0; iter < maxIter; iter++) {
       iterations++;
@@ -549,6 +569,18 @@ export class Agent {
       if (usage > this.opt.cfg.compactThreshold && this.messages.length > 6) {
         this.opt.console.info(`上下文使用率 ${(usage * 100).toFixed(0)}%，自动压缩中…`);
         await this.compact();
+      }
+
+      // A2：接近窗口上限（含本次 maxTokens 预留）时提前压缩。配置窗口可能偏大，
+      // 这里只是减少 400 概率；真正的兜底是下面的 overflow 错误恢复。
+      if (
+        this.messages.length > 6 &&
+        estimateTokens(this.messages, specs) + this.opt.cfg.maxTokens >
+          this.opt.cfg.contextWindow * 0.98
+      ) {
+        this.opt.console.info("上下文接近窗口上限，压缩后继续…");
+        const ok = await this.compact();
+        if (!ok) this.trimOldToolOutputs();
       }
 
       // ---- P1 跨会话消息注入（PRD v1.2 §4.4）----
@@ -802,6 +834,38 @@ export class Agent {
         // 推理阶段出错时 answer 的复位把状态清掉，reasoning 的 └─ 永远不打印。
         this.opt.console.ensureStreamClosed();
 
+        // ---- A2：上下文超限 → 校正窗口 + 压缩/裁剪 → 同一轮重试一次 ----
+        if (!overflowRecovered && isContextOverflowError(e)) {
+          overflowRecovered = true;
+          const limit = parseContextLimitFromError((e as Error).message);
+          if (limit) {
+            this.opt.cfg.contextWindow = limit;
+            this.opt.cfg.contextWindowSource = "overflow_error";
+            try {
+              this.opt.onContextLimit?.(limit, this.opt.cfg.model);
+            } catch {
+              // 持久化失败不影响恢复
+            }
+            this.opt.console.warn(
+              `服务端提示上下文上限 ${limit.toLocaleString()} tokens，已按实际窗口校正；压缩后重试。`,
+            );
+          } else {
+            this.opt.console.warn("上下文超限：压缩后重试一次…");
+          }
+          let compacted = false;
+          try {
+            await this.compactNow();
+            compacted = true;
+          } catch {
+            // 历史太短/压缩失败：退化为裁剪旧工具输出
+          }
+          if (!compacted) {
+            this.trimOldToolOutputs();
+            this.opt.console.warn("压缩不可用，已裁剪旧工具输出后重试。");
+          }
+          continue;
+        }
+
         if (e instanceof LLMError || (e as Error).name === "AbortError") {
           const err = e as Error;
           if (err.name === "AbortError" || signal.aborted) {
@@ -830,8 +894,10 @@ export class Agent {
             return this.lastStats;
           }
           hadError = true;
-          errorMessage = err.message;
-          this.opt.console.error(`LLM 请求失败: ${err.message}`);
+          errorMessage = isContextOverflowError(err)
+            ? `${err.message}（已尝试压缩仍超限；请检查 settings.context_window / 模型实际窗口）`
+            : err.message;
+          this.opt.console.error(`LLM 请求失败: ${errorMessage}`);
           this.opt.onEvent?.({ type: "error", data: err.message });
           break;
         }
@@ -904,6 +970,26 @@ export class Agent {
         ? { compaction: { before: this.lastCompact.beforeTokens, after: this.lastCompact.afterTokens } }
         : {}),
     });
+  }
+
+  /**
+   * 上下文溢出兜底（A2）：压缩不可用时，把最老的一批 tool 输出替换为占位文本。
+   * 只动 tool content，不改角色/配对，消息序列仍然合法。
+   */
+  private trimOldToolOutputs(keepRecent = 6): void {
+    const toolIndices: number[] = [];
+    this.messages.forEach((m, i) => {
+      if (m.role === "tool") toolIndices.push(i);
+    });
+    const drop = Math.max(0, toolIndices.length - Math.max(0, keepRecent));
+    for (let k = 0; k < drop; k++) {
+      const idx = toolIndices[k];
+      if (idx === undefined) continue;
+      const m = this.messages[idx];
+      if (!m) continue;
+      const before = contentText(m.content)?.length ?? 0;
+      m.content = `[旧工具输出已裁剪以适配上下文（原 ${before} 字符）；如需重看请重新调用工具]`;
+    }
   }
 
   /**
