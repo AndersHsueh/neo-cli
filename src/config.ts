@@ -65,6 +65,50 @@ export function isModelTier(v: string): v is ModelTier {
   return (MODEL_TIERS as readonly string[]).includes(v);
 }
 
+/**
+ * 用户输入 → 规范档位名（v0.4.2）。内部/配置/路由仍用 `deep_reasoning`，
+ * 这里只服务 `/tier`、`--tier`、task 等人类输入入口；大小写/空白不敏感。
+ *
+ * 为什么不在内部改名：`deep_reasoning_model_name` / `model_routes.deep_reasoning` /
+ * 会话/测试/文档已按规范名落盘，改名需要 schema 迁移且会破坏旧 settings。
+ */
+export function normalizeTierName(input: string): ModelTier | null {
+  const v = input.trim().toLowerCase();
+  switch (v) {
+    case "default":
+    case "auto":
+    case "dflt":
+      return "default";
+    case "deep_reasoning":
+    case "deep-reasoning":
+    case "deep":
+    case "d":
+    case "reasoning":
+      return "deep_reasoning";
+    case "balanced":
+    case "balance":
+    case "bal":
+    case "b":
+      return "balanced";
+    case "fast":
+    case "f":
+      return "fast";
+    default:
+      return null;
+  }
+}
+
+/** 展示用短名：内部 `deep_reasoning` → UI/命令里显示 `deep`；其余同名。 */
+export function tierDisplayName(tier: ModelTier | string): string {
+  return tier === "deep_reasoning" ? "deep" : tier;
+}
+
+/** 展示名 + 规范名（需区分时）：`deep (deep_reasoning)`；fast/balanced/default 只显示短名。 */
+export function tierChoiceLabel(tier: ModelTier | string): string {
+  const short = tierDisplayName(tier);
+  return short === tier ? short : `${short} (${tier})`;
+}
+
 export interface ProviderConfig {
   name: string;
   type: ProviderType;

@@ -22,6 +22,9 @@ import {
   ConfigError,
   isModelTier,
   MODEL_TIERS,
+  normalizeTierName,
+  tierDisplayName,
+  tierChoiceLabel,
   type Config,
 } from "./config.ts";
 import { Classifier, CLASSIFIER_NAMES, isClassifierName, type ClassifierName } from "./classifier/index.ts";
@@ -360,8 +363,15 @@ async function main(): Promise<number> {
     console.error(c.err(`✖ 未知分类器 "${args.auto}"。可选：${CLASSIFIER_NAMES.join(", ")}`));
     return 2;
   }
-  if (args.tier && !isModelTier(args.tier)) {
-    console.error(c.err(`✖ 未知档位 "${args.tier}"。可选：${MODEL_TIERS.join(", ")}`));
+  // --tier 接受简写（deep/bal/fast/auto），内部仍落到规范 ModelTier。
+  const requestedTier = args.tier ? normalizeTierName(args.tier) : null;
+  if (args.tier && !requestedTier) {
+    console.error(
+      c.err(
+        `✖ 未知档位 "${args.tier}"。可选：deep (deep_reasoning) / balanced / fast / default；` +
+          `简写 deep / d / bal / b / f / auto 也可`,
+      ),
+    );
     return 2;
   }
 
@@ -384,8 +394,8 @@ async function main(): Promise<number> {
   try {
     cfg = loadConfig(overrides);
 
-    if (args.tier && isModelTier(args.tier)) {
-      const r = applyTier(cfg, args.tier);
+    if (requestedTier) {
+      const r = applyTier(cfg, requestedTier);
       if (!r.ok) {
         console.error(c.err(`✖ ${r.error}`));
         return 2;
@@ -758,7 +768,7 @@ async function main(): Promise<number> {
           };
           ui.blank();
           ui.line(
-            `${c.tier(ts.to, "⇅")} 档位 ${c.dim(ts.from)} → ${c.tier(ts.to, ts.to)} ` +
+            `${c.tier(ts.to, "⇅")} 档位 ${c.dim(tierDisplayName(ts.from))} → ${c.tier(ts.to, tierChoiceLabel(ts.to))} ` +
               `${c.dim(`(${cfg.providerName}/${cfg.model})`)}`,
           );
           ui.line(`  ${c.dim("理由:")} ${c.muted(ts.reason)}`);
@@ -983,7 +993,7 @@ async function main(): Promise<number> {
 
   // ---- 交互模式 ----
   if (process.stdin.isTTY) {
-    ui.line(banner(cfg.model, cfg.baseUrl, cfg.providerName, cfg.modelTier, toolNames().join(" ")));
+    ui.line(banner(cfg.model, cfg.baseUrl, cfg.providerName, tierDisplayName(cfg.modelTier), toolNames().join(" ")));
     // v0.4.0 平台适配层：一眼可见实际使用的 shell，解析告警不静默。
     const bootShell = getShell(cfg);
     ui.line(c.dim(`  shell ${describeShell(bootShell)}`));
@@ -1315,7 +1325,7 @@ async function main(): Promise<number> {
       stdout: process.stdout,
       getStatus: (): ComposerStatus => ({
         model: cfg.model,
-        tier: cfg.modelTier,
+        tier: tierDisplayName(cfg.modelTier),
         mode:
           args.mode === "auto-edit" ? "edit" : args.mode === "auto-all" ? "yolo" : args.mode,
         branch: getBranch(cfg.cwd),
@@ -1873,7 +1883,7 @@ function showStats(ui: Console, agent: Agent, cfg: Config, stats: {
   }
   ui.statusBar([
     ["model", `${cfg.providerName}/${cfg.model}`],
-    ["tier", cfg.modelTier],
+    ["tier", tierDisplayName(cfg.modelTier)],
     ["stop", String(stats.finishReason ?? "stop")],
     ["tok", `${stats.promptTokens}↑ ${stats.completionTokens}↓`],
     ["think", String(stats.reasoningTokens)],
@@ -2005,7 +2015,7 @@ async function handleCommand(
       const cum = agent.cumulative;
       ui.blank();
       ui.kv("provider", `${c.accent(cfg.providerName)} ${c.dim(`(${cfg.providerType})`)}`);
-      ui.kv("tier", c.muted(cfg.modelTier));
+      ui.kv("tier", c.muted(tierDisplayName(cfg.modelTier)));
       ui.kv("model", c.accent(cfg.model));
       ui.kv("endpoint", c.muted(cfg.baseUrl));
       ui.kv("api key", c.muted(maskKey(cfg.apiKey)));
@@ -2056,7 +2066,7 @@ async function handleCommand(
           }
           agent.noteModelChange(cfg);
           ui.success(`provider → ${cfg.providerName}（${cfg.providerType}）`);
-          ui.kv("model", `${cfg.model} ${c.dim(`[${cfg.modelTier}]`)}`);
+          ui.kv("model", `${cfg.model} ${c.dim(`[${tierDisplayName(cfg.modelTier)}]`)}`);
           ui.kv("endpoint", cfg.baseUrl);
           break;
         }
@@ -2087,7 +2097,7 @@ async function handleCommand(
       }
       agent.noteModelChange(cfg);
       ui.success(`provider → ${cfg.providerName}（${cfg.providerType}）`);
-      ui.kv("model", `${cfg.model} ${c.dim(`[${cfg.modelTier}]`)}`);
+      ui.kv("model", `${cfg.model} ${c.dim(`[${tierDisplayName(cfg.modelTier)}]`)}`);
       ui.kv("endpoint", cfg.baseUrl);
       break;
     }
@@ -2106,13 +2116,15 @@ async function handleCommand(
       // /tier 的档位名来自**参数**（rest[0]），不是命令名 —— 旧代码永远取 cmd，
       // 导致 `/tier default` 被解析成档位 "tier"，任何参数都报「未知档位」。
       // 快捷命令（/fast /balanced /deep…）没有参数概念，档位名就是命令名本身。
-      const target = cmd === "tier" ? (rest[0] ?? "") : cmd === "deep" ? "deep_reasoning" : cmd;
+      const rawTarget = cmd === "tier" ? (rest[0] ?? "") : cmd;
+      // 人类输入接受简写（deep/bal/fast/auto），内部仍落到规范 ModelTier。
+      const target = normalizeTierName(rawTarget);
       // /tier 不带参数时是查询操作：列出全部档位的生效路由。
       // 用 target === "" 判断而非 rest.length === 0："/tier "（尾随空格）
       // split 后 rest = [""]，length 为 1，但语义上仍是查询。
-      if (cmd === "tier" && target === "") {
+      if (cmd === "tier" && rawTarget === "") {
         ui.blank();
-        ui.kv("当前档位", c.accent(cfg.modelTier));
+        ui.kv("当前档位", c.accent(tierChoiceLabel(cfg.modelTier)));
         ui.kv("生效路由", `${c.accent(describeRoute(cfg, cfg.modelTier))}`);
         ui.blank();
         // TTY：选择器接入（与 /model 同款）；hint = 该档位生效路由，initial 定位当前档位
@@ -2120,7 +2132,7 @@ async function handleCommand(
           ui.stopSpinner(); // C1
           ui.blank();
           const options = MODEL_TIERS.map((t) => ({
-            label: t,
+            label: tierDisplayName(t),
             hint: t === cfg.modelTier ? `当前 · ${describeRoute(cfg, t)}` : describeRoute(cfg, t),
             value: t,
           }));
@@ -2133,7 +2145,9 @@ async function handleCommand(
             if (r.ok) {
               agent.noteModelChange(cfg);
               if (r.degraded && r.note) ui.warn(r.note);
-              ui.success(`档位 → ${cfg.modelTier}（${cfg.providerName} / ${cfg.model}）`);
+              ui.success(
+                `档位 → ${tierChoiceLabel(cfg.modelTier)}（${cfg.providerName} / ${cfg.model}）`,
+              );
             } else {
               ui.warn(r.error);
             }
@@ -2145,8 +2159,9 @@ async function handleCommand(
         // 非 TTY：维持纯列表（C8）
         for (const tier of MODEL_TIERS) {
           const on = tier === cfg.modelTier;
+          const label = tierChoiceLabel(tier);
           ui.line(
-            `${on ? c.accent("●") : c.dim("○")} ${on ? c.bright(tier.padEnd(15)) : c.muted(tier.padEnd(15))} ` +
+            `${on ? c.accent("●") : c.dim("○")} ${on ? c.bright(label.padEnd(20)) : c.muted(label.padEnd(20))} ` +
               `${c.dim("→")} ${c.muted(describeRoute(cfg, tier))}`,
           );
         }
@@ -2154,8 +2169,11 @@ async function handleCommand(
         ui.blank();
         break;
       }
-      if (!isModelTier(target)) {
-        ui.warn(`未知档位 "${target}"。可选：${MODEL_TIERS.join(", ")}`);
+      if (!target) {
+        ui.warn(
+          `未知档位 "${rawTarget}"。可选：${MODEL_TIERS.join(", ")}` +
+            `（简写 deep / d / bal / b / f / auto）`,
+        );
         break;
       }
       const r = applyTier(cfg, target);
@@ -2165,7 +2183,9 @@ async function handleCommand(
       }
       agent.noteModelChange(cfg);
       if (r.degraded && r.note) ui.warn(r.note);
-      ui.success(`档位 → ${cfg.modelTier}（${cfg.providerName} / ${cfg.model}）`);
+      ui.success(
+        `档位 → ${tierChoiceLabel(cfg.modelTier)}（${cfg.providerName} / ${cfg.model}）`,
+      );
       // 剩余文本当作下一轮用户输入，不丢内容。
       // /tier 的 rest[0] 是档位名，已消费掉；快捷命令的 rest 全是剩余文本。
       const leftover = cmd === "tier" ? rest.slice(1) : rest;

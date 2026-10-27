@@ -1,6 +1,6 @@
 ──── stage: pty ────
 command: bun run scripts/pty-e2e.ts
-started: 2026-10-27 16:37:42 +0800
+started: 2026-10-27 17:03:13 +0800
 repo:    /Users/xueyuheng/research/000-alice-new/neo
 bun:     1.3.13
 ──────────────────────────
@@ -11,66 +11,66 @@ fake-llm  /Users/xueyuheng/research/000-alice-new/neo/scripts/fake-llm.ts
 场景      s1, s2, s3, s4, s5, s6, s7, s8, s9, s10, s11, s12, s13, s14, s15, s16, s17, s18, s19, s20
 
 ▶ s1 S1 narration：两轮正文都有行首 ● 前缀
-  PASS s1（344ms）
+  PASS s1（313ms）
 
 ▶ s2 S2 /last：回看 read_file 的完整输出
-  PASS s2（337ms）
+  PASS s2（302ms）
 
 ▶ s3 S3 窄终端（COLUMNS=60）：工具行不超宽、错误摘要非空
-  PASS s3（315ms）
+  PASS s3（278ms）
 
 ▶ s4 S4 --resume：回放上一轮问答
-  PASS s4（538ms）
+  PASS s4（476ms）
 
 ▶ s5 S5 Tab 补全 @ 文件：插入 @a.txt 并触发引用
-  PASS s5（314ms）
+  PASS s5（282ms）
 
 ▶ s6 S6 Tab 补全 / 命令：/las → /last
-  PASS s6（289ms）
+  PASS s6（257ms）
 
 ▶ s7 S7 Ctrl+J 多行：一条含 \n 的 user 消息
-  PASS s7（316ms）
+  PASS s7（286ms）
 
 ▶ s8 S8 @ 引用送达模型：REF_OK
-  PASS s8（286ms）
+  PASS s8（258ms）
 
 ▶ s9 S9 补全后光标在行尾：@a.txt + X → @a.txtX
   · 清行方式：Ctrl+U（Ctrl+U 可用）
-  PASS s9（391ms）
+  PASS s9（366ms）
 
 ▶ s10 S10 连按 Tab 遍历首轮候选：alpha1/2/3
   · 退出前清行方式：Ctrl+U（Ctrl+U 可用）
-  PASS s10（398ms）
+  PASS s10（404ms）
 
 ▶ s11 S11 状态条常驻：字段/时长递增/忙碌排队/分支
-  PASS s11（3010ms）
+  PASS s11（2983ms）
 
 ▶ s12 S12 输入框视觉：中文/emoji/退格整字
-  PASS s12（338ms）
+  PASS s12（369ms）
 
 ▶ s13 S13 输入框多行滚动：窗口/横线/状态行
-  PASS s13（827ms）
+  PASS s13（807ms）
 
 ▶ s14 S14 审批模态：问题可见/输入框不消失/写入生效
-  PASS s14（306ms）
+  PASS s14（309ms）
 
 ▶ s15 S15 resize：100→60 列后帧不超宽/不串行
-  PASS s15（1660ms）
+  PASS s15（1659ms）
 
 ▶ s16 S16 选择菜单：↓/Enter 生效、Esc 取消、状态行在
-  PASS s16（971ms）
+  PASS s16（965ms）
 
 ▶ s17 S17 双 Ctrl+C：第一次提示、第二次退出
-  PASS s17（257ms）
+  PASS s17（250ms）
 
 ▶ s18 S18 --resume 真续接 + 活进程拒绝 + 列表隐藏
-  PASS s18（1545ms）
+  PASS s18（1546ms）
 
 ▶ s19 S19 随机代号 + Agent 标题 + /rename neo 动画初态
-  PASS s19（1139ms）
+  PASS s19（1142ms）
 
 ▶ s20 S20 askUser：问题/选项/回答/模型继续
-  PASS s20（470ms）
+  PASS s20（438ms）
 
 ── 汇总 ──
   PASS  s1  S1 narration：两轮正文都有行首 ● 前缀

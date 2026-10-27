@@ -15,7 +15,7 @@
  */
 import { Agent, type AgentIO } from "../agent.ts";
 import { contentText } from "../llm.ts";
-import { applyTier, tierAvailable, type Config, type ModelTier } from "../config.ts";
+import { applyTier, normalizeTierName, tierAvailable, type Config, type ModelTier } from "../config.ts";
 import { TIER_ORDER } from "../classifier/types.ts";
 import { getEnvForPrompt } from "../env/probe.ts";
 import { formatEnvPrompt } from "../env/render.ts";
@@ -138,15 +138,17 @@ export function decideSubTier(
 
   // 第一层：主代理声明。它刚写完任务描述，对任务性质判断上下文最完整。
   if (declared && declared !== "inherit") {
-    const t = declared as ModelTier;
-    if (TIER_ORDER.includes(t)) {
+    // 接受 deep/bal/fast 等简写；配置路由仍用规范 deep_reasoning。
+    const t = normalizeTierName(declared);
+    if (t && TIER_ORDER.includes(t)) {
       if (available(t)) {
-        return { tier: t, source: "declared", reason: `主代理声明 ${t}` };
+        const label = declared === t ? declared : `${declared}（${t}）`;
+        return { tier: t, source: "declared", reason: `主代理声明 ${label}` };
       }
       return { tier: current, source: "inherit", reason: `声明的 ${t} 不可用，沿用主代理档位` };
     }
     throw new ToolError(
-      `无效的 tier "${declared}"。可用值：fast, balanced, default, deep_reasoning, inherit`,
+      `无效的 tier "${declared}"。可用值：fast, balanced, default, deep/deep_reasoning, inherit`,
     );
   }
 
@@ -273,7 +275,7 @@ export function makeTaskTool(deps: {
           "适合：大范围代码探索、批量机械读写、跑测试并汇总结果 —— 子代理烧掉的上下文不占用你的窗口。" +
           "任务描述必须自包含：子代理看不到与用户的对话历史。" +
           "tier 参数决定子代理用哪档模型（档位名，实际模型由该档位的路由配置解析）：机械读写用 fast 档（廉价模型）省钱，" +
-          "深度推理用 deep_reasoning 档（强推理模型），不确定就留空（自动按任务措辞判断，无信号则沿用当前档位）。",
+          "深度推理用 deep（deep_reasoning）档（强推理模型），不确定就留空（自动按任务措辞判断，无信号则沿用当前档位）。",
         parameters: {
           type: "object",
           properties: {
@@ -283,8 +285,8 @@ export function makeTaskTool(deps: {
             },
             tier: {
               type: "string",
-              enum: ["fast", "balanced", "default", "deep_reasoning", "inherit"],
-              description: "子代理模型档位。机械读写任务选 fast，深度推理选 deep_reasoning；留空自动判断",
+              enum: ["fast", "balanced", "default", "deep", "deep_reasoning", "inherit"],
+              description: "子代理模型档位。机械读写任务选 fast，深度推理选 deep（deep_reasoning）；留空自动判断",
             },
           },
           required: ["prompt"],

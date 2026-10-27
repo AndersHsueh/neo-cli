@@ -29,6 +29,8 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { normalizeTierName, tierDisplayName, tierChoiceLabel } from "../src/config.ts";
+
 const REPO = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const ENTRY = join(REPO, "src", "index.ts");
 const made: string[] = [];
@@ -117,9 +119,54 @@ describe("/tier 命令", () => {
     expect(out).toContain("default, deep_reasoning, balanced, fast");
   });
 
+  test("R7 /tier deep：简写可用（不必打 deep_reasoning）", () => {
+    const out = runCommands(makeProject(), ["/tier deep"]);
+    expect(out).toContain("档位 → deep");
+    expect(out).toContain("m-deep");
+    expect(out).not.toContain("未知档位");
+  });
+
+  test("R8 /tier 大小写与短写：DEEP / bal / auto", () => {
+    const out = runCommands(makeProject(), ["/tier DEEP", "/tier bal", "/tier auto"]);
+    expect(out).toContain("档位 → deep");
+    expect(out).toContain("档位 → balanced");
+    expect(out).toContain("档位 → default");
+  });
+
+  test("R9 --tier 接受简写（校验发生在 --version 之前）", () => {
+    const out = execFileSync(process.execPath, [ENTRY, "--tier", "deep", "--version"], {
+      cwd: makeProject(),
+      encoding: "utf8",
+      timeout: 20_000,
+      env: { ...process.env, NO_COLOR: "1", HOME: join(makeProject(), "fakehome") },
+    });
+    expect(out).toContain("neo v0.4.2");
+    expect(out).not.toContain("未知档位");
+  });
+
   test("R6 /fast 快捷命令不受本次修复影响", () => {
     const out = runCommands(makeProject(), ["/fast"]);
     expect(out).toContain("档位 → fast");
     expect(out).toContain("m-fast");
+  });
+});
+
+
+describe("tier 别名归一", () => {
+  test("deep / d / bal / b / f / auto 归一，未知返回 null", () => {
+    expect(normalizeTierName("deep")).toBe("deep_reasoning");
+    expect(normalizeTierName(" DEEP ")).toBe("deep_reasoning");
+    expect(normalizeTierName("d")).toBe("deep_reasoning");
+    expect(normalizeTierName("bal")).toBe("balanced");
+    expect(normalizeTierName("b")).toBe("balanced");
+    expect(normalizeTierName("f")).toBe("fast");
+    expect(normalizeTierName("auto")).toBe("default");
+    expect(normalizeTierName("nope")).toBeNull();
+  });
+
+  test("展示名：deep_reasoning → deep，带规范名时用 tierChoiceLabel", () => {
+    expect(tierDisplayName("deep_reasoning")).toBe("deep");
+    expect(tierChoiceLabel("deep_reasoning")).toBe("deep (deep_reasoning)");
+    expect(tierChoiceLabel("fast")).toBe("fast");
   });
 });

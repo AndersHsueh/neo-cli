@@ -224,6 +224,8 @@ describe("task 档位决策", () => {  test("主代理声明的档位优先", ()
       reason: "主代理声明 fast",
     });
     expect(decideSubTier("随便什么任务", "deep_reasoning", cfg).tier).toBe("deep_reasoning");
+    // v0.4.2：task tier 也接受 deep 简写
+    expect(decideSubTier("随便什么任务", "deep", cfg).tier).toBe("deep_reasoning");
   });
 
   test("inherit 显式沿用主代理档位", () => {
