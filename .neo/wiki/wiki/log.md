@@ -274,3 +274,5 @@ grep -E -A3 "^## \[[0-9-]+\] todo \|" wiki/log.md
 
 ## [2026-10-27] milestone | v0.4.2 发布：tier 视觉语义（深红/平衡绿/亮蓝/默认冰绿）+ 切档即时反馈；1034/67、PTY 20/20、verify ALL GREEN
 ## [2026-10-27] wiki | 新建 [[neo-v0.4.2-tier视觉]]；INDEX 当前版本/测试基线/主题目录同步
+
+## [2026-10-27] wiki | v0.4.2 补档：`/tier deep|d|bal|b|f|auto` 简写与展示名（内部仍规范 deep_reasoning）；测试 1039/67
