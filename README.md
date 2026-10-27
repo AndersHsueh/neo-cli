@@ -33,6 +33,7 @@ Windows 启动用 `neo.cmd`（需要 Bun 在 PATH）；Linux/macOS 用 `neo.sh` 
 - `ask_user`：模型可在关键分叉/破坏性操作前向用户提问（单选/多选/自由输入，Esc 取消；仅交互 TUI）。
 - `web_search`（Bing RSS，无需 key）、`shell.cwd`、超长输出落盘 `.neo/tmp/`、`/export [id]`。
 - `remember` 同步回执；技能支持 `skills_extra_paths` / `NEO_SKILLS_PATHS`。
+
 shell 探测顺序：`settings.shell.path` → `NEO_SHELL` → `$SHELL` → 平台默认 → `which` → `/bin/sh`；
 启动横幅后会显示实际使用的 shell。环境探测（`/env`）不需要模型，纯脚本采集，约 10ms。
 
