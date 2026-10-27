@@ -68,6 +68,7 @@ import { makeRememberTool } from "./tools/memory.ts";
 import { listModels, contentText, type Message } from "./llm.ts";
 import { toolNames, registerTool } from "./tools/index.ts";
 import { makeTaskTool, runSubagent } from "./tools/task.ts";
+import { makeAskUserTool } from "./tools/askUser.ts";
 import { registerWikiTools } from "./tools/wiki.ts";
 import { lintWiki, formatLintReport, resolveWikiDir } from "./wiki/lint.ts";
 import {
@@ -684,7 +685,7 @@ async function main(): Promise<number> {
     cfg,
     console: ui,
     mode: args.mode,
-    systemPrompt: buildSystemPrompt(cfg, { mailbox: mailboxEnabled }),
+    systemPrompt: buildSystemPrompt(cfg, { mailbox: mailboxEnabled, askUser: interactiveTTY }),
     classifier,
     memory,
     checkpoint: checkpoints,
@@ -698,6 +699,13 @@ async function main(): Promise<number> {
         evidence: "服务端上下文溢出错误",
       });
     },
+    askUser: interactiveTTY
+      ? (req) => {
+          const c = composerRef;
+          return c ? c.askUser(req) : Promise.resolve({ status: "canceled" as const });
+        }
+      : undefined,
+    cancelAskUser: () => composerRef?.cancelAskUser(),
     // -p 单次模式：即使终端是 TTY 也按非交互块级渲染，避免 spinner/ANSI 污染输出
     nonInteractive: args.print !== null,
     pollInbox: mailbox
@@ -756,6 +764,18 @@ async function main(): Promise<number> {
   // 记忆工具：模型显式写入（与自动归纳共用同一合并管线；子代理不可见）。
   registerTool(makeRememberTool({ remember: (body, scope) => memory.remember(body, scope) }));
 
+  // ask_user（v0.4.1 B2）：只在交互 TUI 注册；-p / 管道里模型看不到该工具。
+  if (interactiveTTY) {
+    registerTool(
+      makeAskUserTool({
+        ask: (req) => {
+          const c = composerRef;
+          return c ? c.askUser(req) : Promise.resolve({ status: "canceled" as const });
+        },
+      }),
+    );
+  }
+
   // 跨会话工具：send_message / list_peers（只有启用信箱的交互式会话注册）。
   if (mailbox) {
     const mb = mailbox;
@@ -785,7 +805,7 @@ async function main(): Promise<number> {
   // 首次构造时运行时工具（task/wiki/remember/send_message/list_peers）尚未注册。
   {
     const sys0 = agent.messages[0];
-    if (sys0) sys0.content = buildSystemPrompt(cfg, { mailbox: mailboxEnabled });
+    if (sys0) sys0.content = buildSystemPrompt(cfg, { mailbox: mailboxEnabled, askUser: interactiveTTY });
   }
 
   if (restored && restored.length > 0) {

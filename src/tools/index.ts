@@ -870,6 +870,7 @@ export const TOOL_NAMES_EXCLUDED_FOR_SUBAGENT: readonly string[] = [
   "remember",
   "send_message",
   "list_peers",
+  "ask_user",
 ];
 
 export function toolSpecs(): ToolSpec[] {

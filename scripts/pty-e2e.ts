@@ -422,7 +422,8 @@ async function startFake(
     | "slow"
     | "slow-500"
     | "slow-800"
-    | "write-then-answer",
+    | "write-then-answer"
+    | "ask-user",
 ): Promise<FakeServer> {
   const proc = Bun.spawn([BUN, "run", FAKE_LLM], {
     cwd: ROOT,
@@ -2063,6 +2064,56 @@ interface Scenario {
   focus: string[];
 }
 
+/** S20：ask_user 提问模态（v0.4.1 B2）——问题/选项可见，↓+Enter 回答并回给模型。 */
+async function scenarioS20(tmpRoot: string): Promise<void> {
+  const dirs = await makeDirs(tmpRoot, "s20-ask-user");
+  const fake = await startFake("ask-user");
+  const run = await startNeo({
+    fake,
+    dirs,
+    name: "s20",
+    args: BASE_ARGS,
+    cols: DEFAULT_COLS,
+    rows: DEFAULT_ROWS,
+  });
+  try {
+    await waitPrompt(run);
+    await run.type("请问我一个问题");
+    await waitFor(() => run.screen.text().includes("选哪个报价方案？"), {
+      label: "ask_user 问题可见",
+      run,
+      timeoutMs: 10_000,
+    });
+    const screen = run.screen.text();
+    check(screen.includes("方案 A"), "选项 A 未显示", run.screen);
+    check(screen.includes("方案 B"), "选项 B 未显示", run.screen);
+    check(screen.includes("其他（自行输入）"), "自定义输入入口未显示", run.screen);
+    check(statusLineOf(run.screen) !== null, "提问态状态行丢失", run.screen);
+    await run.write("\x1b[B"); // ↓ → 方案 B
+    await sleep(120);
+    await run.write("\r"); // Enter
+    await waitFor(() => run.screen.text().includes("回答：方案 B"), {
+      label: "回答提交进 scrollback",
+      run,
+      timeoutMs: 8_000,
+    });
+    await waitFor(() => run.screen.text().includes("ANSWER_OK"), {
+      label: "模型收到回答并继续",
+      run,
+      timeoutMs: 10_000,
+    });
+    await waitPrompt(run, "提问结束后回到提示符");
+    check(statusLineOf(run.screen) !== null, "提问结束后状态行丢失", run.screen);
+    await run.type("/exit");
+    await run.waitExit();
+  } catch (e) {
+    throw attachScreen(e, run.screen, run.stderr);
+  } finally {
+    await run.close();
+    await fake.stop();
+  }
+}
+
 const SCENARIOS: Scenario[] = [
   {
     id: "s1",
@@ -2177,6 +2228,12 @@ const SCENARIOS: Scenario[] = [
     title: "S19 随机代号 + Agent 标题 + /rename neo 动画初态",
     fn: scenarioS19,
     focus: ["Agent:", "Mr.Anderson"],
+  },
+  {
+    id: "s20",
+    title: "S20 askUser：问题/选项/回答/模型继续",
+    fn: scenarioS20,
+    focus: ["选哪个报价方案", "回答：方案 B", "ANSWER_OK"],
   },
 ];
 

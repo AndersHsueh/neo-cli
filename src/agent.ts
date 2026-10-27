@@ -13,6 +13,7 @@ import {
   type ModelTier,
 } from "./config.ts";
 import { StreamFormatter } from "./ui/stream.ts";
+import type { AskUserAnswer, AskUserRequest } from "./ui/askUser.ts";
 import { renderMarkdown } from "./ui/render.ts";
 import { c, colorEnabled } from "./ui/theme.ts";
 import { Classifier } from "./classifier/index.ts";
@@ -134,6 +135,10 @@ export interface AgentOptions {
    * 重新解析当前模型窗口，避免沿用上一个模型的值。
    */
   refreshContextWindow?: () => void;
+  /** 向用户提问（v0.4.1 B2）：仅交互 TUI 注入；ask_user 工具使用。 */
+  askUser?: (req: AskUserRequest) => Promise<AskUserAnswer>;
+  /** 强制关闭提问模态（用户 abort 时）。 */
+  cancelAskUser?: () => void;
 }
 
 export interface TurnStats {
@@ -1066,6 +1071,8 @@ export class Agent {
       },
       onNotice: (m) => ui.info(m),
       onProgress: (m) => ui.updateSpinner(m),
+      askUser: this.opt.askUser,
+      cancelAskUser: this.opt.cancelAskUser,
     };
   }
 }

@@ -9,6 +9,7 @@
  */
 import type { ToolSpec } from "../llm.ts";
 import type { Config } from "../config.ts";
+import type { AskUserAnswer, AskUserRequest } from "../ui/askUser.ts";
 
 export class ToolError extends Error {
   constructor(message: string) {
@@ -55,6 +56,13 @@ export interface ToolCtx {
    * 否则子代理运行的几分钟里终端会显得像死掉了。
    */
   onProgress?: (msg: string) => void;
+  /**
+   * 向用户提问（v0.4.1 B2，仅交互 TUI 注入）。ask_user 工具用它打开模态；
+   * 不传 = 非交互环境，工具会明确报错。
+   */
+  askUser?: (req: AskUserRequest) => Promise<AskUserAnswer>;
+  /** 强制关闭当前提问模态（宿主 abort 时用）。 */
+  cancelAskUser?: () => void;
 }
 
 export interface ToolImpl {

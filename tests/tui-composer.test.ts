@@ -413,3 +413,99 @@ describe("C1e Agent 标题视图（v0.3.1）", () => {
     h.composer.stop();
   });
 });
+
+/* ------------------------------------------------------------------ */
+/* v0.4.1 B2：askUser 模态                                             */
+/* ------------------------------------------------------------------ */
+
+describe("C5 askUser 模态", () => {
+  test("单选：问题/选项渲染，↓+Enter 返回选中项", async () => {
+    const h = makeHarness();
+    const p = h.composer.askUser({
+      header: "确认",
+      question: "选择哪个方案？",
+      context: "影响报价口径",
+      options: [
+        { label: "方案 A", description: "成本优先" },
+        { label: "方案 B", description: "质量优先" },
+      ],
+    });
+    const rows = h.composer.compose().rows.join("\n");
+    expect(rows).toContain("确认");
+    expect(rows).toContain("选择哪个方案");
+    expect(rows).toContain("方案 A");
+    expect(rows).toContain("方案 B");
+    expect(rows).toContain("其他（自行输入）");
+    special(h, { name: "down" });
+    special(h, { name: "return", sequence: "\r" });
+    expect(await p).toEqual({ status: "answered", selected: ["方案 B"], custom: null });
+    expect(h.out()).toContain("回答：方案 B");
+    h.composer.stop();
+  });
+
+  test("Esc 取消返回 canceled，并提交问答到 scrollback", async () => {
+    const h = makeHarness();
+    const p = h.composer.askUser({ question: "继续吗？", options: [{ label: "是" }] });
+    special(h, { name: "escape" });
+    expect(await p).toEqual({ status: "canceled" });
+    expect(h.out()).toContain("回答：（已取消）");
+    h.composer.stop();
+  });
+
+  test("多选：Space 勾选多项后 Enter 提交；空选择不允许提交", async () => {
+    const h = makeHarness();
+    const p = h.composer.askUser({
+      question: "选哪些模块？",
+      multiSelect: true,
+      options: [{ label: "A" }, { label: "B" }, { label: "C" }],
+    });
+    special(h, { name: "return", sequence: "\r" });
+    // 空选择：不 resolve
+    const state = h.composer.compose().rows.join("\n");
+    expect(state).toContain("选哪些模块");
+    typeText(h, " ");
+    special(h, { name: "down" });
+    typeText(h, " ");
+    special(h, { name: "return", sequence: "\r" });
+    expect(await p).toEqual({ status: "answered", selected: ["A", "B"], custom: null });
+    h.composer.stop();
+  });
+
+  test("自由输入：选中「其他」→ 文本模态 → Enter 返回 custom", async () => {
+    const h = makeHarness();
+    const p = h.composer.askUser({
+      question: "补充说明？",
+      options: [{ label: "无" }],
+    });
+    special(h, { name: "down" }); // 移到「其他（自行输入）」
+    special(h, { name: "return", sequence: "\r" });
+    expect(h.composer.compose().rows.join("\n")).toContain("自定义回答");
+    typeText(h, "自定义内容");
+    special(h, { name: "return", sequence: "\r" });
+    expect(await p).toEqual({ status: "answered", selected: [], custom: "自定义内容" });
+    h.composer.stop();
+  });
+
+  test("纯文本提问（无选项）直接进入输入态", async () => {
+    const h = makeHarness();
+    const p = h.composer.askUser({ question: "项目名？", allowCustom: true });
+    expect(h.composer.compose().rows.join("\n")).toContain("自定义回答");
+    typeText(h, "威高项目");
+    special(h, { name: "return", sequence: "\r" });
+    expect(await p).toEqual({ status: "answered", selected: [], custom: "威高项目" });
+    h.composer.stop();
+  });
+
+  test("多选勾选后切到「其他」再取消：取消整体", async () => {
+    const h = makeHarness();
+    const p = h.composer.askUser({
+      question: "选？",
+      multiSelect: true,
+      options: [{ label: "A" }, { label: "B" }],
+    });
+    typeText(h, " ");
+    special(h, { name: "escape" });
+    expect(await p).toEqual({ status: "canceled" });
+    h.composer.stop();
+  });
+});

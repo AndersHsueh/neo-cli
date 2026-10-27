@@ -53,7 +53,7 @@ function listFiles(root: string, depth = 2, max = 200): string[] {
   return out;
 }
 
-export function buildSystemPrompt(cfg: Config, opts: { mailbox?: boolean } = {}): string {
+export function buildSystemPrompt(cfg: Config, opts: { mailbox?: boolean; askUser?: boolean } = {}): string {
   const tree = existsSync(cfg.cwd) ? listFiles(cfg.cwd, 2, 120) : [];
   const treeText =
     tree.length > 0
@@ -62,6 +62,9 @@ export function buildSystemPrompt(cfg: Config, opts: { mailbox?: boolean } = {})
 
   const tools = toolNames().join(", ");
   const mailboxText = opts.mailbox ? buildMailboxSection() : "";
+  const askUserRule = opts.askUser
+    ? "遇到只有用户能拍板的分叉（模板分组/业务口径/删除或覆盖交付物/不可逆操作），先用 ask_user 问清楚，不要替用户猜；能自己查证的事实不要问。交付物默认保留旧版本，不主动建议删除。"
+    : "遇到只有用户能拍板的分叉（模板分组/业务口径/删除或覆盖交付物/不可逆操作），先问清楚再动手，不要替用户猜；交付物默认保留旧版本，不主动建议删除。";
 
   // v0.4.0 平台适配层：环境块由脚本探测（不经过模型）。
   // env.prompt=false 可关闭；探测失败静默省略，不阻塞系统提示词构建。
@@ -101,6 +104,8 @@ export function buildSystemPrompt(cfg: Config, opts: { mailbox?: boolean } = {})
 
 动手之前先弄清现状——读真实的代码，不凭印象猜测。改动贴着需求走，小步前进，不顺手翻新无关的东西。失败了就如实说：一句「这里失败了，原因是……」远比含糊带过有价值。没有亲自验证过的结论，不要当作已确认的事实陈述——可以转述对方的话，但注明这是口述、未经你验证。删除文件、覆盖内容、执行后果不明的命令之前，先让对方知道会发生什么。
 
+遇到只有用户能拍板的分叉（模板分组/业务口径/删除或覆盖交付物/不可逆操作），先用 ask_user 问清楚，不要替用户猜；能自己查证的事实不要问。交付物默认保留旧版本，不主动建议删除。
+
 ## 工具
 
 可用工具：${tools}
@@ -113,6 +118,7 @@ export function buildSystemPrompt(cfg: Config, opts: { mailbox?: boolean } = {})
 - web_fetch：抓网页转纯文本，查文档用。
 - use_skill：按需加载技能正文（技能索引见下方「技能」节）。
 - task：派生隔离子代理跑探索/多文件改动，返回结论与用量；子代理不能用 task 递归派生。
+${opts.askUser ? "- ask_user：向用户提问（单选/多选/自由输入，Esc 取消）。仅在交互 TUI 可用；关键歧义/破坏性操作前使用。\n" : ""}
 - wiki_search：检索记忆 wiki（scope=auto 时先项目级、后用户级）。
 - wiki_write：回填项目 wiki 的唯一合法路径（强制摘要/日期戳/INDEX/log）。
 - remember：把长期有价值的结论/用户偏好写入记忆（自动判断项目级或用户级）。

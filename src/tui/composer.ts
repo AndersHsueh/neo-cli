@@ -22,6 +22,16 @@ import { emitKeypressEvents } from "node:readline";
 import { c, displayWidth, truncate } from "../ui/theme.ts";
 import { formatCandidateHint, applyMatch, completeLine, triggerAt, type CommandEntry } from "../input/completion.ts";
 import { reduce as reduceSelect, type SelectOption, type SelectState } from "../ui/select.ts";
+import {
+  askAnswerText,
+  buildAskOptions,
+  reduceAskUser,
+  toggleSelected,
+  type AskUserAnswer,
+  type AskUserOptionView,
+  type AskUserRequest,
+  type AskUserState,
+} from "../ui/askUser.ts";
 import { FrameRenderer } from "./frame.ts";
 import { TextBuffer, InputHistory, layoutBuffer, type VisualLine } from "./buffer.ts";
 import { PasteMachine, mapKey, type RawKey, type KeyAction } from "./keys.ts";
@@ -83,6 +93,18 @@ interface AskState {
   resolve: (v: string) => void;
 }
 
+/** askUser 模态（v0.4.1 B2）：选项/多选/自由输入三合一。 */
+interface AskUserSession {
+  req: AskUserRequest;
+  options: AskUserOptionView[];
+  state: AskUserState;
+  selected: Set<number>;
+  viewport: number;
+  phase: "choose" | "custom";
+  customBuf: TextBuffer;
+  resolve: (a: AskUserAnswer) => void;
+}
+
 interface TabCycle {
   start: number;
   matches: string[];
@@ -114,9 +136,10 @@ export class Composer {
   private pasteTimer: Timer | null = null;
   private readonly pasteIdleMs: number;
   private attachments: unknown[] = [];
-  private mode: "normal" | "ask" | "select" = "normal";
+  private mode: "normal" | "ask" | "select" | "ask_user" = "normal";
   private select: SelectSession | null = null;
   private askState: AskState | null = null;
+  private askUserState: AskUserSession | null = null;
   private hint: string | null = null;
   private tabCycle: TabCycle | null = null;
   private noticeText: string | null = null;
@@ -441,6 +464,11 @@ export class Composer {
       rows = [...extras, ...box.rows, statusRow];
       cursorRow = extras.length + box.cursorRow;
       cursorCol = box.cursorCol;
+    } else if (this.mode === "ask_user" && this.askUserState) {
+      const box = this.composeAskUser(width, this.askUserState);
+      rows = [...extras, ...box.rows, statusRow];
+      cursorRow = extras.length + box.cursorRow;
+      cursorCol = box.cursorCol;
     } else {
       const box = this.composeInput(width, this.buf, "normal");
       rows = [...extras, ...box.rows, statusRow];
@@ -616,6 +644,49 @@ export class Composer {
     return { rows, cursorRow: 2 + Math.max(0, sel.state.cursor - scroll), cursorCol: 0 };
   }
 
+  private composeAskUser(
+    width: number,
+    s: AskUserSession,
+  ): { rows: string[]; cursorRow: number; cursorCol: number } {
+    const rows: string[] = [];
+    rows.push(this.topRule(width, s.req.header ?? "提问"));
+    rows.push(...wrapAnsi(c.bold(s.req.question), Math.max(4, width - 2)));
+    if (s.req.context) rows.push(...wrapAnsi(c.dim(s.req.context), Math.max(4, width - 2)));
+    if (s.phase === "custom") {
+      rows.push(c.dim("自定义回答（Enter 提交 · Esc 取消）："));
+      const box = this.composeInput(width, s.customBuf, "ask");
+      rows.push(...box.rows);
+      return {
+        rows,
+        cursorRow: rows.length - box.rows.length + box.cursorRow,
+        cursorCol: box.cursorCol,
+      };
+    }
+    const base = rows.length;
+    const end = Math.min(s.state.scroll + s.viewport, s.options.length);
+    for (let i = s.state.scroll; i < end; i++) {
+      const o = s.options[i] as AskUserOptionView;
+      const marked = i === s.state.cursor;
+      const check = s.req.multiSelect ? (s.selected.has(i) ? c.accent("[x] ") : c.dim("[ ] ")) : "";
+      const marker = marked ? c.accent("❯ ") : "  ";
+      const descRaw = o.description ? truncate(o.description, Math.max(4, Math.floor(width / 2))) : "";
+      const descW = descRaw ? displayWidth(descRaw) + 2 : 0;
+      const avail = Math.max(4, width - 2 - displayWidth(check.replace(/\x1b\[[0-9;]*m/g, "")) - descW);
+      const label = truncate(o.label, avail);
+      const desc = descRaw ? c.dim(`  ${descRaw}`) : "";
+      rows.push(marker + check + (marked ? c.bold(label) : c.dim(label)) + desc);
+    }
+    rows.push(c.dim("─".repeat(width)));
+    rows.push(
+      c.dim(
+        s.req.multiSelect
+          ? "↑↓ 移动 · Space 勾选 · Enter 提交 · Esc 取消"
+          : "↑↓ 移动 · Enter 确认 · Esc 取消",
+      ),
+    );
+    return { rows, cursorRow: base + Math.max(0, s.state.cursor - s.state.scroll), cursorCol: 0 };
+  }
+
   // ---------------------------------------------------------------- 按键
 
   /** 入口：由 stdin keypress 调用；测试也可直接调。 */
@@ -662,6 +733,10 @@ export class Composer {
       this.handleSelectKey(action);
       return;
     }
+    if (this.mode === "ask_user" && this.askUserState) {
+      this.handleAskUserKey(action);
+      return;
+    }
     if (this.mode === "ask" && this.askState) {
       this.handleAskKey(action);
       return;
@@ -694,6 +769,95 @@ export class Composer {
     this.mode = "normal";
     this.select = null;
     this.scheduleRender();
+  }
+
+  private handleAskUserKey(action: KeyAction): void {
+    const s = this.askUserState;
+    if (!s) return;
+
+    if (s.phase === "custom") {
+      if (action.type === "submit") {
+        const text = s.customBuf.text.trim();
+        if (text === "") {
+          this.notice("自定义回答不能为空");
+          return;
+        }
+        this.finishAskUser(s, {
+          status: "answered",
+          selected: this.selectedAskLabels(s),
+          custom: text,
+        });
+        return;
+      }
+      if (action.type === "escape" || action.type === "ctrl-c") {
+        this.finishAskUser(s, { status: "canceled" });
+        if (action.type === "ctrl-c") this.handleCtrlC();
+        return;
+      }
+      if (action.type === "insert") s.customBuf.insert(action.text);
+      else this.applyEditAction(action, s.customBuf);
+      this.scheduleRender();
+      return;
+    }
+
+    if (action.type === "up" || action.type === "down") {
+      s.state = reduceAskUser(s.state, action.type, s.options.length, s.viewport);
+      this.scheduleRender();
+      return;
+    }
+    // 多选：空格切换；只在普通选项上生效（「其他」由 Enter 进入输入态）。
+    if (action.type === "insert" && action.text === " " && s.req.multiSelect) {
+      const o = s.options[s.state.cursor];
+      if (o && !o.custom) s.selected = toggleSelected(s.selected, s.state.cursor);
+      this.scheduleRender();
+      return;
+    }
+    if (action.type === "submit") {
+      const o = s.options[s.state.cursor];
+      if (!o) return;
+      if (o.custom) {
+        s.phase = "custom";
+        s.customBuf = new TextBuffer();
+        this.scheduleRender();
+        return;
+      }
+      if (s.req.multiSelect && s.selected.size === 0) {
+        this.notice("请至少选择一项（Space 勾选）");
+        this.scheduleRender();
+        return;
+      }
+      const selected = s.req.multiSelect
+        ? this.selectedAskLabels(s)
+        : [o.label];
+      this.finishAskUser(s, { status: "answered", selected, custom: null });
+      return;
+    }
+    if (action.type === "escape" || action.type === "ctrl-c") {
+      this.finishAskUser(s, { status: "canceled" });
+      if (action.type === "ctrl-c") this.handleCtrlC();
+    }
+  }
+
+  private selectedAskLabels(s: AskUserSession): string[] {
+    return [...s.selected]
+      .sort((a, b) => a - b)
+      .map((i) => s.options[i]?.label)
+      .filter((x): x is string => typeof x === "string");
+  }
+
+  /** 结束 askUser 模态：先把「提问/回答」提交进 scrollback，再 resolve。 */
+  private finishAskUser(s: AskUserSession, answer: AskUserAnswer): void {
+    if (this.askUserState !== s) return;
+    this.mode = "normal";
+    this.askUserState = null;
+    this.hint = null;
+    const width = this.cols();
+    const rows = [
+      ...wrapAnsi(c.bold(`提问：${s.req.question}`), Math.max(4, width - 2)),
+      ...wrapAnsi(c.dim(`回答：${askAnswerText(answer)}`), Math.max(4, width - 2)),
+    ];
+    this.frame.commitAboveAndRender(rows, this.compose());
+    s.resolve(answer);
   }
 
   private handleAskKey(action: KeyAction): void {
@@ -962,6 +1126,13 @@ export class Composer {
     const normalized = text.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
     // 模态：审批答案进 ask buffer；选择菜单直接丢弃（避免 "y" 代答 / 残留污染主缓冲）。
     if (this.mode === "select") { this.scheduleRender(); return; }
+    if (this.mode === "ask_user" && this.askUserState) {
+      if (this.askUserState.phase === "custom") {
+        this.askUserState.customBuf.insert(normalized);
+        this.scheduleRender();
+      }
+      return;
+    }
     if (this.mode === "ask" && this.askState) {
       this.askState.buf.insert(normalized);
       this.scheduleRender();
@@ -1019,6 +1190,49 @@ export class Composer {
       this.mode = "select";
       this.scheduleRender();
     });
+  }
+
+  /**
+   * askUser 模态（v0.4.1 B2）：单选 / 多选 / 自由输入。
+   * 已有任何模态时返回 canceled（工具层会把它作为「当前不可提问」）。
+   */
+  askUser(req: AskUserRequest): Promise<AskUserAnswer> {
+    if (this.askUserState || this.select || this.askState) {
+      return Promise.resolve({ status: "canceled" });
+    }
+    const options = buildAskOptions(req);
+    const viewport = Math.max(
+      1,
+      Math.min(Math.max(1, options.length), Math.min(10, this.maxFrameRows() - 10)),
+    );
+    const state = reduceAskUser(
+      { cursor: 0, scroll: 0 },
+      { type: "resize", viewportRows: viewport },
+      Math.max(1, options.length),
+      viewport,
+    );
+    return new Promise<AskUserAnswer>((resolve) => {
+      const pureText = (req.options?.length ?? 0) === 0;
+      this.askUserState = {
+        req,
+        options,
+        state,
+        selected: new Set<number>(),
+        viewport,
+        phase: pureText ? "custom" : "choose",
+        customBuf: new TextBuffer(),
+        resolve,
+      };
+      this.mode = "ask_user";
+      this.scheduleRender();
+    });
+  }
+
+  /** 供宿主 abort 时强制关闭提问（resolve canceled）。 */
+  cancelAskUser(): void {
+    const s = this.askUserState;
+    if (!s) return;
+    this.finishAskUser(s, { status: "canceled" });
   }
 }
 

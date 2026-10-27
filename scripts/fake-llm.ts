@@ -27,7 +27,7 @@
  * 所有请求体仅在内存中读取、不落盘；不记录日志（避免把测试数据写进仓库）。
  */
 
-type Scenario = "tool-then-answer" | "narration" | "resume" | "echo-ref" | "slow" | "slow-500" | "slow-800" | "write-then-answer";
+type Scenario = "tool-then-answer" | "narration" | "resume" | "echo-ref" | "slow" | "slow-500" | "slow-800" | "write-then-answer" | "ask-user";
 
 const SCENARIOS: readonly Scenario[] = [
   "tool-then-answer",
@@ -38,6 +38,7 @@ const SCENARIOS: readonly Scenario[] = [
   "slow-500",
   "slow-800",
   "write-then-answer",
+  "ask-user",
 ];
 
 function pickScenario(raw: string | undefined): Scenario {
@@ -152,6 +153,32 @@ function writeFileToolFrames(): string[] {
   ];
 }
 
+/** ask_user 的工具调用帧（v0.4.1 S20：TUI 提问模态）。 */
+function askUserToolFrames(): string[] {
+  const args = JSON.stringify({
+    header: "确认方案",
+    question: "选哪个报价方案？",
+    context: "影响最终报价口径",
+    options: [
+      { label: "方案 A", description: "成本优先" },
+      { label: "方案 B", description: "质量优先" },
+    ],
+  });
+  return [
+    frame({
+      tool_calls: [
+        {
+          index: 0,
+          id: "call_fake_ask",
+          type: "function",
+          function: { name: "ask_user", arguments: "" },
+        },
+      ],
+    }),
+    frame({ tool_calls: [{ index: 0, function: { arguments: args } }] }),
+  ];
+}
+
 function finishFrames(reason: "stop" | "tool_calls"): string[] {
   return [frame({}, reason), "data: [DONE]\n\n"];
 }
@@ -224,6 +251,13 @@ function framesFor(scenario: Scenario, messages: WireMessage[]): string[] {
       // v0.3.0 S11：慢回答（首帧前等 1.3s，>1s 足够让状态条的 0:01 出现），让忙碌态/排队可观察。
       // v0.3.1：slow-500 给 S19 用（只需观察忙碌标题，缩短 PTY 时长）。
       return [...contentFrames("慢回答完成。"), ...finishFrames("stop")];
+
+    case "ask-user": {
+      if (toolRounds === 0) {
+        return [...contentFrames("需要你拍板一个问题。"), ...askUserToolFrames(), ...finishFrames("tool_calls")];
+      }
+      return [...contentFrames("ANSWER_OK"), ...finishFrames("stop")];
+    }
 
     case "write-then-answer": {
       if (toolRounds === 0) {
