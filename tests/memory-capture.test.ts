@@ -503,8 +503,9 @@ describe("D CaptureEngine", () => {
     const audits = readAudit(JOURNAL, 5);
     expect(audits.at(-1)?.status).toBe("applied");
     expect(audits.at(-1)?.applied).toBe(1);
-    // journal 已落盘（先于提炼）
-    expect(pendingRecords(JOURNAL, { limit: 10 }).length).toBe(0);
+    // journal 已落盘（先于提炼）；retentionDays 显式放大，理由同 D6：
+    // 断言的是「记录已落盘且无待处理」，不掺保留期与真实时钟。
+    expect(pendingRecords(JOURNAL, { limit: 10, retentionDays: 3650 }).length).toBe(0);
   });
 
   test("D2 非法 JSON：重试一次后放弃，审计 failed，不落页", async () => {
@@ -584,7 +585,11 @@ describe("D CaptureEngine", () => {
     expect(audits).toHaveLength(1);
     expect(audits[0]?.status).toBe("deferred");
     expect(audits[0]?.reasons[0]).toContain("写锁被占用");
-    expect(pendingRecords(JOURNAL, { limit: 10 }).length).toBe(1);
+    // retentionDays 显式放大：本用例断言的是「记录留在 journal 可重试」，
+    // 不是保留期语义。engineWith 的 now 固定为 2026-10-20，若按默认 7 天保留期
+    // 与真实时钟比较，该记录会在真实时间跨过 2026-10-27 后被判过期而消失
+    // （D6 曾因此在到期日当天变红）。保留期行为由 pendingRecords 自身单测覆盖。
+    expect(pendingRecords(JOURNAL, { limit: 10, retentionDays: 3650 }).length).toBe(1);
   });
 
   test("D7 会话页面上限：超过 max_pages_per_session 后 skipped", async () => {
