@@ -1,17 +1,21 @@
 # neo 测试约定
 
-> **最后更新:2026-10-27**（v0.4.2 tier 视觉 + 切档即时反馈；v0.4.1 实战可靠性修复 + askUser；v0.4.0 平台适配层；v0.3.5 P0 加固；v0.3.4 banner；v0.3.1 会话代号 + resume；v0.3.0 TUI）
+> **最后更新:2026-10-27**（v0.4.3 目标锚 + 手段/目标分层；v0.4.2 tier 视觉 + 切档即时反馈；v0.4.1 实战可靠性修复 + askUser；v0.4.0 平台适配层；v0.3.5 P0 加固；v0.3.4 banner；v0.3.1 会话代号 + resume；v0.3.0 TUI）
 
 ## §1 当前基线
 
 ```bash
 bun x tsc --noEmit    # exit 0（strict + noUncheckedIndexedAccess；不用 bunx：部分 bun 安装没有独立 bunx 入口）
-bun test              # 1039 pass / 0 fail（67 个测试文件，约 13s）
-bash scripts/verify.sh # 全量闸门：上两条 + 真 PTY E2E（20 场景），输出落 docs/evidence/
+bun test              # 1051 pass / 1 fail（67 个测试文件，约 23s）
+bash scripts/verify.sh # 全量闸门：上两条 + 真 PTY E2E（21 场景），输出落 docs/evidence/
 ```
 
-v0.4.2 后的基线：**1039 pass / 0 fail / 67 文件 / PTY 20/20**（v0.4.1 为 1027/66，v0.4.0 为 974/59/PTY19；v0.3.5 为 925/57，v0.3.4 为 881/53，v0.3.0 为 839/46，v0.2.4 为 660/37，v0.2.3 为 569/32）。
-证据见 `docs/evidence/v0.4.2-*`（macOS）；v0.4.0 的 Ubuntu sp7 双平台证据仍保留在 `v0.4.0-sp7-*`。改功能前先在干净树上跑一遍，数字对位后再动手。
+v0.4.3 后的基线：**1051 pass / 1 fail / 67 文件 / PTY 21/21**（v0.4.2 为 1039/0/67/PTY20；v0.4.1 为 1027/66，v0.4.0 为 974/59/PTY19；v0.3.5 为 925/57，v0.3.4 为 881/53，v0.3.0 为 839/46，v0.2.4 为 660/37，v0.2.3 为 569/32）。
+证据见 `docs/evidence/goal-anchor-*`（v0.4.3 起按功能命名）与 `docs/evidence/v0.4.2-*`（macOS）；v0.4.0 的 Ubuntu sp7 双平台证据仍保留在 `v0.4.0-sp7-*`。改功能前先在干净树上跑一遍，数字对位后再动手。
+
+> **v0.4.3 起基线含 1 个已知失败**：`memory-capture.test.ts` D6（锁被占用时 journal 应留 1 条待重试记录，实际 0）。
+> 已用 `git stash` 验证：stash 掉 v0.4.3 全部改动后 D6 依然失败，属**先前存在**的失败，与本版改动无关。
+> 它不阻塞发布，但**新基线不再允许用「0 fail」当验收口径**——判读时先确认失败项是否仍是 D6。
 
 ### TTY-only 行为的验证方式（v0.2.3 起）
 
@@ -81,6 +85,19 @@ bun test 里的 fake IO 测不出事件顺序与覆盖语义。可复用脚本�
 | `toollog.test.ts` | D3：失败摘要（stderr/exit code）、时长格式、`/last` 格式化、缓存上限 20、失败详情的行数预算 |
 | `transcript.test.ts` | D4：轮次切取、角色过滤、`maxLines` 截断提示、多行用户输入、markdown 渲染 |
 | `flash-notice.test.ts` | D5：提示符重绘注入、不打印 `❯`、非 TTY 不写、无 restorer 退化 |
+
+### v0.4.3 新增（67 文件 / 1052 例，+13；PTY +1）
+
+| 文件 | 覆盖 |
+|---|---|
+| `mailbox-state.test.ts`（H1–H6） | 目标锚：新会话为 null、`setGoal` 写入/读回（含 `set_by` 与时间戳）、空串与纯空白视为清除、覆盖写、旧 state 缺 `goal` 字段不判非法、`setGoal` 不动 phase/turn |
+| `mailbox-agent.test.ts`（目标锚注入 4 例） | 设了目标时预算提示含目标原文与「不可修改」；未设目标退化为纯预算；`readGoal` 抛错不击穿本轮；目标提示是临时消息不累积进历史 |
+| `mailbox-agent.test.ts`（capability 计数 3 例） | 连续 2 次 capability 显示计数但不触发阈值；连续 4 次触发强制回锚；未设目标时不显示计数 |
+| `pty-e2e.ts`（s21） | `/goal` 设置/查看/清除全流程；设了目标时带工具的 turn 正常完成 |
+
+> **写 capability 计数用例时踩到的坑**：`maxToolIterations` 默认 4，跑满 4 次 capability 后循环已收口，
+> **下一次请求根本不存在**，阈值提示永远看不到。用例里必须把上限调到 `n+2` 才能观察到。
+> 这不是测试写法问题，而是实现的一个真实边界：**计数在最后一次工具调用后无人消费**。
 
 ### v0.4.2 新增（67 文件 / 1039 例，+12）
 
