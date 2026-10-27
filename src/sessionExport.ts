@@ -8,8 +8,10 @@
 import { contentText, type Message } from "./llm.ts";
 import type { SessionMeta } from "./session.ts";
 
-function fence(text: string, lang = ""): string {
-  return ["```" + lang, text.replace(/```/g, "``\\`"), "```"].join("\n");
+function fence(text: string): string {
+  // 内容本身含 ``` 时用四反引号围栏，避免提前闭合。
+  const ticks = text.includes("```") ? "````" : "```";
+  return [ticks, text, ticks].join("\n");
 }
 
 function toolCallLines(m: Message): string[] {
@@ -54,7 +56,7 @@ export function renderSessionMarkdown(meta: SessionMeta, messages: Message[]): s
       if (calls.length > 0) lines.push("工具调用：", ...calls, "");
     } else if (m.role === "tool") {
       lines.push(`### 工具结果${m.name ? ` · ${m.name}` : ""}`, "");
-      lines.push(fence(contentText(m.content) ?? "", "text"), "");
+      lines.push(fence(contentText(m.content) ?? ""), "");
     }
   }
   if (n === 0) lines.push("（空会话）", "");

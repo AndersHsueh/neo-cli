@@ -19,7 +19,7 @@ import {
   recordModelContext,
   resolveAndApplyModelWindow,
 } from "../src/env/modelWindows.ts";
-import { machineKeyOf, snapshotFile, writeSnapshot } from "../src/env/probe.ts";
+import { loadEnv, machineKeyOf, readSnapshot, snapshotFile, writeSnapshot } from "../src/env/probe.ts";
 import type { EnvStatic } from "../src/env/types.ts";
 import type { Config } from "../src/config.ts";
 
@@ -127,6 +127,11 @@ describe("env 模型窗口事实", () => {
     expect(cfg.contextWindowSource).toBe("overflow_error");
 
     expect(formatModelWindowLines(cfg).join("\n")).toContain("128,000");
+
+    // /env refresh（force）重写静态快照时不能抹掉 models 事实。
+    const refreshed = loadEnv({ cfg, persist: true, force: true, home: SANDBOX });
+    expect(refreshed).not.toBeNull();
+    expect(readSnapshot(refreshed!.snapshotPath)?.models?.["p1|m1"]?.contextWindow).toBe(128_000);
   });
 
   test("/models 元数据探测并落盘", async () => {

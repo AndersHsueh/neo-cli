@@ -106,6 +106,11 @@ export function buildSystemPrompt(cfg: Config, opts: { mailbox?: boolean; askUse
 
 遇到只有用户能拍板的分叉（模板分组/业务口径/删除或覆盖交付物/不可逆操作），先用 ask_user 问清楚，不要替用户猜；能自己查证的事实不要问。交付物默认保留旧版本，不主动建议删除。
 
+## 风险与交付
+
+- 删除、覆盖交付物（outputs/、docs/、release-notes 等）之前先说明后果；默认保留旧版本（改名/备份），不为了整洁主动删旧版。
+- 不可逆操作（rm -rf、git reset --hard、覆盖文件）先确认；有 ask_user 时先问，没有时明确写出将发生什么再执行。
+
 ## 工具
 
 可用工具：${tools}

@@ -12,6 +12,10 @@ settings.json
 # 写文件检查点：快照是本地恢复用运行时状态，不进版本控制
 .neo/backups/
 
+# 超长工具输出落盘（B4/D1）与会话导出（B4/D4）：运行时产物，不进版本控制
+.neo/tmp/
+.neo/exports/
+
 # neo 会话导出
 neo-session.json
 

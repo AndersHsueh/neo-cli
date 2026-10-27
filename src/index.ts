@@ -108,11 +108,12 @@ import * as mailboxState from "./mailbox/state.ts";
 import { decideInbound, formatIncomingFrame, formatNotice, formatNoticePreview, formatPreview } from "./mailbox/inbound.ts";
 import { makeListPeersTool, makeSendMessageTool } from "./tools/mailbox.ts";
 import { mailboxRoot, type Envelope } from "./mailbox/types.ts";
+import { cleanupRuntime } from "./maintenance.ts";
 import { CheckpointStore } from "./checkpoint.ts";
 import { formatResumeWarning, outcomeOf, type LastTurnMeta } from "./turnDiagnostics.ts";
 import type { ToolCtx } from "./tools/types.ts";
 
-const VERSION = "0.4.0";
+const VERSION = "0.4.1";
 
 /** /auto 列表里各实现的说明。 */
 const DESC: Record<string, string> = {
@@ -476,6 +477,19 @@ async function main(): Promise<number> {
       .catch(() => {
         /* 探测失败不影响会话 */
       });
+
+    // B5：清理过期工具输出与已死 mailbox 会话目录（默认 7 天）。
+    try {
+      const cleaned = cleanupRuntime(cfg.cwd, mailboxRoot());
+      if (cleaned.removedTmpFiles + cleaned.removedMailboxDirs.length > 0) {
+        ui.info(
+          `已清理过期文件：tmp ${cleaned.removedTmpFiles} 个、mailbox ${cleaned.removedMailboxDirs.length} 个` +
+            `（释放 ${Math.round(cleaned.freedBytes / 1024)} KB）`,
+        );
+      }
+    } catch {
+      /* 清理失败不影响启动 */
+    }
   }
 
   // default_provider 指向未接入的协议时，必须在启动就拦下。

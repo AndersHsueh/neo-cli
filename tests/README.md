@@ -1,18 +1,17 @@
 # neo 测试约定
 
-> **最后更新:2026-10-26**（v0.4.0 平台适配层：跨平台 shell + 环境探测/注入 + 跨平台测试修正；v0.3.5 P0 加固；v0.3.4 banner；v0.3.1 会话代号 + resume；v0.3.0 TUI）
+> **最后更新:2026-10-27**（v0.4.1 实战可靠性修复 + askUser；v0.4.0 平台适配层；v0.3.5 P0 加固；v0.3.4 banner；v0.3.1 会话代号 + resume；v0.3.0 TUI）
 
 ## §1 当前基线
 
 ```bash
 bun x tsc --noEmit    # exit 0（strict + noUncheckedIndexedAccess；不用 bunx：部分 bun 安装没有独立 bunx 入口）
-bun test              # 974 pass / 0 fail（59 个测试文件，约 13s）
-bash scripts/verify.sh # 全量闸门：上两条 + 真 PTY E2E（19 场景），输出落 docs/evidence/
+bun test              # 1023 pass / 0 fail（66 个测试文件，约 13s）
+bash scripts/verify.sh # 全量闸门：上两条 + 真 PTY E2E（20 场景），输出落 docs/evidence/
 ```
 
-v0.4.0 后的基线：**974 pass / 0 fail / 59 文件**（v0.3.5 为 925/57，v0.3.4 为 881/53，v0.3.0 为 839/46，v0.2.4 为 660/37，v0.2.3 为 569/32）。
-**macOS 与 Ubuntu 24.04（sp7）双平台同构全绿**（974 pass / PTY 19/19），证据见
-`docs/evidence/v0.4.0-*` 与 `v0.4.0-sp7-*`。改功能前先在干净树上跑一遍，数字对位后再动手。
+v0.4.1 后的基线：**1023 pass / 0 fail / 66 文件 / PTY 20/20**（v0.4.0 为 974/59/PTY19；v0.3.5 为 925/57，v0.3.4 为 881/53，v0.3.0 为 839/46，v0.2.4 为 660/37，v0.2.3 为 569/32）。
+证据见 `docs/evidence/v0.4.1-*`（macOS）；v0.4.0 的 Ubuntu sp7 双平台证据仍保留在 `v0.4.0-sp7-*`。改功能前先在干净树上跑一遍，数字对位后再动手。
 
 ### TTY-only 行为的验证方式（v0.2.3 起）
 
@@ -82,6 +81,21 @@ bun test 里的 fake IO 测不出事件顺序与覆盖语义。可复用脚本�
 | `toollog.test.ts` | D3：失败摘要（stderr/exit code）、时长格式、`/last` 格式化、缓存上限 20、失败详情的行数预算 |
 | `transcript.test.ts` | D4：轮次切取、角色过滤、`maxLines` 截断提示、多行用户输入、markdown 渲染 |
 | `flash-notice.test.ts` | D5：提示符重绘注入、不打印 `❯`、非 TTY 不写、无 restorer 退化 |
+
+### v0.4.1 新增（66 文件 / 1023 例，+49；PTY +1）
+
+| 文件 | 覆盖 |
+|---|---|
+| `turn-reliability.test.ts` | 空正文两轮按错误收口 + 诊断 JSONL、length 放大 max_tokens 重试、outcomeOf/resume 告警、session lastTurn 持久化、坏目录不抛 |
+| `context-window.test.ts` | 上下文溢出错误识别/窗口解析（128000/200k/1m）、env 探测值优先、model window 落盘、`/models` 元数据探测 |
+| `context-recovery.test.ts` | 400 上下文 → 解析窗口 → 压缩 → 同轮重试成功；二次仍溢出明确失败；普通 401 不误触发 |
+| `ask-user-tool.test.ts` | ask_user 参数校验/多选无选项/无 host/abort 取消/schema |
+| `tui-composer.test.ts`（C5） | askUser 单选/多选/自由输入/纯文本/Esc 取消/答案提交 scrollback |
+| `memory-capture.test.ts`（D11/D12） | 显式记忆 append→create 自动降级并回执 applied；空轮/中断轮写 skipped 审计 |
+| `b4-tools.test.ts` | 超长输出落盘、shell cwd、Bing RSS 解析/count/HTTP 错误/非 RSS |
+| `session-export.test.ts` | 会话 Markdown 渲染（元信息/工具结果/最后一轮状态/system 不导出） |
+| `maintenance.test.ts` | 7 天 tmp/mailbox 清理、保留新文件、非法目录名不删 |
+| `skills.test.ts`（K 组） | skills_extra_paths 只读发现/解析、不建软链、not_found 提示、环境变量解析 |
 
 ### v0.4.0 新增（59 文件 / 974 例，+49）
 

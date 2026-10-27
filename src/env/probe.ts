@@ -471,8 +471,11 @@ export function loadEnv(opts: LoadEnvOptions): LoadedEnv | null {
   }
 
   // shell 以本次运行解析结果为准：即使快照是 12h 前的，也不能让 prompt 说错 shell。
+  // models（A2 探测到的窗口事实）不属于「静态探测」产物：刷新时保留旧值，
+  // 否则一次 /env refresh 或 TTL 过期就把学习结果抹掉。
   stat = {
     ...stat,
+    ...(existing?.models ? { models: existing.models } : {}),
     machineKey,
     shell: {
       path: shell.path,

@@ -386,8 +386,9 @@ export function resolveSkill(cfg: Config, name: string, opts?: { createLink?: bo
       const p = join(dir, name);
       if (!existsSync(p)) continue;
       const found = readOrMalformed(name, p, "extra", available);
-      if (!("ok" in found)) return { ok: true, meta: found, createdLink: false };
-      break;
+      // 目录存在但缺 SKILL.md → 如实报 malformed，不能伪装成 not_found。
+      if ("ok" in found) return found;
+      return { ok: true, meta: found, createdLink: false };
     }
     const searched = [projectSkillsDir(cfg), skillsStore(cfg), ...extraSkillsDirs(cfg)];
     return {
