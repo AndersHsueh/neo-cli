@@ -271,3 +271,6 @@ grep -E -A3 "^## \[[0-9-]+\] todo \|" wiki/log.md
 
 ## [2026-10-27] milestone | v0.4.1 发布：实战可靠性修复 + askUser；1027/66、PTY 20/20、verify ALL GREEN，tag `v0.4.1` 已推 gitee
 ## [2026-10-27] wiki | 新建 [[neo-v0.4.1-实战可靠性]]（15 问题→批次落点、A1/A2/askUser/记忆/工具链契约、独立审计 4 阻断修复）；INDEX 当前版本/测试基线/平台边界与主题目录同步
+
+## [2026-10-27] milestone | v0.4.2 发布：tier 视觉语义（深红/平衡绿/亮蓝/默认冰绿）+ 切档即时反馈；1034/67、PTY 20/20、verify ALL GREEN
+## [2026-10-27] wiki | 新建 [[neo-v0.4.2-tier视觉]]；INDEX 当前版本/测试基线/主题目录同步
