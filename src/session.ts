@@ -118,7 +118,10 @@ export function listSessions(limit = 20): SessionMeta[] {
 export function loadSession(id: string): SessionFile | null {
   const dir = sessionsDir();
   if (!existsSync(dir)) return null;
-  const candidates = readdirSync(dir).filter((f) => f.includes(id) && f.endsWith(".json"));
+  // 先精确匹配文件名（<id>.json），再退回包含匹配：避免 /export 2026 静默导错会话。
+  const files = readdirSync(dir).filter((f) => f.endsWith(".json"));
+  const exact = files.find((f) => f === `${id}.json`);
+  const candidates = exact ? [exact] : files.filter((f) => f.includes(id));
   if (candidates.length === 0) return null;
   try {
     const f = JSON.parse(readFileSync(join(dir, candidates[0] as string), "utf8")) as SessionFile;

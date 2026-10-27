@@ -96,7 +96,7 @@ function pruneOldFiles(dir: string): void {
   try {
     const cutoff = Date.now() - RETENTION_DAYS * 86_400_000;
     for (const name of readdirSync(dir)) {
-      if (!name.endsWith(".jsonl")) continue;
+      if (!name.includes(".jsonl")) continue; // 含滚动产物 .jsonl.1
       const file = join(dir, name);
       try {
         if (statSync(file).mtimeMs < cutoff) rmSync(file, { force: true });
