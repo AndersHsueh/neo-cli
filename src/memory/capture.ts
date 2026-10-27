@@ -207,6 +207,8 @@ export class CaptureEngine {
   /** 本会话已触碰的页面（max_pages_per_session 的上限依据）。 */
   private pagesTouched = new Set<string>();
   private lastNotice = "";
+  /** 显式 remember 的同步回执：record id → audit 到达时 resolve（v0.4.1 B3）。 */
+  private readonly pendingAudits = new Map<string, (a: AuditEntry) => void>();
 
   constructor(private readonly deps: CaptureDeps) {}
 
@@ -231,7 +233,18 @@ export class CaptureEngine {
         date: localDate(now),
         ts: now.toISOString(),
       });
-      if (!shouldCapture(input, rec, m.autoCapture.mode)) return;
+      if (!shouldCapture(input, rec, m.autoCapture.mode)) {
+        // v0.4.1 B3：被过滤的轮次也要留审计（此前完全静默，无法知道「为什么没记住」）。
+        this.audit({
+          rec,
+          status: "skipped",
+          applied: 0,
+          dropped: 0,
+          reasons: [input.kind === "aborted" ? "aborted 轮次不提炼" : "价值判定未通过"],
+          ms: 0,
+        });
+        return;
+      }
       this.enqueueJournaled(rec);
     } catch (e) {
       this.debug(`capture 入口失败：${(e as Error).message}`);
@@ -258,11 +271,18 @@ export class CaptureEngine {
     }
   }
 
-  /** 显式记忆（remember 工具 / /remember）：跳过价值判定。 */
-  captureExplicit(body: string, turn: number, hintScope?: "project" | "user"): void {
+  /**
+   * 显式记忆（remember 工具 / /remember）：跳过价值判定。
+   * 返回 record id + audit Promise，让工具能如实回执「落页成功/失败原因」（B3）。
+   */
+  captureExplicit(
+    body: string,
+    turn: number,
+    hintScope?: "project" | "user",
+  ): { id: string; done: Promise<AuditEntry> } | null {
     try {
       const m = this.deps.cfg.memory;
-      if (!m.enabled) return;
+      if (!m.enabled) return null;
       const now = this.deps.now?.() ?? new Date();
       const rec: TurnRecord = {
         v: 1,
@@ -278,9 +298,14 @@ export class CaptureEngine {
         filesTouched: [],
         ...(hintScope ? { hintScope } : {}),
       };
+      const done = new Promise<AuditEntry>((resolve) => {
+        this.pendingAudits.set(rec.id, resolve);
+      });
       this.enqueueJournaled(rec);
+      return { id: rec.id, done };
     } catch (e) {
       this.debug(`显式记忆失败：${(e as Error).message}`);
+      return null;
     }
   }
 
@@ -508,21 +533,27 @@ export class CaptureEngine {
     reasons: string[];
     ms: number;
   }): void {
+    const entry: AuditEntry = {
+      ts: new Date().toISOString(),
+      id: input.rec.id,
+      sessionId: input.rec.sessionId,
+      turn: input.rec.turn,
+      kind: input.rec.kind,
+      status: input.status,
+      applied: input.applied,
+      dropped: input.dropped,
+      reasons: input.reasons.slice(0, 10),
+      ms: input.ms,
+    };
     try {
-      appendAudit(this.deps.cfg.memory.journalDir, {
-        ts: new Date().toISOString(),
-        id: input.rec.id,
-        sessionId: input.rec.sessionId,
-        turn: input.rec.turn,
-        kind: input.rec.kind,
-        status: input.status,
-        applied: input.applied,
-        dropped: input.dropped,
-        reasons: input.reasons.slice(0, 10),
-        ms: input.ms,
-      });
+      appendAudit(this.deps.cfg.memory.journalDir, entry);
     } catch (e) {
       this.debug(`审计写入失败：${(e as Error).message}`);
+    }
+    const waiting = this.pendingAudits.get(input.rec.id);
+    if (waiting) {
+      this.pendingAudits.delete(input.rec.id);
+      waiting(entry);
     }
   }
 

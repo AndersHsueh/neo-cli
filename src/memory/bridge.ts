@@ -124,8 +124,13 @@ export class MemoryBridge implements MemoryPort {
     this.engine.captureCompact(summary, turn);
   }
 
-  /** 显式记忆（remember 工具 / /remember）。 */
-  remember(body: string, hintScope?: "project" | "user"): string {
+  /**
+   * 显式记忆（remember 工具 / /remember），带同步回执（v0.4.1 B3）。
+   *
+   * 旧实现立即回「已登记，稍后写入」，但提炼/落页可能被静默 drop（实战中用户偏好
+   * 就这样丢了）。现在等待该 record 的 audit 结果（上限 15s）再如实回复。
+   */
+  async remember(body: string, hintScope?: "project" | "user"): Promise<string> {
     if (!this.writeAllowed()) return "记忆写入当前不可用（plan 模式或记忆已关闭）。";
     if (this.opts.mode === "oneshot" && hintScope === "user") {
       return "单次模式（-p）只用项目级记忆，不能写用户级。";
@@ -133,10 +138,24 @@ export class MemoryBridge implements MemoryPort {
     this.explicitTurn += 1;
     // -p：即使 scope=auto 也强制项目级（否则提炼器可能判成 user，随后被合并器丢弃）
     const effective = this.opts.mode === "oneshot" ? "project" : hintScope;
-    this.engine.captureExplicit(body, this.explicitTurn, effective);
-    return hintScope
-      ? `已登记到${hintScope === "user" ? "用户" : "项目"}记忆，稍后写入。`
-      : "已登记到记忆，稍后由提炼器判断归属。";
+    const receipt = this.engine.captureExplicit(body, this.explicitTurn, effective);
+    if (!receipt) return "记忆写入当前不可用（记忆已关闭或队列不可用）。";
+    const audit = await Promise.race([
+      receipt.done,
+      new Promise<null>((resolve) => {
+        const t = setTimeout(() => resolve(null), 15_000);
+        t.unref?.();
+      }),
+    ]);
+    if (!audit) {
+      return "已登记到记忆队列，但 15s 内未确认落页（可用 /memory status 查看审计）。";
+    }
+    const scopeLabel = hintScope === "user" ? "用户" : hintScope === "project" ? "项目" : "项目/用户";
+    if (audit.status === "applied" || audit.status === "partial") {
+      const dropped = audit.dropped > 0 ? `；另有 ${audit.dropped} 条被规则丢弃：${audit.reasons[0] ?? ""}` : "";
+      return `已写入${scopeLabel}记忆（${audit.applied} 条落页${dropped}）。`;
+    }
+    return `记忆未写入（${audit.status}）：${audit.reasons[0] ?? "未知原因"}`;
   }
 
   async flush(timeoutMs?: number): Promise<void> {
@@ -161,9 +180,14 @@ export class MemoryBridge implements MemoryPort {
     lines.push(`用户库：${user ? `${user.pagesDir}（${this.countPages(user)} 页）` : `${mem.userWikiDir}（未创建）`}`);
     const pending = this.engine.pendingCount;
     lines.push(`journal：${mem.journalDir}${pending > 0 ? `（${pending} 条待处理）` : ""}`);
-    const audit = readAudit(mem.journalDir, 1)[0];
-    if (audit) {
-      lines.push(`最近写入：turn ${audit.turn} ${audit.status} +${audit.applied}（${audit.ts.slice(0, 19).replace("T", " ")}）`);
+    const audits = readAudit(mem.journalDir, 3);
+    for (const audit of audits) {
+      const reason = audit.reasons.length > 0 ? ` · ${audit.reasons[0]}` : "";
+      lines.push(
+        `最近写入：turn ${audit.turn} ${audit.status} +${audit.applied}` +
+          `${audit.dropped ? ` -${audit.dropped}` : ""}${reason}` +
+          `（${audit.ts.slice(0, 19).replace("T", " ")}）`,
+      );
     }
     return lines.join("\n");
   }

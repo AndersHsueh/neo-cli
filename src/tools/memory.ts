@@ -11,7 +11,7 @@ import { ToolError, type ToolImpl } from "./types.ts";
 
 export interface RememberDeps {
   /** 返回给模型看的回执（写队列已登记，不等待 LLM）。 */
-  remember: (body: string, scope?: "project" | "user") => string;
+  remember: (body: string, scope?: "project" | "user") => Promise<string>;
 }
 
 export function makeRememberTool(deps: RememberDeps): ToolImpl {
@@ -42,7 +42,7 @@ export function makeRememberTool(deps: RememberDeps): ToolImpl {
         },
       },
     },
-    execute(args) {
+    async execute(args) {
       const text = String(args["text"] ?? "").trim();
       if (text.length < 8) throw new ToolError("text 太短（<8 字符），请写清要记住的结论与依据");
       const scopeRaw = String(args["scope"] ?? "auto");
@@ -50,7 +50,7 @@ export function makeRememberTool(deps: RememberDeps): ToolImpl {
         throw new ToolError(`scope 必须是 auto/project/user，当前：${scopeRaw}`);
       }
       const hint = scopeRaw === "auto" ? undefined : (scopeRaw as "project" | "user");
-      return deps.remember(text, hint);
+      return await deps.remember(text, hint);
     },
   };
 }

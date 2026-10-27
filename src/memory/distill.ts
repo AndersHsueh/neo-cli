@@ -216,6 +216,11 @@ function containsSecret(...texts: string[]): boolean {
  */
 export function validateDistillOps(raw: unknown[], input: DistillInput): ValidateResult {
   const { record, inventory, maxOps, minConfidence, minInferredConfidence } = input;
+  // 显式 remember 是用户直接要求写，不能被价值/置信度/页存在性规则静默丢掉：
+  //  - 不设 confidence 门槛；
+  //  - evidence 缺省用用户原文兜底；
+  //  - append 目标不存在 → 降级 create；create 目标已存在 → 降级 append。
+  const isExplicit = record.kind === "explicit";
   const ops: DistillOp[] = [];
   const dropped: DroppedOp[] = [];
   const sources = [record.user, record.answer];
@@ -260,7 +265,7 @@ export function validateDistillOps(raw: unknown[], input: DistillInput): Validat
     }
     const confidence = typeof o["confidence"] === "number" ? o["confidence"] : Number.NaN;
     const inferred = o["inferred"] === true;
-    const floor = inferred ? minInferredConfidence : minConfidence;
+    const floor = isExplicit ? 0 : inferred ? minInferredConfidence : minConfidence;
     if (!Number.isFinite(confidence) || confidence < floor) {
       dropped.push({
         index: idx,
@@ -268,12 +273,13 @@ export function validateDistillOps(raw: unknown[], input: DistillInput): Validat
       });
       continue;
     }
-    const evidence = isStr(o["evidence"]) ? o["evidence"].trim() : "";
+    const evRaw = isStr(o["evidence"]) ? o["evidence"].trim() : "";
+    const evidence = evRaw || (isExplicit ? "用户显式要求记住" : "");
     if (!evidence) {
       dropped.push({ index: idx, reason: "缺少 evidence" });
       continue;
     }
-    if (!evidenceSupported(evidence, sources)) {
+    if (!isExplicit && !evidenceSupported(evidence, sources)) {
       dropped.push({ index: idx, reason: "evidence 无法在本轮原文中找到" });
       continue;
     }
@@ -284,15 +290,22 @@ export function validateDistillOps(raw: unknown[], input: DistillInput): Validat
 
     const key = `${scope}/${page}`;
     const exists = existing.has(key);
-    if (action === "append" && !exists) {
-      dropped.push({ index: idx, reason: `append 目标页不存在于清单：${key}` });
-      continue;
+    let act: "create" | "append" = action;
+    if (act === "append" && !exists) {
+      if (isExplicit) act = "create";
+      else {
+        dropped.push({ index: idx, reason: `append 目标页不存在于清单：${key}` });
+        continue;
+      }
     }
-    if (action === "create" && exists) {
-      dropped.push({ index: idx, reason: `create 目标页已存在：${key}` });
-      continue;
+    if (act === "create" && exists) {
+      if (isExplicit) act = "append";
+      else {
+        dropped.push({ index: idx, reason: `create 目标页已存在：${key}` });
+        continue;
+      }
     }
-    if (action === "create") {
+    if (act === "create") {
       if (createsByScope[scope] >= 1) {
         dropped.push({ index: idx, reason: `${scope} 作用域本轮 create 超过 1 个` });
         continue;
@@ -307,7 +320,7 @@ export function validateDistillOps(raw: unknown[], input: DistillInput): Validat
     const supersedes = isStr(o["supersedes"]) ? o["supersedes"].trim() : undefined;
     ops.push({
       scope,
-      action,
+      action: act,
       page,
       summary,
       body,

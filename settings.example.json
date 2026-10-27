@@ -38,6 +38,8 @@
   "max_tool_iterations": 80,
   "tool_output_limit": 30000,
 
+  "skills_extra_paths": [],
+
   "shell": {
     "path": null,
     "login": true,

@@ -2687,7 +2687,7 @@ async function handleCommand(
         break;
       }
       const scope = flag?.[1] as "user" | "project" | undefined;
-      ui.line(memory.remember(body, scope));
+      ui.line(await memory.remember(body, scope));
       await memory.flush(10_000);
       ui.success("记忆已处理。");
       break;

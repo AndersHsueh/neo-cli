@@ -33,6 +33,7 @@ import { discoverSkills, parseFrontmatter, resolveSkill, buildSkillIndex } from 
 import type { SkillMeta } from "../src/skills.ts";
 import { TOOLS, toolNames, dispatch } from "../src/tools/index.ts";
 import { buildSystemPrompt } from "../src/system-prompt.ts";
+import { parseSkillsExtraPaths } from "../src/config.ts";
 import type { Config } from "../src/config.ts";
 import type { ToolCtx } from "../src/tools/index.ts";
 
@@ -972,6 +973,54 @@ describe("J. 测试隔离红线", () => {
     // Dirent.isDirectory() 为 false，但 statSync（跟随软链）为 true
     expect(lstatSync(link).isSymbolicLink()).toBe(true);
     expect(statSync(link).isDirectory()).toBe(true);
+  });
+});
+
+/* ------------------------------------------------------------------ */
+/* K. 额外技能目录（v0.4.1 B3）                                        */
+/* ------------------------------------------------------------------ */
+
+describe("K skills_extra_paths", () => {
+  test("discover/resolve 从额外目录只读加载，不建软链", () => {
+    const s = sandbox("k1");
+    const extra = join(dirname(s.cwd), "extra-skills");
+    mkdirSync(extra, { recursive: true });
+    makeSkill(extra, "ext-skill", { description: "外部技能" });
+    const cfg = { ...makeCfg(s.cwd, s.store), skillsExtraPaths: [extra] } as Config;
+
+    const found = discoverSkills(cfg).find((x) => x.name === "ext-skill");
+    expect(found?.source).toBe("extra");
+    const r = resolveSkill(cfg, "ext-skill");
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.meta.source).toBe("extra");
+      expect(r.createdLink).toBe(false);
+    }
+    expect(existsSync(join(s.cwd, "skills", "ext-skill"))).toBe(false);
+  });
+
+  test("not_found 错误包含搜索目录与配置提示", () => {
+    const s = sandbox("k2");
+    const cfg = {
+      ...makeCfg(s.cwd, s.store),
+      skillsExtraPaths: [join(dirname(s.cwd), "nope")],
+    } as Config;
+    const r = resolveSkill(cfg, "missing");
+    expect(r.ok).toBe(false);
+    if (!r.ok) {
+      expect(r.message).toContain("已搜索");
+      expect(r.message).toContain("skills_extra_paths");
+    }
+  });
+
+  test("parseSkillsExtraPaths：数组 + 环境变量 + 去重", () => {
+    expect(parseSkillsExtraPaths(["/a", "/b", "/a"], {})).toEqual(["/a", "/b"]);
+    const sep = process.platform === "win32" ? ";" : ":";
+    expect(parseSkillsExtraPaths(undefined, { NEO_SKILLS_PATHS: `/x${sep}/y` })).toEqual([
+      "/x",
+      "/y",
+    ]);
+    expect(parseSkillsExtraPaths([""], {})).toEqual([]);
   });
 });
 

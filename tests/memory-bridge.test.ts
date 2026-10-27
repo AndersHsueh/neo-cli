@@ -427,7 +427,7 @@ describe("D 跨会话与跨 cwd", () => {
         evidence: "用户显式要求记住",
       },
     ]);
-    bA.remember("请记住：会话 A 决定采用方案 B", "project");
+    await bA.remember("请记住：会话 A 决定采用方案 B", "project");
     await bA.flush(3000);
     expect(existsSync(join(ensureScopeLayout("project", CWD).pagesDir, "决策-跨会话.md"))).toBe(true);
 
@@ -462,7 +462,7 @@ describe("D 跨会话与跨 cwd", () => {
         evidence: "用户显式要求记住",
       },
     ]);
-    bA.remember("请记住：项目 A 的坑与我的偏好");
+    await bA.remember("请记住：项目 A 的坑与我的偏好");
     await bA.flush(3000);
 
     // 项目 B 会话：用户级可见，项目 A 的页不可见
@@ -474,9 +474,9 @@ describe("D 跨会话与跨 cwd", () => {
     expect(projectRecall).toBeNull();
   });
 
-  test("D3 单次模式（-p）写用户级被拒", () => {
+  test("D3 单次模式（-p）写用户级被拒", async () => {
     const b = bridge(CWD, "oneshot");
-    expect(b.remember("请记住我的偏好：先给结论", "user")).toContain("单次模式");
+    expect(await b.remember("请记住我的偏好：先给结论", "user")).toContain("单次模式");
   });
 });
 
@@ -563,7 +563,7 @@ describe("G 作用域守卫与恢复", () => {
       captureEnabled: false,
       streamFn: async () => fakeStream('{"ops":[]}'),
     });
-    expect(b.remember("请记住这个结论，它很重要")).toContain("不可用");
+    expect(await b.remember("请记住这个结论，它很重要")).toContain("不可用");
     b.capture({ kind: "turn", messages: [{ role: "user", content: "决定采用方案 B" }, { role: "assistant", content: "好" }], turn: 1 });
     await b.flush(1000);
     const project = ensureScopeLayout("project", CWD);

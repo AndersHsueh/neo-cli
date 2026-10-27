@@ -13,12 +13,12 @@
  */
 import { existsSync, readdirSync, readFileSync, statSync, symlinkSync, realpathSync, lstatSync, mkdirSync, type Dirent } from "node:fs";
 import { homedir } from "node:os";
-import { join, relative, sep } from "node:path";
+import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import type { Config } from "./config.ts";
 import { estimateTokens } from "./llm.ts";
 
 /** 技能的来源标记。 */
-export type SkillSource = "project" | "global";
+export type SkillSource = "project" | "global" | "extra";
 
 /** 一个技能的索引条目。 */
 export interface SkillMeta {
@@ -62,6 +62,19 @@ export function skillsStore(cfg: Config): string {
 /** 项目技能区路径。 */
 export function projectSkillsDir(cfg: Config): string {
   return join(cfg.cwd, "skills");
+}
+
+/**
+ * 额外技能目录（v0.4.1 B3）：settings.skills_extra_paths / NEO_SKILLS_PATHS。
+ * 支持 ~ 展开；相对路径按工作目录解析。只读，不建软链。
+ */
+export function extraSkillsDirs(cfg: Config): string[] {
+  return (cfg.skillsExtraPaths ?? [])
+    .map((raw) => {
+      const p = raw === "~" ? homedir() : raw.startsWith("~/") ? join(homedir(), raw.slice(2)) : raw;
+      return isAbsolute(p) ? p : resolve(cfg.cwd, p);
+    })
+    .filter((p, i, arr) => arr.indexOf(p) === i);
 }
 
 /* ------------------------------------------------------------------ */
@@ -200,8 +213,9 @@ export function isRealDir(full: string, e: Dirent): boolean {
 export function discoverSkills(cfg: Config): SkillMeta[] {
   const project = scanSkillsDir(projectSkillsDir(cfg), "project");
   const global = scanSkillsDir(skillsStore(cfg), "global");
+  const extras = extraSkillsDirs(cfg).flatMap((dir) => scanSkillsDir(dir, "extra"));
   // 约束 5：按 name 字典序；同名时项目条在前，保证顺序稳定可复现
-  const all = [...project, ...global].sort((a, b) =>
+  const all = [...project, ...global, ...extras].sort((a, b) =>
     a.name === b.name ? 0 : a.name < b.name ? -1 : 1,
   );
 
@@ -367,10 +381,21 @@ export function resolveSkill(cfg: Config, name: string, opts?: { createLink?: bo
   // 2. 全局库命中 → 建软链
   const globalDir = join(skillsStore(cfg), name);
   if (!existsSync(globalDir)) {
+    // 3. 额外技能目录（只读；不建软链）
+    for (const dir of extraSkillsDirs(cfg)) {
+      const p = join(dir, name);
+      if (!existsSync(p)) continue;
+      const found = readOrMalformed(name, p, "extra", available);
+      if (!("ok" in found)) return { ok: true, meta: found, createdLink: false };
+      break;
+    }
+    const searched = [projectSkillsDir(cfg), skillsStore(cfg), ...extraSkillsDirs(cfg)];
     return {
       ok: false,
       reason: "not_found",
-      message: `技能不存在: ${name}`,
+      message:
+        `技能不存在: ${name}\n已搜索：${searched.join("、")}` +
+        `\n把技能放到上述目录之一，或在 settings.json 配 skills_extra_paths / 设 NEO_SKILLS_PATHS。`,
       available,
     };
   }

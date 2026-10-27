@@ -668,6 +668,40 @@ describe("D CaptureEngine", () => {
     expect(readFileSync(path, "utf8")).toContain('"kind":"turn"');
     void engine.flush(3000);
   });
+
+  test("D12 空轮/中断轮也留审计（不再静默）", async () => {
+    const { engine } = engineWith([fakeResult('{"ops":[]}')]);
+    engine.capture({ kind: "turn", messages: [{ role: "user", content: "继续" }], turn: 1 });
+    engine.capture({ kind: "aborted", messages: [], turn: 2 });
+    await engine.flush(1000);
+    const audits = engine.recentAudit(5);
+    expect(audits.some((a) => a.status === "skipped" && a.reasons[0] === "价值判定未通过")).toBe(true);
+    expect(audits.some((a) => a.status === "skipped" && a.reasons[0] === "aborted 轮次不提炼")).toBe(true);
+  });
+
+  test("D11 显式 remember：append 目标缺失 → 自动 create 并回执 applied", async () => {
+    const { engine } = engineWith([
+      jsonOps([
+        {
+          scope: "user",
+          action: "append",
+          page: "偏好-交付物版本管理.md",
+          summary: "交付物版本保留偏好",
+          body: "用户要求每一版报价都保留，绝不主动删除，清理由用户手动做。",
+          confidence: 0.3,
+          inferred: false,
+          evidence: "",
+        },
+      ]),
+    ]);
+    const receipt = engine.captureExplicit("请记住：每一版报价都保留，不能主动删", 1, "user");
+    expect(receipt).not.toBeNull();
+    const audit = await receipt!.done;
+    expect(audit.status).toBe("applied");
+    expect(audit.applied).toBe(1);
+    const user = ensureScopeLayout("user", CWD, USER_ROOT);
+    expect(existsSync(join(user.pagesDir, "偏好-交付物版本管理.md"))).toBe(true);
+  });
 });
 
 /* ------------------------------------------------------------------ */
@@ -675,21 +709,24 @@ describe("D CaptureEngine", () => {
 /* ------------------------------------------------------------------ */
 
 describe("E remember 工具与边界", () => {
-  test("E1 合法调用转发 scope；短文本抛 ToolError", () => {
+  test("E1 合法调用转发 scope；短文本抛 ToolError", async () => {
     const calls: Array<{ body: string; scope?: "project" | "user" }> = [];
     const tool = makeRememberTool({
       remember: (body, scope) => {
         calls.push({ body, ...(scope ? { scope } : {}) });
-        return "已登记";
+        return Promise.resolve("已登记");
       },
     });
     const ctx = { cfg: makeCfg(), approve: async () => true };
-    const r = tool.execute({ text: "这个结论值得长期记住，因为每次发布都会用到", scope: "project" }, ctx);
-    expect(typeof r === "string" ? r : "已登记").toBe("已登记");
+    const r = await tool.execute(
+      { text: "这个结论值得长期记住，因为每次发布都会用到", scope: "project" },
+      ctx,
+    );
+    expect(r).toBe("已登记");
     expect(calls.length).toBe(1);
     expect(calls[0]?.scope).toBe("project");
-    expect(() => tool.execute({ text: "太短" }, ctx)).toThrow(/太短/);
-    expect(() => tool.execute({ text: "长度足够的记忆内容", scope: "bogus" }, ctx)).toThrow(/scope/);
+    await expect(tool.execute({ text: "太短" }, ctx)).rejects.toThrow(/太短/);
+    await expect(tool.execute({ text: "长度足够的记忆内容", scope: "bogus" }, ctx)).rejects.toThrow(/scope/);
   });
 
   test("E2 collectInventory 覆盖双库且遵守 limit", () => {

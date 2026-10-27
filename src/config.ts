@@ -175,6 +175,8 @@ export interface Config {
    * 否则会读写用户真实的技能库。
    */
   skillsStore: string;
+  /** 额外技能目录（v0.4.1 B3）：按顺序只读扫描，用于外部技能包/团队共享目录。 */
+  skillsExtraPaths?: string[];
   /**
    * 记忆系统配置。PRD docs/memory-prd.md §6.3 + §A 配套。
    * 实现层用 `cfg.memory.userLevelDir ?? homedir()/.neo/memorys`（§7.3）：
@@ -319,6 +321,30 @@ function resolveMailboxSettings(raw: Raw): MailboxConfig {
 
 function resolveInboundPolicy(raw: unknown): InboundPolicy | "auto" {
   return raw === "accept" || raw === "hold" || raw === "refuse" ? raw : "auto";
+}
+
+/**
+ * 额外技能目录（v0.4.1 B3）：settings.skills_extra_paths + NEO_SKILLS_PATHS。
+ * 只做去空白/去重；路径展开由 skills.ts 负责（需要 cfg.cwd 解析相对路径）。
+ */
+export function parseSkillsExtraPaths(
+  raw: unknown,
+  env: NodeJS.ProcessEnv = process.env,
+): string[] {
+  const out: string[] = [];
+  if (Array.isArray(raw)) {
+    for (const v of raw) {
+      if (typeof v === "string" && v.trim() !== "") out.push(v.trim());
+    }
+  }
+  const envRaw = env["NEO_SKILLS_PATHS"];
+  if (envRaw) {
+    const sep = process.platform === "win32" ? ";" : ":";
+    for (const p of envRaw.split(sep)) {
+      if (p.trim() !== "") out.push(p.trim());
+    }
+  }
+  return [...new Set(out)];
 }
 
 /**
@@ -630,6 +656,7 @@ export function loadConfig(overrides: Partial<Config> = {}): Config {
     cwd: here,
     settingsPath: found,
     skillsStore: str(raw["skills_store"], join(homedir(), ".neo", "skills")),
+    skillsExtraPaths: parseSkillsExtraPaths(raw["skills_extra_paths"]),
     memory: resolveMemoryConfig(raw["memory"] as Raw | undefined),
     shell: resolveShellConfig(raw["shell"]),
     env: resolveEnvConfig(raw["env"]),
