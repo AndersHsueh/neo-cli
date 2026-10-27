@@ -39,6 +39,8 @@ import type { WikiLayout } from "../src/wiki/paths.ts";
 /* 脚手架                                                              */
 /* ------------------------------------------------------------------ */
 
+const NOW = new Date();
+
 const LINUX_SHELL: ShellSpec = {
   path: "/bin/bash",
   args: ["-l", "-c"],
@@ -79,7 +81,7 @@ function makeDeps(over: Partial<ProbeDeps> = {}): ProbeDeps {
       TERM: "xterm-256color",
       SSH_CONNECTION: "203.0.113.5 50000 198.51.100.7 22",
     },
-    now: () => new Date("2026-10-26T06:00:00Z"),
+    now: () => NOW,
     bunVersion: "1.4.4",
     nodeVersion: "24.15.0",
     uid: 1000,
@@ -164,7 +166,7 @@ describe("probeStatic — Ubuntu 事实采集", () => {
     expect(snap.runtime.bun).toBe("1.4.4");
     expect(snap.runtime.node).toBe("24.15.0");
     expect(snap.machineKey.startsWith("anders-surface-pro-7-linux-x64-")).toBe(true);
-    expect(snap.collectedAt).toBe("2026-10-26T06:00:00.000Z");
+    expect(snap.collectedAt).toBe(NOW.toISOString());
   });
 
   test("root 用户 / 无 sudo", () => {

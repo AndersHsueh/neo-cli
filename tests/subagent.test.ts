@@ -461,23 +461,26 @@ describe("空正文自动重试", () => {
     expect(contentText(main.messages[2]!.content)).toContain("正文答案");
   });
 
-  test("重试仍空正文 → 放弃并警告，历史不留空消息与提示", async () => {
+  test("重试仍空正文 → 按错误收口（v0.4.1），历史不留空消息与提示", async () => {
     const cfg = makeCfg("default");
-    const warns: string[] = [];
+    const errors: string[] = [];
     const fake = fakeStream([
       () => ({ content: "", reasoning: "想了", toolCalls: [] }),
       () => ({ content: "", reasoning: "又想了", toolCalls: [] }),
     ]);
     const main = new Agent({
       cfg,
-      console: spyConsole({ warn: (m: string) => warns.push(m) }),
+      console: spyConsole({ error: (m: string) => errors.push(m) }),
       mode: "auto-all",
       systemPrompt: "main",
       chatStream: fake.fn,
     });
     currentMain = main;
-    await main.send("你好");
-    expect(warns.some((w) => w.includes("重试后模型仍未产出正文"))).toBe(true);
+    const stats = await main.send("你好");
+    expect(stats.hadError).toBe(true);
+    expect(stats.emptyResponse).toBe(true);
+    expect(stats.errorMessage).toContain("连续两轮未产出正文");
+    expect(errors.some((w) => w.includes("连续两轮"))).toBe(true);
     // 历史回到失败交换之前：system + user，无空 assistant、无重试提示
     expect(main.messages.length).toBe(2);
     expect(main.messages[1]!.role).toBe("user");

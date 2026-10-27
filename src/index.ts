@@ -101,6 +101,7 @@ import { decideInbound, formatIncomingFrame, formatNotice, formatNoticePreview, 
 import { makeListPeersTool, makeSendMessageTool } from "./tools/mailbox.ts";
 import { mailboxRoot, type Envelope } from "./mailbox/types.ts";
 import { CheckpointStore } from "./checkpoint.ts";
+import { formatResumeWarning, outcomeOf, type LastTurnMeta } from "./turnDiagnostics.ts";
 import type { ToolCtx } from "./tools/types.ts";
 
 const VERSION = "0.4.0";
@@ -662,6 +663,7 @@ async function main(): Promise<number> {
     classifier,
     memory,
     checkpoint: checkpoints,
+    sessionId: sess.meta.id,
     // -p 单次模式：即使终端是 TTY 也按非交互块级渲染，避免 spinner/ANSI 污染输出
     nonInteractive: args.print !== null,
     pollInbox: mailbox
@@ -758,6 +760,12 @@ async function main(): Promise<number> {
     // 用户裁决：恢复对话/名字/信箱，但不偷偷切换工作目录。
     if (meta?.cwd && meta.cwd !== cfg.cwd) {
       ui.info(`会话原目录 ${meta.cwd}，本次按 ${cfg.cwd} 运行`);
+    }
+    // v0.4.1 A1：上次会话最后一轮失败/空转 → 明确告警，避免用户以为上下文正常。
+    const resumeWarn = formatResumeWarning(meta);
+    if (resumeWarn) {
+      ui.warn(resumeWarn);
+      ui.line(c.dim("  诊断日志：~/.neo/logs/turns/（可用 NEO_LOG_DIR 覆盖）"));
     }
   }
 
@@ -1090,19 +1098,24 @@ async function main(): Promise<number> {
           // 状态机失败不阻塞 turn
         }
       }
+      let turnStats: Awaited<ReturnType<typeof agent.send>> | null = null;
       try {
         // ESC 回滚语义（PRD §4.11 裁决 A）：人类输入的 turn 保留回滚；
         // 由 mailbox / 状态通知触发的自动 turn 只停不删（否则会连任务消息与已完成结果一起抹掉）。
-        const stats = await agent.send(
+        turnStats = await agent.send(
           resolved.images.length > 0 ? { text: resolved.text, images: resolved.images } : resolved.text,
           { rollbackOnAbort: origin === "user" },
         );
-        if (stats.aborted) outcome = "aborted";
+        outcome = outcomeOf(turnStats);
+        if (turnStats.hadError || turnStats.emptyResponse) {
+          ui.error(`本轮未完成：${turnStats.errorMessage ?? "模型未产出正文"}`);
+          ui.line(c.dim("  诊断日志：~/.neo/logs/turns/（可用 NEO_LOG_DIR 覆盖）"));
+        }
         ui.blank();
         ui.blank();
         // 档位切换必须显式告知 —— 静默换模型会让人困惑「为什么这轮答得不一样」
-        if (stats.tierSwitch) {
-          const ts = stats.tierSwitch;
+        if (turnStats.tierSwitch) {
+          const ts = turnStats.tierSwitch;
           ui.line(
             `${c.accent("⇅")} 档位 ${c.dim(ts.from)} → ${c.accent(ts.to)} ` +
               `${c.dim(`(${cfg.providerName}/${cfg.model})`)}`,
@@ -1111,10 +1124,26 @@ async function main(): Promise<number> {
           if (ts.degraded) ui.line(`  ${c.warn("降级:")} ${c.warn(ts.degraded)}`);
           ui.blank();
         }
-        showStats(ui, agent, cfg, stats);
+        showStats(ui, agent, cfg, turnStats);
+        const last: LastTurnMeta = {
+          at: new Date().toISOString(),
+          outcome,
+          finishReason: turnStats.finishReason,
+          errorMessage: turnStats.errorMessage,
+          durationMs: turnStats.durationMs,
+          promptTokens: turnStats.promptTokens,
+          completionTokens: turnStats.completionTokens,
+        };
+        sess.meta.lastTurn = last;
       } catch (e) {
         outcome = "error";
         ui.error(`未捕获异常: ${(e as Error).message}`);
+        sess.meta.lastTurn = {
+          at: new Date().toISOString(),
+          outcome: "error",
+          finishReason: null,
+          errorMessage: (e as Error).message,
+        };
         // C9：本轮带图且请求失败 → 追加一行软提示（无法可靠区分「服务端拒绝图片」
         // 与其他 4xx，用软提示近似 PRD 要求，不误导为确定结论）
         if (resolved.images.length > 0) ui.line(c.dim("  当前 provider 可能不支持图片输入"));
@@ -2793,9 +2822,10 @@ function printSessions(ui: Console, opts: PrintSessionsOpts = {}): void {
   } else {
     ui.kv("历史会话", String(list.length));
     for (const s of list) {
+      const failed = s.lastTurn && s.lastTurn.outcome !== "ok" ? c.warn(" ⚠") : "";
       ui.line(
         `  ${c.accent(s.id)} ${c.dim(s.updatedAt.slice(0, 16).replace("T", " "))} ` +
-          `${c.muted(`${s.turns} 轮`)} ${c.dim(s.model)}`,
+          `${c.muted(`${s.turns} 轮`)} ${c.dim(s.model)}${failed}`,
       );
     }
     ui.line(c.dim("  用 /resume <id> 或 neo --resume <id> 恢复"));

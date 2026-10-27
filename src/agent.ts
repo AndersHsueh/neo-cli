@@ -19,6 +19,7 @@ import { Classifier } from "./classifier/index.ts";
 import { dispatch, toolSpecs, toolNames, TOOL_NAMES_EXCLUDED_FOR_SUBAGENT, type ToolCtx } from "./tools/index.ts";
 import { ToolError, type CheckpointSink } from "./tools/types.ts";
 import { isRecallMessage, type MemoryPort } from "./memory/port.ts";
+import { appendTurnLog } from "./turnDiagnostics.ts";
 
 export type PermissionMode = "ask" | "auto-edit" | "auto-all" | "plan";
 
@@ -118,6 +119,10 @@ export interface AgentOptions {
    * 子代理沿用父代理的实例（写入仍记在同一个会话下）。
    */
   checkpoint?: CheckpointSink;
+  /**
+   * 会话 id（v0.4.1 A1）：只用于轮次诊断日志定位；不传时日志记 "unknown"。
+   */
+  sessionId?: string;
 }
 
 export interface TurnStats {
@@ -133,6 +138,13 @@ export interface TurnStats {
   hadError: boolean;
   /** 人类可读的错误原因；无错误为 null。 */
   errorMessage: string | null;
+  /**
+   * 空正文终态（v0.4.1 A1）：模型连续两轮没有输出正文。
+   * 这类轮次没有 assistant 消息，必须按错误处理，不能报 ok。
+   */
+  emptyResponse: boolean;
+  /** 轮末上下文使用率 0..1（估算值），写诊断日志用。 */
+  contextUsage: number;
   /** 本轮因分类而发生的档位切换，无则 null。 */
   tierSwitch: { from: ModelTier; to: ModelTier; reason: string; degraded?: string } | null;
 }
@@ -155,6 +167,10 @@ export class Agent {
   private lastStats: TurnStats | null = null;
   /** 轮次序号：记忆捕获的审计键（会话内递增，不跨会话）。 */
   private turnSeq = 0;
+  /** 诊断日志的轮次计数（v0.4.1 A1；与记忆 turnSeq 解耦）。 */
+  private turnCounter = 0;
+  /** 最近一次压缩的前后 tokens（只用于本轮诊断日志）。 */
+  private lastCompact: { beforeTokens: number; afterTokens: number } | null = null;
 
   constructor(private readonly opt: AgentOptions) {
     this.mode = opt.mode;
@@ -381,6 +397,7 @@ export class Agent {
     };
     this.messages = [...(sys ? [sys] : []), summaryMsg, ...tail];
     const afterTokens = estimateTokens(this.messages);
+    this.lastCompact = { beforeTokens: convoTokens, afterTokens };
     this.opt.onEvent?.({ type: "compact", data: { beforeTokens: convoTokens, afterTokens } });
     return { beforeTokens: convoTokens, afterTokens };
   }
@@ -460,6 +477,8 @@ export class Agent {
     opts: { rollbackOnAbort?: boolean } = {},
   ): Promise<TurnStats> {
     const started = Date.now();
+    this.turnCounter += 1;
+    this.lastCompact = null;
     this.abort = new AbortController();
     const signal = this.abort.signal;
 
@@ -511,6 +530,10 @@ export class Agent {
     let reasoningTokens = 0;
     let hadError = false;
     let errorMessage: string | null = null;
+    /** 空正文终态（连续两轮无正文）；仅在放弃时置 true。 */
+    let emptyResponse = false;
+    /** 空正文重试时临时提高的输出预算（仅一次）。 */
+    let retryMaxTokens: number | null = null;
     /**
      * 空正文自动重试的 user 提示；非 null 表示本轮已重试过一次（至多一次，
      * 防止「模型持续空回复」变成死循环）。成功或放弃后都从历史摘除。
@@ -575,8 +598,11 @@ export class Agent {
       try {
         if (interactive) this.opt.console.startSpinner("连接中…");
 
+        // 空正文重试（尤其 finishReason=length）时临时放大输出预算。
+        const reqCfg =
+          retryMaxTokens !== null ? { ...this.opt.cfg, maxTokens: retryMaxTokens } : this.opt.cfg;
         const res = await this.streamFn(
-          this.opt.cfg,
+          reqCfg,
           this.messages,
           specs,
           {
@@ -669,24 +695,35 @@ export class Agent {
           // 正文为空的两种退化场景：
           //  - finishReason=length：输出预算被思维链吃光，正文还没轮到就被截断；
           //  - 其余（通常 stop）：推理模型把答案全写进思维链通道，content 通道为空。
-          // 自动重试一次：追加 user 提示，明确要求把最终答案作为正文输出；
-          // 仍失败则放弃并摘掉提示，历史回到本次失败交换之前的状态。
-          // 不写入空 assistant 消息 —— 空回复留在历史里，部分服务端会拒绝
-          // 该消息序列，对模型自身也是错误示范。
+          // 第一次：length 时临时放大输出预算，并追加 nudge 提示；只重试一次。
+          // 第二次仍空：按错误收口（v0.4.1 A1），必须让 UI/日志/会话状态都看见，
+          // 不能像旧实现那样静默放弃并报 ok。
           const truncated = res.finishReason === "length";
           if (nudgeMsg) {
             this.dropTransientMessage(nudgeMsg);
-            this.opt.console.warn(
-              truncated
-                ? "重试后仍未产出正文（输出预算仍被思维链耗尽）。可调大 max_tokens 后重发。"
-                : "重试后模型仍未产出正文，本轮放弃。",
+            emptyResponse = true;
+            hadError = true;
+            errorMessage =
+              `模型连续两轮未产出正文（finishReason=${res.finishReason ?? "null"}；` +
+              `reasoning ${res.reasoning.trim().length} 字符）` +
+              (truncated ? "；输出预算被思维链耗尽" : "");
+            this.opt.console.error(
+              `${errorMessage}。本轮已放弃；诊断日志见 ~/.neo/logs/turns/（可用 NEO_LOG_DIR 覆盖）。`,
             );
+            this.opt.onEvent?.({ type: "error", data: errorMessage });
             break;
+          }
+          if (truncated) {
+            // 翻倍预算，但封顶 64k；下一轮请求生效。
+            retryMaxTokens = Math.min(
+              65_536,
+              Math.max(this.opt.cfg.maxTokens * 2, this.opt.cfg.maxTokens + 4_096),
+            );
           }
           if (res.reasoning.trim() !== "") {
             this.opt.console.info(
               truncated
-                ? "输出预算被思维链耗尽，正文未开始 —— 自动重试一次。"
+                ? `输出预算被思维链耗尽，正文未开始 —— 提高 max_tokens 后自动重试一次（${retryMaxTokens ?? this.opt.cfg.maxTokens}）。`
                 : "模型只返回了思维链，没有正文 —— 自动重试一次。",
             );
           } else {
@@ -785,8 +822,11 @@ export class Agent {
               aborted: true,
               hadError: false,
               errorMessage: null,
+              emptyResponse: false,
+              contextUsage: estimateTokens(this.messages, specs) / this.opt.cfg.contextWindow,
               tierSwitch,
             };
+            this.writeTurnLog(this.lastStats);
             return this.lastStats;
           }
           hadError = true;
@@ -821,6 +861,8 @@ export class Agent {
       aborted: false,
       hadError,
       errorMessage,
+      emptyResponse,
+      contextUsage: estimateTokens(this.messages, specs) / this.opt.cfg.contextWindow,
       tierSwitch,
     };
 
@@ -829,7 +871,39 @@ export class Agent {
 
     this.opt.onEvent?.({ type: "turn_end", data: this.lastStats });
     this.emitMemoryCapture(turnStart, "turn");
+    this.writeTurnLog(this.lastStats);
     return this.lastStats;
+  }
+
+  /**
+   * 写一轮诊断日志（v0.4.1 A1）。失败静默：诊断不得影响主流程。
+   * 只记元数据，不记 prompt/回答正文。
+   */
+  private writeTurnLog(stats: TurnStats): void {
+    // 没有会话 id = 测试/裸 Agent：不写盘，避免单测污染用户 ~/.neo/logs。
+    if (!this.opt.sessionId) return;
+    appendTurnLog({
+      sessionId: this.opt.sessionId,
+      turn: this.turnCounter,
+      provider: this.opt.cfg.providerName,
+      model: this.opt.cfg.model,
+      durationMs: stats.durationMs,
+      iterations: stats.iterations,
+      toolCalls: stats.toolCalls,
+      promptTokens: stats.promptTokens,
+      completionTokens: stats.completionTokens,
+      reasoningTokens: stats.reasoningTokens,
+      finishReason: stats.finishReason,
+      aborted: stats.aborted,
+      hadError: stats.hadError,
+      emptyResponse: stats.emptyResponse,
+      errorMessage: stats.errorMessage,
+      contextWindow: this.opt.cfg.contextWindow,
+      contextUsage: stats.contextUsage,
+      ...(this.lastCompact
+        ? { compaction: { before: this.lastCompact.beforeTokens, after: this.lastCompact.afterTokens } }
+        : {}),
+    });
   }
 
   /**

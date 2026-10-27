@@ -6,6 +6,7 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync, statSy
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { ContentPart, Message } from "./llm.ts";
+import type { LastTurnMeta } from "./turnDiagnostics.ts";
 
 export interface SessionMeta {
   id: string;
@@ -15,6 +16,11 @@ export interface SessionMeta {
   model: string;
   cwd: string;
   turns: number;
+  /**
+   * 最后一轮的诊断摘要（v0.4.1 A1）。旧会话没有该字段 = 正常。
+   * 仅用于 resume 告警与 /sessions 标记，不参与消息恢复。
+   */
+  lastTurn?: LastTurnMeta;
 }
 
 export interface SessionFile {
