@@ -76,12 +76,16 @@ export function toolLineSegments(opts: {
   return { name, args, tail };
 }
 
-/** 尾标三态着色（运行中 / ✓ / ✗）。 */
-export function paintTail(seg: ToolLineSegments, status: ToolLineStatus): string {
-  return status === "ok" ? c.ok(seg.tail) : status === "error" ? c.err(seg.tail) : c.accent(seg.tail);
+/** 尾标三态着色（运行中按 tier / ✓ / ✗）。 */
+export function paintTail(
+  seg: ToolLineSegments,
+  status: ToolLineStatus,
+  tier = "balanced",
+): string {
+  return status === "ok" ? c.ok(seg.tail) : status === "error" ? c.err(seg.tail) : c.tier(tier, seg.tail);
 }
 
-/** 单行工具文本：` ⚡ name args tail`（tail 由调用方决定是否着色）。 */
-export function toolLineText(seg: ToolLineSegments, tail: string): string {
-  return ` ${c.tool("⚡")} ${c.bright(seg.name)}` + (seg.args ? ` ${c.dim(seg.args)}` : "") + ` ${tail}`;
+/** 单行工具文本：` ⚡ name args tail`（⚡ 按 tier 着色；tail 由调用方着色）。 */
+export function toolLineText(seg: ToolLineSegments, tail: string, tier = "balanced"): string {
+  return ` ${c.tier(tier, "⚡")} ${c.bright(seg.name)}` + (seg.args ? ` ${c.dim(seg.args)}` : "") + ` ${tail}`;
 }

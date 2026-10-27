@@ -32,6 +32,10 @@ export const palette = {
   magenta: [200, 120, 255] as const,     // 强调
   white: [230, 255, 235] as const,
   grey: [130, 165, 140] as const,
+  /** v0.4.2 tier 语义色：深思亮红 / 快速亮蓝 / 默认冰绿（平衡沿用 phosphor）。 */
+  tierDeep: [255, 59, 48] as const,
+  tierFast: [0, 200, 255] as const,
+  tierDefault: [180, 255, 190] as const,
 };
 
 type Role = keyof typeof palette;
@@ -40,6 +44,26 @@ type Rgb = readonly [number, number, number];
 
 const wrap = (role: Role) => (s: string): string =>
   colorEnabled() ? `${fg(...palette[role] as Rgb)}${s}${RESET}` : s;
+
+/**
+ * tier → RGB（v0.4.2）。
+ * `deep_reasoning` 用亮红、`fast` 亮蓝、`balanced` 磷光绿、`default` 冰绿；
+ * 未知 tier 回退到平衡绿，保证旧配置/别名不会无颜色。
+ */
+export function tierRgb(tier: string): Rgb {
+  switch (tier) {
+    case "deep_reasoning":
+    case "deep":
+      return palette.tierDeep;
+    case "fast":
+      return palette.tierFast;
+    case "default":
+    case "auto":
+      return palette.tierDefault;
+    default:
+      return palette.phosphor;
+  }
+}
 
 export const c = {
   reset: RESET,
@@ -60,6 +84,9 @@ export const c = {
   accentMagenta: wrap("magenta"),
   /** Matrix 绿（#00FF41）：剧情标题等语义化用法，与 accent 同色但表达不同含义。 */
   matrix: wrap("phosphor"),
+  /** v0.4.2：档位语义色（deep 亮红 / balanced 绿 / fast 亮蓝 / default 冰绿）。 */
+  tier: (tier: string, s: string): string =>
+    colorEnabled() ? `${fg(...tierRgb(tier))}${s}${RESET}` : s,
 
   bold: (s: string): string => (colorEnabled() ? `${esc}1m${s}${RESET}` : s),
   dimAttr: (s: string): string => (colorEnabled() ? `${esc}2m${s}${RESET}` : s),

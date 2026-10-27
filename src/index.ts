@@ -113,7 +113,7 @@ import { CheckpointStore } from "./checkpoint.ts";
 import { formatResumeWarning, outcomeOf, type LastTurnMeta } from "./turnDiagnostics.ts";
 import type { ToolCtx } from "./tools/types.ts";
 
-const VERSION = "0.4.1";
+const VERSION = "0.4.2";
 
 /** /auto 列表里各实现的说明。 */
 const DESC: Record<string, string> = {
@@ -451,16 +451,17 @@ async function main(): Promise<number> {
     cfg.theme === "matrix",
     cfg.toolcallInfoDetails,
     dock
-      ? { dock }
+      ? { dock, getTier: () => cfg.modelTier }
       : jsonMode
         ? {
             stdoutIsTTY: false,
             stdinIsTTY: false,
+            getTier: () => cfg.modelTier,
             write: (s: string) => {
               process.stderr.write(s);
             },
           }
-        : {},
+        : { getTier: () => cfg.modelTier },
   );
 
   // A2：交互模式下异步探测当前模型窗口（/models 元数据）；失败静默。
@@ -746,6 +747,27 @@ async function main(): Promise<number> {
         }
       : undefined,
     onEvent: (e) => {
+      // v0.4.2：分类切档发生在请求之前，提示也必须在请求之前出现（不再等 turn 结束）。
+      if (e.type === "tier_switch") {
+        if (!jsonMode) {
+          const ts = e.data as {
+            from: string;
+            to: string;
+            reason: string;
+            degraded?: string;
+          };
+          ui.blank();
+          ui.line(
+            `${c.tier(ts.to, "⇅")} 档位 ${c.dim(ts.from)} → ${c.tier(ts.to, ts.to)} ` +
+              `${c.dim(`(${cfg.providerName}/${cfg.model})`)}`,
+          );
+          ui.line(`  ${c.dim("理由:")} ${c.muted(ts.reason)}`);
+          if (ts.degraded) ui.line(`  ${c.warn("降级:")} ${c.warn(ts.degraded)}`);
+          ui.blank();
+          composerRef?.rerender();
+        }
+        return;
+      }
       if (!mailbox) return;
       const mb = mailbox;
       try {
@@ -948,19 +970,6 @@ async function main(): Promise<number> {
       return exitCode;
     }
 
-    if (!stats.aborted) {
-      ui.blank();
-      if (stats.tierSwitch) {
-        const ts = stats.tierSwitch;
-        ui.line(
-          `${c.accent("⇅")} 档位 ${c.dim(ts.from)} → ${c.accent(ts.to)} ` +
-            `${c.dim(`(${cfg.providerName}/${cfg.model})`)}`,
-        );
-        ui.line(`  ${c.dim("理由:")} ${c.muted(ts.reason)}`);
-        if (ts.degraded) ui.line(`  ${c.warn("降级:")} ${c.warn(ts.degraded)}`);
-        ui.blank();
-      }
-    }
     return exitCode;
   }
 
@@ -1183,17 +1192,6 @@ async function main(): Promise<number> {
         }
         ui.blank();
         ui.blank();
-        // 档位切换必须显式告知 —— 静默换模型会让人困惑「为什么这轮答得不一样」
-        if (turnStats.tierSwitch) {
-          const ts = turnStats.tierSwitch;
-          ui.line(
-            `${c.accent("⇅")} 档位 ${c.dim(ts.from)} → ${c.accent(ts.to)} ` +
-              `${c.dim(`(${cfg.providerName}/${cfg.model})`)}`,
-          );
-          ui.line(`  ${c.dim("理由:")} ${c.muted(ts.reason)}`);
-          if (ts.degraded) ui.line(`  ${c.warn("降级:")} ${c.warn(ts.degraded)}`);
-          ui.blank();
-        }
         showStats(ui, agent, cfg, turnStats);
         const last: LastTurnMeta = {
           at: new Date().toISOString(),

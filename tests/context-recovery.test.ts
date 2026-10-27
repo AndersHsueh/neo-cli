@@ -9,6 +9,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 
 import { Agent } from "../src/agent.ts";
+import type { Classifier } from "../src/classifier/index.ts";
 import type { Config } from "../src/config.ts";
 import { LLMError, type Message, type StreamResult } from "../src/llm.ts";
 import { captureConsole } from "./helpers.ts";
@@ -21,7 +22,23 @@ function makeCfg(): Config {
     baseUrl: "http://localhost:0",
     modelTier: "default",
     model: "m1",
-    providers: [],
+    providers: [
+      {
+        name: "p1",
+        type: "openai",
+        baseUrl: "http://localhost:0",
+        apiKey: "k",
+        models: {
+          default: "m1",
+          deep_reasoning: "m-deep",
+          balanced: "m-bal",
+          fast: "m-fast",
+        },
+        maxTokens: null,
+        temperature: null,
+        contextWindow: null,
+      },
+    ],
     routes: {
       default: { provider: "p1", model: null, fallbackAllowed: true },
       deep_reasoning: { provider: "p1", model: null, fallbackAllowed: true },
@@ -160,6 +177,42 @@ describe("A2 上下文溢出恢复", () => {
     expect(stats.errorMessage).toContain("没有产出最终回答");
     expect(stats.aborted).toBe(false);
     expect(calls).toBe(2); // 主请求 + 恢复分支里的压缩请求
+  });
+
+  test("分类切 fast：tier_switch 事件先于请求，且首请求已是 fast", async () => {
+    const events: string[] = [];
+    const seen: string[] = [];
+    const stream = async (cfg: Config): Promise<StreamResult> => {
+      seen.push(cfg.model);
+      events.push("stream");
+      return {
+        content: "ok",
+        reasoning: "",
+        toolCalls: [],
+        finishReason: "stop",
+        usage: null,
+        raw: null,
+      } as StreamResult;
+    };
+    const classifier = {
+      classify: async () => ({ tier: "fast" as const, reason: "简单问题", source: "fallback" }),
+    } as unknown as Classifier;
+    const cfg = makeCfg();
+    const agent = new Agent({
+      cfg,
+      console: captureConsole().ui,
+      mode: "auto-all",
+      systemPrompt: "sys",
+      chatStream: stream,
+      classifier,
+      onEvent: (e) => {
+        if (e.type === "tier_switch") events.push("tier_switch");
+      },
+    });
+    const stats = await agent.send("列一下文件");
+    expect(events[0]).toBe("tier_switch");
+    expect(seen[0]).toBe("m-fast");
+    expect(stats.tierSwitch?.to).toBe("fast");
   });
 
   test("普通 400（非上下文）不触发压缩重试", async () => {

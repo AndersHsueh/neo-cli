@@ -180,7 +180,7 @@ describe("S1e 优先级与丢弃顺序", () => {
     const segs = statusSegments(snap({ queueCount: 2 }));
     expect(segs.map((s) => s.role)).toEqual([
       "accent",
-      "dim",
+      "tier",
       "text",
       "muted",
       "dim",
@@ -276,7 +276,7 @@ describe("S1h paint 钩子", () => {
 
   test("S1h paint 按角色着色，只作用于保留字段", () => {
     const painted = renderStatus(snap(), (role, text) => `<${role}>${text}`);
-    expect(painted.startsWith("<accent>deepseek-flash · <dim>balanced · <text>ask")).toBe(true);
+    expect(painted.startsWith("<accent>deepseek-flash · <tier>balanced · <text>ask")).toBe(true);
     expect(painted).toContain("<muted>⎇ main");
     expect(painted).toContain("<dim>ctx ▓▓░░░ 42%");
   });

@@ -1244,6 +1244,7 @@ function paintRole(role: StatusSegment["role"], text: string): string {
     case "muted": return c.muted(text);
     case "warn": return c.warn(text);
     case "tool": return c.tool(text);
+    case "tier": return c.tier(text, text);
     default: return c.text(text);
   }
 }

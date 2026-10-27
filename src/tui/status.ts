@@ -40,7 +40,7 @@ export interface StatusSnapshot {
 
 export interface StatusSegment {
   text: string;
-  role: "accent" | "dim" | "muted" | "warn" | "text" | "tool";
+  role: "accent" | "dim" | "muted" | "warn" | "text" | "tool" | "tier";
   priority: number;
 }
 
@@ -101,7 +101,7 @@ function build(s: StatusSnapshot): Built[] {
   };
 
   add("model", s.model, "accent", 100);
-  add("tier", s.tier, "dim", 90);
+  add("tier", s.tier, "tier", 90);
   if (s.mode !== undefined && s.mode !== "") add("mode", s.mode, "text", 80);
   if (s.branch !== undefined && s.branch !== null && s.branch.trim() !== "") {
     add("branch", `⎇ ${s.branch}`, "muted", 50);

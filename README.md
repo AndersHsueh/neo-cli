@@ -19,7 +19,7 @@ bun run src/index.ts -p "用 glob 找出所有 .ts 文件"   # 单次模式
 
 | 平台 | shell | 状态 |
 | --- | --- | --- |
-| macOS | `$SHELL`（默认 zsh） | ✅ 实测（tsc / 1027 测试 / PTY 20/20） |
+| macOS | `$SHELL`（默认 zsh） | ✅ 实测（tsc / 1034 测试 / PTY 20/20） |
 | Ubuntu / Debian | `$SHELL`（默认 bash） | ✅ 实测（sp7, Ubuntu 24.04.4 LTS） |
 | 其它 POSIX（dash/ksh/fish） | 自动探测 | ✅ 解析器支持；fish 不吃登录 PATH preamble |
 | Windows 11 | `pwsh` → `powershell` → `cmd` | 🟡 **实验性，未实机验证**（见 PD-1） |
@@ -33,6 +33,7 @@ Windows 启动用 `neo.cmd`（需要 Bun 在 PATH）；Linux/macOS 用 `neo.sh` 
 - `ask_user`：模型可在关键分叉/破坏性操作前向用户提问（单选/多选/自由输入，Esc 取消；仅交互 TUI）。
 - `web_search`（Bing RSS，无需 key）、`shell.cwd`、超长输出落盘 `~/.neo/tmp/`、`/export [id]`。
 - `remember` 同步回执；技能支持 `skills_extra_paths` / `NEO_SKILLS_PATHS`。
+- **v0.4.2**：tier 视觉语义（深思亮红 / 平衡绿 / 快速亮蓝 / 默认冰绿），状态条、spinner `⚡`、工具行、回答 `●` 随档位着色；分类切档在首次 LLM 请求前即时提示。
 
 shell 探测顺序：`settings.shell.path` → `NEO_SHELL` → `$SHELL` → 平台默认 → `which` → `/bin/sh`；
 启动横幅后会显示实际使用的 shell。环境探测（`/env`）不需要模型，纯脚本采集，约 10ms。

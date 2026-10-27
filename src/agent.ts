@@ -76,6 +76,7 @@ export interface AgentEvent {
     | "turn_end"
     | "error"
     | "compact"
+    | "tier_switch"
     | "aborted";
   data?: unknown;
 }
@@ -479,12 +480,15 @@ export class Agent {
 
     this.noteModelChange(cfg);
     this.consecutiveFailures = 0;
-    return {
+    const switchInfo: NonNullable<TurnStats["tierSwitch"]> = {
       from: before,
       to: cfg.modelTier,
       reason: decision.reason,
       ...(r.degraded && r.note ? { degraded: r.note } : {}),
     };
+    // v0.4.2：切档在请求前发生，UI 也必须在这一刻知道 —— 不能等 turn 结束才提示。
+    this.opt.onEvent?.({ type: "tier_switch", data: switchInfo });
+    return switchInfo;
   }
 
   /**

@@ -53,6 +53,11 @@ export interface ConsoleDeps {
    * 流式行缓冲、工具行 transient、状态条由 composer 负责；非 TTY 不传。
    */
   dock?: ConsoleDock;
+  /**
+   * 当前档位（v0.4.2 视觉）：由组合根注入 `() => cfg.modelTier`，
+   * 让 spinner/工具行/回答前缀在分类切档后自动换色，不需要每个调用点传参。
+   */
+  getTier?: () => string;
 }
 
 /** Console 用到的 dock 子集（structural，避免 ui → tui 的实体依赖）。 */
@@ -112,6 +117,11 @@ export class Console {
 
   private stdinIsTTY(): boolean {
     return this.deps.stdinIsTTY ?? process.stdin.isTTY === true;
+  }
+
+  /** 当前档位（无注入时按 balanced；只在交互 TTY 会真正着色）。 */
+  private currentTier(): string {
+    return this.deps.getTier?.() ?? "balanced";
   }
 
   private write(s: string): void {
@@ -181,7 +191,11 @@ export class Console {
       status: this.toolStatus,
       errorText: this.toolError,
     });
-    return toolLineText(seg, paintTail(seg, this.toolStatus));
+    return toolLineText(
+      seg,
+      paintTail(seg, this.toolStatus, this.currentTier()),
+      this.currentTier(),
+    );
   }
 
   private renderToolLine(): void {
@@ -273,13 +287,16 @@ export class Console {
     this.spinnerTimer = setInterval(() => {
       const frames = this.useMatrixSpinner ? MATRIX_FRAMES : FRAMES;
       const f = frames[this.spinnerFrame++ % frames.length] ?? "⠋";
+      const tier = this.currentTier();
       if (this.dock) {
-        this.dock.spinner(` ${f} ${this.spinnerText}`);
+        this.dock.spinner(` ${c.tier(tier, "⚡")} ${c.tier(tier, f)} ${c.dim(this.spinnerText)}`);
         return;
       }
       const clear = this.spinnerLineActive ? "\r\x1b[2K" : "";
       this.spinnerLineActive = true;
-      this.write(clear + ` ${c.accent(f)} ${c.dim(this.spinnerText)}`);
+      this.write(
+        clear + ` ${c.tier(tier, "⚡")} ${c.tier(tier, f)} ${c.dim(this.spinnerText)}`,
+      );
     }, 90);
     this.spinnerTimer.unref?.();
   }
@@ -338,7 +355,7 @@ export class Console {
         this.writeRaw(c.dim("┌ think "));
         break;
       case "answer":
-        this.writeRaw(c.accent("● "));
+        this.writeRaw(c.tier(this.currentTier(), "● "));
         break;
       case "tool-args":
         this.writeRaw(c.tool("│ "));
@@ -407,7 +424,7 @@ export class Console {
     if (!this.toolCompact) {
       this.stopSpinner();
       const w = this.cols();
-      const head = ` ${c.tool("⚡")} ${c.bright(name)}`;
+      const head = ` ${c.tier(this.currentTier(), "⚡")} ${c.bright(name)}`;
       const room = w - displayWidth(name) - 6;
       const tail = room > 12 ? c.dim(truncate(argsPreview, room)) : "";
       this.line(head + (tail ? " " + tail : ""));

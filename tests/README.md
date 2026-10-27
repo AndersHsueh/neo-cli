@@ -1,17 +1,17 @@
 # neo 测试约定
 
-> **最后更新:2026-10-27**（v0.4.1 实战可靠性修复 + askUser；v0.4.0 平台适配层；v0.3.5 P0 加固；v0.3.4 banner；v0.3.1 会话代号 + resume；v0.3.0 TUI）
+> **最后更新:2026-10-27**（v0.4.2 tier 视觉 + 切档即时反馈；v0.4.1 实战可靠性修复 + askUser；v0.4.0 平台适配层；v0.3.5 P0 加固；v0.3.4 banner；v0.3.1 会话代号 + resume；v0.3.0 TUI）
 
 ## §1 当前基线
 
 ```bash
 bun x tsc --noEmit    # exit 0（strict + noUncheckedIndexedAccess；不用 bunx：部分 bun 安装没有独立 bunx 入口）
-bun test              # 1027 pass / 0 fail（66 个测试文件，约 13s）
+bun test              # 1034 pass / 0 fail（67 个测试文件，约 13s）
 bash scripts/verify.sh # 全量闸门：上两条 + 真 PTY E2E（20 场景），输出落 docs/evidence/
 ```
 
-v0.4.1 后的基线：**1027 pass / 0 fail / 66 文件 / PTY 20/20**（v0.4.0 为 974/59/PTY19；v0.3.5 为 925/57，v0.3.4 为 881/53，v0.3.0 为 839/46，v0.2.4 为 660/37，v0.2.3 为 569/32）。
-证据见 `docs/evidence/v0.4.1-*`（macOS）；v0.4.0 的 Ubuntu sp7 双平台证据仍保留在 `v0.4.0-sp7-*`。改功能前先在干净树上跑一遍，数字对位后再动手。
+v0.4.2 后的基线：**1034 pass / 0 fail / 67 文件 / PTY 20/20**（v0.4.1 为 1027/66，v0.4.0 为 974/59/PTY19；v0.3.5 为 925/57，v0.3.4 为 881/53，v0.3.0 为 839/46，v0.2.4 为 660/37，v0.2.3 为 569/32）。
+证据见 `docs/evidence/v0.4.2-*`（macOS）；v0.4.0 的 Ubuntu sp7 双平台证据仍保留在 `v0.4.0-sp7-*`。改功能前先在干净树上跑一遍，数字对位后再动手。
 
 ### TTY-only 行为的验证方式（v0.2.3 起）
 
@@ -81,6 +81,13 @@ bun test 里的 fake IO 测不出事件顺序与覆盖语义。可复用脚本�
 | `toollog.test.ts` | D3：失败摘要（stderr/exit code）、时长格式、`/last` 格式化、缓存上限 20、失败详情的行数预算 |
 | `transcript.test.ts` | D4：轮次切取、角色过滤、`maxLines` 截断提示、多行用户输入、markdown 渲染 |
 | `flash-notice.test.ts` | D5：提示符重绘注入、不打印 `❯`、非 TTY 不写、无 restorer 退化 |
+
+### v0.4.2 新增（67 文件 / 1034 例，+7）
+
+| 文件 | 覆盖 |
+|---|---|
+| `tier-visual.test.ts` | tier 色板（deep/balanced/fast/default）、状态条 `tier` role、回答 `●`、工具行 `⚡`、spinner `⚡` 的 tier 着色 |
+| `context-recovery.test.ts`（新增用例） | 分类切 fast 时 `tier_switch` 事件先于首次 stream，且第一次请求的 `cfg.model` 已是 fast |
 
 ### v0.4.1 新增（66 文件 / 1027 例，+53；PTY +1）
 
