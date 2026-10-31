@@ -267,9 +267,9 @@ deepseek-flash · balanced · ask · ⎇ main · ctx ▓▓░░░ 42% · 0:42
 
 ```bash
 bun run check   # tsc --noEmit，strict + noUncheckedIndexedAccess（含 scripts/）
-bun test        # 单元测试，812 pass（43 个测试文件）
-bun run e2e     # 真 PTY 端到端（19 场景；渲染类改动必跑；不需要真实网络/LLM）
-bun run verify  # 全量闸门：tsc → test → pty（19 个 PTY 场景），证据落 docs/evidence/
+bun test        # 单元测试（数字以 bun test 输出为准）
+bun run e2e     # 真 PTY 端到端（渲染类改动必跑；不需要真实网络/LLM）
+bun run verify  # 全量闸门：tsc → test → pty，证据落 docs/evidence/（已 gitignore）
 ```
 
 > 终端渲染类改动（动画行、宽度、覆盖语义）**只有真 PTY 能验证**。
@@ -399,8 +399,21 @@ neo/
 ├── settings.json           # 本地配置（含密钥，已 gitignore）
 ├── settings.example.json   # 配置模板
 └── src/
-    ├── index.ts            # CLI 入口、斜杠命令、交互循环
-    ├── agent.ts            # agent 循环、上下文管理、轮次分类
+    ├── index.ts            # 组合根：参数、会话装配、REPL（不含命令实现）
+    ├── agent.ts            # 兼容入口，再导出 agent/loop.ts
+    ├── agent/              # 循环、权限策略、预算提示、压缩切点
+    │   ├── loop.ts         # user → LLM → tool → 回填
+    │   ├── policy.ts       # ask / auto-edit / auto-all / plan
+    │   ├── steer.ts        # 工具预算与目标锚提示
+    │   ├── compact.ts      # 安全切点与摘要替换
+    │   └── types.ts        # AgentOptions / AgentIO（宿主能力走回调）
+    ├── cli/                # 斜杠命令、帮助、shell 直通、会话落盘、版本
+    │   ├── commands.ts     # 命令实现；名字自动登记到注册表
+    │   ├── command-registry.ts
+    │   ├── help.ts
+    │   ├── shell.ts        # !cmd，与工具审批共用 policy.ts
+    │   ├── sessions.ts
+    │   └── version.ts      # 只读 package.json，不再手写第二份版本号
     ├── llm.ts              # OpenAI 兼容客户端（SSE 流式 + tool_calls 拼接）
     ├── config.ts           # provider 解析、档位路由、降级、旧格式迁移
     ├── system-prompt.ts    # 系统提示词与 /init 记忆文件

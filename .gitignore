@@ -35,5 +35,8 @@ out/
 *.tsbuildinfo
 .cache/
 
+# 全量闸门证据：verify.sh 每次运行覆盖写入，不进版本控制
+docs/evidence/
+
 # 项目根 AGENTS.md:由 /init 生成的本地记忆,不入库(用户决定 2026-10-16)
 /AGENTS.md

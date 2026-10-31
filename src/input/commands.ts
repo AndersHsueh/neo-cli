@@ -1,9 +1,9 @@
 /**
  * input/commands.ts — 斜杠命令声明表（v0.2.4 C2，`/` 补全的唯一数据源）。
  *
- * 与 `src/index.ts` 的 `handleCommand` switch 是「表 + 实现」关系：
+ * 与 `src/cli/commands.ts` 的注册名是「表 + 实现」关系：
  * 两侧任何一边新增/删除而另一边没跟，`tests/commands.test.ts` 的漂移守卫会立刻红。
- * 新增命令的顺序：先在这里登记（名称 + 一句说明），再去 switch 加 case。
+ * 新增命令的顺序：先在这里登记（名称 + 一句说明），再去 `cli/commands.ts` 加 case。
  */
 
 export interface CommandEntry {

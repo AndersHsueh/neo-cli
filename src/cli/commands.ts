@@ -1,0 +1,1158 @@
+/**
+ * 斜杠命令实现。
+ *
+ * 每个 case 仍是一条命令的实现。分发走注册表，新增命令不用再改入口的 switch。
+ * 命令名必须同时出现在 input/commands.ts，漂移守卫会对照两边。
+ */
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
+
+import type { Agent, PermissionMode } from "../agent.ts";
+import {
+  CLASSIFIER_NAMES,
+  isClassifierName,
+  type Classifier,
+} from "../classifier/index.ts";
+import type { CheckpointStore } from "../checkpoint.ts";
+import {
+  describeRoute,
+  isImplemented,
+  maskKey,
+  MODEL_TIERS,
+  normalizeTierName,
+  switchProvider,
+  applyTier,
+  tierChoiceLabel,
+  tierDisplayName,
+  type Config,
+} from "../config.ts";
+import {
+  detectAndRecordModelWindow,
+  formatModelWindowLines,
+  resolveAndApplyModelWindow,
+} from "../env/modelWindows.ts";
+import { loadEnv } from "../env/probe.ts";
+import { formatEnvForCli } from "../env/render.ts";
+import { syncEnvPage } from "../env/wiki.ts";
+import { contentText } from "../llm.ts";
+import { listModels } from "../llm.ts";
+import type { MemoryBridge } from "../memory/bridge.ts";
+import { ensureScopeLayout } from "../memory/layout.ts";
+import { initProjectLevel as initProjectLevelImpl } from "../memory/init.ts";
+import { sessionLiveness, renameSession, takenAliveNames } from "../mailbox/identity.ts";
+import { readProfile } from "../mailbox/identity.ts";
+import * as mailboxState from "../mailbox/state.ts";
+import { mailboxRoot, type Envelope } from "../mailbox/types.ts";
+import type { Mailbox } from "../mailbox/store.ts";
+import { chooseSessionName } from "../sessionName.ts";
+import {
+  applyRestored,
+  listSessions,
+  loadSession,
+  type SessionMeta,
+} from "../session.ts";
+import { renderSessionMarkdown } from "../sessionExport.ts";
+import { discoverSkills, formatSkillLine, isValidSkillName, normalizeDescription } from "../skills.ts";
+import { makeListPeersTool } from "../tools/mailbox.ts";
+import { runSubagent } from "../tools/task.ts";
+import { toolNames } from "../tools/index.ts";
+import type { ToolCtx } from "../tools/types.ts";
+import { select, type SelectDeps } from "../ui/select.ts";
+import type { Console } from "../ui/console.ts";
+import { formatToolCall } from "../ui/toolLog.ts";
+import { c, truncate } from "../ui/theme.ts";
+import { buildMemoryFile } from "../system-prompt.ts";
+import {
+  buildIngestPrompt,
+  finishIngest,
+  loadIngestTemplate,
+  planIngest,
+} from "../wiki/ingest.ts";
+import { formatLintReport, lintWiki, resolveWikiDir } from "../wiki/lint.ts";
+import { resolveWikiLayout } from "../wiki/paths.ts";
+import { appendLog } from "../wiki/write.ts";
+import { commandHandler, registerCommand } from "./command-registry.ts";
+import { helpText } from "./help.ts";
+import { printSessions, replayTranscript } from "./sessions.ts";
+
+/** /auto 列表里各实现的说明。 */
+const DESC: Record<string, string> = {
+  off: "关闭自动分类，始终用手动选的档位",
+  rule: "规则分类器，零延迟零成本（默认）",
+  llm: "用 classifier_model_name 判定，多一次调用",
+};
+
+export interface CommandContext {
+  agent: Agent;
+  ui: Console;
+  cfg: Config;
+  memory: MemoryBridge;
+  classifier: Classifier;
+  meta: SessionMeta;
+  shutdown: () => void | Promise<void>;
+  selectDeps: SelectDeps;
+  mailbox: Mailbox | null;
+  checkpoints: CheckpointStore | null;
+  injectMailbox?: (env: Envelope) => void;
+  onMailboxRekey?: () => void;
+  onNameChange?: (name: string) => void;
+  memoryMode?: "interactive" | "oneshot";
+}
+
+export async function handleCommand(line: string, ctx: CommandContext): Promise<void> {
+  const {
+    agent, ui, cfg, memory, classifier, meta, shutdown, selectDeps, mailbox, checkpoints,
+    injectMailbox, onMailboxRekey, onNameChange,
+  } = ctx;
+  const memoryMode = ctx.memoryMode ?? "interactive";
+  const [cmdRaw, ...rest] = line.slice(1).split(/\s+/);
+  const cmd = (cmdRaw ?? "").toLowerCase();
+  const arg = rest.join(" ").trim();
+
+  switch (cmd) {
+    case "help":
+    case "?":
+      ui.line(helpText());
+      break;
+
+    case "clear":
+      agent.reset();
+      ui.success("上下文已清空。");
+      break;
+
+    case "compact": {
+      ui.line("压缩上下文中…");
+      const ok = await agent.compact();
+      if (ok) ui.success(`压缩完成。上下文使用率 ${(agent.contextUsage() * 100).toFixed(1)}%`);
+      else ui.warn("对话太短或压缩失败，未做处理。");
+      break;
+    }
+
+    case "undo": {
+      const n = Math.max(1, Number(arg) || 1);
+      if (!checkpoints) {
+        ui.warn("当前没有启用写文件检查点。");
+        break;
+      }
+      const results = checkpoints.undo(n);
+      if (results.length === 0) {
+        ui.info("没有可撤销的写操作。");
+        break;
+      }
+      for (const r of results) {
+        if (r.restored === "content") {
+          ui.line(`${c.accent("↩")} 已还原 ${r.entry.rel}（${r.entry.op}）`);
+        } else if (r.restored === "deleted") {
+          ui.line(`${c.accent("↩")} 已删除 ${r.entry.rel}（恢复为写前不存在）`);
+        } else {
+          ui.warn(`未能恢复 ${r.entry.rel}：${r.reason ?? "未知原因"}`);
+        }
+      }
+      break;
+    }
+
+    case "checkpoints": {
+      if (!checkpoints) {
+        ui.warn("当前没有启用写文件检查点。");
+        break;
+      }
+      const n = Math.max(1, Number(arg) || 10);
+      const list = checkpoints.list(n);
+      if (list.length === 0) {
+        ui.info("还没有写文件检查点。");
+        break;
+      }
+      ui.line(c.dim(`最近 ${list.length} 条写文件检查点（${checkpoints.dir}）：`));
+      for (const e of list.slice().reverse()) {
+        const meta = `${e.op} · ${e.existed ? `${e.size}B` : "新建"} · ${e.at}`;
+        ui.line(`  #${e.seq} ${e.rel}  ${c.dim(meta)}${e.note ? `  ${c.warn(e.note)}` : ""}`);
+      }
+      break;
+    }
+
+    case "context": {
+      // A2：一眼看清「配置窗口 vs 估算用量 vs 最近压缩」，用于排查长会话/窗口配错。
+      const resolved = resolveAndApplyModelWindow(cfg);
+      const usage = agent.contextUsage();
+      const est = Math.round(usage * cfg.contextWindow);
+      const last = agent.lastCompactionInfo;
+      ui.blank();
+      ui.kv("model", `${cfg.providerName}/${cfg.model}`);
+      ui.kv(
+        "window",
+        `${cfg.contextWindow.toLocaleString()} tokens ${c.dim(`(${cfg.contextWindowSource ?? resolved.source})`)}`,
+      );
+      ui.kv("threshold", `${(cfg.compactThreshold * 100).toFixed(0)}% · ${Math.round(
+        cfg.compactThreshold * cfg.contextWindow,
+      ).toLocaleString()} tokens`);
+      ui.kv("estimate", `${est.toLocaleString()} tokens ${c.dim(`(${(usage * 100).toFixed(1)}%)`)}`);
+      ui.kv("messages", String(agent.messages.length));
+      if (last) {
+        ui.kv(
+          "last compact",
+          `${last.beforeTokens.toLocaleString()} → ${last.afterTokens.toLocaleString()} tokens`,
+        );
+      } else {
+        ui.kv("last compact", c.dim("无"));
+      }
+      ui.line(c.dim("  window 来源：config=settings；models_api=网关元数据；overflow_error=服务端错误校正"));
+      ui.blank();
+      break;
+    }
+
+    case "cost": {
+      const cum = agent.cumulative;
+      ui.blank();
+      ui.kv("provider", `${c.accent(cfg.providerName)} ${c.dim(`(${cfg.providerType})`)}`);
+      ui.kv("tier", c.muted(tierDisplayName(cfg.modelTier)));
+      ui.kv("model", c.accent(cfg.model));
+      ui.kv("endpoint", c.muted(cfg.baseUrl));
+      ui.kv("api key", c.muted(maskKey(cfg.apiKey)));
+      ui.kv("max_tokens", String(cfg.maxTokens));
+      ui.kv("temperature", String(cfg.temperature));
+      ui.kv("prompt", `${cum.prompt} tokens`);
+      ui.kv("completion", `${cum.completion} tokens`);
+      ui.kv("thinking", `${cum.reasoning} tokens`);
+      ui.kv("context", `${(agent.contextUsage() * 100).toFixed(1)}% of ${cfg.contextWindow}`);
+      ui.kv("messages", String(agent.messages.length));
+      ui.blank();
+      break;
+    }
+
+    case "provider": {
+      const p = cfg.providers.find((x) => x.name === cfg.providerName);
+      if (!arg) {
+        ui.blank();
+        ui.kv("当前", `${c.accent(cfg.providerName)} ${c.dim(`(${cfg.providerType})`)}`);
+        ui.blank();
+        // TTY：选择器接入（与 /model 同款）。含全部 provider——未接入的标注在 hint，
+        // 选中后由 switchProvider 给出与显式 /provider <name> 相同的错误，不另设禁用态
+        if (process.stdin.isTTY) {
+          ui.stopSpinner(); // C1
+          ui.blank();
+          const options = cfg.providers.map((x) => ({
+            label: x.name,
+            hint:
+              x.name === cfg.providerName
+                ? `当前 · ${x.type}`
+                : isImplemented(x.type)
+                  ? x.type
+                  : `${x.type} · 未接入`,
+            value: x.name,
+          }));
+          const picked = await select("切换到哪个 provider？", options, {
+            ...selectDeps,
+            initial: Math.max(0, cfg.providers.findIndex((x) => x.name === cfg.providerName)),
+          });
+          if (!picked) {
+            ui.info("已取消。");
+            break;
+          }
+          const r = switchProvider(cfg, picked);
+          if (!r.ok) {
+            ui.warn(r.error);
+            break;
+          }
+          agent.noteModelChange(cfg);
+          ui.success(`provider → ${cfg.providerName}（${cfg.providerType}）`);
+          ui.kv("model", `${cfg.model} ${c.dim(`[${tierDisplayName(cfg.modelTier)}]`)}`);
+          ui.kv("endpoint", cfg.baseUrl);
+          break;
+        }
+        // 非 TTY：维持纯列表（C8）
+        for (const x of cfg.providers) {
+          const on = x.name === cfg.providerName;
+          const usable = isImplemented(x.type);
+          const tag = usable ? "" : c.warn(" [未接入]");
+          ui.line(
+            `${on ? c.accent("●") : c.dim("○")} ${on ? c.bright(x.name) : c.muted(x.name)} ` +
+              `${c.dim(x.type)} ${c.dim("→")} ${c.muted(x.baseUrl)}${tag}`,
+          );
+          if (on) {
+            for (const tier of MODEL_TIERS) {
+              const mark = tier === cfg.modelTier ? c.accent("▸") : " ";
+              ui.line(`    ${mark} ${c.dim(tier.padEnd(15))} ${c.muted(x.models[tier])}`);
+            }
+          }
+        }
+        ui.line(c.dim("  用 /provider <name> 切换"));
+        ui.blank();
+        break;
+      }
+      const r = switchProvider(cfg, arg);
+      if (!r.ok) {
+        ui.warn(r.error);
+        break;
+      }
+      agent.noteModelChange(cfg);
+      ui.success(`provider → ${cfg.providerName}（${cfg.providerType}）`);
+      ui.kv("model", `${cfg.model} ${c.dim(`[${tierDisplayName(cfg.modelTier)}]`)}`);
+      ui.kv("endpoint", cfg.baseUrl);
+      break;
+    }
+
+    case "tier":
+    // 档位快捷方式。存在的理由：规则分类器的 override 规则（/deep、/fast…）
+    // 匹配的是用户输入，若没有对应分支，输入会在到达分类器之前
+    // 就被 handleCommand 当成未知命令吃掉 —— 规则永远等不到它的输入。
+    case "fast":
+    case "balanced":
+    case "deep":
+    case "deep_reasoning":
+    case "default": {
+      // /deep 等价于 /tier deep_reasoning；带参数时（如 `/deep 分析这段代码`）
+      // 前半段是档位指令，其余作为普通输入继续走 agent。
+      // /tier 的档位名来自**参数**（rest[0]），不是命令名 —— 旧代码永远取 cmd，
+      // 导致 `/tier default` 被解析成档位 "tier"，任何参数都报「未知档位」。
+      // 快捷命令（/fast /balanced /deep…）没有参数概念，档位名就是命令名本身。
+      const rawTarget = cmd === "tier" ? (rest[0] ?? "") : cmd;
+      // 人类输入接受简写（deep/bal/fast/auto），内部仍落到规范 ModelTier。
+      const target = normalizeTierName(rawTarget);
+      // /tier 不带参数时是查询操作：列出全部档位的生效路由。
+      // 用 target === "" 判断而非 rest.length === 0："/tier "（尾随空格）
+      // split 后 rest = [""]，length 为 1，但语义上仍是查询。
+      if (cmd === "tier" && rawTarget === "") {
+        ui.blank();
+        ui.kv("当前档位", c.accent(tierChoiceLabel(cfg.modelTier)));
+        ui.kv("生效路由", `${c.accent(describeRoute(cfg, cfg.modelTier))}`);
+        ui.blank();
+        // TTY：选择器接入（与 /model 同款）；hint = 该档位生效路由，initial 定位当前档位
+        if (process.stdin.isTTY) {
+          ui.stopSpinner(); // C1
+          ui.blank();
+          const options = MODEL_TIERS.map((t) => ({
+            label: tierDisplayName(t),
+            hint: t === cfg.modelTier ? `当前 · ${describeRoute(cfg, t)}` : describeRoute(cfg, t),
+            value: t,
+          }));
+          const picked = await select("切换到哪个档位？", options, {
+            ...selectDeps,
+            initial: Math.max(0, MODEL_TIERS.indexOf(cfg.modelTier)),
+          });
+          if (picked) {
+            const r = applyTier(cfg, picked);
+            if (r.ok) {
+              agent.noteModelChange(cfg);
+              if (r.degraded && r.note) ui.warn(r.note);
+              ui.success(
+                `档位 → ${tierChoiceLabel(cfg.modelTier)}（${cfg.providerName} / ${cfg.model}）`,
+              );
+            } else {
+              ui.warn(r.error);
+            }
+          } else {
+            ui.info("已取消。");
+          }
+          break;
+        }
+        // 非 TTY：维持纯列表（C8）
+        for (const tier of MODEL_TIERS) {
+          const on = tier === cfg.modelTier;
+          const label = tierChoiceLabel(tier);
+          ui.line(
+            `${on ? c.accent("●") : c.dim("○")} ${on ? c.bright(label.padEnd(20)) : c.muted(label.padEnd(20))} ` +
+              `${c.dim("→")} ${c.muted(describeRoute(cfg, tier))}`,
+          );
+        }
+        ui.line(c.dim("  用 /tier <name> 切换"));
+        ui.blank();
+        break;
+      }
+      if (!target) {
+        ui.warn(
+          `未知档位 "${rawTarget}"。可选：${MODEL_TIERS.join(", ")}` +
+            `（简写 deep / d / bal / b / f / auto）`,
+        );
+        break;
+      }
+      const r = applyTier(cfg, target);
+      if (!r.ok) {
+        ui.warn(r.error);
+        break;
+      }
+      agent.noteModelChange(cfg);
+      if (r.degraded && r.note) ui.warn(r.note);
+      ui.success(
+        `档位 → ${tierChoiceLabel(cfg.modelTier)}（${cfg.providerName} / ${cfg.model}）`,
+      );
+      // 剩余文本当作下一轮用户输入，不丢内容。
+      // /tier 的 rest[0] 是档位名，已消费掉；快捷命令的 rest 全是剩余文本。
+      const leftover = cmd === "tier" ? rest.slice(1) : rest;
+      if (leftover.length > 0) await agent.send(leftover.join(" "));
+      break;
+    }
+
+    case "auto": {
+      if (!arg) {
+        ui.blank();
+        ui.kv("自动分类", `${c.accent(classifier.name)}`);
+        ui.kv("分类器模型", `${c.muted(cfg.classifierProvider)} / ${c.muted(cfg.classifierModel)}`);
+        ui.kv("连续工具失败", String(agent.toolFailureStreak));
+        ui.blank();
+        for (const n of CLASSIFIER_NAMES) {
+          ui.line(
+            `${n === classifier.name ? c.accent("●") : c.dim("○")} ` +
+              `${n === classifier.name ? c.bright(n) : c.muted(n)} ${c.dim(DESC[n] ?? "")}`,
+          );
+        }
+        ui.line(c.dim("  用 /auto <off|rule|llm> 切换"));
+        ui.blank();
+        break;
+      }
+      if (!isClassifierName(arg)) {
+        ui.warn(`未知分类器 "${arg}"。可选：${CLASSIFIER_NAMES.join(", ")}`);
+        break;
+      }
+      try {
+        classifier.use(arg, cfg);
+        ui.success(`自动分类 → ${arg}`);
+      } catch (e) {
+        ui.warn((e as Error).message);
+      }
+      break;
+    }
+
+    case "why": {
+      ui.blank();
+      ui.kv("分类器", c.accent(classifier.name));
+      const last = classifier.lastResult;
+      if (!last) {
+        ui.info("还没有产生过判定。发一条消息后用 /why 查看。");
+      } else {
+        ui.kv("判定档位", c.accent(last.tier));
+        ui.kv("来源", c.muted(last.source));
+        ui.kv("理由", c.text(last.reason));
+      }
+      const fail = classifier.lastFailure;
+      if (fail) ui.kv("上次失败", c.err(fail));
+      ui.kv("当前生效", `${cfg.modelTier} → ${cfg.providerName} / ${cfg.model}`);
+      ui.blank();
+      break;
+    }
+
+    case "model": {
+      if (!arg) {
+        ui.blank();
+        ui.kv("当前模型", `${c.accent(cfg.model)} ${c.dim(`(${cfg.modelTier})`)}`);
+        // D8：先取列表——失败维持现有错误输出，不进选择器
+        let models: string[] | null = null;
+        try {
+          models = await listModels(cfg);
+        } catch (e) {
+          ui.error(`获取模型列表失败: ${(e as Error).message}`);
+        }
+        if (models && models.length > 0 && process.stdin.isTTY) {
+          // TTY：可选。当前模型 hint「当前」+ initial 定位（D8）
+          ui.stopSpinner(); // C1：进入前收尾 spinner
+          ui.blank();
+          const options = models.map((m) => ({
+            label: m,
+            hint: m === cfg.model ? "当前" : undefined,
+            value: m,
+          }));
+          const picked = await select("切换到哪个模型？", options, {
+            ...selectDeps,
+            initial: Math.max(0, models.indexOf(cfg.model)),
+          });
+          if (picked) {
+            // 与显式 /model <id> 同一收尾（F2 缺口补齐）
+            cfg.model = picked;
+            agent.noteModelChange(cfg);
+            ui.success(`模型已切到 ${picked}（本次会话内生效，已绕过档位）。`);
+          } else {
+            ui.info("已取消。");
+          }
+        } else if (models) {
+          // 非 TTY / 空列表：维持现有纯列表展示（C8）
+          ui.line(c.dim("  用 /model <id> 直接指定模型，或 /tier <档位> 切换档位"));
+          ui.line(c.dim("  服务端可用模型："));
+          for (const m of models) {
+            ui.line(m === cfg.model ? `  ${c.accent("●")} ${c.bright(m)}` : `  ${c.dim("○")} ${c.muted(m)}`);
+          }
+        }
+        ui.blank();
+        break;
+      }
+      cfg.model = arg;
+      agent.noteModelChange(cfg);
+      ui.success(`模型已切到 ${arg}（本次会话内生效，已绕过档位）。`);
+      break;
+    }
+
+    case "tools":
+      ui.blank();
+      ui.kv("可用工具", String(toolNames().length));
+      for (const t of toolNames()) ui.line(`  ${c.tool("⚡")} ${c.text(t)}`);
+      ui.blank();
+      break;
+
+    case "env": {
+      const refresh = arg === "refresh";
+      const loaded = loadEnv({ cfg, persist: memoryMode === "interactive", force: refresh });
+      if (!loaded) {
+        ui.warn("环境探测已关闭（settings.env.enabled=false 或 NEO_ENV_DISABLE=1）");
+        break;
+      }
+      ui.blank();
+      ui.line(
+        formatEnvForCli(loaded.snapshot, {
+          snapshotPath: loaded.snapshotPath,
+          fromCache: loaded.fromCache,
+          probeMs: loaded.probeMs,
+          persisted: loaded.persisted,
+        }),
+      );
+      // A2：refresh 时顺带探测当前模型窗口；平时展示 env 里已有的事实。
+      if (refresh) {
+        const info = await detectAndRecordModelWindow(cfg);
+        resolveAndApplyModelWindow(cfg);
+        if (info?.contextWindow) {
+          ui.info(`已探测 ${cfg.model} 上下文窗口：${info.contextWindow.toLocaleString()} tokens`);
+        } else {
+          ui.info("未能从 /models 探测到窗口元数据（不影响会话，溢出错误会自动学习）。");
+        }
+      }
+      const windowLines = formatModelWindowLines(cfg);
+      if (windowLines.length > 0) {
+        ui.line(c.dim("模型上下文窗口（env 事实）："));
+        for (const line of windowLines) ui.line(`  ${line}`);
+      }
+      if (memoryMode === "interactive" && cfg.env?.wikiPage !== false) {
+        try {
+          const layout = ensureScopeLayout("user", cfg.cwd, cfg.memory.userWikiDir);
+          const r = syncEnvPage(layout, loaded.snapshot);
+          ui.info(
+            r.action === "unchanged"
+              ? `环境页已是最新 ${r.pagePath}`
+              : `环境页已${r.action === "created" ? "创建" : "更新"} ${r.pagePath}${r.logged ? "（已记 log）" : ""}`,
+          );
+        } catch (e) {
+          ui.warn(`环境页写入失败：${(e as Error).message}`);
+        }
+      }
+      ui.blank();
+      break;
+    }
+
+    case "peers": {
+      if (!mailbox) {
+        ui.warn("跨会话信箱未启用（-p / 非交互模式不参与协作）");
+        break;
+      }
+      const out = await makeListPeersTool({ mailbox }).execute(arg ? { target: arg } : {}, {} as ToolCtx);
+      ui.line(out);
+      break;
+    }
+
+    case "inbox": {
+      if (!mailbox) {
+        ui.warn("跨会话信箱未启用（-p / 非交互模式不参与协作）");
+        break;
+      }
+      const [subRaw, ...subRest] = arg.split(/\s+/).filter(Boolean);
+      const sub = (subRaw ?? "").toLowerCase();
+      if (sub === "release") {
+        const id = subRest.join(" ").trim();
+        if (!id) {
+          ui.warn("用法：/inbox release <消息 id>");
+          break;
+        }
+        const env = mailbox.release(id);
+        if (!env) {
+          ui.warn(`未找到 held 消息 ${id}`);
+          break;
+        }
+        ui.success(`已放行 ${id}`);
+        // 放行等价于一次正常投递：补记回执 / last_inbound / 消账，保证回信 exec 与状态机一致
+        try {
+          mailboxState.recordReceipt(
+            mailbox.root,
+            mailbox.sessionId,
+            { message_id: env.id, from: env.from.session, received_at: new Date().toISOString() },
+            cfg.mailbox.receiptMax,
+          );
+          mailboxState.noteInbound(mailbox.root, mailbox.sessionId, {
+            from: env.from.session,
+            message_id: env.id,
+          });
+          mailboxState.resolveDelegation(mailbox.root, mailbox.sessionId, {
+            reply_to: env.reply_to ?? null,
+            from: env.from.session,
+          });
+        } catch {
+          // 状态记录失败不影响放行
+        }
+        injectMailbox?.(env);
+        break;
+      }
+      const held = mailbox.heldIds();
+      ui.blank();
+      if (held.length === 0) {
+        ui.info("没有 held 消息。");
+        ui.blank();
+        break;
+      }
+      ui.kv("held 消息", String(held.length));
+      for (const id of held) ui.line(`  ${c.accent(id)} ${c.dim(`（/inbox release ${id}）`)}`);
+      ui.blank();
+      break;
+    }
+
+    // 目标锚（2026-10-26）：只由人写，模型只读。
+    // 无参数 = 查看当前目标；/goal clear = 清除。
+    case "goal": {
+      if (!mailbox) {
+        ui.warn("跨会话信箱未启用（-p / 非交互模式不参与协作）");
+        break;
+      }
+      const text = arg.trim();
+      try {
+        if (!text) {
+          const g = mailboxState.readGoal(mailbox.root, mailbox.sessionId);
+          if (!g) {
+            ui.info("本会话尚未设置目标锚。用法：/goal <一句话目标>");
+          } else {
+            ui.kv("目标", g.text);
+            ui.kv("设定", `${g.set_at}（${g.set_by}）`);
+          }
+          ui.blank();
+          break;
+        }
+        if (text === "clear") {
+          mailboxState.setGoal(mailbox.root, mailbox.sessionId, "");
+          ui.success("目标锚已清除。");
+          break;
+        }
+        const s = mailboxState.setGoal(mailbox.root, mailbox.sessionId, text, { by: "user" });
+        ui.success(`目标锚已设置：${s.goal?.text ?? ""}`);
+        ui.line(c.dim("每轮请求前会把它连同工具预算一起告诉模型；模型不能改写它。"));
+        ui.blank();
+      } catch (e) {
+        ui.warn(`设置目标失败：${(e as Error).message}`);
+      }
+      break;
+    }
+
+    case "rename": {
+      if (!mailbox) {
+        ui.warn("跨会话信箱未启用（-p / 非交互模式不参与协作）");
+        break;
+      }
+      const name = arg.trim();
+      if (!name) {
+        ui.warn("用法：/rename <name>");
+        break;
+      }
+      try {
+        const p = renameSession(mailbox.root, mailbox.sessionId, name, {
+          deadAfterMs: cfg.mailbox.deadAfterMs,
+        });
+        onNameChange?.(p.name ?? "");
+        ui.success(`本会话名字 → ${p.name}`);
+      } catch (e) {
+        ui.warn(`改名字失败：${(e as Error).message}`);
+      }
+      break;
+    }
+
+    case "skills": {
+      const skills = discoverSkills(cfg);
+      if (arg) {
+        // 约束 16：这是给**人**看的只读诊断入口 —— 不加载全文，也不建软链。
+        // 软链只由 use_skill 创建（那是模型行为，且会在输出里告知）。
+        // 所以这里只从已发现的索引里查，不能走 resolveSkill —— 它会建软链，
+        // 让一条纯查看命令悄悄改动了用户的项目目录。
+        //
+        // 但名称白名单仍要先过：arg 来自用户输入，`../etc` 这类必须报「非法」而非
+        // 混入下面的 find() 变成一句语义错误的「不存在」—— 否则路径穿越的形态被掩盖了。
+        if (!isValidSkillName(arg)) {
+          ui.error(`技能名非法: ${arg}`);
+          if (skills.length > 0) ui.info(`可用技能：${skills.map((s) => s.name).join(", ")}`);
+          break;
+        }
+        const hit = skills.find((s) => s.name === arg);
+        if (!hit) {
+          ui.error(`技能不存在: ${arg}`);
+          if (skills.length > 0) ui.info(`可用技能：${skills.map((s) => s.name).join(", ")}`);
+          break;
+        }
+        ui.blank();
+        ui.kv("名称", hit.name);
+        // 用与索引/list 完全相同的规范化函数，保证三处 description 逐字一致
+        ui.kv("说明", normalizeDescription(hit.description, hit.name));
+        ui.kv("来源", hit.source === "project" ? "项目" : "全局");
+        ui.kv("路径", hit.absPath);
+        let first = "";
+        try {
+          first = (readFileSync(join(hit.absPath, "SKILL.md"), "utf8").split("\n") ?? [])
+            .find((l) => l.trim().startsWith("# "))
+            ?.trim() ?? "";
+        } catch {
+          /* ignore */
+        }
+        if (first) ui.kv("标题", first);
+        ui.blank();
+        ui.info("完整正文请让模型调用 use_skill。");
+        break;
+      }
+
+      ui.blank();
+      if (skills.length === 0) {
+        ui.info(`没有可用技能。把技能目录放到 ${join(cfg.cwd, "skills")} 或全局技能库。`);
+        ui.blank();
+        break;
+      }
+      ui.kv("可用技能", String(skills.length));
+      for (const s of skills) {
+        const dot = c.tool("●");
+        // 形态与 system prompt 索引一致（formatSkillLine 保证 description 截断口径统一），
+        // 但**保留来源与软链标注** —— 它们是 name/description 之外的信息，
+        // 去掉会让用户看不出某技能是项目私有还是全局、是否为软链产物。
+        // 统一的是「技能行里name:description 的写法」，不是「只能有这两项」。
+        const origin = `${s.source === "project" ? "项目" : "全局"}${s.linked ? " · 软链" : ""}`;
+        ui.line(`  ${dot} ${formatSkillLine(s.name, s.description)}${origin ? `　[${origin}]` : ""}`);
+      }
+      ui.blank();
+      ui.info("用 /skills <名称> 查看详情，或让模型按需 use_skill。");
+      ui.blank();
+      break;
+    }
+
+    case "wiki-lint": {
+      const dir = resolveWikiDir(cfg.cwd);
+      if (!dir) {
+        ui.warn(
+          `未找到 wiki 目录（${join(cfg.cwd, ".neo", "wiki", "wiki")} 或 ${join(cfg.cwd, "wiki")}）。` +
+            `先跑 /init 创建骨架，或确认目录位置。`,
+        );
+        break;
+      }
+      const result = lintWiki(dir);
+      ui.line(formatLintReport(result));
+      const s = result.summary;
+      const total = s.broken + s.orphans + s.lowlinks + s.nosummary + s.nostamp;
+      if (total === 0) ui.success("wiki 体检通过。");
+      else {
+        ui.warn(
+          `共 ${total} 项待处理（断链 ${s.broken} / 孤儿 ${s.orphans} / 密度 ${s.lowlinks}` +
+            ` / 摘要 ${s.nosummary} / 日期戳 ${s.nostamp}）`,
+        );
+      }
+      break;
+    }
+
+    case "ingest": {
+      const layout = resolveWikiLayout(cfg.cwd);
+      if (!layout) {
+        ui.warn(`未找到 wiki 骨架（${join(cfg.cwd, ".neo", "wiki")}）。先跑 /init。`);
+        break;
+      }
+      let plan;
+      try {
+        plan = planIngest(layout, arg);
+      } catch (e) {
+        ui.warn((e as Error).message);
+        break;
+      }
+      if (plan.files.length === 0 && plan.removed.length === 0) {
+        ui.info(`raw/ 无变更，无需编译。`);
+        finishIngest(layout);
+        break;
+      }
+      if (plan.needsAnnounce) {
+        ui.warn(`本次将做全量编译（${plan.reason}），处理 ${plan.files.length} 份 raw。`);
+      } else {
+        ui.info(`${plan.reason}；新增 ${plan.files.length} 份，删除 ${plan.removed.length} 份。`);
+      }
+
+      // 编译交给 fast 档子代理（机械编译活）；派发前主代理切回当前档，互不影响
+      const prompt = buildIngestPrompt(layout, plan, loadIngestTemplate());
+      ui.startSpinner(`子代理编译中（${plan.mode}）…`);
+      const report = await runSubagent(agent, prompt, "fast", {
+        cfg,
+        approve: async () => true,
+      });
+      ui.stopSpinner();
+      ui.line(report);
+
+      finishIngest(layout);
+      const hadChanges = plan.mode === "full" || plan.files.length > 0;
+      if (hadChanges) {
+        appendLog(layout, "ingest", `${plan.mode} 编译 ${plan.files.length} 份 raw`);
+      }
+      ui.success(`ingest 完成（${plan.mode}）。`);
+      break;
+    }
+
+    case "mode": {
+      const modes: Array<[string, string]> = [
+        ["1", "ask — 写文件/执行命令都需批准"],
+        ["2", "auto-edit — 自动批准写文件，命令仍需批准"],
+        ["3", "auto-all — 全部自动批准（慎用）"],
+        ["4", "plan — 只读，禁止一切写操作"],
+      ];
+      if (!arg) {
+        ui.blank();
+        ui.kv("当前模式", c.accent(agent.mode));
+        // TTY：选择器接入（与 /model 同款）；hint = 模式说明，initial 定位当前模式
+        if (process.stdin.isTTY) {
+          ui.stopSpinner(); // C1
+          ui.blank();
+          const modeList: Array<{ name: PermissionMode; desc: string }> = [
+            { name: "ask", desc: "写文件/执行命令都需批准" },
+            { name: "auto-edit", desc: "自动批准写文件，命令仍需批准" },
+            { name: "auto-all", desc: "全部自动批准（慎用）" },
+            { name: "plan", desc: "只读，禁止一切写操作" },
+          ];
+          const options = modeList.map((m) => ({
+            label: m.name,
+            hint: m.name === agent.mode ? `当前 · ${m.desc}` : m.desc,
+            value: m.name,
+          }));
+          const picked = await select("切换到哪个权限模式？", options, {
+            ...selectDeps,
+            initial: Math.max(0, modeList.findIndex((m) => m.name === agent.mode)),
+          });
+          if (picked) {
+            agent.mode = picked;
+            try {
+              mailbox?.setMode(picked);
+            } catch {
+              // 状态同步失败不影响模式切换
+            }
+            ui.success(`权限模式 → ${picked}`);
+          } else {
+            ui.info("已取消。");
+          }
+          break;
+        }
+        // 非 TTY：维持编号列表（C8）
+        for (const [k, d] of modes) ui.line(`  ${c.accent(k)}) ${d}`);
+        ui.line(c.dim("  用 /mode <1-4> 切换"));
+        ui.blank();
+        break;
+      }
+      const map: Record<string, PermissionMode> = {
+        "1": "ask", ask: "ask", "2": "auto-edit", "3": "auto-all", "4": "plan", plan: "plan",
+      };
+      const m = map[arg];
+      if (!m) {
+        ui.warn(`未知模式 ${arg}`);
+        break;
+      }
+      agent.mode = m;
+      try {
+        mailbox?.setMode(m);
+      } catch {
+        // 状态同步失败不影响模式切换
+      }
+      ui.success(`权限模式 → ${m}`);
+      break;
+    }
+
+    case "init": {
+      const target = join(cfg.cwd, arg || "AGENTS.md");
+      if (existsSync(target)) {
+        const ok = await ui.confirm(`${target} 已存在，覆盖？`);
+        if (!ok) {
+          ui.info("已取消。");
+          break;
+        }
+      }
+      mkdirSync(dirname(target), { recursive: true });
+      writeFileSync(target, buildMemoryFile(cfg), "utf8");
+      ui.success(`已生成 ${target}`);
+      // PRD §约束 14a / §约束 16 / §约束 17：额外初始化项目级 wiki 骨架 + 写 AGENTS.md 工作流段。
+      // 失败按约束 17 不抛 — catch + stderr WARN。
+      try {
+        await initProjectLevelImpl(cfg, cfg.cwd);
+      } catch (e) {
+        const reason = e instanceof Error ? e.message : String(e);
+        console.error(`项目级 wiki 骨架创建失败（${reason}），本次会话不写索引`);
+      }
+      break;
+    }
+
+    case "memory": {
+      // v0.2 记忆激活：完整子命令族（规格 §7.10）。
+      const [subRaw, ...subRest] = arg.split(/\s+/).filter(Boolean);
+      const sub = (subRaw ?? "").toLowerCase();
+      const subArg = subRest.join(" ").trim();
+      switch (sub) {
+        case "":
+        case "status":
+          ui.line(memory.status());
+          break;
+        case "list": {
+          const scope = subArg === "user" || subArg === "project" ? subArg : "all";
+          ui.line(memory.list(scope));
+          break;
+        }
+        case "recall":
+          if (!subArg) {
+            ui.warn("用法：/memory recall <关键词>");
+            break;
+          }
+          ui.line(memory.recallForHuman(subArg));
+          break;
+        case "why":
+          ui.line(memory.why());
+          break;
+        case "flush":
+          ui.info("冲刷记忆写队列…");
+          await memory.flush(10_000);
+          ui.success("记忆写队列已处理。");
+          break;
+        case "forget": {
+          const m = /^(project|user)[/:](.+\.md)$/.exec(subArg);
+          if (!m) {
+            ui.warn("用法：/memory forget <project|user>/<页面.md>");
+            break;
+          }
+          const ok = await ui.confirm(`确定删除 ${m[1]}/${m[2]}？此操作不可撤销。`);
+          if (!ok) {
+            ui.info("已取消。");
+            break;
+          }
+          ui.line(memory.forget(m[1] as "project" | "user", m[2] ?? ""));
+          break;
+        }
+        case "migrate":
+          ui.line(memory.migrate());
+          break;
+        case "lint":
+          ui.line(memory.lint());
+          break;
+        case "on":
+        case "off":
+          cfg.memory.enabled = sub === "on";
+          ui.success(`记忆已${sub === "on" ? "开启" : "关闭"}（仅本会话，不改配置文件）`);
+          break;
+        default:
+          ui.warn(
+            `未知 /memory 子命令：${subRaw}。可用：status / list [project|user] / recall <q> / why / flush / forget <scope>/<page> / migrate / lint / on|off`,
+          );
+      }
+      break;
+    }
+
+    case "remember": {
+      // 显式记忆：/remember <内容> [--user|--project]
+      const flag = /\s*--(user|project)\s*$/.exec(arg);
+      const body = (flag ? arg.slice(0, flag.index) : arg).trim();
+      if (!body) {
+        ui.warn("用法：/remember <要记住的内容> [--user|--project]");
+        break;
+      }
+      const scope = flag?.[1] as "user" | "project" | undefined;
+      ui.line(await memory.remember(body, scope));
+      await memory.flush(10_000);
+      ui.success("记忆已处理。");
+      break;
+    }
+
+    case "history": {
+      const msgs = agent.messages;
+      ui.blank();
+      ui.kv("消息总数", String(msgs.length));
+      ui.kv("用户消息", String(msgs.filter((m) => m.role === "user").length));
+      ui.kv("助手消息", String(msgs.filter((m) => m.role === "assistant").length));
+      ui.kv("工具结果", String(msgs.filter((m) => m.role === "tool").length));
+      ui.kv("工具调用", String(msgs.reduce((n, m) => n + (m.tool_calls?.length ?? 0), 0)));
+      ui.blank();
+      break;
+    }
+
+    case "save": {
+      const target = arg ? resolve(cfg.cwd, arg) : join(cfg.cwd, "neo-session.json");
+      writeFileSync(target, JSON.stringify({ meta, messages: agent.messages }, null, 2), "utf8");
+      ui.success(`会话已保存到 ${target}`);
+      break;
+    }
+
+    case "export": {
+      const id = arg.trim();
+      const loaded = id ? loadSession(id) : null;
+      if (id && !loaded) {
+        ui.warn(`会话不存在: ${id}（用 /sessions 查看）`);
+        break;
+      }
+      const targetMeta = loaded?.meta ?? meta;
+      const targetMessages = loaded?.messages ?? agent.messages;
+      const dir = join(cfg.cwd, ".neo", "exports");
+      mkdirSync(dir, { recursive: true });
+      const file = join(dir, `${targetMeta.id}.md`);
+      writeFileSync(file, renderSessionMarkdown(targetMeta, targetMessages), "utf8");
+      ui.success(`已导出会话 ${targetMeta.id} → ${file}（${targetMessages.length} 条消息）`);
+      break;
+    }
+
+    case "resume": {
+      // /resume [id] —— 交互中恢复历史会话（真续接：沿用目标 session-id/文件/信箱身份）。
+      // 运行中的会话不列出、也不允许恢复（2026-10-26 裁决）。
+      const resumeRoot = mailbox?.root ?? mailboxRoot();
+      const isRunning = (id: string): boolean =>
+        sessionLiveness(resumeRoot, id, { deadAfterMs: cfg.mailbox.deadAfterMs }) === "running";
+      let targetId = arg;
+      if (targetId === "last") {
+        const available = listSessions(50).find((x) => x.id !== meta.id && !isRunning(x.id));
+        if (!available) {
+          ui.info("没有可恢复的会话（运行中的会话不列出）。");
+          break;
+        }
+        targetId = available.id;
+      }
+      if (!targetId) {
+        const list = listSessions(50)
+          .filter((x) => x.id !== meta.id && !isRunning(x.id))
+          .slice(0, 8);
+        if (list.length === 0) {
+          ui.info("没有可恢复的会话（运行中的会话不列出）。");
+          break;
+        }
+        // 预览取该会话首条用户消息 —— id 是时间戳，辨识度全靠它
+        const options = list.map((s) => {
+          const f = loadSession(s.id);
+          const firstUser = f?.messages.find((m) => m.role === "user" && (contentText(m.content) ?? "").trim());
+          const preview = firstUser?.content
+            ? truncate((contentText(firstUser.content) ?? "").replace(/\s+/g, " ").trim(), 46)
+            : "（无文本预览）";
+          return { label: `${s.id}  ${preview}`, hint: `${s.turns}轮 ${s.model}`, value: s.id };
+        });
+        // C1：进入前收尾 spinner；select 存续期间不得有其他输出写入
+        ui.stopSpinner();
+        ui.blank();
+        const picked = await select("恢复哪个会话？", options, selectDeps);
+        if (!picked) {
+          ui.info("已取消。");
+          break;
+        }
+        targetId = picked;
+      }
+      const full = loadSession(targetId);
+      if (!full) {
+        ui.warn(`未找到会话 ${targetId}`);
+        break;
+      }
+      if (full.messages.length === 0) {
+        ui.warn("该会话没有任何消息，无法恢复。");
+        break;
+      }
+      if (isRunning(full.meta.id)) {
+        ui.warn(`会话 ${full.meta.id} 正在另一个进程中运行，不能恢复（/peers 可查看存活会话）。`);
+        break;
+      }
+      // 先接管信箱身份；失败则不改对话/持久化，避免身份与会话不一致。
+      if (mailbox) {
+        const beforeName = readProfile(mailbox.root, full.meta.id)?.name ?? null;
+        try {
+          const p = mailbox.adopt(full.meta.id);
+          if (beforeName && p.name && beforeName !== p.name) {
+            ui.info(`目标代号 ${beforeName} 已被占用，恢复为 ${p.name}`);
+          }
+          onMailboxRekey?.();
+          if (p.name) {
+            onNameChange?.(p.name);
+          } else {
+            // 目标 profile 无名字：按 A2 随机一个池内名并写回（不随机覆盖已有名字）。
+            const chosen = chooseSessionName({
+              taken: takenAliveNames(mailbox.root, { deadAfterMs: cfg.mailbox.deadAfterMs }),
+            });
+            if (chosen) {
+              const renamed = renameSession(mailbox.root, mailbox.sessionId, chosen.name, {
+                deadAfterMs: cfg.mailbox.deadAfterMs,
+              });
+              onNameChange?.(renamed.name ?? "");
+            }
+          }
+          ui.info(`跨会话信箱身份已切换到 ${full.meta.id}${p.name ? `（${p.name}）` : ""}`);
+        } catch (e) {
+          ui.warn(`无法恢复 ${full.meta.id}：${(e as Error).message}`);
+          break;
+        }
+      }
+      agent.messages = applyRestored(agent.messages[0], full.messages);
+      Object.assign(meta, full.meta, { model: cfg.model });
+      if (full.meta.cwd && full.meta.cwd !== cfg.cwd) {
+        ui.info(`会话原目录 ${full.meta.cwd}，本次按 ${cfg.cwd} 运行`);
+      }
+      ui.success(`已恢复会话 ${full.meta.id}（${full.messages.length} 条消息）`);
+      // v0.2.3 D4：恢复后回放，避免「上下文都在、屏幕上什么都没有」
+      replayTranscript(ui, full.messages);
+      const lastUser = [...full.messages]
+        .reverse()
+        .find((m) => m.role === "user" && (contentText(m.content) ?? "").trim());
+      if (lastUser?.content) {
+        ui.line(c.dim(`  上次输入：${truncate((contentText(lastUser.content) ?? "").replace(/\s+/g, " ").trim(), 60)}`));
+      }
+      break;
+    }
+
+    case "last": {
+      // v0.2.3 D3：紧凑模式不打印工具正文，这里用内存缓存把最近 n 次找回来。
+      // 范围夹取在 recentToolCalls 内部完成，这里不做第二遍。
+      const recs = ui.recentToolCalls(arg ? Number(arg) || 1 : 1).reverse(); // 时间顺序：旧 → 新
+      if (recs.length === 0) {
+        ui.info("本次会话还没有工具调用记录。");
+        break;
+      }
+      for (const r of recs) {
+        for (const l of formatToolCall(r, ui.width)) ui.line(l);
+        ui.blank();
+      }
+      break;
+    }
+
+    case "sessions":
+      printSessions(ui, {
+        root: mailbox?.root ?? mailboxRoot(),
+        deadAfterMs: cfg.mailbox.deadAfterMs,
+        currentId: meta.id,
+      });
+      break;
+
+    case "exit":
+    case "quit":
+      void shutdown();
+      break;
+
+    default:
+      ui.warn(`未知命令 /${cmd}。用 /help 查看全部命令。`);
+  }
+}
+
+/**
+ * 把本文件实现的命令登记进注册表。
+ *
+ * 名字从 switch 的顶层 case 现取，不手抄第二份清单。
+ * 每个名字都指向同一个 handleCommand：新增 case 即自动可分发，
+ * 不必再在入口写一遍 switch。重复调用是幂等的。
+ */
+let wired = false;
+
+export function wireCommands(): void {
+  if (wired) return;
+  wired = true;
+  for (const name of implementedCommandNames()) {
+    registerCommand(name, handleCommand);
+  }
+}
+
+export async function dispatchCommand(line: string, ctx: CommandContext): Promise<void> {
+  wireCommands();
+  const name = (line.slice(1).split(/\s+/)[0] ?? "").toLowerCase();
+  const handler = commandHandler(name);
+  if (!handler) {
+    ctx.ui.warn(`未知命令 /${name}。用 /help 查看全部命令。`);
+    return;
+  }
+  await handler(line, ctx);
+}
+
+/** 顶层 case 名。嵌套 switch（/memory）缩进更深，不会被算进来。 */
+export function implementedCommandNames(source = readFileSync(new URL("./commands.ts", import.meta.url), "utf8")): string[] {
+  const start = source.indexOf("export async function handleCommand(");
+  const body = start === -1 ? source : source.slice(start);
+  return [...body.matchAll(/^ {4}case "([^"]+)":/gm)].map((m) => m[1]!);
+}
+

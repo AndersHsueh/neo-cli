@@ -24,7 +24,7 @@
  */
 import { describe, expect, test, afterAll } from "bun:test";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, rmSync, mkdirSync, writeFileSync, realpathSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, mkdirSync, writeFileSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -140,7 +140,7 @@ describe("/tier 命令", () => {
       timeout: 20_000,
       env: { ...process.env, NO_COLOR: "1", HOME: join(makeProject(), "fakehome") },
     });
-    expect(out).toContain("neo v0.4.3");
+    expect(out).toContain(`neo v${JSON.parse(readFileSync(join(import.meta.dir, "..", "package.json"), "utf8")).version}`);
     expect(out).not.toContain("未知档位");
   });
 

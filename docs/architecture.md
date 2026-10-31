@@ -1,5 +1,12 @@
 # neo 架构 — v0.1.0
 
+> **作废:2026-10-31**
+>
+> 本文停在 v0.1.0（2026-10-16）的双仓快照，不再作为架构依据。
+> 现行实现以 `src/` 为准：记忆在 `src/memory/`，组合根在 `src/index.ts`，主循环在 `src/agent/loop.ts`（`src/agent.ts` 只做再导出），斜杠命令在 `src/cli/commands.ts`。
+> `../neo-memory/` 是已删除的 `dev/memory-v0.1.0` worktree，不是现行代码。
+> 下文保留作历史记录，不要据此改代码或同步文档。
+
 > **最后更新:2026-10-16** · 来源:本目录 wiki/项目管理-2026-10-16.md §2 + Kiki A1 commit message + 跨 session 协调经验
 >
 > **页面定位**:v0.1.0 release node 架构总览 — 跨仓事实 + 关键模块拓扑 + 何时动哪里

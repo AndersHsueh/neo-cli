@@ -5,26 +5,16 @@
  * 两边任何一侧新增/删除而另一侧没跟，测试立刻红 —— 这是「表即规格」的落地。
  */
 import { describe, expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
 
+import { implementedCommandNames, wireCommands } from "../src/cli/commands.ts";
+import { registeredCommandNames } from "../src/cli/command-registry.ts";
 import { COMMANDS } from "../src/input/commands.ts";
 
-const INDEX = readFileSync(join(import.meta.dir, "..", "src", "index.ts"), "utf8");
-
-/** 取出 handleCommand 函数体（到下一个顶层分隔注释为止）。 */
-function handlerBody(): string {
-  const start = INDEX.indexOf("async function handleCommand(");
-  expect(start).toBeGreaterThan(-1);
-  const rest = INDEX.slice(start);
-  const end = rest.indexOf("/* ------------------------------------------------------------------ */\n/* shell 直通");
-  return end === -1 ? rest : rest.slice(0, end);
-}
+wireCommands();
 
 /** 顶层 switch 的 case（4 空格缩进；嵌套 switch 的 case 更深）。 */
 function implementedCommands(): string[] {
-  const body = handlerBody();
-  return [...body.matchAll(/^ {4}case "([^"]+)":/gm)].map((m) => m[1]!);
+  return implementedCommandNames();
 }
 
 describe("C2a 命令表", () => {
@@ -47,6 +37,10 @@ describe("C2a 命令表", () => {
     const impl = new Set(implementedCommands());
     const missing = COMMANDS.map((c) => c.name).filter((n) => !impl.has(n));
     expect(missing).toEqual([]);
+  });
+
+  test("注册表与实现同名（分发器不会漏接）", () => {
+    expect(new Set(registeredCommandNames())).toEqual(new Set(implementedCommands()));
   });
 
   test("handleCommand 每个顶层 case 都在表里（reverse guard）", () => {
