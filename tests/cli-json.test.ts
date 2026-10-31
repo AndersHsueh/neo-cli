@@ -116,6 +116,33 @@ function project(baseUrl: string, retry = 1): string {
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
+/**
+ * Bun.spawn(["bun", script]) 返回的 pid 是启动器，不是跑脚本的那个进程。
+ * 对启动器发 SIGINT 时，JS 的 process.on("SIGINT") 收不到，脚本会拖到超时才退出，
+ * 进程退出码却仍可能是 130 —— 这正是本文件 SIGINT 用例曾经红的原因。
+ * 这里向直接子进程发信号（必要时回退到启动器），模拟编排器打到真正的 neo 进程。
+ */
+function signalSpawnedBun(proc: Bun.Subprocess, signal: NodeJS.Signals = "SIGINT"): void {
+  const out = Bun.spawnSync(["ps", "-axo", "pid=,ppid="], { stdout: "pipe", stderr: "pipe" });
+  const text = new TextDecoder().decode(out.stdout);
+  const kids: number[] = [];
+  for (const line of text.split("\n")) {
+    const parts = line.trim().split(/\s+/);
+    if (parts.length < 2) continue;
+    const pid = Number(parts[0]);
+    const ppid = Number(parts[1]);
+    if (Number.isFinite(pid) && ppid === proc.pid) kids.push(pid);
+  }
+  const targets = kids.length > 0 ? kids : [proc.pid];
+  for (const pid of targets) {
+    try {
+      process.kill(pid, signal);
+    } catch {
+      /* 已退出 */
+    }
+  }
+}
+
 async function run(cwd: string, args: string[]): Promise<{ out: string; err: string; code: number }> {
   const proc = Bun.spawn(["bun", INDEX, ...args], {
     cwd,
@@ -217,7 +244,7 @@ describe("P0-6 -p --output-format json", () => {
       },
     });
     await sleep(800);
-    proc.kill("SIGINT");
+    signalSpawnedBun(proc, "SIGINT");
     const [out, , code] = await Promise.all([
       new Response(proc.stdout).text(),
       new Response(proc.stderr).text(),

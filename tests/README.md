@@ -1,21 +1,19 @@
 # neo 测试约定
 
-> **最后更新:2026-10-27**（v0.4.3 目标锚 + 手段/目标分层；v0.4.2 tier 视觉 + 切档即时反馈；v0.4.1 实战可靠性修复 + askUser；v0.4.0 平台适配层；v0.3.5 P0 加固；v0.3.4 banner；v0.3.1 会话代号 + resume；v0.3.0 TUI）
+> **最后更新:2026-10-31**（cli-json SIGINT 用例修复；v0.4.4 拆分 index/agent；v0.4.3 目标锚 + 手段/目标分层；v0.4.2 tier 视觉 + 切档即时反馈；v0.4.1 实战可靠性修复 + askUser；v0.4.0 平台适配层；v0.3.5 P0 加固；v0.3.4 banner；v0.3.1 会话代号 + resume；v0.3.0 TUI）
 
 ## §1 当前基线
 
 ```bash
 bun x tsc --noEmit    # exit 0（strict + noUncheckedIndexedAccess；不用 bunx：部分 bun 安装没有独立 bunx 入口）
-bun test              # 1051 pass / 1 fail（67 个测试文件，约 23s）
+bun test              # 1061 pass / 0 fail（68 个测试文件，约 9s）
 bash scripts/verify.sh # 全量闸门：上两条 + 真 PTY E2E（21 场景），输出落 docs/evidence/
 ```
 
-v0.4.3 后的基线：**1051 pass / 1 fail / 67 文件 / PTY 21/21**（v0.4.2 为 1039/0/67/PTY20；v0.4.1 为 1027/66，v0.4.0 为 974/59/PTY19；v0.3.5 为 925/57，v0.3.4 为 881/53，v0.3.0 为 839/46，v0.2.4 为 660/37，v0.2.3 为 569/32）。
+v0.4.4 后的基线（2026-10-31 实测）：**1061 pass / 0 fail / 68 文件**（此前 README 记 v0.4.3 为 1051/1/67；v0.4.2 为 1039/0/67/PTY20；v0.4.1 为 1027/66，v0.4.0 为 974/59/PTY19；v0.3.5 为 925/57，v0.3.4 为 881/53，v0.3.0 为 839/46，v0.2.4 为 660/37，v0.2.3 为 569/32）。
 证据见 `docs/evidence/goal-anchor-*`（v0.4.3 起按功能命名）与 `docs/evidence/v0.4.2-*`（macOS）；v0.4.0 的 Ubuntu sp7 双平台证据仍保留在 `v0.4.0-sp7-*`。改功能前先在干净树上跑一遍，数字对位后再动手。
 
-> **v0.4.3 起基线含 1 个已知失败**：`memory-capture.test.ts` D6（锁被占用时 journal 应留 1 条待重试记录，实际 0）。
-> 已用 `git stash` 验证：stash 掉 v0.4.3 全部改动后 D6 依然失败，属**先前存在**的失败，与本版改动无关。
-> 它不阻塞发布，但**新基线不再允许用「0 fail」当验收口径**——判读时先确认失败项是否仍是 D6。
+> **已知失败已清零**：原 `memory-capture.test.ts` D6、以及 `cli-json.test.ts` SIGINT（`Bun.spawn` 杀到启动器 pid、脚本进程收不到信号）均已修复；当前验收口径恢复为 **0 fail**。
 
 ### TTY-only 行为的验证方式（v0.2.3 起）
 
