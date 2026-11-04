@@ -61,6 +61,30 @@ export interface IgnoreRule {
 
 const REGEX_SPECIAL = /[.+^${}()|\\]/g;
 
+/**
+ * 找字符类的结束 `]`（返回下标，未闭合返回 -1）。
+ *
+ * 与 `pat.indexOf("]", i)` 的区别：gitignore 允许 `]` 作为字符类**首字符**
+ * （`[]abc]` 表示「] 或 a 或 b 或 c」），紧跟 `[` 或 `[!` 的那个 `]` 是字面字符，
+ * 不是结束符。旧实现直接 indexOf，把 `[]abc].txt` 截成 `[]`，生成非法字符类，
+ * 于是 `a.txt` / `].txt` 都匹配不上（git 实测两者都被忽略）。
+ */
+function charClassEnd(pat: string, open: number): number {
+  let j = open + 1;
+  if (pat[j] === "!") j += 1;
+  // 首字符的 `]` 是字面量 —— 但仅当后面还有另一个 `]` 能闭合字符类时。
+  // `[!]` / `[]` 里那个 `]` 是唯一的 `]`，它是结束符（git 视作空类），不是字面量。
+  if (pat[j] === "]" && pat.indexOf("]", j + 1) !== -1) j += 1;
+  for (; j < pat.length; j++) {
+    if (pat[j] === "\\") {
+      j += 1; // 字符类内的转义（\] 不是结束符）
+      continue;
+    }
+    if (pat[j] === "]") return j;
+  }
+  return -1;
+}
+
 /** 把 gitignore 的 glob 段转成正则主体（不含首尾锚点）。 */
 function wildcardBody(pat: string): string {
   let out = "";
@@ -84,13 +108,36 @@ function wildcardBody(pat: string): string {
       out += "[^/]";
       continue;
     }
+    if (ch === "\\") {
+      // gitignore 的 `\x` 是「字面 x」：`foo\ bar.txt` 匹配含空格的 `foo bar.txt`。
+      // 旧实现把反斜杠当普通字符转义成 `\\`，正则里变成「字面反斜杠 + x」，永远匹配不上。
+      const next = pat[i + 1];
+      if (next !== undefined) {
+        out += next.replace(REGEX_SPECIAL, "\\$&");
+        i += 1;
+        continue;
+      }
+      out += "\\\\";
+      continue;
+    }
     if (ch === "[") {
-      const end = pat.indexOf("]", i);
+      const end = charClassEnd(pat, i);
       if (end !== -1) {
-        let cls = pat.slice(i, end + 1);
-        // gitignore 的 [!a] 是「非 a」，JS 字符类里对应 [^a]；原样塞进 RegExp 语义相反。
-        if (cls.startsWith("[!")) cls = `[^${cls.slice(2)}`;
-        out += cls;
+        const inner = pat.slice(i + 1, end);
+        const negated = inner.startsWith("!");
+        const body = negated ? inner.slice(1) : inner;
+        if (body === "") {
+          // `[]` / `[!]`：git 视为空字符类（匹配空集）。JS 的 `[^]` 却是「任意字符」，
+          // 原样拼进去会把「什么都不忽略」变成「忽略所有单字符名」—— 语义完全相反。
+          // 用永不匹配的 `(?!)` 表达空集。
+          out += "(?!)";
+        } else {
+          // gitignore 的 [!a] 是「非 a」，JS 字符类里对应 [^a]；原样塞进 RegExp 语义相反。
+          // 另：git 允许 `]` 作字符类首字符（`[]abc]`），但 JS RegExp 的 `[]` 是**空类**
+          // （永不匹配），首字符 `]` 必须转义成 `\]`，否则整类语义丢失。
+          const safe = body.startsWith("]") ? `\\]${body.slice(1)}` : body;
+          out += negated ? `[^${safe}]` : `[${safe}]`;
+        }
         i = end;
         continue;
       }
