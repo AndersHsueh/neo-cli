@@ -117,8 +117,15 @@ function wrapSegment(chars: string[], from: number, to: number, width: number, o
     if (lastSpace >= 0) {
       // 断点空格留在上一行行尾，下一行从空格之后开始。
       const end = lastSpace + 1;
+      // 必须在推进 i 之前判断：断点前是否已有非空白。有 → 这是词边界折行，
+      // 断点后的连续空格是行首空白，应丢弃（否则 `"ab   cd"` 宽 3 会多出纯空格行）。
+      // 无 → 整段就是空白（B1i），空格本身是内容，必须原样折行保留。
+      const lineHadContent = chars.slice(i, lastSpace).some((c) => c !== " ");
       out.push({ text: chars.slice(i, end).join(""), start: i, end });
       i = end;
+      if (lineHadContent) {
+        while (i < to && chars[i] === " ") i += 1;
+      }
       continue;
     }
     // 硬折：上一行已满且没有可用空白断点。

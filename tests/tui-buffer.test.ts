@@ -87,6 +87,19 @@ describe("B1 layoutBuffer 按显示列折行", () => {
     expect(second?.start).toBe(6);
   });
 
+  test("B1f2 断点后的连续空格一并丢弃，不产生纯空格视觉行", () => {
+    // 旧实现只跳过断点那一个空格，"ab   cd"（宽 3）折出 ["ab ", "  ", "cd"]：
+    // 中间多一条纯空格行，输入框凭空变高、↑↓ 多跳一行。
+    expect(lineTexts("ab   cd", 3)).toEqual(["ab ", "cd"]);
+    expect(lineTexts("x     y", 3)).toEqual(["x  ", "y"]);
+    // 任何折出来的行都不以空格开头（除非原文整行就是空白，见 B1i）
+    for (const [text, w] of [["ab   cd", 3], ["x     y", 3], ["abc     def", 3]] as const) {
+      for (const line of lineTexts(text, w)) {
+        expect(line.startsWith(" ")).toBe(false);
+      }
+    }
+  });
+
   test("B1g 空文本是一行空行", () => {
     const layout = layoutBuffer("", 0, 10);
     expect(layout.lines).toEqual([{ text: "", start: 0, end: 0 }]);
