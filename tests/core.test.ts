@@ -462,10 +462,24 @@ describe("htmlToText", () => {
     expect(htmlToText("<p>it&apos;s</p>")).toBe("it's");
   });
 
-  // 命名实体先于数字实体：&amp;#65; 会先成 &#65; 再成 A（已知，非严格单次解码）
-  test("&amp;#65; 现行为解成 A；&amp;amp; 停在 &amp;", () => {
-    expect(htmlToText("<p>&amp;#65;</p>")).toBe("A");
+  // &#39; 必须走十进制数字实体（码点 39），不能塞进命名组抢匹配（v0.4.23 审阅修正）
+  test("&#39; / &#x27; 解成单引号", () => {
+    expect(htmlToText("<p>it&#39;s</p>")).toBe("it's");
+    expect(htmlToText("<p>it&#x27;s</p>")).toBe("it's");
+  });
+
+  // 单次解码：命名实体与数字实体各扫一遍，解出的字符不再参与后续匹配（v0.4.23）
+  test("实体只解一次：&amp;lt; / &amp;amp; / &amp;#65; 都停在字面量", () => {
+    // 网页里字面量 <b>y</b> 的正规转义写法，必须原样保留成字面量
+    expect(htmlToText("<p>&amp;lt;b&amp;gt;y&amp;lt;/b&amp;gt;</p>")).toBe("&lt;b&gt;y&lt;/b&gt;");
+    // 比较符的双重转义
+    expect(htmlToText("<p>a &amp;lt; b</p>")).toBe("a &lt; b");
+    // &amp;amp; 停在 &amp;，不会一路解成 &
     expect(htmlToText("<p>&amp;amp;</p>")).toBe("&amp;");
+    // &amp;#65; 停在 &#65;，不会解成 A（旧版行为是 A，属二次解码）
+    expect(htmlToText("<p>&amp;#65;</p>")).toBe("&#65;");
+    // 单层转义仍照常解码，不因修复而回退
+    expect(htmlToText("<p>&lt;b&gt;x&lt;/b&gt;</p>")).toBe("<b>x</b>");
   });
 });
 

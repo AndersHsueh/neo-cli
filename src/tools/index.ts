@@ -14,7 +14,7 @@ import { describeSource, insideGlobalSkills, isRealDir, listSkillFiles, resolveS
 import { insideRawDir } from "../wiki/paths.ts";
 import { ToolError, type ToolCtx, type ToolImpl, type ToolKind, type DispatchResult } from "./types.ts";
 import { webSearchTool } from "./webSearch.ts";
-import { decodeNumericEntities } from "./entities.ts";
+import { decodeHtmlEntities } from "./entities.ts";
 import { toolTmpDir } from "../runtimeTmp.ts";
 import { shellMarks } from "./shellMarks.ts";
 import { listSearchFiles } from "./fileList.ts";
@@ -774,25 +774,23 @@ const webFetch: ToolImpl = {
 /**
  * 极简 HTML → 文本。移除 script/style，块级标签转换行。
  *
- * 实体解码顺序有讲究：命名实体先解，数字实体后解（`decodeNumericEntities`），
- * 否则 `&amp;#65;` 会被解成 `A` 而不是字面量 `&#65;` —— 单次解码才是对的。
+ * 实体解码顺序有讲究：**先剥标签，再一次性解实体**（`decodeHtmlEntities`）。
+ *
+ * v0.4.23 修：旧版先链式解命名实体、再调 `decodeNumericEntities`，于是
+ * `&amp;lt;b&amp;gt;` 被解两遍（→ `&lt;b&gt;` → `<b>`），`&amp;amp;` 一路解成 `&`、
+ * `&amp;#65;` 解成 `A` —— 都是二次解码。现在命名与数字实体共用一次扫描：
+ * `&amp;lt;b&amp;gt;` → `&lt;b&gt;`（字面量），`&amp;amp;` → `&amp;`，`&amp;#65;` → `&#65;`。
+ * 与 web_search 的 `decodeXml` 行为对齐。
  */
 export function htmlToText(html: string): string {
-  return decodeNumericEntities(
+  return decodeHtmlEntities(
     html
       .replace(/<!--[\s\S]*?-->/g, "")
       .replace(/<(script|style|noscript|svg)[\s\S]*?<\/\1>/gi, "")
       .replace(/<\/(p|div|section|article|h[1-6]|li|tr|br)>/gi, "\n")
       .replace(/<br\s*\/?>/gi, "\n")
       .replace(/<li[^>]*>/gi, "  • ")
-      .replace(/<[^>]+>/g, "")
-      .replace(/&nbsp;/g, " ")
-      .replace(/&amp;/g, "&")
-      .replace(/&lt;/g, "<")
-      .replace(/&gt;/g, ">")
-      .replace(/&quot;/g, '"')
-      .replace(/&apos;/g, "'")
-      .replace(/&#39;/g, "'"),
+      .replace(/<[^>]+>/g, ""),
   )
     .replace(/[ \t]+/g, " ")
     .replace(/\n{3,}/g, "\n\n")

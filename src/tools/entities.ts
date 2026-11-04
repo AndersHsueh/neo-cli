@@ -28,12 +28,38 @@ export function codePointToString(cp: number, raw: string): string {
   return String.fromCodePoint(cp);
 }
 
+/** HTML 侧命名实体表（与 webSearch decodeXml 的 NAMED 对齐）。 */
+const HTML_NAMED: Record<string, string> = {
+  amp: "&",
+  lt: "<",
+  gt: ">",
+  quot: '"',
+  apos: "'",
+  nbsp: " ",
+};
+
+/** 命名 / 数字字符引用一次扫完。`&#39;` 走十进制分支（码点 39 → `'`），勿塞进命名组。 */
+const HTML_ENTITY = /&(?:(amp|lt|gt|quot|apos|nbsp)|#[xX]([0-9a-fA-F]+)|#(\d+));/g;
+
 /**
- * 解码**数字**字符引用（十进制 `&#65;` 与十六进制 `&#x41;` / `&#X41;`）。
- * 命名实体（`&amp;` 等）由调用方按各自场景处理：HTML 与 XML 的实体表并不相同。
+ * 解码 HTML 实体（`&amp;` `&lt;` `&gt;` `&quot;` `&apos;` `&nbsp;` + 数字引用）。
+ *
+ * 为什么必须是**单次扫描**（v0.4.23）：旧版 htmlToText 用链式 `.replace()`，
+ * `&amp;lt;b&amp;gt;`（网页里字面量 `<b>` 的正规写法）会先变 `&lt;b&gt;` 再变
+ * `<b>`，随后被 `/<[^>]+>/g` 当标签剥掉 —— 内容静默丢失。链式替换怎么排序都逃不掉
+ * （`&amp;` 放最后则 `&amp;amp;` 又错）。
+ *
+ * 注意「两遍」也不等于单次解码：先命名再数字时，`&amp;#65;` 第一遍变 `&#65;`，
+ * 第二遍又解成 `A`。命名与数字必须在**同一个 replace** 里匹配。
+ * 与 webSearch 的 `decodeXml` 同构。
  */
-export function decodeNumericEntities(s: string): string {
-  return s
-    .replace(/&#[xX]([0-9a-fA-F]+);/g, (m, h: string) => codePointToString(parseInt(h, 16), m))
-    .replace(/&#(\d+);/g, (m, d: string) => codePointToString(Number(d), m));
+export function decodeHtmlEntities(s: string): string {
+  return s.replace(
+    HTML_ENTITY,
+    (m, name: string | undefined, hex: string | undefined, dec: string | undefined) => {
+      if (name) return HTML_NAMED[name] ?? m;
+      if (hex) return codePointToString(parseInt(hex, 16), m);
+      return codePointToString(Number(dec), m);
+    },
+  );
 }
