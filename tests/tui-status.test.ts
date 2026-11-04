@@ -210,6 +210,21 @@ describe("S1d token 格式", () => {
     expect(formatTokens(1_234_567_890_123_456)).toBe("1.2P");
     expect(formatTokens(9_999_999_999_999_999)).toBe("10P");
   });
+
+  // v0.4.45：v0.4.44 补 P 档时只写了 `fixed1(v / 1e15)`，漏了末档的「整数档」那一半。
+  // fixed1 只把 10.0 降级成 10，不负责把 1000.0 收成整数，于是 1e18 输出 "1000P"、
+  // 1e21 输出 "1000000P"、1e300 输出 "1.0000000000000001e+285P" —— 宽度随数量级
+  // 无限增长（状态栏单行硬约束被打破），且出现科学计数法。与 v0.4.31 的 M 档、
+  // v0.4.44 的 T 档是同一类缺陷：末档也必须有「<10P 一位小数 / ≥10P 整数」两档。
+  test("S1d P 档末档：<10P 一位小数，≥10P 整数（不出现 1000.0P/科学计数法）", () => {
+    expect(formatTokens(9_950_000_000_000_000)).toBe("9.9P"); // 9.95 的 toFixed(1) 仍是 "9.9"
+    expect(formatTokens(9_960_000_000_000_000)).toBe("10P"); // toFixed(1) 进位到 "10.0" → 降级
+    expect(formatTokens(1e16)).toBe("10P");
+    expect(formatTokens(1e17)).toBe("100P");
+    expect(formatTokens(1.5e17)).toBe("150P");
+    expect(formatTokens(1e18)).toBe("1000P"); // 末档无处可升，保留整数档
+    expect(formatTokens(1e21)).toBe("1000000P"); // 仍是整数，不是 "1e+6"
+  });
 });
 
 describe("S1e 优先级与丢弃顺序", () => {
