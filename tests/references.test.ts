@@ -43,6 +43,19 @@ describe("C3a 解析", () => {
     expect(parseReferences("(@a.ts)").map((r) => r.path)).toEqual(["a.ts"]);
   });
 
+  test("剥掉中文右引号/右括号/书名号", () => {
+    // v0.4.48：TRAILING_PUNCT 只有 ASCII 的 )]} 和全角句读（，。；：、！？），
+    // 漏了中文右引号/右括号/书名号。用户写「见 @a.ts）」时路径带上「）」，
+    // exists 失败，引用静默不展开。
+    for (const tail of ["）", "」", "》", "】", "〕", "〉", "｝", "］", "｠", "〗"]) {
+      expect(parseReferences(`见 @a.ts${tail}`).map((r) => r.path)).toEqual(["a.ts"]);
+    }
+    // 叠加多个也要一次剥干净
+    expect(parseReferences("见 @a.ts」》】）").map((r) => r.path)).toEqual(["a.ts"]);
+    // 全角括号包住整个引用（左括号不在剥离集里，不影响）
+    expect(parseReferences("（见 @a.ts）").map((r) => r.path)).toEqual(["a.ts"]);
+  });
+
   test("email 与孤立 @ 不算引用", () => {
     expect(parseReferences("mail a@b.com")).toEqual([]);
     expect(parseReferences("@ hello")).toEqual([]);

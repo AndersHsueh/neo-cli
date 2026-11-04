@@ -55,8 +55,19 @@ const EMAIL_LOCAL = /[A-Za-z0-9._%+-]/;
 export function isAtBoundary(prev: string): boolean {
   return prev !== "@" && !EMAIL_LOCAL.test(prev);
 }
-/** 引用路径末尾可能粘上的标点，解析时剥掉。 */
-const TRAILING_PUNCT = /[,.;:!?)\]}，。；：、！？]+$/;
+/**
+ * 引用路径末尾可能粘上的标点，解析时剥掉。
+ *
+ * v0.4.48：旧集合只有 ASCII 的 `)]}` 与全角句读（，。；：、！？），漏了
+ * 中文右引号 / 右括号 / 书名号 —— 而 ASCII 右括号是剥的，两边口径不一致。
+ * 后果：用户写「见 @a.ts）」时路径带上「）」，exists 失败，引用**静默不展开**
+ * （不报错，只是正文里没有内容块，最难排查的一类）。
+ *
+ * 只剥**尾部**：`@a（b）.ts` 中间的括号不动；以右括号结尾的文件名（如
+ * `@foo）.md`）本来就不是合法路径，剥掉不损失。
+ */
+const TRAILING_PUNCT =
+  /[,.;:!?)\]}，。；：、！？）］｝〕〉》」』】〗〙〛｠]+$/;
 
 function isBoundary(target: string, i: number): boolean {
   const prev = target[i - 1] ?? "";
