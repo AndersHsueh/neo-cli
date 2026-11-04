@@ -724,6 +724,28 @@ export function rewriteSearchUrl(url: string): { url: string; note: string | nul
   return { url: next, note: `已将 ${host} 的搜索改写为 cn.bing.com（原域名在中国境内不可达）` };
 }
 
+/**
+ * 从 HTML 里取 `<title>` 并解码实体；取不到返回 null。
+ *
+ * 为什么要单独抽出来（v0.4.23）：旧版在 web_fetch 里直接
+ * `/<title[^>]*>([\s\S]*?)<\/title>/i.exec(body)?.[1]?.trim()`，**没解实体**。
+ * 于是 `<title>A &amp; B</title>` 输出成 `Title: A &amp; B`，而正文经
+ * `htmlToText` 已是 `A & B` —— 同一份内容在输出里两种写法，模型容易把
+ * `&amp;` 当成页面原文抄进回答。标题走同一套单次解码。
+ *
+ * 顺带把两个边角一并处理：`<title>` 里带属性（`<title lang="zh">`）能匹配；
+ * 标题里夹标签（`<title><b>x</b></title>`）先剥标签再解码，与 htmlToText 同序
+ * （先剥后解，避免解出的 `<` 被当标签剥掉）。
+ */
+export function extractTitle(html: string): string | null {
+  const raw = /<title[^>]*>([\s\S]*?)<\/title>/i.exec(html)?.[1];
+  if (raw === undefined) return null;
+  const title = decodeHtmlEntities(raw.replace(/<[^>]+>/g, " "))
+    .replace(/\s+/g, " ")
+    .trim();
+  return title === "" ? null : title;
+}
+
 const webFetch: ToolImpl = {
   sensitive: false,
   kind: "evidence",
@@ -760,7 +782,7 @@ const webFetch: ToolImpl = {
     const ct = res.headers.get("content-type") ?? "";
     const body = await res.text();
     const text = ct.includes("html") ? htmlToText(body) : body;
-    const title = /<title[^>]*>([\s\S]*?)<\/title>/i.exec(body)?.[1]?.trim();
+    const title = extractTitle(body);
     return [note, `URL: ${url}`, title ? `Title: ${title}` : "", "", text.slice(0, 60_000)]
       .filter((x) => x !== undefined && x !== null && x !== "")
       .join("\n");

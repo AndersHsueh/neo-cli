@@ -15,6 +15,7 @@ import {
   toolNames,
   globToRegExp,
   htmlToText,
+  extractTitle,
   rewriteSearchUrl,
   dispatch,
 } from "../src/tools/index.ts";
@@ -373,6 +374,31 @@ describe("web_fetch", () => {
     const r = await dispatch("web_fetch", JSON.stringify({ url: "file:///etc/passwd" }), makeCtx());
     expect(r.ok).toBe(false);
     expect(r.output).toContain("http");
+  });
+
+  // 标题与正文走同一套单次解码（v0.4.23）：旧版标题不解实体，
+  // 输出里 `Title: A &amp; B` 与正文 `A & B` 并存，模型会把 `&amp;` 当原文抄走。
+  test("extractTitle：解实体、剥标签、带属性", () => {
+    expect(extractTitle("<html><head><title>A &amp; B</title></head></html>")).toBe("A & B");
+    // 字面量标签的正规转义写法只解一次，停在字面量
+    expect(extractTitle("<title>&amp;lt;b&amp;gt;y&amp;lt;/b&amp;gt;</title>")).toBe("&lt;b&gt;y&lt;/b&gt;");
+    // 单层转义照常解码
+    expect(extractTitle("<title>&lt;b&gt;x&lt;/b&gt;</title>")).toBe("<b>x</b>");
+    // 标题里夹真标签：先剥后解，不会被当成标签剥掉内容
+    expect(extractTitle("<title><b>neo</b> cli</title>")).toBe("neo cli");
+    // 带属性的 title
+    expect(extractTitle('<title lang="zh">你好</title>')).toBe("你好");
+    // 数字实体与畸形实体
+    expect(extractTitle("<title>it&#39;s &#x1F600;</title>")).toBe("it's 😀");
+    expect(extractTitle("<title>&#1114112;</title>")).toBe("&#1114112;");
+    // 空白折叠
+    expect(extractTitle("<title>\n  a   b \n</title>")).toBe("a b");
+  });
+
+  test("extractTitle：无 title / 空 title 返回 null", () => {
+    expect(extractTitle("<html><body>x</body></html>")).toBeNull();
+    expect(extractTitle("<title></title>")).toBeNull();
+    expect(extractTitle("<title>   </title>")).toBeNull();
   });
 
   test("rewriteSearchUrl: google/duckduckgo 搜索页改写到 cn.bing.com", () => {
