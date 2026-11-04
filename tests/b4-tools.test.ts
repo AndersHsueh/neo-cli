@@ -125,6 +125,25 @@ describe("D3 web_search", () => {
     expect(parseBingRss(mk("a&#0;b"))[0]!.title).not.toContain("\u0000");
   });
 
+  // 单次解码：转义后的字面量标签不能被二次解码成真标签再被剥掉（v0.4.22）
+  test("parseBingRss：实体只解一次，&amp;lt;b&amp;gt; 保留为字面量", () => {
+    const mk = (t: string) =>
+      `<rss><item><title>${t}</title><link>https://a.com/x</link></item></rss>`;
+    // 标题里的代码片段：字面量 <b>y</b> 的正规转义写法
+    expect(parseBingRss(mk("&amp;lt;b&amp;gt;y&amp;lt;/b&amp;gt;"))[0]!.title).toBe("&lt;b&gt;y&lt;/b&gt;");
+    // 比较符：a < b 的双重转义
+    expect(parseBingRss(mk("a &amp;lt; b"))[0]!.title).toBe("a &lt; b");
+    // &amp;amp; 停在 &amp;，不会一路解成 &
+    expect(parseBingRss(mk("&amp;amp;"))[0]!.title).toBe("&amp;");
+    // 单层转义仍照常解码（不因修复而回退）
+    expect(parseBingRss(mk("&lt;b&gt;x&lt;/b&gt;"))[0]!.title).toBe("x");
+    // url 侧同样只解一次
+    const r = parseBingRss(
+      `<rss><item><title>t</title><link>https://a.com/x?a=1&amp;amp;b=2</link></item></rss>`,
+    );
+    expect(r[0]!.url).toBe("https://a.com/x?a=1&amp;b=2");
+  });
+
   test("工具返回格式化结果；count 生效", async () => {
     let seenUrl = "";
     const tool = makeWebSearchTool({

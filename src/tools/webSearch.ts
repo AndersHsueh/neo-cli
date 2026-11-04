@@ -8,7 +8,7 @@
  * 约束：零依赖、纯文本解析；只在搜索失败时抛 ToolError，不吞成「没结果」。
  */
 import { ToolError, type ToolCtx, type ToolImpl } from "./types.ts";
-import { decodeNumericEntities } from "./entities.ts";
+import { codePointToString } from "./entities.ts";
 
 export interface SearchResult {
   title: string;
@@ -16,13 +16,37 @@ export interface SearchResult {
   snippet: string;
 }
 
+/**
+ * XML 实体解码 —— **单次扫描**，解出的字符不再参与后续匹配。
+ *
+ * 反例（v0.4.22 修）：`&amp;lt;b&amp;gt;y&amp;lt;/b&amp;gt;` 是 RSS 里字面量
+ * `<b>y</b>` 的正规写法（标题里的代码片段、比较符都这么转义）。旧实现是链式
+ * `.replace()`：先 `&amp;`→`&`，再 `&lt;`→`<`，于是得到真标签 `<b>y</b>`，
+ * 随后被 `stripTags` 的 `/<[^>]+>/g` 当标签剥掉，用户只看到 `y` —— 内容被静默吞掉。
+ * 链式替换无论怎么排序都逃不掉（`&amp;` 放最后则 `&amp;amp;` 又错），
+ * 只有一次扫描 + 单次解码才是对的。
+ *
+ * 数字实体走 `codePointToString`：越界 / 代理区 / NUL 原样保留（见 ./entities.ts）。
+ */
+const XML_ENTITY = /&(?:(amp|lt|gt|quot|apos|nbsp)|#([xX])([0-9a-fA-F]+)|#(\d+));/g;
+const NAMED: Record<string, string> = {
+  amp: "&",
+  lt: "<",
+  gt: ">",
+  quot: '"',
+  apos: "'",
+  nbsp: " ",
+};
+
 function decodeXml(s: string): string {
-  return decodeNumericEntities(s.replace(/<!\[CDATA\[([\s\S]*?)\]\]>/g, "$1"))
-    .replace(/&lt;/g, "<")
-    .replace(/&gt;/g, ">")
-    .replace(/&quot;/g, '"')
-    .replace(/&apos;/g, "'")
-    .replace(/&amp;/g, "&");
+  return s.replace(/<!\[CDATA\[([\s\S]*?)\]\]>/g, "$1").replace(
+    XML_ENTITY,
+    (m, name: string | undefined, hex: string | undefined, hd: string | undefined, dec: string | undefined) => {
+      if (name) return NAMED[name] ?? m;
+      if (hex) return codePointToString(parseInt(hd ?? "", 16), m);
+      return codePointToString(Number(dec), m);
+    },
+  );
 }
 
 function stripTags(s: string): string {
@@ -32,9 +56,16 @@ function stripTags(s: string): string {
     .trim();
 }
 
+/**
+ * 取标签内**原文**，不解码 —— 解码由调用方做一次。
+ *
+ * v0.4.22 修：旧版 `tag()` 内部 `decodeXml`，而 `stripTags()` 又 `decodeXml` 一次，
+ * 于是 `&amp;lt;b&amp;gt;` 被解两遍：第一遍 → `&lt;b&gt;`，第二遍 → `<b>`，
+ * 再被 `/<[^>]+>/g` 当标签剥掉。单次解码必须由**调用链**保证，不能只靠函数内部。
+ */
 function tag(block: string, name: string): string {
   const m = new RegExp(`<${name}>([\\s\\S]*?)</${name}>`, "i").exec(block);
-  return m ? decodeXml(m[1] ?? "").trim() : "";
+  return m ? (m[1] ?? "").trim() : "";
 }
 
 /** 解析 Bing RSS（`<item><title/><link/><description/></item>`）。坏条目跳过。 */
@@ -46,7 +77,7 @@ export function parseBingRss(xml: string): SearchResult[] {
     if (!m) break;
     const block = m[1] ?? "";
     const title = stripTags(tag(block, "title"));
-    const url = tag(block, "link").trim();
+    const url = decodeXml(tag(block, "link")).trim();
     const snippet = stripTags(tag(block, "description"));
     if (!title || !/^https?:\/\//i.test(url)) continue;
     out.push({ title, url, snippet: snippet.slice(0, 400) });
