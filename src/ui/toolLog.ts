@@ -8,6 +8,7 @@
  *     而不是被第一行 `$ cmd` 挤掉唯一有用信息；
  *  3. 工具正文的「缩进 + 限高 + 省略提示」只有一份实现，console 与 `/last` 共用。
  */
+import { clock, fixed1Raw } from "./format.ts";
 import { shellMarks } from "../tools/shellMarks.ts";
 import { c, displayWidth, truncate } from "./theme.ts";
 import { oneLine, paintTail, toolLineSegments, toolLineText } from "./toolLine.ts";
@@ -34,7 +35,7 @@ export interface ToolCallRecord {
 /**
  * 耗时：<1s 用 ms，<1min 用一位小数 s，<1h 用 `m:ss`，其余 `h:mm:ss`。
  *
- * 档位边界必须「进位即升档」（与 tui/status.ts 的 formatTokens 同一纪律）：
+ * 档位边界必须「进位即升档」（纪律与实现在 ui/format.ts）：
  * 59_950ms 的 toFixed(1) 是 "60.0"、3_599_950ms 是 "3600.0"，若原样输出会得到
  * "60.0s"/"3600.0s" —— 既跨了档（宽度多 1~2 列，`/last` 单行头抖动），
  * 又与下一档的 "1:00"/"1:00:00" 表达同一时长却不同写法。
@@ -43,16 +44,10 @@ export function formatDuration(ms: number): string {
   const n = Number.isFinite(ms) ? Math.max(0, Math.trunc(ms)) : 0;
   if (n < 1_000) return `${n}ms`;
   if (n < 60_000) {
-    const s = (n / 1_000).toFixed(1);
+    const s = fixed1Raw(n / 1_000);
     return s === "60.0" ? "1:00" : `${s}s`; // 59_950~59_999 进位到 60.0 → 升分钟档
   }
-  const total = Math.floor(n / 1_000);
-  const hours = Math.floor(total / 3600);
-  const minutes = Math.floor((total % 3600) / 60);
-  const seconds = total % 60;
-  const ss = String(seconds).padStart(2, "0");
-  if (hours > 0) return `${hours}:${String(minutes).padStart(2, "0")}:${ss}`;
-  return `${minutes}:${ss}`;
+  return clock(n / 1_000);
 }
 
 /**
