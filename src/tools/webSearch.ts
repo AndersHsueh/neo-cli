@@ -28,7 +28,6 @@ export interface SearchResult {
  *
  * 数字实体走 `codePointToString`：越界 / 代理区 / NUL 原样保留（见 ./entities.ts）。
  */
-const XML_ENTITY = /&(?:(amp|lt|gt|quot|apos|nbsp)|#([xX])([0-9a-fA-F]+)|#(\d+));/g;
 const NAMED: Record<string, string> = {
   amp: "&",
   lt: "<",
@@ -38,22 +37,74 @@ const NAMED: Record<string, string> = {
   nbsp: " ",
 };
 
+/**
+ * 一次扫描同时处理 CDATA 段与实体（v0.4.27）。
+ *
+ * 旧实现是「先 `replace(/<!\[CDATA\[([\s\S]*?)\]\]>/, "$1")` 脱壳，再整体解实体」，
+ * 两个 bug 都出在这个顺序上：
+ * 1. **CDATA 内实体被解码**：CDATA 的语义就是「字面量，不解实体」，
+ *    `<![CDATA[a &amp; b]]>` 应原样输出 `a &amp; b`，旧版输出 `a & b`。
+ * 2. **跨 CDATA 边界拼出实体**：`<![CDATA[&am]]>p;` 脱壳后拼成 `&amp;`，
+ *    于是被解成 `&` —— 两个本不相邻的片段被拼成了一个实体。
+ *
+ * 修法是把 CDATA 也放进同一个正则：CDATA 段整体作为一个分支被**摘出来**，
+ * 实体分支只可能从 CDATA 之外的原文里匹配，两个问题一起消失。
+ */
+const XML_TOKEN = /<!\[CDATA\[([\s\S]*?)\]\]>|&(?:(amp|lt|gt|quot|apos|nbsp)|#([xX])([0-9a-fA-F]+)|#(\d+));/g;
+
+/**
+ * CDATA 段替换成私用区占位符（U+E000 + 序号），解码完再还原。
+ *
+ * 为什么不能「原样返回 CDATA 内容」：`decodeXml` 的输出还要过 `stripTags` 的
+ * `/<[^>]+>/g`，CDATA 里的字面量 `<b>` 会当场被当标签剥掉 —— 与 v0.4.22 修的是
+ * 同一类错误（解码/剥标签的顺序把字面量吃掉了）。占位符不含 `&` 也不含 `<`，
+ * 安全穿过剥标签，最后由 `restoreCdata` 换回原文。
+ *
+ * 占位符用私用区码点：正常 RSS 里不会出现，且不会被实体正则或标签正则命中。
+ */
+const CDATA_PLACEHOLDER = "\uE000";
+
 function decodeXml(s: string): string {
-  return s.replace(/<!\[CDATA\[([\s\S]*?)\]\]>/g, "$1").replace(
-    XML_ENTITY,
-    (m, name: string | undefined, hex: string | undefined, hd: string | undefined, dec: string | undefined) => {
-      if (name) return NAMED[name] ?? m;
-      if (hex) return codePointToString(parseInt(hd ?? "", 16), m);
-      return codePointToString(Number(dec), m);
-    },
+  const segments: string[] = [];
+  const masked = s.replace(XML_TOKEN, (m, cdata: string | undefined, name, hex, hd, dec) => {
+    if (cdata !== undefined) {
+      segments.push(cdata);
+      return `${CDATA_PLACEHOLDER}${segments.length - 1}${CDATA_PLACEHOLDER}`;
+    }
+    if (name) return NAMED[name] ?? m;
+    if (hex) return codePointToString(parseInt(hd ?? "", 16), m);
+    return codePointToString(Number(dec), m);
+  });
+  return restoreCdata(masked, segments);
+}
+
+/** 把 `decodeXml` 埋下的 CDATA 占位符换回原文。 */
+function restoreCdata(s: string, segments: string[]): string {
+  if (segments.length === 0) return s;
+  return s.replace(
+    new RegExp(`${CDATA_PLACEHOLDER}(\\d+)${CDATA_PLACEHOLDER}`, "g"),
+    (m, i: string) => segments[Number(i)] ?? m,
   );
 }
 
 function stripTags(s: string): string {
-  return decodeXml(s)
+  const segments: string[] = [];
+  // 先摘 CDATA：段内**不解实体**（字面量），但**剥标签**——Bing 摘要常用
+  // CDATA 包 `<b>` 高亮，留给模型看字面量标签是噪声；实体字面量仍保留（v0.4.27）。
+  const masked = s.replace(XML_TOKEN, (m, cdata: string | undefined, name, hex, hd, dec) => {
+    if (cdata !== undefined) {
+      segments.push(cdata.replace(/<[^>]+>/g, " "));
+      return `${CDATA_PLACEHOLDER}${segments.length - 1}${CDATA_PLACEHOLDER}`;
+    }
+    if (name) return NAMED[name] ?? m;
+    if (hex) return codePointToString(parseInt(hd ?? "", 16), m);
+    return codePointToString(Number(dec), m);
+  });
+  const stripped = masked
     .replace(/<[^>]+>/g, " ")
     .replace(/\s+/g, " ")
     .trim();
+  return restoreCdata(stripped, segments).replace(/\s+/g, " ").trim();
 }
 
 /**

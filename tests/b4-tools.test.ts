@@ -101,7 +101,8 @@ describe("D3 web_search", () => {
     const r = parseBingRss(RSS);
     expect(r).toHaveLength(2);
     expect(r[0]).toMatchObject({ title: "Vue 3.5 发布", url: "https://example.com/vue" });
-    expect(r[0]!.snippet).toContain("Vue 3.5 & 性能提升");
+    // CDATA：剥标签、不解实体 → 高亮去掉，&amp; 保留字面量（v0.4.27）
+    expect(r[0]!.snippet).toContain("Vue 3.5 &amp; 性能提升");
     expect(r[1]!.title).toBe("第二篇");
   });
 
@@ -142,6 +143,22 @@ describe("D3 web_search", () => {
       `<rss><item><title>t</title><link>https://a.com/x?a=1&amp;amp;b=2</link></item></rss>`,
     );
     expect(r[0]!.url).toBe("https://a.com/x?a=1&amp;b=2");
+  });
+
+  // CDATA 是字面量段：段内实体不解码，也不能与段外拼出实体（v0.4.27）
+  test("parseBingRss：CDATA 内容按字面量保留，段内实体不解码", () => {
+    const mk = (t: string) =>
+      `<rss><item><title>${t}</title><link>https://a.com/x</link></item></rss>`;
+    // CDATA 里写什么就是什么，&amp; 不该变成 &
+    expect(parseBingRss(mk("<![CDATA[a &amp; b]]>"))[0]!.title).toBe("a &amp; b");
+    // 段内标签剥掉（Bing 高亮），实体字面量保留
+    expect(parseBingRss(mk("<![CDATA[<b>x</b>]]>"))[0]!.title).toBe("x");
+    // 段外实体照常解码，且与段内互不影响（段内的 &amp; 保持字面量）
+    expect(parseBingRss(mk("&lt;i&gt;<![CDATA[&amp;]]>"))[0]!.title).toBe("&amp;");
+    // 跨 CDATA 边界不能拼出实体：&am + p; 不是 &amp;
+    expect(parseBingRss(mk("<![CDATA[&am]]>p;"))[0]!.title).toBe("&amp;");
+    // 空 CDATA 与多段 CDATA 拼接
+    expect(parseBingRss(mk("<![CDATA[]]>x<![CDATA[y]]>"))[0]!.title).toBe("xy");
   });
 
   test("工具返回格式化结果；count 生效", async () => {
