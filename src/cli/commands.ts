@@ -30,6 +30,7 @@ import {
   currentModelCapabilityView,
   detectAndRecordModelWindow,
   formatModelWindowLines,
+  refreshCapabilitiesAfterModelSwitch,
   resolveAndApplyModelWindow,
 } from "../env/modelWindows.ts";
 import { loadEnv } from "../env/probe.ts";
@@ -263,6 +264,7 @@ export async function handleCommand(line: string, ctx: CommandContext): Promise<
             break;
           }
           agent.noteModelChange(cfg);
+          refreshCapabilitiesAfterModelSwitch(cfg);
           ui.success(`provider → ${cfg.providerName}（${cfg.providerType}）`);
           ui.kv("model", `${cfg.model} ${c.dim(`[${tierDisplayName(cfg.modelTier)}]`)}`);
           ui.kv("endpoint", cfg.baseUrl);
@@ -294,6 +296,7 @@ export async function handleCommand(line: string, ctx: CommandContext): Promise<
         break;
       }
       agent.noteModelChange(cfg);
+      refreshCapabilitiesAfterModelSwitch(cfg);
       ui.success(`provider → ${cfg.providerName}（${cfg.providerType}）`);
       ui.kv("model", `${cfg.model} ${c.dim(`[${tierDisplayName(cfg.modelTier)}]`)}`);
       ui.kv("endpoint", cfg.baseUrl);
@@ -342,6 +345,7 @@ export async function handleCommand(line: string, ctx: CommandContext): Promise<
             const r = applyTier(cfg, picked);
             if (r.ok) {
               agent.noteModelChange(cfg);
+              refreshCapabilitiesAfterModelSwitch(cfg);
               if (r.degraded && r.note) ui.warn(r.note);
               ui.success(
                 `档位 → ${tierChoiceLabel(cfg.modelTier)}（${cfg.providerName} / ${cfg.model}）`,
@@ -380,6 +384,7 @@ export async function handleCommand(line: string, ctx: CommandContext): Promise<
         break;
       }
       agent.noteModelChange(cfg);
+      refreshCapabilitiesAfterModelSwitch(cfg);
       if (r.degraded && r.note) ui.warn(r.note);
       ui.success(
         `档位 → ${tierChoiceLabel(cfg.modelTier)}（${cfg.providerName} / ${cfg.model}）`,
@@ -467,6 +472,7 @@ export async function handleCommand(line: string, ctx: CommandContext): Promise<
             // 与显式 /model <id> 同一收尾（F2 缺口补齐）
             cfg.model = picked;
             agent.noteModelChange(cfg);
+            refreshCapabilitiesAfterModelSwitch(cfg);
             ui.success(`模型已切到 ${picked}（本次会话内生效，已绕过档位）。`);
           } else {
             ui.info("已取消。");
@@ -484,6 +490,7 @@ export async function handleCommand(line: string, ctx: CommandContext): Promise<
       }
       cfg.model = arg;
       agent.noteModelChange(cfg);
+      refreshCapabilitiesAfterModelSwitch(cfg);
       ui.success(`模型已切到 ${arg}（本次会话内生效，已绕过档位）。`);
       break;
     }

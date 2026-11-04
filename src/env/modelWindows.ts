@@ -70,6 +70,41 @@ export function resolveAndApplyModelWindow(cfg: Config): ResolvedWindow {
   return resolved;
 }
 
+/* ------------------------------------------------------------------ */
+/* P4：切换模型后刷新能力视图                                          */
+/* ------------------------------------------------------------------ */
+
+/**
+ * 切换模型/provider/档位后的统一收尾（GitHub #5 P4）。
+ *
+ * 为什么需要：`/model` `/provider` `/tier` 只改了 cfg.model 等字段，
+ * cfg.contextWindow 仍是**旧模型**解析出来的值 —— 紧接着的 `/context` `/env`
+ * 会展示上一个模型的窗口，压缩阈值也按错的窗口算。
+ *
+ * 两段式：
+ *  1. 同步：立刻按 env 缓存/settings 手写解析并写回 cfg（`/context` 马上正确）；
+ *  2. 异步：fire-and-forget 探测一次 `/models` 元数据（撞墙/首次才探测的口径不变，
+ *     这里只是「换了模型就补一次事实」），完成后**再解析一次** cfg。
+ *     失败静默 —— 探测是增强项，不能拖慢首 token，也不能影响会话。
+ *
+ * 返回同步阶段的结果，供调用方展示。
+ */
+export function refreshCapabilitiesAfterModelSwitch(cfg: Config): ResolvedWindow {
+  const applied = resolveAndApplyModelWindow(cfg);
+  // 探测期间用户可能又切了模型：回调里比对 key，避免把旧探测结果套到新模型上。
+  const key = modelKey(cfg.providerName, cfg.model);
+  void detectAndRecordModelWindow(cfg)
+    .then((info) => {
+      if (!info) return;
+      if (modelKey(cfg.providerName, cfg.model) !== key) return;
+      resolveAndApplyModelWindow(cfg);
+    })
+    .catch(() => {
+      /* 探测失败不影响会话 */
+    });
+  return applied;
+}
+
 /** 记录/更新一个模型的窗口事实（合并进静态快照，不影响其它字段）。 */
 export function recordModelContext(
   cfg: Config,
