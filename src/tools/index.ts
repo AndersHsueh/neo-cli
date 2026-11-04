@@ -14,6 +14,7 @@ import { describeSource, insideGlobalSkills, isRealDir, listSkillFiles, resolveS
 import { insideRawDir } from "../wiki/paths.ts";
 import { ToolError, type ToolCtx, type ToolImpl, type ToolKind, type DispatchResult } from "./types.ts";
 import { webSearchTool } from "./webSearch.ts";
+import { decodeNumericEntities } from "./entities.ts";
 import { toolTmpDir } from "../runtimeTmp.ts";
 import { shellMarks } from "./shellMarks.ts";
 import { listSearchFiles } from "./fileList.ts";
@@ -767,37 +768,32 @@ const webFetch: ToolImpl = {
 };
 
 /**
- * 数字字符引用 → 字符。码点越界（> 0x10FFFF）或落在代理区（0xD800–0xDFFF）
- * 时 `String.fromCodePoint` 会抛 RangeError，而引用来自外部网页，畸形实体
- * （如 `&#1114112;`）不该让整个 web_fetch 崩掉 —— 原样保留即可。
- *
- * `raw` 是匹配到的原文（`&#1114112;` 或 `&#x110000;`），越界时原样返回，
- * 与 webSearch 的 decodeXml 保持一致，不把十六进制改写成十进制。
+ * 数字字符引用解码见 ./entities.ts（与 web_search 共用，v0.4.21 抽出）。
  */
-function codePointToString(cp: number, raw: string): string {
-  if (!Number.isInteger(cp) || cp < 0 || cp > 0x10ffff || (cp >= 0xd800 && cp <= 0xdfff)) {
-    return raw;
-  }
-  return String.fromCodePoint(cp);
-}
 
-/** 极简 HTML → 文本。移除 script/style，块级标签转换行。 */
+/**
+ * 极简 HTML → 文本。移除 script/style，块级标签转换行。
+ *
+ * 实体解码顺序有讲究：命名实体先解，数字实体后解（`decodeNumericEntities`），
+ * 否则 `&amp;#65;` 会被解成 `A` 而不是字面量 `&#65;` —— 单次解码才是对的。
+ */
 export function htmlToText(html: string): string {
-  return html
-    .replace(/<!--[\s\S]*?-->/g, "")
-    .replace(/<(script|style|noscript|svg)[\s\S]*?<\/\1>/gi, "")
-    .replace(/<\/(p|div|section|article|h[1-6]|li|tr|br)>/gi, "\n")
-    .replace(/<br\s*\/?>/gi, "\n")
-    .replace(/<li[^>]*>/gi, "  • ")
-    .replace(/<[^>]+>/g, "")
-    .replace(/&nbsp;/g, " ")
-    .replace(/&amp;/g, "&")
-    .replace(/&lt;/g, "<")
-    .replace(/&gt;/g, ">")
-    .replace(/&quot;/g, '"')
-    .replace(/&#39;/g, "'")
-    .replace(/&#[xX]([0-9a-fA-F]+);/g, (m, h: string) => codePointToString(parseInt(h, 16), m))
-    .replace(/&#(\d+);/g, (m, d: string) => codePointToString(Number(d), m))
+  return decodeNumericEntities(
+    html
+      .replace(/<!--[\s\S]*?-->/g, "")
+      .replace(/<(script|style|noscript|svg)[\s\S]*?<\/\1>/gi, "")
+      .replace(/<\/(p|div|section|article|h[1-6]|li|tr|br)>/gi, "\n")
+      .replace(/<br\s*\/?>/gi, "\n")
+      .replace(/<li[^>]*>/gi, "  • ")
+      .replace(/<[^>]+>/g, "")
+      .replace(/&nbsp;/g, " ")
+      .replace(/&amp;/g, "&")
+      .replace(/&lt;/g, "<")
+      .replace(/&gt;/g, ">")
+      .replace(/&quot;/g, '"')
+      .replace(/&apos;/g, "'")
+      .replace(/&#39;/g, "'"),
+  )
     .replace(/[ \t]+/g, " ")
     .replace(/\n{3,}/g, "\n\n")
     .trim();

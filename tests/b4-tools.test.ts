@@ -116,6 +116,15 @@ describe("D3 web_search", () => {
     expect(parseBingRss(mk("&#x1F600;"))[0]!.title).toBe("😀");
   });
 
+  // NUL 会污染下游，且肉眼不可见（v0.4.21，与 htmlToText 共用 entities.ts）
+  test("parseBingRss：NUL 实体原样保留，不产出 U+0000", () => {
+    const mk = (t: string) =>
+      `<rss><item><title>${t}</title><link>https://a.com/x</link></item></rss>`;
+    expect(parseBingRss(mk("&#0;"))[0]!.title).toBe("&#0;");
+    expect(parseBingRss(mk("&#x0;"))[0]!.title).toBe("&#x0;");
+    expect(parseBingRss(mk("a&#0;b"))[0]!.title).not.toContain("\u0000");
+  });
+
   test("工具返回格式化结果；count 生效", async () => {
     let seenUrl = "";
     const tool = makeWebSearchTool({

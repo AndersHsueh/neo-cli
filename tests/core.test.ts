@@ -448,6 +448,25 @@ describe("htmlToText", () => {
     expect(htmlToText("<p>&#x110000;</p>")).toBe("&#x110000;");
     expect(htmlToText("<p>&#xD83D;</p>")).toBe("&#xD83D;");
   });
+
+  // NUL 会污染下游（模型上下文 / 终端 / JSON），且肉眼不可见（v0.4.21）
+  test("NUL 实体原样保留，不产出 U+0000", () => {
+    expect(htmlToText("<p>&#0;</p>")).toBe("&#0;");
+    expect(htmlToText("<p>&#x0;</p>")).toBe("&#x0;");
+    expect(htmlToText("<p>&#x0000;</p>")).toBe("&#x0000;");
+    expect(htmlToText("<p>a&#0;b</p>")).not.toContain("\u0000");
+  });
+
+  // 与 web_search 的 decodeXml 共用 ./entities.ts，实体表不再漂移（v0.4.21）
+  test("&apos; 与 XML 侧行为一致", () => {
+    expect(htmlToText("<p>it&apos;s</p>")).toBe("it's");
+  });
+
+  // 命名实体先于数字实体：&amp;#65; 会先成 &#65; 再成 A（已知，非严格单次解码）
+  test("&amp;#65; 现行为解成 A；&amp;amp; 停在 &amp;", () => {
+    expect(htmlToText("<p>&amp;#65;</p>")).toBe("A");
+    expect(htmlToText("<p>&amp;amp;</p>")).toBe("&amp;");
+  });
 });
 
 /* ------------------------------------------------------------------ */
