@@ -73,6 +73,24 @@ describe("D3b 时长与格式化", () => {
     expect(formatDuration(12_340)).toBe("12.3s");
   });
 
+  test("档位边界不跨档：60.0s → 1:00，3600.0s → 1:00:00", () => {
+    expect(formatDuration(59_940)).toBe("59.9s");
+    expect(formatDuration(59_950)).toBe("1:00"); // toFixed(1) 得 "60.0" 时升档
+    expect(formatDuration(59_999)).toBe("1:00");
+    expect(formatDuration(60_000)).toBe("1:00");
+    expect(formatDuration(61_000)).toBe("1:01");
+    expect(formatDuration(3_599_000)).toBe("59:59");
+    expect(formatDuration(3_599_999)).toBe("59:59"); // floor 到秒，未满 1h 不升档
+    expect(formatDuration(3_600_000)).toBe("1:00:00");
+    expect(formatDuration(3_723_000)).toBe("1:02:03");
+  });
+
+  test("非法输入按 0 处理", () => {
+    expect(formatDuration(-5)).toBe("0ms");
+    expect(formatDuration(Number.NaN)).toBe("0ms");
+    expect(formatDuration(Number.POSITIVE_INFINITY)).toBe("0ms");
+  });
+
   test("成功记录：单行头 + 缩进正文，正文超限有省略提示", () => {
     const lines = formatToolCall(
       rec({ output: Array.from({ length: 10 }, (_, i) => `line${i}`).join("\n") }),
