@@ -5,7 +5,7 @@
  * 失败降级、锁占用、会话页面上限。全部用 fake chatStream，不触网。
  */
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -19,7 +19,7 @@ import { CaptureEngine, buildTurnRecord, shouldCapture } from "../src/memory/cap
 import { makeRememberTool } from "../src/tools/memory.ts";
 import type { TurnCaptureInput } from "../src/memory/port.ts";
 import { ensureScopeLayout } from "../src/memory/layout.ts";
-import { readAudit, pendingRecords, localDate } from "../src/memory/journal.ts";
+import { appendTurn, auditState, readAudit, pendingRecords, localDate } from "../src/memory/journal.ts";
 import { todayStamp } from "../src/wiki/write.ts";
 
 let SANDBOX = "";
@@ -675,6 +675,59 @@ describe("D CaptureEngine", () => {
     expect(existsSync(path)).toBe(true);
     expect(readFileSync(path, "utf8")).toContain('"kind":"turn"');
     void engine.flush(3000);
+  });
+
+  test("D13 早期终态审计被挤出尾部窗口后，记录仍判为已处理（不重复提炼）", () => {
+    // 回归：auditState 曾用 readAudit(dir, 10_000) 只看最后 1 万条，
+    // capture-log.jsonl 跨会话累积后，早期记录的 applied 审计滑出窗口 →
+    // pendingRecords 把它当成未处理重新入队 → 重复提炼、重复写页。
+    const target = rec({ id: "old-terminal", ts: new Date().toISOString() });
+    appendTurn(JOURNAL, target);
+    const audit = (id: string): string =>
+      JSON.stringify({
+        ts: new Date().toISOString(),
+        id,
+        sessionId: "sess-1",
+        turn: 1,
+        kind: "turn",
+        status: "applied",
+        applied: 1,
+        dropped: 0,
+        reasons: [],
+        ms: 10,
+      });
+    // 目标记录的终态审计写在最前面，后面灌满无关审计把它挤出任何有限窗口
+    appendFileSync(join(JOURNAL, "capture-log.jsonl"), audit("old-terminal") + "\n", "utf8");
+    const noise: string[] = [];
+    for (let i = 0; i < 10_050; i++) noise.push(audit(`noise-${i}`));
+    appendFileSync(join(JOURNAL, "capture-log.jsonl"), noise.join("\n") + "\n", "utf8");
+
+    expect(auditState(JOURNAL, "old-terminal")).toEqual({ attempts: 1, terminal: true });
+    expect(pendingRecords(JOURNAL, { limit: 10, retentionDays: 3650 })).toHaveLength(0);
+  });
+
+  test("D14 失败计数同样不受尾部窗口影响（≥2 次失败仍放弃）", () => {
+    const target = rec({ id: "old-failed", ts: new Date().toISOString() });
+    appendTurn(JOURNAL, target);
+    const failed = (id: string): string =>
+      JSON.stringify({
+        ts: new Date().toISOString(),
+        id,
+        sessionId: "sess-1",
+        turn: 1,
+        kind: "turn",
+        status: "failed",
+        applied: 0,
+        dropped: 0,
+        reasons: ["LLM 超时"],
+        ms: 10,
+      });
+    const lines = [failed("old-failed"), failed("old-failed")];
+    for (let i = 0; i < 10_050; i++) lines.push(failed(`noise-${i}`));
+    appendFileSync(join(JOURNAL, "capture-log.jsonl"), lines.join("\n") + "\n", "utf8");
+
+    expect(auditState(JOURNAL, "old-failed")).toEqual({ attempts: 2, terminal: false });
+    expect(pendingRecords(JOURNAL, { limit: 10, retentionDays: 3650 })).toHaveLength(0);
   });
 
   test("D12 空轮/中断轮也留审计（不再静默）", async () => {

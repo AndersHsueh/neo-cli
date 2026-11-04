@@ -113,7 +113,19 @@ export function appendAudit(dir: string, entry: AuditEntry): void {
 /* 读取                                                                */
 /* ------------------------------------------------------------------ */
 
-export function readAudit(dir: string, limit = 50): AuditEntry[] {
+/** 审计文件里的一行 → AuditEntry；坏行返回 null（journal 是尽力而为的运行状态，不让一行脏数据炸掉整条链路）。 */
+function parseAuditLine(line: string): AuditEntry | null {
+  const t = line.trim();
+  if (!t) return null;
+  try {
+    return JSON.parse(t) as AuditEntry;
+  } catch {
+    return null;
+  }
+}
+
+/** 读审计文件全部行（不截断）。 */
+function readAllAudit(dir: string): AuditEntry[] {
   const path = auditPath(dir);
   if (!existsSync(path)) return [];
   let text: string;
@@ -124,29 +136,52 @@ export function readAudit(dir: string, limit = 50): AuditEntry[] {
   }
   const out: AuditEntry[] = [];
   for (const line of text.split("\n")) {
-    const t = line.trim();
-    if (!t) continue;
-    try {
-      out.push(JSON.parse(t) as AuditEntry);
-    } catch {
-      // 坏行跳过：journal 是尽力而为的运行状态，不让一行脏数据炸掉整条链路
-    }
+    const e = parseAuditLine(line);
+    if (e) out.push(e);
   }
-  return out.slice(-limit);
+  return out;
 }
 
-/** 某 id 的审计状态（失败计数/终态判定用）。 */
+export function readAudit(dir: string, limit = 50): AuditEntry[] {
+  return readAllAudit(dir).slice(-limit);
+}
+
+/** 终态审计：这些状态意味着这条 journal 记录已经处理完毕，不该再进队列。 */
+const TERMINAL_STATUS: ReadonlySet<AuditStatus> = new Set<AuditStatus>(["applied", "partial", "dropped", "skipped"]);
+
+/**
+ * 某 id 的审计状态（失败计数/终态判定用）。
+ *
+ * 注意：**不能**用 readAudit(dir, N) 取尾部窗口来判定 —— capture-log.jsonl 是跨会话
+ * 追加的，一条早期记录的终态审计会被后来的记录挤出窗口，导致已提炼的记录被当成
+ * 「未处理」重新提炼（重复写页 + 重复消耗 LLM）。这里按 id 全量扫描，代价是每次
+ * pendingRecords 都要读一遍审计文件；pendingRecords 内部改为一次扫描 + 索引复用。
+ */
 export function auditState(dir: string, id: string): { attempts: number; terminal: boolean } {
   let attempts = 0;
   let terminal = false;
-  for (const e of readAudit(dir, 10_000)) {
+  for (const e of readAllAudit(dir)) {
     if (e.id !== id) continue;
     attempts++;
-    if (e.status === "applied" || e.status === "partial" || e.status === "dropped" || e.status === "skipped") {
-      terminal = true;
-    }
+    if (TERMINAL_STATUS.has(e.status)) terminal = true;
   }
   return { attempts, terminal };
+}
+
+/** 全量审计索引：id → 该 id 的审计状态。pendingRecords 一次扫描复用。 */
+function auditIndex(dir: string): Map<string, { attempts: number; terminal: boolean }> {
+  const idx = new Map<string, { attempts: number; terminal: boolean }>();
+  for (const e of readAllAudit(dir)) {
+    if (typeof e?.id !== "string") continue;
+    let st = idx.get(e.id);
+    if (!st) {
+      st = { attempts: 0, terminal: false };
+      idx.set(e.id, st);
+    }
+    st.attempts++;
+    if (TERMINAL_STATUS.has(e.status)) st.terminal = true;
+  }
+  return idx;
 }
 
 /**
@@ -168,6 +203,8 @@ export function pendingRecords(
     return [];
   }
   const cutoff = Date.now() - retentionDays * 24 * 3600 * 1000;
+  // 审计状态一次扫描成索引：逐条调 auditState 会把整个审计文件重读 N 遍
+  const audits = auditIndex(dir);
   const out: TurnRecord[] = [];
   for (const f of files) {
     const full = join(dir, f);
@@ -188,8 +225,8 @@ export function pendingRecords(
       }
       if (!rec || typeof rec.id !== "string") continue;
       if (Date.parse(rec.ts) < cutoff) continue;
-      const st = auditState(dir, rec.id);
-      if (st.terminal || st.attempts >= 2) continue;
+      const st = audits.get(rec.id);
+      if (st && (st.terminal || st.attempts >= 2)) continue;
       out.push(rec);
     }
   }
