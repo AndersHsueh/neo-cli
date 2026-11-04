@@ -500,3 +500,37 @@ describe("B4 InputHistory 历史导航", () => {
     expect(history.size).toBe(2);
   });
 });
+
+describe("B1e 折行按 grapheme 取宽（v0.4.29）", () => {
+  // 根因：wrapSegment 曾逐 code point 用 charWidth 累加，与 displayWidth 的
+  // grapheme 口径分叉 —— VS16 / ZWJ / 区域指示符三类输入会折错行。
+  test("VS16 变体 ❤️ 不被低估宽度（视觉行不超宽）", () => {
+    const text = "❤️❤️❤️";
+    const width = 5;
+    const lines = layoutBuffer(text, 0, width).lines;
+    for (const l of lines) expect(displayWidth(l.text)).toBeLessThanOrEqual(width);
+    // 每颗 ❤️ 2 列 → 5 列只能放 2 颗
+    expect(lines.map((l) => l.text)).toEqual(["❤️❤️", "❤️"]);
+  });
+
+  test("ZWJ 家庭 emoji 不被拆到两行", () => {
+    const family = "👨‍👩‍👧‍👦";
+    const lines = layoutBuffer(family, 0, 3).lines;
+    expect(lines.map((l) => l.text)).toEqual([family]);
+    expect(displayWidth(lines[0]!.text)).toBeLessThanOrEqual(3);
+  });
+
+  test("区域指示符国旗按整体 2 列折行", () => {
+    const lines = layoutBuffer("🇨🇳🇨🇳", 0, 4).lines;
+    expect(lines.map((l) => l.text)).toEqual(["🇨🇳🇨🇳"]);
+    expect(lines.every((l) => displayWidth(l.text) <= 4)).toBe(true);
+  });
+
+  test("start/end 仍是码点下标（grapheme 不改变下标口径）", () => {
+    const lines = layoutBuffer("❤️❤️", 0, 2).lines;
+    expect(lines.map((l) => [l.start, l.end])).toEqual([
+      [0, 2],
+      [2, 4],
+    ]);
+  });
+});

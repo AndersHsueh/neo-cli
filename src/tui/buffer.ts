@@ -17,7 +17,7 @@
  * - 视觉行是左闭右开 `[start, end)`；光标落在折行边界时归后一行行首（B2）。
  */
 
-import { charWidth, displayWidth } from "../ui/theme.ts";
+import { charWidth, displayWidth, graphemeWidth, graphemes } from "../ui/theme.ts";
 
 /** 一条视觉行。start/end 是整段 text 的 code point 下标，`[start, end)`。 */
 export interface VisualLine {
@@ -61,6 +61,31 @@ function isWordChar(ch: string): boolean {
 }
 
 /**
+ * 从 chars 的 `start` 起取一个 **grapheme cluster** 的结束下标（不含）。
+ *
+ * 为什么不能逐 code point 累加宽度（v0.4.30 修）：`charWidth` 是单码点近似，
+ * 而 `displayWidth` 按 grapheme 整体算。两者在三种输入上分叉：
+ *  - `❤️`（U+2764 + VS16）：逐字 1+0=1 列，整体 2 列 → 视觉行超宽；
+ *  - `👨‍👩‍👧‍👦`（ZWJ 序列）：逐字 2+0+2+0+2+0+2=8 列，整体 2 列 → 被拆成 4 行；
+ *  - `🇨🇳`（区域指示符对）：逐字 2+2=4，整体 2 列。
+ * 折行单位必须是 grapheme，否则「一行放得下几个字」与终端实际渲染对不上，
+ * 输入框会折错行、光标列也会偏。
+ */
+function graphemeEnd(chars: string[], start: number, to: number): number {
+  const first = chars[start] as string;
+  let end = start + 1;
+  // 快速路径：ASCII 与常见单码点字符不可能是多码点 grapheme 的开头。
+  const cp = first.codePointAt(0) ?? 0;
+  if (cp < 0x300 && !(cp >= 0x1f1e6 && cp <= 0x1f1ff)) return end;
+  // 慢路径：把剩余文本交给 Segmenter，取第一个 cluster 的码点数。
+  const rest = chars.slice(start, to).join("");
+  const g = graphemes(rest)[0];
+  if (g === undefined) return end;
+  end = start + toChars(g).length;
+  return Math.min(end, to);
+}
+
+/**
  * 把 chars 的 `[from, to)` 段折成若干视觉行（绝对下标与 chars 一致）。
  * 断点空格回填规则见文件头注释。
  */
@@ -75,13 +100,15 @@ function wrapSegment(chars: string[], from: number, to: number, width: number, o
     let j = i;
     let lastSpace = -1;
     while (j < to) {
-      const ch = chars[j] as string;
-      const cw = charWidth(ch);
+      // 按 grapheme 整体取宽，与 displayWidth 同口径（见 graphemeEnd 注释）。
+      const end = graphemeEnd(chars, j, to);
+      const chunk = chars.slice(j, end).join("");
+      const cw = graphemeWidth(chunk);
       if (cols + cw > width) break;
       cols += cw;
       // 行首的空格不作为断点（否则会折出一行只有一个空格）。
-      if (ch === " " && j > i) lastSpace = j;
-      j += 1;
+      if (chunk === " " && j > i) lastSpace = j;
+      j = end;
     }
     if (j >= to) {
       out.push({ text: chars.slice(i, to).join(""), start: i, end: to });
@@ -298,11 +325,12 @@ export class TextBuffer {
     let pos = line.start;
     let col = 0;
     while (pos < line.end) {
-      const ch = chars[pos] as string;
-      const cw = charWidth(ch);
+      // 与折行同口径：按 grapheme 整体取宽，否则 ❤️/👨‍👩‍👧‍👦 上会算错目标列。
+      const next = graphemeEnd(chars, pos, line.end);
+      const cw = graphemeWidth(chars.slice(pos, next).join(""));
       if (col + cw > goal) break;
       col += cw;
-      pos += 1;
+      pos = next;
     }
     // 左闭右开 + 边界归后一行行首：满宽视觉行的 end 会被映射到下一行，
     // 直接落 end 会「按 ↑ 却停在原地」。退一格保证落在目标行内（行尾前一个槽位）。
