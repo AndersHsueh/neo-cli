@@ -280,3 +280,4 @@ grep -E -A3 "^## \[[0-9-]+\] todo \|" wiki/log.md
 ## [2026-10-27] query | 目标锚与回锚提示落地：改动清单、readGoalSafe 兜底 bug、D6 经 stash 验证为既有失败
 ## [2026-11-04] milestone | v0.4.8 hydrateMessages 图片丢失占位编号对齐 chip（tsc 0 / 1073 pass）
 ## [2026-11-04] milestone | v0.4.9 verify.sh 证据前缀改为从 package.json 解析（tsc 0 / 1074 pass / PTY 21）
+## [2026-11-04] wiki | 自动记忆：project/修复-1104-图片附件落盘命名覆盖.md（create）
