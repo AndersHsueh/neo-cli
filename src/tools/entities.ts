@@ -28,8 +28,8 @@ export function codePointToString(cp: number, raw: string): string {
   return String.fromCodePoint(cp);
 }
 
-/** HTML 侧命名实体表（与 webSearch decodeXml 的 NAMED 对齐）。 */
-const HTML_NAMED: Record<string, string> = {
+/** HTML/XML 共用命名实体表（web_fetch 与 web_search）。 */
+export const NAMED_ENTITIES: Record<string, string> = {
   amp: "&",
   lt: "<",
   gt: ">",
@@ -57,7 +57,7 @@ export function decodeHtmlEntities(s: string): string {
   return s.replace(
     HTML_ENTITY,
     (m, name: string | undefined, hex: string | undefined, dec: string | undefined) => {
-      if (name) return HTML_NAMED[name] ?? m;
+      if (name) return NAMED_ENTITIES[name] ?? m;
       if (hex) return codePointToString(parseInt(hex, 16), m);
       return codePointToString(Number(dec), m);
     },

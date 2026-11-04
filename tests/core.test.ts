@@ -441,7 +441,7 @@ describe("web_fetch", () => {
       note: null,
     });
     // 旧实现里 bing 不在 isSearchHost 里，靠「无 q → 原样返回」侥幸通过；
-    // 但带 q 的 bing 链接一旦进 isSearchHost 就会被改写成自身，note 也谎报「原域名不可达」
+    // 但带 q 的 bing 链接一旦进 isSearchHost 就会被改写成自身，会改写成自身
     // v0.4.26：www.bing.com 现在**应该**改写（与 cn.bing.com 不同域），
     // 这里只保证改写目标是 cn.bing.com 而非自身。
     expect(rewriteSearchUrl("https://www.bing.com/search?q=x").url).toBe(

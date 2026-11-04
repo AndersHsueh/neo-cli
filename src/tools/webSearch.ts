@@ -8,7 +8,7 @@
  * 约束：零依赖、纯文本解析；只在搜索失败时抛 ToolError，不吞成「没结果」。
  */
 import { ToolError, type ToolCtx, type ToolImpl } from "./types.ts";
-import { codePointToString } from "./entities.ts";
+import { codePointToString, NAMED_ENTITIES } from "./entities.ts";
 
 export interface SearchResult {
   title: string;
@@ -28,14 +28,6 @@ export interface SearchResult {
  *
  * 数字实体走 `codePointToString`：越界 / 代理区 / NUL 原样保留（见 ./entities.ts）。
  */
-const NAMED: Record<string, string> = {
-  amp: "&",
-  lt: "<",
-  gt: ">",
-  quot: '"',
-  apos: "'",
-  nbsp: " ",
-};
 
 /**
  * 一次扫描同时处理 CDATA 段与实体（v0.4.27）。
@@ -71,7 +63,7 @@ function decodeXml(s: string): string {
       segments.push(cdata);
       return `${CDATA_PLACEHOLDER}${segments.length - 1}${CDATA_PLACEHOLDER}`;
     }
-    if (name) return NAMED[name] ?? m;
+    if (name) return NAMED_ENTITIES[name] ?? m;
     if (hex) return codePointToString(parseInt(hd ?? "", 16), m);
     return codePointToString(Number(dec), m);
   });
@@ -96,7 +88,7 @@ function stripTags(s: string): string {
       segments.push(cdata.replace(/<[^>]+>/g, " "));
       return `${CDATA_PLACEHOLDER}${segments.length - 1}${CDATA_PLACEHOLDER}`;
     }
-    if (name) return NAMED[name] ?? m;
+    if (name) return NAMED_ENTITIES[name] ?? m;
     if (hex) return codePointToString(parseInt(hd ?? "", 16), m);
     return codePointToString(Number(dec), m);
   });

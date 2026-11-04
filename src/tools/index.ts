@@ -701,7 +701,7 @@ const shell: ToolImpl = {
  * 1. **幂等**：`cn.bing.com` 是改写目标，必须显式排除。旧版靠「bing 不在
  *    isSearchHost 里」侥幸不命中，但 web_fetch 的 description 恰恰教模型拼
  *    `cn.bing.com/search?q=…` —— 一旦有人把 bing 加进 isSearchHost，就会改写成
- *    自身并谎报「原域名不可达」。现在把「目标域名」写成显式排除，意图可读。
+ *    自身并改写成自身。现在把「目标域名」写成显式排除，意图可读。
  * 2. **保留其余参数**：旧版只留 `q`，`&hl=en&num=20` 这类参数被静默丢弃。
  * 3. **`+` 是字面加号**：`URLSearchParams.get` 会把 `+` 解成空格，`?q=c++`
  *    被搜成 `c  `。这里手工取原始串，只把 `%20` 解成空格（`+` 保留为字面量）。
@@ -744,7 +744,7 @@ export function rewriteSearchUrl(url: string): { url: string; note: string | nul
     .toArray()
     .join("");
   const next = `https://cn.bing.com/search?q=${encodeURIComponent(q)}${rest}`;
-  return { url: next, note: `已将 ${host} 的搜索改写为 cn.bing.com（原域名在中国境内不可达）` };
+  return { url: next, note: `已将 ${host} 的搜索改写为 cn.bing.com` };
 }
 
 /**
