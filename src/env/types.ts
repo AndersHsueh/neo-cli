@@ -22,6 +22,11 @@ export interface EnvConfig {
   wikiPage?: boolean;
   /** 快照根目录覆盖（测试/多环境隔离用），默认 ~/.neo/env。 */
   dir?: string;
+  /**
+   * `/models` 能力探测超时（毫秒）。缺省 5000。
+   * 旧默认 2500 对慢企业网关的冷启动偏紧，会把「有元数据」误判成探测失败。
+   */
+  modelsProbeTimeoutMs?: number;
 }
 
 export interface ToolInfo {

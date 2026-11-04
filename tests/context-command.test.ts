@@ -38,27 +38,29 @@ const MODEL = "m-caps";
  * env 快照里同一模型探测到 vision=true / tools=true / reasoning=false + 输出上限。
  * 于是「手写优先」与「探测补空缺」两条路径都能在同一份输出里验到。
  */
-function makeProject(opts: { snapshot?: "full" | "legacy" | "none" } = {}): string {
+function makeProject(
+  opts: { snapshot?: "full" | "legacy" | "none" | "thin"; handwritten?: "default" | "window-only" } = {},
+): string {
   const cwd = realpathSync(mkdtempSync(join(tmpdir(), "neo-ctx-cmd-")));
   const home = join(cwd, "fakehome");
   mkdirSync(home, { recursive: true });
 
+  const provider: Record<string, unknown> = {
+    provider_name: PROVIDER,
+    provider_type: "openai",
+    base_url: "http://127.0.0.1:9/v1",
+    api_key: "sk-test",
+    default_model_name: MODEL,
+    max_tokens: 8_192,
+    context_window: 100_000,
+  };
+  if (opts.handwritten !== "window-only") {
+    provider["vision"] = false;
+    provider["reasoning"] = true;
+  }
   writeFileSync(
     join(cwd, "settings.json"),
-    JSON.stringify({
-      providers: [
-        {
-          provider_name: PROVIDER,
-          provider_type: "openai",
-          base_url: "http://127.0.0.1:9/v1",
-          api_key: "sk-test",
-          default_model_name: MODEL,
-          context_window: 100_000,
-          vision: false,
-          reasoning: true,
-        },
-      ],
-    }),
+    JSON.stringify({ providers: [provider] }),
     "utf8",
   );
 
@@ -80,14 +82,28 @@ function makeProject(opts: { snapshot?: "full" | "legacy" | "none" } = {}): stri
               updatedAt: "2026-01-01T00:00:00.000Z",
             },
           }
-        : {
-            // v0.4.1 时期的旧记录：只有窗口字段。
-            [`${PROVIDER}|${MODEL}`]: {
-              contextWindow: 131_072,
-              source: "overflow_error",
-              updatedAt: "2026-01-01T00:00:00.000Z",
-            },
-          };
+        : kind === "thin"
+          ? {
+              // ipsa-thor 一类瘦网关：探测跑过，但卡片上没有能力字段。
+              [`${PROVIDER}|${MODEL}`]: {
+                contextWindow: null,
+                maxOutputTokens: null,
+                vision: "unknown",
+                tools: "unknown",
+                reasoning: "unknown",
+                source: "models_api",
+                updatedAt: "2026-01-01T00:00:00.000Z",
+                evidence: "http://thin.example/v1/models",
+              },
+            }
+          : {
+              // v0.4.1 时期的旧记录：只有窗口字段。
+              [`${PROVIDER}|${MODEL}`]: {
+                contextWindow: 131_072,
+                source: "overflow_error",
+                updatedAt: "2026-01-01T00:00:00.000Z",
+              },
+            };
     writeFileSync(
       file,
       JSON.stringify({
@@ -180,13 +196,33 @@ describe("P2 /context 展示五项能力", () => {
   });
 });
 
+describe("瘦网关：输出上限未探测到", () => {
+  test("/context 与 /env 区分请求预算和能力上限，并提示手写", () => {
+    const out = runCommands(makeProject({ snapshot: "thin", handwritten: "window-only" }), ["/context", "/env"]);
+    expect(out).toContain("未探测到");
+    expect(out).toContain("max_output_tokens");
+    expect(out).toContain("请求预算");
+    expect(out).toContain("能力上限");
+    const outputLine = lineWith(out, "max_output");
+    expect(outputLine).toContain("未知");
+    expect(outputLine).toContain("能力上限");
+    expect(outputLine).not.toContain("8,192");
+    const budgetLine = lineWith(out, "max_tokens");
+    expect(budgetLine).toContain("8,192");
+    expect(budgetLine).toContain("请求预算");
+    // 窗口是手写的，不能被瘦网关的 null 探测值抹掉。
+    expect(lineWith(out, "context")).toContain("100,000 tokens");
+  });
+});
+
 describe("P2 /env 模型能力行", () => {
   test("标题改为「模型能力」，行内含五项", () => {
     const out = runCommands(makeProject(), ["/env"]);
     expect(out).toContain("模型能力");
     const line = out.split("\n").find((l) => l.includes(`${PROVIDER}|${MODEL}`)) ?? "";
     expect(line).toContain("131,072 tokens");
-    expect(line).toContain("max_output 32,768 tokens");
+    expect(line).toContain("能力上限 max_output_tokens 32,768 tokens");
+    expect(line).toContain("请求预算 max_tokens 8,192");
     expect(line).toContain("vision 否");
     expect(line).toContain("tools 是");
     expect(line).toContain("reasoning 是");

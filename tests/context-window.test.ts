@@ -15,6 +15,7 @@ import {
 import {
   currentModelCapabilityView,
   detectAndRecordModelWindow,
+  formatCapabilityGapHint,
   formatModelWindowLines,
   readModelContext,
   recordModelContext,
@@ -130,7 +131,7 @@ describe("env 模型窗口事实", () => {
     const lines = formatModelWindowLines(cfg).join("\n");
     expect(lines).toContain("128,000");
     // P2：每行都带五项能力；这条记录只有窗口，其余一律「未知」。
-    expect(lines).toContain("max_output 未知");
+    expect(lines).toContain("能力上限 max_output_tokens 未知");
     expect(lines).toContain("vision 未知");
     expect(lines).toContain("tools 未知");
     expect(lines).toContain("reasoning 未知");
@@ -174,7 +175,7 @@ describe("env 模型窗口事实", () => {
     resolveAndApplyModelWindow(cfg);
     const line = formatModelWindowLines(cfg).find((l) => l.includes("p1|caps-1")) ?? "";
     expect(line).toContain("131,072 tokens");
-    expect(line).toContain("max_output 32,768 tokens");
+    expect(line).toContain("能力上限 max_output_tokens 32,768 tokens");
     expect(line).toContain("vision 否"); // 手写 false 压过探测 true
     expect(line).toContain("tools 是"); // 手写未填 → 探测值
     expect(line).toContain("reasoning 是"); // 手写 true 压过探测 false
@@ -185,7 +186,7 @@ describe("env 模型窗口事实", () => {
     writeBaseSnapshot(cfg);
     recordModelContext(cfg, { contextWindow: 64_000, source: "overflow_error" });
     const line = formatModelWindowLines(cfg).find((l) => l.includes("p1|caps-legacy")) ?? "";
-    expect(line).toContain("max_output 未知");
+    expect(line).toContain("能力上限 max_output_tokens 未知");
     expect(line).toContain("vision 未知");
     expect(line).toContain("tools 未知");
     expect(line).toContain("reasoning 未知");
@@ -196,8 +197,34 @@ describe("env 模型窗口事实", () => {
     writeBaseSnapshot(cfg);
     recordModelContext(cfg, { contextWindow: 64_000, source: "models_api" });
     const line = formatModelWindowLines(cfg).find((l) => l.includes("p1|caps-budget")) ?? "";
-    expect(line).toContain("max_output 未知");
-    expect(line).not.toContain("max_output 4,096");
+    expect(line).toContain("能力上限 max_output_tokens 未知");
+    expect(line).toContain("请求预算 max_tokens 4,096");
+    expect(line).not.toContain("max_output_tokens 4,096");
+    const hint = formatCapabilityGapHint(cfg);
+    expect(hint).toContain("未探测到");
+    expect(hint).toContain("max_output_tokens");
+    expect(hint).toContain("请求预算");
+  });
+
+  test("手写 max_output_tokens 作为能力上限展示，请求预算仍分开", () => {
+    const cfg = makeCfg({
+      model: "caps-manual-out",
+      maxTokens: 64,
+      providers: [{ name: "p1", maxOutputTokens: 32_768, vision: false }],
+    } as unknown as Partial<Config>);
+    writeBaseSnapshot(cfg);
+    recordModelContext(cfg, { contextWindow: 64_000, source: "models_api" });
+    resolveAndApplyModelWindow(cfg);
+    expect(currentModelCapabilityView(cfg).maxOutputTokens).toBe("32,768 tokens");
+    const line = formatModelWindowLines(cfg).find((l) => l.includes("p1|caps-manual-out")) ?? "";
+    expect(line).toContain("能力上限 max_output_tokens 32,768 tokens");
+    expect(line).toContain("请求预算 max_tokens 64");
+    expect(line).not.toContain("max_output_tokens 64");
+    // 上限已手写；vision 已手写 false。tools/reasoning 仍未知，提示里不再提输出上限。
+    const hint = formatCapabilityGapHint(cfg) ?? "";
+    expect(hint).toContain("未探测到");
+    expect(hint).not.toContain("max_output_tokens");
+    expect(hint).toContain("tools");
   });
 
   test("P2 currentModelCapabilityView 与 formatModelWindowLines 同口径", () => {

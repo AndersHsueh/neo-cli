@@ -29,6 +29,7 @@ import {
 import {
   currentModelCapabilityView,
   detectAndRecordModelWindow,
+  formatCapabilityGapHint,
   formatModelWindowLines,
   refreshCapabilitiesAfterModelSwitch,
   resolveAndApplyModelWindow,
@@ -188,10 +189,14 @@ export async function handleCommand(line: string, ctx: CommandContext): Promise<
       // 未填与 unknown 一律「未知」；手写 settings 优先，env 探测补空缺。
       const caps = currentModelCapabilityView(cfg);
       ui.kv("context", caps.contextWindow);
-      ui.kv("max_output", caps.maxOutputTokens);
+      // 请求预算 ≠ 能力上限。两行都打出来，避免把 max_tokens 当成模型硬顶。
+      ui.kv("max_tokens", `${cfg.maxTokens.toLocaleString()} ${c.dim("(请求预算)")}`);
+      ui.kv("max_output_tokens", `${caps.maxOutputTokens} ${c.dim("(能力上限)")}`);
       ui.kv("vision", caps.vision);
       ui.kv("tools", caps.tools);
       ui.kv("reasoning", caps.reasoning);
+      const gap = formatCapabilityGapHint(cfg);
+      if (gap) ui.info(gap);
       ui.kv("threshold", `${(cfg.compactThreshold * 100).toFixed(0)}% · ${Math.round(
         cfg.compactThreshold * cfg.contextWindow,
       ).toLocaleString()} tokens`);
@@ -218,7 +223,7 @@ export async function handleCommand(line: string, ctx: CommandContext): Promise<
       ui.kv("model", c.accent(cfg.model));
       ui.kv("endpoint", c.muted(cfg.baseUrl));
       ui.kv("api key", c.muted(maskKey(cfg.apiKey)));
-      ui.kv("max_tokens", String(cfg.maxTokens));
+      ui.kv("max_tokens", `${cfg.maxTokens.toLocaleString()} ${c.dim("(请求预算)")}`);
       ui.kv("temperature", String(cfg.temperature));
       ui.kv("prompt", `${cum.prompt} tokens`);
       ui.kv("completion", `${cum.completion} tokens`);
@@ -533,6 +538,8 @@ export async function handleCommand(line: string, ctx: CommandContext): Promise<
         ui.line(c.dim("模型能力（env 事实 + settings 手写）："));
         for (const line of windowLines) ui.line(`  ${line}`);
       }
+      const gap = formatCapabilityGapHint(cfg);
+      if (gap) ui.info(gap);
       if (memoryMode === "interactive" && cfg.env?.wikiPage !== false) {
         try {
           const layout = ensureScopeLayout("user", cfg.cwd, cfg.memory.userWikiDir);

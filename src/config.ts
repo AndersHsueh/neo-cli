@@ -352,6 +352,10 @@ function resolveEnvConfig(raw: unknown): EnvConfig | undefined {
   if (typeof r["wiki_page"] === "boolean") out.wikiPage = r["wiki_page"];
   const dir = r["dir"];
   if (typeof dir === "string" && dir.trim() !== "") out.dir = dir.trim();
+  if (typeof r["models_probe_timeout_ms"] === "number" && Number.isFinite(r["models_probe_timeout_ms"])) {
+    // 与 modelWindows.modelsProbeTimeoutMs 同一夹取范围：过小会假阴性，过大拖住后台探测。
+    out.modelsProbeTimeoutMs = Math.min(60_000, Math.max(250, Math.floor(r["models_probe_timeout_ms"])));
+  }
   return Object.keys(out).length > 0 ? out : undefined;
 }
 

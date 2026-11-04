@@ -376,7 +376,10 @@ export class Agent {
     let nudgeMsg: Message | null = null;
     /** 上下文溢出恢复只做一次（A2），避免无限压缩-重试循环。 */
     let overflowRecovered = false;
-    /** 输出撞墙写回只做一次（P3），避免每轮都打 /models。 */
+    /**
+     * 输出撞墙写回每轮用户请求只做一次（P3 / #6）。
+     * finish_reason=length 即记一次：空正文、截断正文、工具轮都算，避免每条迭代都打 /models。
+     */
     let outputLimitProbed = false;
     /** 本轮是否已产出最终正文（用于收口「循环结束但没回答」）。 */
     let answered = false;
@@ -540,6 +543,18 @@ export class Agent {
         }
         finishReason = res.finishReason;
 
+        // #6：只要这轮被 length 截断就尝试探测写回。真实截断经常带着部分正文或工具调用，
+        // 只认「空正文」会在主力模型上打不中。本轮只打一次；回调不得把 completion_tokens
+        // 或请求预算当成能力上限（那是组合根的纪律，这里只负责通知）。
+        if (res.finishReason === "length" && !outputLimitProbed) {
+          outputLimitProbed = true;
+          try {
+            this.opt.onOutputLimit?.(this.opt.cfg.model);
+          } catch {
+            // 写回失败不影响本轮（重试 / 工具执行照常）
+          }
+        }
+
         // ---- 无工具调用 → 本轮结束 ----
         if (res.toolCalls.length === 0) {
           const hasBody = res.content.trim().length > 0;
@@ -575,20 +590,11 @@ export class Agent {
           }
           if (truncated) {
             // 翻倍预算，但封顶 64k；下一轮请求生效。
+            // 输出上限探测已在上面按 finish_reason 记过一次，这里只放大请求预算。
             retryMaxTokens = Math.min(
               65_536,
               Math.max(this.opt.cfg.maxTokens * 2, this.opt.cfg.maxTokens + 4_096),
             );
-            // P3 输出撞墙：把模型的真实输出上限补进 settings 的空字段（不覆盖手写值）。
-            // 后台跑、不 await —— 探测再慢也不该拖住这次重试。
-            if (!outputLimitProbed) {
-              outputLimitProbed = true;
-              try {
-                this.opt.onOutputLimit?.(this.opt.cfg.model);
-              } catch {
-                // 写回失败不影响重试
-              }
-            }
           }
           if (res.reasoning.trim() !== "") {
             this.opt.console.info(

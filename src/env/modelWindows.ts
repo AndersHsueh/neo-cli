@@ -152,7 +152,12 @@ function windowFromModelEntry(entry: Record<string, unknown>): number | null {
   return null;
 }
 
-/** 输出上限字段名（与 context_window 区分：这是单次生成的上限，不是输入窗口）。 */
+/**
+ * 输出上限字段名（与 context_window 区分：这是单次生成的上限，不是输入窗口）。
+ *
+ * 这里的 `max_tokens` 只可能出现在 /models 模型卡片上，表示网关声明的生成上限。
+ * 它不是请求体里的预算，也不是 usage.completion_tokens。后两者禁止写进能力上限（#6）。
+ */
 function outputFromModelEntry(entry: Record<string, unknown>): number | null {
   const direct = ["max_output_tokens", "max_completion_tokens", "max_output", "output_token_limit", "max_tokens"];
   for (const k of direct) {
@@ -231,12 +236,27 @@ export interface DetectedModelCapabilities {
   evidence: string;
 }
 
+/** `/models` 能力探测的默认超时。2.5s 对慢企业网关冷启动偏紧，放宽到 5s。 */
+export const DEFAULT_MODELS_PROBE_TIMEOUT_MS = 5_000;
+
+/**
+ * 本次探测用的超时。settings `env.models_probe_timeout_ms` 可覆盖；
+ * 夹在 250ms～60s，避免 0 变成「立即失败」或一个挂死的后台请求。
+ */
+export function modelsProbeTimeoutMs(cfg: Config): number {
+  const v = cfg.env?.modelsProbeTimeoutMs;
+  if (typeof v === "number" && Number.isFinite(v)) {
+    return Math.min(60_000, Math.max(250, Math.floor(v)));
+  }
+  return DEFAULT_MODELS_PROBE_TIMEOUT_MS;
+}
+
 async function fetchModelEntry(cfg: Config): Promise<Record<string, unknown> | null> {
   const url = `${cfg.baseUrl.replace(/\/$/, "")}/models`;
   try {
     const headers: Record<string, string> = {};
     if (cfg.apiKey) headers.Authorization = `Bearer ${cfg.apiKey}`;
-    const res = await fetch(url, { headers, signal: AbortSignal.timeout(2_500) });
+    const res = await fetch(url, { headers, signal: AbortSignal.timeout(modelsProbeTimeoutMs(cfg)) });
     if (!res.ok) return null;
     const json = (await res.json()) as { data?: unknown };
     const list = Array.isArray(json.data) ? json.data : [];
@@ -254,7 +274,8 @@ async function fetchModelEntry(cfg: Config): Promise<Record<string, unknown> | n
 
 /**
  * 向 provider 的 /models 端点探测当前模型的完整能力。返回 null = 不可达/无该模型条目。
- * 只读、2.5s 超时，任何异常都吞掉（探测失败不能影响会话）。
+ * 只读，默认 5s 超时（`env.models_probe_timeout_ms` 可覆盖），任何异常都吞掉
+ * （探测失败不能影响会话）。
  */
 export async function detectModelCapabilitiesFromModelsApi(
   cfg: Config,
@@ -338,10 +359,30 @@ export function manualCapabilitiesOf(cfg: Config): {
   vision?: boolean;
   tools?: boolean;
   reasoning?: boolean;
+  /** 手写的能力上限。与请求预算 cfg.maxTokens 无关。 */
+  maxOutputTokens?: number | null;
 } | undefined {
   const p = cfg.providers?.find((x) => x.name === cfg.providerName);
   if (!p) return undefined;
-  return { vision: p.vision, tools: p.tools, reasoning: p.reasoning };
+  return {
+    vision: p.vision,
+    tools: p.tools,
+    reasoning: p.reasoning,
+    maxOutputTokens: p.maxOutputTokens,
+  };
+}
+
+/**
+ * 能力上限的展示值：手写 `max_output_tokens` 优先，其次 env 探测值。
+ * 两者都没有 = null。绝不回落到请求预算 `cfg.maxTokens`。
+ */
+function declaredOutputLimit(
+  manual: { maxOutputTokens?: number | null } | undefined,
+  info: ModelContextInfo | null,
+): number | null {
+  const hand = num(manual?.maxOutputTokens);
+  if (hand !== null) return hand;
+  return num(info?.maxOutputTokens);
 }
 
 /** 一个模型的五项能力展示值（全部已归一成可打印字符串）。 */
@@ -358,24 +399,50 @@ export interface ModelCapabilityView {
  *
  * 口径：
  *  - contextWindow 由调用方传入（已按 resolveContextWindow 解析过，含 source）；
- *  - maxOutputTokens 只认 ModelContextInfo.maxOutputTokens —— 绝不回落到
- *    cfg.maxTokens，那是「本次请求要多少输出」，不是模型能力上限；
+ *  - maxOutputTokens：手写 settings 优先，否则只认 ModelContextInfo.maxOutputTokens。
+ *    绝不回落到 cfg.maxTokens，那是「本次请求要多少输出」，不是模型能力上限；
  *  - vision/tools/reasoning 走 mergeModelCapabilities：手写优先，探测补空缺，
  *    二者皆无 = 未知。
  */
 export function buildModelCapabilityView(
   info: ModelContextInfo | null,
-  manual: { vision?: boolean; tools?: boolean; reasoning?: boolean } | undefined,
+  manual: { vision?: boolean; tools?: boolean; reasoning?: boolean; maxOutputTokens?: number | null } | undefined,
   contextWindow: number | null | undefined,
 ): ModelCapabilityView {
   const merged = mergeModelCapabilities(manual, info);
   return {
     contextWindow: formatTokens(contextWindow),
-    maxOutputTokens: formatTokens(info?.maxOutputTokens),
+    maxOutputTokens: formatTokens(declaredOutputLimit(manual, info)),
     vision: formatCapabilityFlag(merged.vision),
     tools: formatCapabilityFlag(merged.tools),
     reasoning: formatCapabilityFlag(merged.reasoning),
   };
+}
+
+/**
+ * 探测/手写之后仍然空着的能力，给 `/context` 与 `/env` 的一行提示。
+ *
+ * 没有缺口返回 null。文案必须让人分清：
+ *  - `max_output_tokens` 是能力上限，网关没给就不能当成已经学会；
+ *  - 请求预算 `max_tokens` 是另一回事，提示里点名，避免用户拿预算数字去填上限。
+ * 手写值（含 vision/tools/reasoning 的 false）不算缺口。
+ */
+export function formatCapabilityGapHint(cfg: Config): string | null {
+  const info = readModelContext(cfg);
+  const manual = manualCapabilitiesOf(cfg);
+  const missing: string[] = [];
+  if (declaredOutputLimit(manual, info) === null) missing.push("max_output_tokens");
+  const merged = mergeModelCapabilities(manual, info);
+  for (const key of ["vision", "tools", "reasoning"] as const) {
+    const hand = manual?.[key];
+    if (hand === true || hand === false) continue;
+    if (merged[key] === "unknown") missing.push(key);
+  }
+  if (missing.length === 0) return null;
+  const ceiling = missing.includes("max_output_tokens")
+    ? "max_output_tokens 是能力上限，请在 settings 手写；它和请求预算 max_tokens 不是同一个字段。"
+    : "请在 settings 手写这些能力（false 也算已声明，不会被覆盖）。";
+  return `未探测到：${missing.join("、")}。网关未提供这些能力。${ceiling}`;
 }
 
 /** 当前模型的能力展示（/context 用）；窗口取 cfg 当前生效值。 */
@@ -397,17 +464,24 @@ export function formatModelWindowLines(cfg: Config): string[] {
     // 当前模型：窗口用已解析的生效值（可能是配置兜底），手写能力参与合并；
     // 其它模型：只有 env 事实，没有手写声明可套。
     const isCurrent = key === currentKey;
+    const manual = isCurrent ? manualCapabilitiesOf(cfg) : undefined;
     const view = buildModelCapabilityView(
       info,
-      isCurrent ? manualCapabilitiesOf(cfg) : undefined,
+      manual,
       isCurrent ? cfg.contextWindow : info.contextWindow,
     );
     const obs = info.observedMaxPromptTokens
       ? ` · 观测最大 prompt ${info.observedMaxPromptTokens.toLocaleString()}`
       : "";
+    // 请求预算只对当前模型有意义（cfg.maxTokens 是这次会话的请求参数，不是模型卡片）。
+    const budget =
+      isCurrent && typeof cfg.maxTokens === "number" && Number.isFinite(cfg.maxTokens)
+        ? ` · 请求预算 max_tokens ${cfg.maxTokens.toLocaleString()}`
+        : "";
     return (
       `${key}  ${view.contextWindow}  [${info.source}]${obs}` +
-      ` · max_output ${view.maxOutputTokens}` +
+      ` · 能力上限 max_output_tokens ${view.maxOutputTokens}` +
+      budget +
       ` · vision ${view.vision}` +
       ` · tools ${view.tools}` +
       ` · reasoning ${view.reasoning}`

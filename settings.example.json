@@ -20,6 +20,8 @@
       "max_tokens": 8192,
       "temperature": 0.6,
       "context_window": 200000,
+      "max_output_tokens": null,
+      "capability_note": "瘦网关（/models 只有 id/object/created/owned_by/supported_endpoint_types，例如 ipsa-thor）不会返回 max_output_tokens、vision、tools、reasoning。留空表示未声明：neo 只补网关明确给出的值，补不到就保持「未探测到」，需要在这里手写。max_output_tokens 是模型能力上限，不是上面的请求预算 max_tokens。手写 false 也算已声明，不会被覆盖。",
 
       "vision": false,
       "tools": true,
@@ -53,6 +55,8 @@
   "env": {
     "enabled": true,
     "probe_ttl_hours": 12,
+    "models_probe_timeout_ms": 5000,
+    "env_note": "models_probe_timeout_ms 是 /models 能力探测超时（毫秒）。企业网关冷启动偏慢时可以再调大，默认 5000。",
     "prompt": true,
     "wiki_page": true
   },
