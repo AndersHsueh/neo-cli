@@ -32,6 +32,22 @@ function clip(s: string, max = COMPACT_MSG_CHAR_CAP): string {
 }
 
 /**
+ * 消息的文本视图（压缩专用）：在 contentText 之上给图片补占位。
+ *
+ * `contentText` 对 image part 返回空串 —— 那是发送/预览层要的语义，但压缩器不该
+ * 因此看不见「这一轮贴过图」：用户贴图问「这个报错怎么修」，被压进 head 后摘要器
+ * 只看到 `user: `，摘要里也就不会提，恢复会话后模型对着空壳提问。
+ * 占位只进摘要器输入，不改历史本身（图片原文仍在 tail 或已被压缩掉）。
+ */
+function compactText(content: Message["content"]): string {
+  const text = contentText(content) ?? "";
+  if (!Array.isArray(content)) return text;
+  const images = content.filter((p) => p.type !== "text").length;
+  if (images === 0) return text;
+  return `${text}${text ? " " : ""}[图片 ×${images}，原始图像未随摘要保留]`;
+}
+
+/**
  * 从当前历史算出安全切点。
  *
  * 只能在消息序列已经配对完整时调用。召回临时消息不是历史的一部分，输入与输出都不含它。
@@ -68,8 +84,8 @@ export function planCompaction(messages: Message[]): CompactionPlan {
           .join("; ");
         return `assistant(tool_call): ${clip(calls)}`;
       }
-      if (m.role === "tool") return `tool(${m.name ?? ""}): ${clip(contentText(m.content) ?? "")}`;
-      return `${m.role}: ${clip(contentText(m.content) ?? "")}`;
+      if (m.role === "tool") return `tool(${m.name ?? ""}): ${clip(compactText(m.content))}`;
+      return `${m.role}: ${clip(compactText(m.content))}`;
     })
     .join("\n");
   if (convoText.length > COMPACT_INPUT_CHAR_CAP) {
