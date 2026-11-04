@@ -44,6 +44,16 @@
 | 修复-1104-verify证据前缀取版本 | [[修复-1104-verify证据前缀取版本]] | v0.4.9 修 `scripts/verify.sh` 的 `EVIDENCE_PREFIX`：从手写常量 `v0.4.4` 改为从 `package.jso | |
 | 修复-1104-图片附件落盘命名覆盖 | [[修复-1104-图片附件落盘命名覆盖]] | v0.4.12 修 saveSession 图片按 part 下标命名导致每轮 img-1.png 互相覆盖，改为会话内递增序号 | |
 | 重构-1116-档位纪律共享工具 | [[重构-1116-档位纪律共享工具]] | v0.4.13/14/15 连续三次修的是同一类缺陷——`toFixed`/`Math.round` 把档内值进位到档边界（`9_999 → "10.0k"`、 | |
+| 修复-1104-CDATA字面量被解码 | [[修复-1104-CDATA字面量被解码]] | 2026-11-04，`src/tools/webSearch.ts` 的 `decodeXml` 有两个同源缺陷：**CDATA 段内的实体被解码**、**跨 | |
+| 修复-1105-裸ESC残留 | [[修复-1105-裸ESC残留]] | 2026-11-05（v0.4.34），修复 TUI 的**裸 ESC 残留**缺陷：不构成合法转义序列的 ESC（后面跟普通字符或直接到结尾）此前被 `tok | |
+| 修复-1105-复合参数SGR的reset语义 | [[修复-1105-复合参数SGR的reset语义]] | `src/tui/ansi.ts` 的 `nextActive()` 处理 SGR 复合参数（`\x1b[31;0m`、`\x1b[0;31m`）时语义错误，导 | |
+| 修复-1106-wrapAnsi连续空格折行与buffer同口径 | [[修复-1106-wrapAnsi连续空格折行与buffer同口径]] | v0.4.38（HEAD `2a60c8d` 之后）修掉 `src/tui/ansi.ts` 的 `wrapAnsi` 在**连续空格**处折行与 `src/t | |
+| 修复-1104-trimPending颜色上下文丢失 | [[修复-1104-trimPending颜色上下文丢失]] | v0.4.38 后修 trimPending 切分丢 SGR：切分后算 head 末尾 active SGR 前置到 pending 剩余部分 | |
+| 修复-1107-formatTokens末档P漏整数档 | [[修复-1107-formatTokens末档P漏整数档]] | 2026-11-07（v0.4.45）。`formatTokens` 的 P 档末档只写了 `fixed1(v / 1e15)`，漏了「整数档」那一半：`fix | |
+| 修复-1107-sanitizeOutput漏OSC剥离 | [[修复-1107-sanitizeOutput漏OSC剥离]] | 2026-11-07（v0.4.46）。`sanitizeOutput`（`src/ui/toolLog.ts`）只写了 `\x1b[@-_]` 一条通用转义， | |
+| 修复-1107-formatBytes末档P单位没除 | [[修复-1107-formatBytes末档P单位没除]] | 2026-11-07（v0.4.47）。`formatBytes`（`src/env/render.ts`）在 P 档（末档）**所有 ≥1P 的值都被放大 1 | |
+| 修复-1108-引用漏剥中文右括号 | [[修复-1108-引用漏剥中文右括号]] | 2026-11-08（v0.4.48）。`@path` 引用解析的 `TRAILING_PUNCT`（`src/input/completion.ts`）只剥  | |
+| 修复-1108-引用漏剥弯引号右半边 | [[修复-1108-引用漏剥弯引号右半边]] | 2026-11-04（v0.4.49）。v0.4.48 后仍漏弯引号右半边 ” ’ 〞 〟；只剥尾部，左引号故意不进集合 | |
 
 ### 流程与基础设施
 

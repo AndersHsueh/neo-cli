@@ -56,6 +56,22 @@ describe("C3a 解析", () => {
     expect(parseReferences("（见 @a.ts）").map((r) => r.path)).toEqual(["a.ts"]);
   });
 
+  test("剥掉中文引号（含左引号被误剥的一半）", () => {
+    // v0.4.49：TRAILING_PUNCT 补了右括号/书名号，但仍漏了右引号 ” ’。
+    // 更糟的是左引号 “ ‘ 不在集合里，却因为「剥尾部」规则被当成尾随标点剥掉：
+    //   「见 @a.ts”」  => path "a.ts”"   （右引号没剥 → exists 失败）
+    //   「见 @“a.ts”」=> path "“a.ts"   （左引号被剥 → exists 失败）
+    // 两头都错，且都是静默不展开。
+    for (const tail of ["”", "’", "〞", "〟"]) {
+      expect(parseReferences(`见 @a.ts${tail}`).map((r) => r.path)).toEqual(["a.ts"]);
+    }
+    // 引号包住整个引用：左引号不能被剥
+    expect(parseReferences("见 @“a.ts”").map((r) => r.path)).toEqual(["“a.ts"]);
+    expect(parseReferences("见 @‘a.ts’").map((r) => r.path)).toEqual(["‘a.ts"]);
+    // 叠加多个也要一次剥干净
+    expect(parseReferences("见 @a.ts”’）").map((r) => r.path)).toEqual(["a.ts"]);
+  });
+
   test("email 与孤立 @ 不算引用", () => {
     expect(parseReferences("mail a@b.com")).toEqual([]);
     expect(parseReferences("@ hello")).toEqual([]);

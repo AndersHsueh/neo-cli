@@ -282,3 +282,13 @@ grep -E -A3 "^## \[[0-9-]+\] todo \|" wiki/log.md
 ## [2026-11-04] milestone | v0.4.9 verify.sh 证据前缀改为从 package.json 解析（tsc 0 / 1074 pass / PTY 21）
 ## [2026-11-04] wiki | 自动记忆：project/修复-1104-图片附件落盘命名覆盖.md（create）
 ## [2026-11-04] milestone | v0.4.16 档位纪律抽成 src/ui/format.ts；踩坑：fixed1 的 ≥10 降级不是通用一位小数语义
+## [2026-11-04] wiki | v0.4.27 修复 web_search CDATA 内实体被解码 / 跨边界拼实体
+## [2026-11-04] milestone | 修复 TUI 裸 ESC 残留：tokenizeAnsi 丢弃、stripAnsi/ANSI_ESCAPE 补剥（v0.4.34）
+## [2026-11-04] wiki | 修复 ansi.ts nextActive 复合参数 SGR 的 reset 语义（\x1b[31;0m 曾致下一行错误染色）
+## [2026-11-04] milestone | v0.4.38 修复 wrapAnsi 连续空格折行与 layoutBuffer 分叉（1134 pass / tsc 0）
+## [2026-11-04] wiki | 自动记忆：project/修复-1104-trimPending颜色上下文丢失.md（create）
+## [2026-11-04] wiki | v0.4.45 修复 formatTokens P 档末档漏整数档（1e18 → 1000P）
+## [2026-11-04] milestone | v0.4.46 sanitizeOutput 补 OSC/DCS 剥离（外部输出正文残留）
+## [2026-11-04] wiki | v0.4.47 修复 formatBytes 末档 P 单位没除（≥1P 全部放大 1024 倍）
+## [2026-11-04] wiki | v0.4.48 修复 @path 引用漏剥中文右引号/右括号/书名号（引用静默不展开）
+## [2026-11-04] wiki | v0.4.49 修复 @path 引用漏剥弯引号右半边（”’〞〟）
