@@ -194,6 +194,22 @@ describe("S1d token 格式", () => {
     expect(formatTokens(9_999_999_999)).toBe("10G");
     expect(formatTokens(999_999_999_999)).toBe("1.0T");
   });
+
+  // v0.4.44：T 档原被当作末档，999_999_999_999_999 与 1e15 都输出 "1000T"，
+  // 既跨档又与「1.0P」数量级撞值。现与 k/M/G 档同构补上 P 档。
+  test("S1d T 档进位到 1000 时升级为 P", () => {
+    expect(formatTokens(9_999_999_999_999)).toBe("10T");
+    expect(formatTokens(10_000_000_000_000)).toBe("10T");
+    expect(formatTokens(12_300_000_000_000)).toBe("12T");
+    expect(formatTokens(999_499_999_999_999)).toBe("999T");
+    expect(formatTokens(999_999_999_999_999)).toBe("1.0P");
+    expect(formatTokens(1_000_000_000_000_000)).toBe("1.0P");
+  });
+
+  test("S1d P 档是末档，一位小数转整数", () => {
+    expect(formatTokens(1_234_567_890_123_456)).toBe("1.2P");
+    expect(formatTokens(9_999_999_999_999_999)).toBe("10P");
+  });
 });
 
 describe("S1e 优先级与丢弃顺序", () => {
