@@ -84,7 +84,9 @@ export function isUserScope(layout: WikiLayout): boolean {
 export function insideRawDir(cwd: string, p: string): boolean {
   for (const raw of [join(cwd, ".neo", "wiki", "raw"), join(cwd, "wiki", "raw")]) {
     const r = relative(raw, p);
-    if (r !== "" && !r.startsWith("..") && !r.startsWith(sep + "..")) return true;
+    // 越界判定只认 ".." 本身或 "../" 前缀：startsWith("..") 会把同级的
+    // "..foo/" 也算成越界，让 raw 护栏漏掉 .neo/wiki/..foo/ 这类兄弟目录。
+    if (r !== "" && r !== ".." && !r.startsWith(".." + sep)) return true;
   }
   return false;
 }

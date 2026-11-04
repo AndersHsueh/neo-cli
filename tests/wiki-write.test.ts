@@ -78,6 +78,16 @@ describe("wiki 布局解析", () => {
     expect(insideRawDir(CWD, join(CWD, "src", "x.ts"))).toBe(false);
     expect(insideRawDir(CWD, join(CWD, ".neo", "wiki-evil.md"))).toBe(false);
   });
+
+  test("insideRawDir：raw 内以 .. 开头的子目录不算越界（v0.4.31 修复）", () => {
+    // relative() 对 raw/..foo/x 返回 "..foo/x"，旧实现 startsWith("..") 误判为越界，
+    // 让 raw 护栏漏掉这一类路径。
+    expect(insideRawDir(CWD, join(RAW, "..foo", "evil.md"))).toBe(true);
+    expect(insideRawDir(CWD, join(CWD, "wiki", "raw", "..foo", "evil.md"))).toBe(true);
+    // 真正的越界仍然为假
+    expect(insideRawDir(CWD, join(RAW, "..", "wiki", "a.md"))).toBe(false);
+    expect(insideRawDir(CWD, join(RAW, "..", "..", "evil.md"))).toBe(false);
+  });
 });
 
 /* ------------------------------------------------------------------ */
@@ -342,6 +352,22 @@ describe("wiki 工具壳与 raw 拦截", () => {
     );
     expect(r3.ok).toBe(false);
     expect(r3.output).toContain("raw 源不可修改");
+  });
+
+  test("raw 拦截覆盖 raw 内 .. 前缀子目录：write_file 覆盖被拒（v0.4.31 修复）", async () => {
+    const dotDir = join(RAW, "..foo");
+    mkdirSync(dotDir, { recursive: true });
+    const victim = join(dotDir, "keep.md");
+    writeFileSync(victim, "原始内容", "utf8");
+
+    const r = await dispatch(
+      "write_file",
+      JSON.stringify({ path: victim, content: "改" }),
+      ctx,
+    );
+    expect(r.ok).toBe(false);
+    expect(r.output).toContain("raw 源不可修改");
+    expect(readFileSync(victim, "utf8")).toBe("原始内容");
   });
 
   test("主题页不受 raw 拦截影响：可正常写", async () => {
