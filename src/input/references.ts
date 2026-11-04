@@ -98,13 +98,20 @@ function defaultStatSize(path: string): number {
   return statSync(path).size;
 }
 
-/** 只读前 bytes 字节（按预算截断时用，避免把 50MB 文件整份读进内存）。 */
+/**
+ * 只读前 bytes 字节（按预算截断时用，避免把 50MB 文件整份读进内存）。
+ *
+ * 截断点可能落在多字节字符中间（中文 3 字节、emoji 4 字节）。默认的
+ * `TextDecoder` 会把这段残缺字节替换成 U+FFFD —— 既让正文尾部出现乱码，
+ * 又让 `Buffer.byteLength` 从 n 涨到 n+2，突破调用方刚算好的字节预算。
+ * 用 `stream: true` 只解码「已完整」的前缀，残缺尾部直接丢弃。
+ */
 function defaultReadSlice(path: string, bytes: number): string {
   const fd = openSync(path, "r");
   try {
     const buf = Buffer.alloc(Math.max(0, bytes));
     const n = readSync(fd, buf, 0, buf.length, 0);
-    return new TextDecoder().decode(buf.subarray(0, n));
+    return new TextDecoder("utf-8", { fatal: false }).decode(buf.subarray(0, n), { stream: true });
   } finally {
     closeSync(fd);
   }

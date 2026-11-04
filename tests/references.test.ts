@@ -5,6 +5,9 @@
  * 全部通过注入的 readFile/exists 驱动，不碰真实文件系统。
  */
 import { describe, expect, test } from "bun:test";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 import { expandReferences, parseReferences } from "../src/input/references.ts";
 
@@ -164,5 +167,44 @@ describe("C3c 路径解析相对 cfg.cwd（-C 场景）", () => {
       statSize: () => 1,
     });
     expect(r.refs[0]!.path).toBe("/abs/x.ts");
+  });
+});
+
+describe("C3d 字节预算截断落在多字节字符中间（真实 readSlice）", () => {
+  // 这一组**不注入** readSlice，走 defaultReadSlice 的真实实现：
+  // 缺陷是「TextDecoder 把残缺的多字节尾部替换成 U+FFFD」，
+  // 注入 mock 永远测不到（旧用例的 mock 按字符 slice，不是按字节）。
+  test("截断点落在中文中间时不留 U+FFFD，且不突破字节预算", () => {
+    const dir = mkdtempSync(join(tmpdir(), "neo-refs-"));
+    try {
+      // 全中文：每字 3 字节，90000 字节，远超预算
+      writeFileSync(join(dir, "big.txt"), "中".repeat(30_000));
+      const budget = 100;
+      const r = expandReferences("@big.txt", { cwd: dir, maxBytesTotal: budget });
+
+      expect(r.refs.length).toBe(1);
+      expect(r.refs[0]!.truncated).toBe(true);
+      // 正文里不能出现替换字符（乱码进模型上下文会被当成文件真实内容）
+      expect(r.text).not.toContain("\uFFFD");
+      // 引用块正文必须落在预算内（修复前是 102 字节 > 100）
+      const body = /——— big\.txt[^\n]*———\n([\s\S]*?)\n——— end/.exec(r.text)?.[1] ?? "";
+      expect(Buffer.byteLength(body, "utf8")).toBeLessThanOrEqual(budget);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("截断点落在 emoji（4 字节）中间同样不产生乱码", () => {
+    const dir = mkdtempSync(join(tmpdir(), "neo-refs-"));
+    try {
+      // 5 个 ASCII + emoji：预算 7 字节会切在 emoji 的第 2 个字节上
+      writeFileSync(join(dir, "mix.txt"), "abcde😀😀");
+      const r = expandReferences("@mix.txt", { cwd: dir, maxBytesTotal: 7 });
+      expect(r.text).not.toContain("\uFFFD");
+      const body = /——— mix\.txt[^\n]*———\n([\s\S]*?)\n——— end/.exec(r.text)?.[1] ?? "";
+      expect(body).toBe("abcde");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
