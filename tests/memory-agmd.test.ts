@@ -108,3 +108,34 @@ describe("composeAgentsContent — 残缺标记", () => {
     expectWellFormed(out);
   });
 });
+
+/**
+ * 标记出现在用户正文行里（不是独占一行的标记行）。
+ *
+ * 清理残留标记只该删「整行就是标记」的行；用子串匹配会把用户手写的
+ * 说明整行吃掉 —— 区块外内容一律不碰是核心承诺，静默删用户文字属于数据丢失。
+ */
+describe("composeAgentsContent — 标记出现在用户正文行内", () => {
+  test("行内含完整 START 标记 → 该行保留", () => {
+    const userLine = `- 别手改 ${START_LINE} 之间的内容`;
+    const out = composeAgentsContent(`# 约定\n\n${userLine}\n- 其它随便改\n`);
+    expect(out).toContain(userLine);
+    expect(out).toContain("其它随便改");
+    expect(out).toContain("# 约定");
+  });
+
+  test("行内含完整 END 标记 → 该行保留", () => {
+    const userLine = `- 区块以 ${WIKI_SECTION_END} 结尾`;
+    const out = composeAgentsContent(`# 约定\n\n${userLine}\n`);
+    expect(out).toContain(userLine);
+  });
+
+  test("行内标记 + 幂等：重复调用不膨胀、不丢行", () => {
+    const userLine = `- 别手改 ${START_LINE} 之间的内容`;
+    const once = composeAgentsContent(`# 约定\n\n${userLine}\n`);
+    const twice = composeAgentsContent(once);
+    expect(twice).toBe(once);
+    expect(twice).toContain(userLine);
+    expect(count(twice, WIKI_SECTION_START)).toBe(2); // 用户行里的 + 区块自己的
+  });
+});
