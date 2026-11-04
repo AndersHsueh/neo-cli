@@ -163,6 +163,30 @@ describe("A1 wrapAnsi / truncateAnsi", () => {
     // 折行同理
     expect(wrapAnsi("abc\x1bdef", 3)).toEqual(["abc", "def"]);
   });
+
+  test("A1j 行内才开始的 SGR 也要在行尾补 RESET", () => {
+    // 颜色从行首开始（rowStartActive 非空）时行尾补 RESET 已有覆盖（A1d）；
+    // 这里覆盖「行首无颜色、行内才出现 SGR」：整行颜色在行尾仍未闭合，
+    // 不补 RESET 会让后续输出（下一行、提示符）全部染上该颜色。
+    const red = "\x1b[31m";
+    const reset = "\x1b[0m";
+
+    // 不折行：单行内出现 SGR
+    const single = wrapAnsi(`ab${red}cd`, 10);
+    expect(single).toHaveLength(1);
+    expect(single[0]).toBe(`ab${red}cd${reset}`);
+
+    // 折行：第一行行首无颜色、行内出现 SGR，行尾同样要补
+    const wrapped = wrapAnsi(`ab${red}cdef`, 3);
+    expect(wrapped).toEqual([`ab${red}c${reset}`, `${red}def${reset}`]);
+
+    // 行内 SGR 后又被 reset 闭合：颜色已闭合，行尾再补一个 RESET 是幂等冗余（无害），
+    // 这里只断言「不会漏补」，不要求「不多补」—— 折行时 emitRow 拿不到本行精确的末态。
+    const closed = wrapAnsi(`ab${red}cd${reset}ef`, 10);
+    expect(closed).toHaveLength(1);
+    expect(closed[0]!.endsWith(reset)).toBe(true);
+    expect(stripAnsi(closed[0]!)).toBe("abcdef");
+  });
 });
 
 describe("F1 FrameRenderer", () => {

@@ -89,15 +89,20 @@ export function wrapAnsi(text: string, width: number): string[] {
   const rows: string[] = [];
   let active = "";
   let rowStartActive = "";
+  // 本行是否「可能带着未闭合的颜色」：行首有 active SGR，或行内出现过 SGR。
+  // 只看 rowStartActive 会漏掉「行首无色、行内才上色」的行 —— 那种行到行尾颜色仍未闭合，
+  // 不补 RESET 会让下一行/提示符继续染色。
+  let rowHasSgr = false;
   let row: Token[] = [];
   let rowW = 0;
 
   const emitRow = (): void => {
     const body = row.map((t) => t.s).join("");
-    rows.push(rowStartActive + body + (rowStartActive ? RESET : ""));
+    rows.push(rowStartActive + body + (rowHasSgr ? RESET : ""));
     row = [];
     rowW = 0;
     rowStartActive = active;
+    rowHasSgr = active !== "";
   };
 
   for (let i = 0; i < tokens.length; i++) {
@@ -107,6 +112,7 @@ export function wrapAnsi(text: string, width: number): string[] {
       // 行首的 SGR 归入 rowStartActive，不出现在 token 列表里（否则 emit 会重复）
       if (row.length === 0) rowStartActive = active;
       else row.push(t);
+      rowHasSgr = true;
       continue;
     }
     // 逻辑换行：直接结束当前行
@@ -147,7 +153,7 @@ export function wrapAnsi(text: string, width: number): string[] {
   }
   if (row.length > 0 || rows.length === 0) {
     const body = row.map((t) => t.s).join("");
-    rows.push(rowStartActive + body + (rowStartActive ? RESET : ""));
+    rows.push(rowStartActive + body + (rowHasSgr ? RESET : ""));
   }
   return rows;
 }
