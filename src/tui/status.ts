@@ -70,12 +70,22 @@ export function formatElapsed(ms: number): string {
 /**
  * token 数：<1e3 原样 → <1e4 一位小数 k → <1e6 整数 k → 其余一位小数 M。
  * 例：999 / 1.2k / 12k / 1.2M。不四舍五入跨档（9999 仍属一位小数档）。
+ *
+ * 档位边界必须「进位即升档」：9_999 的 toFixed(1) 是 "10.0"、999_999 的
+ * Math.round 是 1000，若原样输出会得到 "10.0k"/"1000k" —— 既跨了档
+ * （宽度突然多 2 列再缩回），又与下一档的 "10k"/"1.0M" 撞值。
  */
 export function formatTokens(n: number): string {
   const v = Number.isFinite(n) ? Math.max(0, Math.floor(n)) : 0;
   if (v < 1_000) return String(v);
-  if (v < 10_000) return `${(v / 1_000).toFixed(1)}k`;
-  if (v < 1_000_000) return `${Math.round(v / 1_000)}k`;
+  if (v < 10_000) {
+    const k = (v / 1_000).toFixed(1);
+    return k === "10.0" ? "10k" : `${k}k`; // 9_950~9_999 进位到 10.0 → 降级整数档
+  }
+  if (v < 1_000_000) {
+    const k = Math.round(v / 1_000);
+    return k >= 1_000 ? `${(v / 1_000_000).toFixed(1)}M` : `${k}k`; // 999_500~999_999 → M 档
+  }
   return `${(v / 1_000_000).toFixed(1)}M`;
 }
 

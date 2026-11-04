@@ -158,6 +158,20 @@ describe("S1d token 格式", () => {
     expect(formatTokens(-5)).toBe("0");
     expect(formatTokens(Number.NaN)).toBe("0");
   });
+
+  // v0.4.13：档位边界不能因四舍五入而跨档——跨档会让状态栏宽度突然多 2 列再缩回。
+  test("S1d 一位小数档进位到 10.0 时降级为整数 k", () => {
+    expect(formatTokens(9_999)).toBe("10k");
+    expect(formatTokens(9_960)).toBe("10k"); // toFixed(1) 已进位到 "10.0"
+    expect(formatTokens(9_950)).toBe("9.9k"); // 9.95 的 toFixed(1) 仍是 "9.9"（舍入到偶）
+    expect(formatTokens(9_949)).toBe("9.9k");
+  });
+
+  test("S1d 整数 k 档进位到 1000 时升级为 M", () => {
+    expect(formatTokens(999_999)).toBe("1.0M");
+    expect(formatTokens(999_500)).toBe("1.0M");
+    expect(formatTokens(999_499)).toBe("999k");
+  });
 });
 
 describe("S1e 优先级与丢弃顺序", () => {
