@@ -58,9 +58,13 @@ export function renderSessionMarkdown(meta: SessionMeta, messages: Message[]): s
       if (text.trim() !== "") lines.push(text, "");
       if (calls.length > 0) lines.push("工具调用：", ...calls, "");
     } else if (m.role === "tool") {
+      // 与空 assistant 同一口径：空白正文的 tool 不写段、不计段数，
+      // 否则会渲染出空围栏，还会把空会话误判成有内容。
+      const body = contentText(m.content) ?? "";
+      if (body.trim() === "") continue;
       n += 1;
       lines.push(`### 工具结果${m.name ? ` · ${m.name}` : ""}`, "");
-      lines.push(fence(contentText(m.content) ?? ""), "");
+      lines.push(fence(body), "");
     }
   }
   if (n === 0) lines.push("（空会话）", "");
