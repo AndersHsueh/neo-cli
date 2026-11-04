@@ -87,4 +87,20 @@ describe("budgetMessage", () => {
     const msg = budgetMessage(2, 20, null, CAPABILITY_STREAK_LIMIT);
     expect(String(msg.content)).not.toContain("扩展手段");
   });
+
+  // attempt 是「第几次请求」（调用方传 iter + 1，iter 从 0 起），本次请求本身还没消耗预算。
+  // 旧实现用 remaining = max - attempt，首轮就报「剩余 79/80」、末轮报「仅剩 0 次」，
+  // 模型据此提前收手 —— 这里把口径钉死。
+  test("剩余次数把本次请求算在内（首轮 = 上限）", () => {
+    const text = String(budgetMessage(1, 80, null, 0).content);
+    expect(text).toContain("已用 0");
+    expect(text).toContain("剩余 80");
+  });
+
+  test("末轮剩余 1 次而不是 0 次", () => {
+    const text = String(budgetMessage(80, 80, null, 0).content);
+    expect(text).toContain("已用 79");
+    expect(text).toContain("剩余 1");
+    expect(text).toContain("仅剩 1 次");
+  });
 });
