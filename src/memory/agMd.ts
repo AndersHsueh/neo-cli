@@ -43,14 +43,24 @@ export function composeAgentsContent(existing: string | null): string {
   if (existing === null || existing.trim() === "") {
     return `${section}\n`;
   }
-  if (START_RE.test(existing) && existing.includes(WIKI_SECTION_END)) {
-    const start = existing.search(START_RE);
-    const end = existing.indexOf(WIKI_SECTION_END);
+  const start = existing.search(START_RE);
+  const end = existing.indexOf(WIKI_SECTION_END);
+  // 标记必须成对且按 start → end 顺序出现才认作「区块」。
+  // 乱序（END 在 START 之前，多由手工编辑/复制粘贴造成）时不能按区块处理：
+  // slice 会产出第二个 END，每次调用文件都增长一整个区块（非幂等）。
+  if (start !== -1 && end !== -1 && end > start) {
     const endIdx = end + WIKI_SECTION_END.length;
     return existing.slice(0, start) + section + existing.slice(endIdx);
   }
-  // 无区块：追加（约束 15 多 feature 共享 / 约束 18 幂等的延续）
-  return `${existing.replace(/\s*$/, "")}\n\n${section}\n`;
+  // 无区块（或标记乱序）：先摘掉残留标记行，再追加。
+  // 摘标记是幂等的关键：否则乱序文件每次调用都多留一对标记，无限膨胀。
+  const cleaned = existing
+    .split("\n")
+    .filter((line) => !START_RE.test(line) && !line.includes(WIKI_SECTION_END))
+    .join("\n")
+    .replace(/\s*$/, "");
+  // 追加（约束 15 多 feature 共享 / 约束 18 幂等的延续）
+  return cleaned === "" ? `${section}\n` : `${cleaned}\n\n${section}\n`;
 }
 
 /**
