@@ -70,13 +70,37 @@ export function tokenizeAnsi(text: string): Token[] {
   return out;
 }
 
-/** 当前 active SGR：遇到 reset 清空，其余按出现顺序保留（可能冗余，但保证颜色正确）。 */
+/**
+ * 当前 active SGR：按参数列表语义累积，遇到 reset 参数清空已累积的部分。
+ *
+ * SGR 参数是分号分隔的列表，按顺序生效：
+ *  - `\x1b[31;0m` = 先红再 reset → 净效果无色；
+ *  - `\x1b[0;31m` = 先 reset 再红 → 净效果红色。
+ * 旧实现只比较整串是否等于 "0"，把 `\x1b[31;0m` 当普通上色追加，下一行被错误染色。
+ * 但「只要含 0 就整体清空」也是错的：会连 `\x1b[0;31m` 里的 `31` 一起丢掉，下一行丢色。
+ * 所以按参数逐个走：0（含空参数，等价于 0）清空累积，其余继续累积。
+ */
 function nextActive(active: string, sgr: string): string {
   const m = /^\x1b\[([0-9;]*)m$/.exec(sgr);
   if (!m) return active;
-  const params = m[1] ?? "";
-  if (params === "" || params === "0") return "";
-  return active + sgr;
+  const params = (m[1] ?? "").split(";");
+  let acc = active;
+  let pending: string[] = [];
+  const flushPending = (): void => {
+    if (pending.length === 0) return;
+    acc += `\x1b[${pending.join(";")}m`;
+    pending = [];
+  };
+  for (const p of params) {
+    if (p === "" || p === "0") {
+      flushPending();
+      acc = "";
+      continue;
+    }
+    pending.push(p);
+  }
+  flushPending();
+  return acc;
 }
 
 /**

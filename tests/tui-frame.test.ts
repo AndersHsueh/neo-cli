@@ -187,6 +187,33 @@ describe("A1 wrapAnsi / truncateAnsi", () => {
     expect(closed[0]!.endsWith(reset)).toBe(true);
     expect(stripAnsi(closed[0]!)).toBe("abcdef");
   });
+
+  test("A1k 复合参数 SGR 里的 0 参数按 reset 处理", () => {
+    // SGR 参数是「分号分隔的列表」，`0` 出现在任意位置都表示 reset：
+    //  - `\x1b[31;0m` = 先红再 reset，净效果无色；
+    //  - `\x1b[0;31m` = 先 reset 再红，净效果红色。
+    // 旧实现只比较整串是否等于 "0"，把 `\x1b[31;0m` 当普通上色追加进 active，
+    // 导致下一行被错误地染上红色（\x1b[31mAAA\x1b[31;0mBBB 折行后第二行变红）。
+    const red = "\x1b[31m";
+    const reset = "\x1b[0m";
+
+    // 复合参数以 reset 结尾：颜色已闭合，下一行不能带颜色前缀，也不该多补 RESET
+    const tailReset = wrapAnsi(`${red}AAA\x1b[31;0mBBB`, 3);
+    expect(tailReset.map(stripAnsi)).toEqual(["AAA", "BBB"]);
+    expect(tailReset[1]).toBe("BBB");
+
+    // 纯 reset 复合参数同样清空 active（不额外残留）
+    const allReset = truncateAnsi(`${red}AAA\x1b[0;0mBBB`, 6);
+    expect(allReset).toBe(`${red}AAA\x1b[0;0mBBB`);
+
+    // 复合参数以 reset 开头：净效果是红色，下一行仍要带颜色
+    const headReset = wrapAnsi(`${red}AAA\x1b[0;31mBBB`, 3);
+    expect(headReset[1]).toBe(`${red}BBB${reset}`);
+
+    // 非 0 的复合参数（如 \x1b[1;31m 粗体红）仍按上色累积
+    const bold = wrapAnsi(`\x1b[1;31mAAA BBB`, 3);
+    expect(bold[1]).toContain("\x1b[1;31m");
+  });
 });
 
 describe("F1 FrameRenderer", () => {
