@@ -402,13 +402,13 @@ describe("web_fetch", () => {
   });
 
   test("rewriteSearchUrl: google/duckduckgo 搜索页改写到 cn.bing.com", () => {
-    // google 带 q → 改写
-    expect(rewriteSearchUrl("https://www.google.com/search?q=hello+world")).toEqual({
+    // google 带 q → 改写。空格的正规编码是 %20（encodeURIComponent 的输出）
+    expect(rewriteSearchUrl("https://www.google.com/search?q=hello%20world")).toEqual({
       url: "https://cn.bing.com/search?q=hello%20world",
       note: expect.stringContaining("cn.bing.com"),
     });
-    // duckduckgo 带 q → 改写
-    expect(rewriteSearchUrl("https://duckduckgo.com/?q=neo+cli")).toEqual({
+    // duckduckgo 带 %20 → 改写
+    expect(rewriteSearchUrl("https://duckduckgo.com/?q=neo%20cli")).toEqual({
       url: "https://cn.bing.com/search?q=neo%20cli",
       note: expect.stringContaining("cn.bing.com"),
     });
@@ -431,6 +431,45 @@ describe("web_fetch", () => {
     });
     // 非法 URL 原样返回
     expect(rewriteSearchUrl("not a url")).toEqual({ url: "not a url", note: null });
+  });
+
+  // 改写目标本身已是 cn.bing.com 时必须幂等（v0.4.25 修）
+  test("rewriteSearchUrl: cn.bing.com 搜索页原样返回，不改写也不加 note", () => {
+    // web_fetch 的 description 直接教模型拼 cn.bing.com/search?q=…，这条路径最常走
+    expect(rewriteSearchUrl("https://cn.bing.com/search?q=neo+cli")).toEqual({
+      url: "https://cn.bing.com/search?q=neo+cli",
+      note: null,
+    });
+    // 旧实现里 bing 不在 isSearchHost 里，靠「无 q → 原样返回」侥幸通过；
+    // 但带 q 的 bing 链接一旦进 isSearchHost 就会被改写成自身，note 也谎报「原域名不可达」
+    expect(rewriteSearchUrl("https://www.bing.com/search?q=x").note).toBeNull();
+  });
+
+  // 改写时保留原 URL 的其余查询参数（v0.4.25 修）
+  test("rewriteSearchUrl: 保留 q 以外的查询参数", () => {
+    expect(rewriteSearchUrl("https://www.google.com/search?q=neo&hl=en&num=20").url).toBe(
+      "https://cn.bing.com/search?q=neo&hl=en&num=20",
+    );
+    // q 不在首位也一样
+    expect(rewriteSearchUrl("https://duckduckgo.com/?kl=cn&q=neo").url).toBe(
+      "https://cn.bing.com/search?q=neo&kl=cn",
+    );
+  });
+
+  // 查询词里的字面 '+' 不能被当成空格（v0.4.25 修）
+  test("rewriteSearchUrl: 字面 + 与 %2B 不被误解为空格", () => {
+    // URL 里的 '+' 是字面加号（真正编码空格的是 %20），解成空格会把「c++」搜成「c  」
+    expect(rewriteSearchUrl("https://www.google.com/search?q=c%2B%2B").url).toBe(
+      "https://cn.bing.com/search?q=c%2B%2B",
+    );
+    // 未编码的 '+' 同样按字面保留
+    expect(rewriteSearchUrl("https://www.google.com/search?q=c++").url).toBe(
+      "https://cn.bing.com/search?q=c%2B%2B",
+    );
+    // 真正的空格（%20）仍解成空格
+    expect(rewriteSearchUrl("https://www.google.com/search?q=neo%20cli").url).toBe(
+      "https://cn.bing.com/search?q=neo%20cli",
+    );
   });
 });
 

@@ -696,6 +696,15 @@ const shell: ToolImpl = {
  * 背景：本机在中国境内，google.com / duckduckgo.com 均连接超时（实测 000）。
  * 模型可能凭习惯拼出这些 URL，这里兜底改写，避免白跑一次抓取。
  * 只改「搜索页」URL；普通网页抓取不受影响。
+ *
+ * v0.4.25 修三处口径问题：
+ * 1. **幂等**：`cn.bing.com` 是改写目标，必须显式排除。旧版靠「bing 不在
+ *    isSearchHost 里」侥幸不命中，但 web_fetch 的 description 恰恰教模型拼
+ *    `cn.bing.com/search?q=…` —— 一旦有人把 bing 加进 isSearchHost，就会改写成
+ *    自身并谎报「原域名不可达」。现在把「目标域名」写成显式排除，意图可读。
+ * 2. **保留其余参数**：旧版只留 `q`，`&hl=en&num=20` 这类参数被静默丢弃。
+ * 3. **`+` 是字面加号**：`URLSearchParams.get` 会把 `+` 解成空格，`?q=c++`
+ *    被搜成 `c  `。这里手工取原始串，只把 `%20` 解成空格（`+` 保留为字面量）。
  */
 export function rewriteSearchUrl(url: string): { url: string; note: string | null } {
   let u: URL;
@@ -705,6 +714,8 @@ export function rewriteSearchUrl(url: string): { url: string; note: string | nul
     return { url, note: null };
   }
   const host = u.hostname.toLowerCase();
+  // 改写目标自身：幂等，原样返回（见上「1. 幂等」）
+  if (host === "cn.bing.com" || host === "www.cn.bing.com") return { url, note: null };
   const isSearchHost =
     host === "www.google.com" ||
     host === "google.com" ||
@@ -716,12 +727,46 @@ export function rewriteSearchUrl(url: string): { url: string; note: string | nul
 
   if (!isSearchHost) return { url, note: null };
 
-  // 提取查询词：google 用 q，duckduckgo 用 q
-  const q = u.searchParams.get("q");
+  // 提取查询词：google 与 duckduckgo 都用 q
+  const q = rawQueryParam(u, "q");
   if (!q) return { url, note: null };
 
-  const next = `https://cn.bing.com/search?q=${encodeURIComponent(q)}`;
+  // 保留 q 以外的参数（顺序不变），只替换 q 的值
+  const rest = u.searchParams
+    .entries()
+    .filter(([k]) => k !== "q")
+    .map(([k, v]) => `&${encodeURIComponent(k)}=${encodeURIComponent(v)}`)
+    .toArray()
+    .join("");
+  const next = `https://cn.bing.com/search?q=${encodeURIComponent(q)}${rest}`;
   return { url: next, note: `已将 ${host} 的搜索改写为 cn.bing.com（原域名在中国境内不可达）` };
+}
+
+/**
+ * 取查询串里某个参数的**原始值**，只解 `%XX`，不把 `+` 当空格。
+ *
+ * `URLSearchParams` 按 `application/x-www-form-urlencoded` 解析，`+` → 空格。
+ * 但 URL 查询串里 `+` 是合法字面字符（空格的正规编码是 `%20`），`?q=c++`
+ * 应该搜「c++」而不是「c  」。解码失败（畸形 `%`）时退回原文，不抛错。
+ */
+function rawQueryParam(u: URL, name: string): string | null {
+  const search = u.search.startsWith("?") ? u.search.slice(1) : u.search;
+  for (const pair of search.split("&")) {
+    if (pair === "") continue;
+    const eq = pair.indexOf("=");
+    const key = eq === -1 ? pair : pair.slice(0, eq);
+    if (safeDecodeURIComponent(key) !== name) continue;
+    return eq === -1 ? "" : safeDecodeURIComponent(pair.slice(eq + 1));
+  }
+  return null;
+}
+
+function safeDecodeURIComponent(s: string): string {
+  try {
+    return decodeURIComponent(s);
+  } catch {
+    return s;
+  }
 }
 
 /**
