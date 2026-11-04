@@ -154,6 +154,14 @@ describe("machineKeyOf / parseVersion / formatBytes", () => {
     // 末档 P 无处可升，保留一位小数
     expect(formatBytes(K ** 5)).toBe("1.0P");
     expect(formatBytes(1.5 * K ** 5)).toBe("1.5P");
+    // 末档 P 的整数档：≥10P 不带小数，且单位换算必须真的除到 P
+    // （旧实现循环退出时 v 仍是 T 档的值，1024**6 → "1024P"、2*1024**6 → "2048P"）
+    expect(formatBytes(K ** 6)).toBe("1.0P");
+    expect(formatBytes(1.5 * K ** 6)).toBe("1.5P");
+    expect(formatBytes(2 * K ** 6)).toBe("2.0P");
+    expect(formatBytes(48 * K ** 6)).toBe("48P");
+    expect(formatBytes(1023 * K ** 6)).toBe("1023P");
+    expect(formatBytes(1024 * K ** 6)).toBe("1024P"); // 末档合法值（= 1024**7）
     // 非法输入
     expect(formatBytes(-1)).toBe("?");
     expect(formatBytes(Number.NaN)).toBe("?");
