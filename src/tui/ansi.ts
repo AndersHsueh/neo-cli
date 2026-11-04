@@ -80,7 +80,7 @@ export function tokenizeAnsi(text: string): Token[] {
  * 但「只要含 0 就整体清空」也是错的：会连 `\x1b[0;31m` 里的 `31` 一起丢掉，下一行丢色。
  * 所以按参数逐个走：0（含空参数，等价于 0）清空累积，其余继续累积。
  */
-function nextActive(active: string, sgr: string): string {
+export function nextActive(active: string, sgr: string): string {
   const m = /^\x1b\[([0-9;]*)m$/.exec(sgr);
   if (!m) return active;
   const params = (m[1] ?? "").split(";");

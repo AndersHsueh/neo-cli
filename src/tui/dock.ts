@@ -10,7 +10,7 @@
  *
  * 非 TTY 不构造 dock（Console 走原路径），所以这里可以假定 Columns/ANSI 都可用。
  */
-import { wrapAnsi } from "./ansi.ts";
+import { nextActive, tokenizeAnsi, wrapAnsi } from "./ansi.ts";
 
 /** 未完成行的最大缓冲：超过就按空格软断一次，避免 reasoning 通道无限 pending 导致 O(L²) rewrap。 */
 const MAX_PENDING = 240;
@@ -77,7 +77,14 @@ export class TranscriptDock {
       }
       if (cut <= 0) break;
       const head = this.pending.slice(0, cut).trimEnd();
-      this.pending = this.pending.slice(cut).replace(/^ +/, "");
+      // 切点之后的部分从原串中间开始，丢掉了 head 里累积的颜色状态。
+      // 不补回去的话，流式输出一旦超过 MAX_PENDING，剩余文本（以及后续追加）
+      // 都会掉色 —— 而 wrapAnsi 只给 head 自己的输出补行首 SGR，管不到 pending。
+      let active = "";
+      for (const t of tokenizeAnsi(head)) {
+        if (t.kind === "sgr") active = nextActive(active, t.s);
+      }
+      this.pending = active + this.pending.slice(cut).replace(/^ +/, "");
       if (head !== "") this.commit(wrapAnsi(head, this.host.width()));
     }
   }

@@ -102,6 +102,33 @@ describe("F2 TranscriptDock", () => {
     expect(pending().length).toBeGreaterThan(0);
   });
 
+  test("F2i2 软断后 pending 保留颜色上下文（否则超过 240 字符就掉色）", () => {
+    const { host } = makeHost(40);
+    const dock = new TranscriptDock(host);
+    // 300 个红色字符：必然触发 trimPending 软断
+    dock.writeStream("\x1b[31m" + "x".repeat(300));
+    // 剩余 pending 必须继续是红色 —— 切点前的 active SGR 要补回到剩余部分开头
+    expect(dock.pendingText.startsWith("\x1b[31m")).toBe(true);
+    // 追加的文本也延续同一颜色上下文
+    dock.writeStream("MORE");
+    expect(dock.pendingText.endsWith("MORE")).toBe(true);
+    expect(dock.pendingText.startsWith("\x1b[31m")).toBe(true);
+  });
+
+  test("F2i3 软断点落在 reset 之后：pending 不该被染色", () => {
+    const { host } = makeHost(40);
+    const dock = new TranscriptDock(host);
+    // 红色段 300 字符后 reset，再跟 100 个无色字符；软断切在红色段内，
+    // 剩余部分应从红色继续，直到遇到原串里的 \x1b[0m 才恢复无色。
+    dock.writeStream("\x1b[31m" + "x".repeat(300) + "\x1b[0m" + "y".repeat(100));
+    const p = dock.pendingText;
+    expect(p.startsWith("\x1b[31m")).toBe(true);
+    expect(p).toContain("\x1b[0m");
+    // reset 之后的部分不带颜色前缀
+    const afterReset = p.slice(p.indexOf("\x1b[0m") + 4);
+    expect(afterReset).toBe("y".repeat(100));
+  });
+
   test("F2j commitLines 批量提交（一次 commitAbove）", () => {
     const { host, calls } = makeHost(20);
     const dock = new TranscriptDock(host);
