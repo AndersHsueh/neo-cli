@@ -19,7 +19,11 @@
 
       "max_tokens": 8192,
       "temperature": 0.6,
-      "context_window": 200000
+      "context_window": 200000,
+
+      "vision": false,
+      "tools": true,
+      "reasoning": false
     }
   ],
 

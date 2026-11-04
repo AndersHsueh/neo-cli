@@ -120,6 +120,13 @@ export interface ProviderConfig {
   maxTokens: number | null;
   temperature: number | null;
   contextWindow: number | null;
+  /**
+   * 模型能力的手写声明（P1）。undefined = 未填，交给 /models 探测补；
+   * 填了就权威，探测结果不得覆盖。注意 maxTokens 是「请求输出预算」，不是能力上限。
+   */
+  vision?: boolean;
+  tools?: boolean;
+  reasoning?: boolean;
 }
 
 /** 档位 → 目标 {provider, model} 的绑定。跨供应商调度靠这个。 */
@@ -438,6 +445,10 @@ function numOrNull(v: unknown): number | null {
 function bool(v: unknown, d: boolean): boolean {
   return typeof v === "boolean" ? v : d;
 }
+/** 三态布尔：只认 true/false，其余（含缺失、"true" 字符串）一律 undefined = 未填。 */
+function boolOrUndef(v: unknown): boolean | undefined {
+  return typeof v === "boolean" ? v : undefined;
+}
 function str(v: unknown, d: string): string {
   return typeof v === "string" && v.length > 0 ? v : d;
 }
@@ -509,6 +520,9 @@ function parseProviders(raw: unknown): ProviderConfig[] {
       maxTokens: numOrNull(p["max_tokens"]),
       temperature: numOrNull(p["temperature"]),
       contextWindow: numOrNull(p["context_window"]),
+      vision: boolOrUndef(p["vision"]),
+      tools: boolOrUndef(p["tools"]),
+      reasoning: boolOrUndef(p["reasoning"]),
     };
   });
 }
@@ -536,6 +550,9 @@ function providerFromLegacy(raw: Raw): ProviderConfig | null {
     maxTokens: numOrNull(raw["max_tokens"]),
     temperature: numOrNull(raw["temperature"]),
     contextWindow: numOrNull(raw["context_window"]),
+    vision: boolOrUndef(raw["vision"]),
+    tools: boolOrUndef(raw["tools"]),
+    reasoning: boolOrUndef(raw["reasoning"]),
   };
 }
 
