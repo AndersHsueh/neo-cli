@@ -191,7 +191,7 @@ export function hostOf(u: string): string {
  * 覆盖：CSI（含 SGR）、OSC（BEL 或 ST 结尾）、以及两字符的 `\x1b<单字符>` 转义。
  */
 const ANSI_ESCAPE =
-  /\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b[@-_]/g;
+  /\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b[@-_]|\x1b/g;
 
 /** combining / format 字符（宽度 0）。 */
 const ZERO_WIDTH = /\p{Mn}|\p{Me}|\p{Cf}/u;

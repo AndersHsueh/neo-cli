@@ -5,7 +5,7 @@
  * 真实 ANSI 字节，断言最终屏幕与光标位置 —— 与 scripts/pty-e2e.ts 的 Screen 同源思路。
  */
 import { describe, expect, test } from "bun:test";
-import { stripAnsi, truncateAnsi, wrapAnsi } from "../src/tui/ansi.ts";
+import { stripAnsi, tokenizeAnsi, truncateAnsi, wrapAnsi } from "../src/tui/ansi.ts";
 import { FrameRenderer, synchronizedEnabled } from "../src/tui/frame.ts";
 import { displayWidth } from "../src/ui/theme.ts";
 
@@ -145,6 +145,23 @@ describe("A1 wrapAnsi / truncateAnsi", () => {
     expect(displayWidth(title)).toBe(4);
     expect(stripAnsi(title)).toBe("text");
     expect(wrapAnsi(title, 10).map(stripAnsi)).toEqual(["text"]);
+  });
+
+  test("A1i 裸 ESC（不构成合法转义）零宽且不残留", () => {
+    // 裸 ESC = 后面跟普通字符或直接到结尾，不构成 CSI/OSC/两字符转义。
+    // 它本身不渲染任何内容，但留在输出里会把终端推进转义状态，吞掉后续输出。
+    const bare = "abc\x1bdef";
+    expect(displayWidth(bare)).toBe(6); // 只算可见字符，ESC 自身 0 宽
+    expect(stripAnsi(bare)).toBe("abcdef");
+    expect(tokenizeAnsi(bare).filter((t) => t.kind === "sgr")).toEqual([]);
+    // 截断后不能以裸 ESC 收尾
+    expect(truncateAnsi("hello\x1bworld", 5)).toBe("hello");
+    expect(truncateAnsi("hello\x1bworld", 7)).toBe("hellowo");
+    // 结尾裸 ESC 也不能留
+    expect(truncateAnsi("abc\x1b", 3)).toBe("abc");
+    expect(stripAnsi("abc\x1b")).toBe("abc");
+    // 折行同理
+    expect(wrapAnsi("abc\x1bdef", 3)).toEqual(["abc", "def"]);
   });
 });
 

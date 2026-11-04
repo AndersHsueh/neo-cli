@@ -55,8 +55,9 @@ export function tokenizeAnsi(text: string): Token[] {
         i += two[0].length;
         continue;
       }
-      flush();
-      out.push({ kind: "sgr", s: ch, w: 0 });
+      // 裸 ESC：不构成任何合法转义（后面是普通字符或已到结尾）。
+      // 它不渲染内容，但**不能留在输出里** —— 终端会进入转义状态吞掉后续字符，
+      // 截断后行尾残留一个裸 ESC 尤其危险。直接丢弃，不产生 token。
       i += 1;
       continue;
     }
@@ -154,7 +155,9 @@ export function wrapAnsi(text: string, width: number): string[] {
 /** 按显示列截断（ANSI 安全；保留已出现的颜色，末尾补 RESET）。 */
 export function truncateAnsi(text: string, max: number): string {
   const budget = Math.max(0, Math.trunc(max));
-  if (displayWidth(text) <= budget) return text;
+  // 快路径只在「没有裸 ESC」时成立：裸 ESC 零宽，宽度检查会放行，
+  // 但它必须被剥掉（见 tokenizeAnsi），所以含 ESC 时一律走完整路径。
+  if (!text.includes("\x1b") && displayWidth(text) <= budget) return text;
   const tokens = tokenizeAnsi(text);
   let out = "";
   let w = 0;
@@ -173,5 +176,6 @@ export function stripAnsi(text: string): string {
   return text
     .replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, "") // OSC（超链接/标题）：正文必须整体剥掉
     .replace(/\x1b\[[0-9;?]*[ -/]*[@-~]/g, "")
-    .replace(/\x1b[@-_]/g, "");
+    .replace(/\x1b[@-_]/g, "")
+    .replace(/\x1b/g, ""); // 裸 ESC：不构成合法转义，但同样不可见、且会污染终端状态
 }
