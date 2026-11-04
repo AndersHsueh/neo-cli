@@ -41,20 +41,24 @@ export function renderSessionMarkdown(meta: SessionMeta, messages: Message[]): s
   }
   lines.push("", "---", "");
 
+  // 计数只统计「真正写进正文的段」：system 跳过、空 assistant 跳过，
+  // 否则一条无正文的 assistant 会让空会话漏掉占位（导出成只有头部的空文件）。
   let n = 0;
   for (const m of messages) {
     if (m.role === "system") continue;
-    n += 1;
     if (m.role === "user") {
+      n += 1;
       lines.push(`## 用户`, "", contentText(m.content) ?? "", "");
     } else if (m.role === "assistant") {
       const text = contentText(m.content) ?? "";
       const calls = toolCallLines(m);
       if (text.trim() === "" && calls.length === 0) continue;
+      n += 1;
       lines.push(`## 助手`, "");
       if (text.trim() !== "") lines.push(text, "");
       if (calls.length > 0) lines.push("工具调用：", ...calls, "");
     } else if (m.role === "tool") {
+      n += 1;
       lines.push(`### 工具结果${m.name ? ` · ${m.name}` : ""}`, "");
       lines.push(fence(contentText(m.content) ?? ""), "");
     }

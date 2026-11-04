@@ -61,4 +61,24 @@ describe("renderSessionMarkdown", () => {
     const md = renderSessionMarkdown(meta, [{ role: "system", content: "x" }]);
     expect(md).toContain("（空会话）");
   });
+
+  test("只有无正文的 assistant 也算空会话（占位不能漏）", () => {
+    // 计数只算写进正文的段：空 assistant 被跳过，不能把它算作「有内容」。
+    const md = renderSessionMarkdown(meta, [
+      { role: "system", content: "x" },
+      { role: "assistant", content: "" },
+      { role: "assistant", content: null },
+    ]);
+    expect(md).toContain("（空会话）");
+    expect(md).not.toContain("## 助手");
+  });
+
+  test("有正文时不出占位", () => {
+    const md = renderSessionMarkdown(meta, [
+      { role: "assistant", content: "" },
+      { role: "user", content: "hi" },
+    ]);
+    expect(md).not.toContain("（空会话）");
+    expect(md).toContain("## 用户\n\nhi");
+  });
 });
