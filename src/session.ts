@@ -146,13 +146,19 @@ export function saveSession(messages: Message[], meta: SessionMeta): void {
   if (messages.some((m) => Array.isArray(m.content) && m.content.some((p) => p.type === "image_url"))) {
     if (!existsSync(attachmentsDir)) mkdirSync(attachmentsDir, { recursive: true });
   }
+  // 文件名里的序号是**会话内第几张图**，不是 part 下标：
+  //  - 每条用户消息都是「text part + 图片 parts」，part 下标恒从 1 起，
+  //    按 part 下标命名会让每一轮的图都落到 img-1.png，后一轮静默覆盖前一轮；
+  //  - 与 hydrateMessages 的占位编号（`[Image #N]`，N = 会话内第几张图）保持同一口径。
+  let imgSeq = 0;
   const serialized = messages.map((m) => {
     if (!Array.isArray(m.content)) return m;
-    const parts: (ContentPart | { type: "image_ref"; ref: string })[] = m.content.map((p, i) => {
+    const parts: (ContentPart | { type: "image_ref"; ref: string })[] = m.content.map((p) => {
       if (p.type !== "image_url") return p;
       const m2 = /^data:image\/png;base64,(.+)$/.exec(p.image_url.url);
       if (!m2) return p; // 非 data URL（自定义 URL）原样保留
-      const name = `img-${i}.png`;
+      imgSeq += 1;
+      const name = `img-${imgSeq - 1}.png`;
       writeFileSync(join(attachmentsDir, name), Buffer.from(m2[1] ?? "", "base64"));
       return { type: "image_ref", ref: `attachments/${meta.id}/${name}` };
     });
@@ -165,9 +171,9 @@ export function saveSession(messages: Message[], meta: SessionMeta): void {
 /**
  * 恢复时把 $ref 重组回 data URL；附件文件缺失 → text part「[Image #N 已丢失]」，不阻塞（PRD §5.6）。
  *
- * N 是**图片在会话内的序号**（第几张图），不是「第几个丢失的」：落盘按 part 下标命名
- * `img-<i>.png`，用户看到的 chip 是 `[Image #<i+1>]`。若按丢失计数，前面有图还在时
- * 编号会整体前移，模型会对着错误的编号回复。
+ * N 是**图片在会话内的序号**（第几张图），不是「第几个丢失的」：落盘按会话内图片序号命名
+ * `img-<seq>.png`（saveSession 与这里同一口径），用户看到的 chip 是 `[Image #<seq+1>]`。
+ * 若按丢失计数，前面有图还在时编号会整体前移，模型会对着错误的编号回复。
  */
 export function hydrateMessages(messages: Message[]): Message[] {
   const dir = sessionsDir();
