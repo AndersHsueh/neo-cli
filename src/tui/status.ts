@@ -63,13 +63,18 @@ export function formatElapsed(ms: number): string {
 }
 
 /**
- * token 数：<1e3 原样 → <1e4 一位小数 k → <1e6 整数 k → 其余一位小数 M。
- * 例：999 / 1.2k / 12k / 1.2M。不四舍五入跨档（9999 仍属一位小数档）。
+ * token 数：一位小数档 / 整数档交替推进到 T。
+ * 例：999 / 1.2k / 12k / 1.2M / 12M / 1.2G / 12G / 1.0T。
+ * 不四舍五入跨档（9999 仍属一位小数档）。
  *
  * 档位边界必须「进位即升档」（纪律与实现在 ui/format.ts）：9_999 的
  * toFixed(1) 是 "10.0"、999_999 的 Math.round 是 1000，若原样输出会得到
  * "10.0k"/"1000k" —— 既跨了档（宽度突然多 2 列再缩回），又与下一档的
  * "10k"/"1.0M" 撞值。
+ *
+ * v0.4.31：M/G 档原先没有守这条纪律（9_999_999 → "10.0M"、999_999_999 →
+ * "1000.0M"，且 1e9 以上一直显示 "1000.0M"），现按同一套「一位小数档 /
+ * 整数档」交替推进，与 k 档同构。
  */
 export function formatTokens(n: number): string {
   const v = Number.isFinite(n) ? Math.max(0, Math.floor(n)) : 0;
@@ -79,7 +84,19 @@ export function formatTokens(n: number): string {
     const k = rounded(v / 1_000);
     return k >= 1_000 ? `${(v / 1_000_000).toFixed(1)}M` : `${k}k`; // 999_500~999_999 → M 档
   }
-  return `${(v / 1_000_000).toFixed(1)}M`;
+  // M 档：一位小数（<10M）→ 整数（<1000M），进位到 1000 升 G 档。
+  if (v < 10_000_000) return `${fixed1(v / 1_000_000)}M`; // 9_950_000~9_999_999 → "10M"
+  if (v < 1_000_000_000) {
+    const m = rounded(v / 1_000_000);
+    return m >= 1_000 ? `${(v / 1_000_000_000).toFixed(1)}G` : `${m}M`;
+  }
+  // G 档：一位小数（<10G）→ 整数（<1000G），进位到 1000 升 T 档。
+  if (v < 10_000_000_000) return `${fixed1(v / 1_000_000_000)}G`;
+  if (v < 1_000_000_000_000) {
+    const g = rounded(v / 1_000_000_000);
+    return g >= 1_000 ? `${(v / 1_000_000_000_000).toFixed(1)}T` : `${g}G`;
+  }
+  return `${fixed1(v / 1_000_000_000_000)}T`;
 }
 
 /** 进度条：ratio clamp 到 0..1 后按格数四舍五入。默认 5 格、▓ 填充 / ░ 空白。 */

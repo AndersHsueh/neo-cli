@@ -172,6 +172,28 @@ describe("S1d token 格式", () => {
     expect(formatTokens(999_500)).toBe("1.0M");
     expect(formatTokens(999_499)).toBe("999k");
   });
+
+  // v0.4.31：M 档是「一位小数」档，同样要守档内纪律——
+  // 9_999_999 的 toFixed(1) 是 "10.0"，999_999_999 是 "1000.0"，
+  // 原样输出会得到 "10.0M"/"1000.0M"：既跨档（宽度多 2 列）又与下一档的
+  // "10M"/"1.0G" 撞值。与 k 档的 9_999 → "10k" 是同一类缺陷。
+  test("S1d M 档进位到 10.0 时降级为整数 M", () => {
+    expect(formatTokens(9_999_999)).toBe("10M");
+    expect(formatTokens(9_960_000)).toBe("10M"); // toFixed(1) 已进位到 "10.0"
+    expect(formatTokens(9_500_000)).toBe("9.5M");
+  });
+
+  test("S1d M 档进位到 1000 时升级为 G", () => {
+    expect(formatTokens(999_999_999)).toBe("1.0G");
+    expect(formatTokens(999_500_000)).toBe("1.0G");
+    expect(formatTokens(999_499_999)).toBe("999M");
+  });
+
+  test("S1d G 档同样守档内纪律", () => {
+    expect(formatTokens(1_000_000_000)).toBe("1.0G");
+    expect(formatTokens(9_999_999_999)).toBe("10G");
+    expect(formatTokens(999_999_999_999)).toBe("1.0T");
+  });
 });
 
 describe("S1e 优先级与丢弃顺序", () => {
