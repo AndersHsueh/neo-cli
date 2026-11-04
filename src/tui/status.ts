@@ -4,11 +4,12 @@
  * 纯函数，无 IO：输入是快照，输出是**可直接写终端的一行**（不折行是硬约束）。
  *
  * 版式（字段顺序固定，与优先级解耦）：
- *   `model · tier · mode · ⎇ branch · ctx ▓▓░░░ 42% · 0:42 · 12k tok`
+ *   `v0.4.54 · model · tier · mode · ⎇ branch · ctx ▓▓░░░ 42% · 0:42 · 12k tok`
  *
  * 宽度不足时按 priority **从低到高**丢字段（queue 30 → tokens 40 → branch 50 →
- * elapsed 60 → ctx 70 → mode 80 → tier 90 → model 100），但 `model` 与 `ctx` 是保底：
+ * elapsed 60 → ctx 70 → mode 80 → tier 90 → version/model 100），但 `model` 与 `ctx` 是保底：
  * 两者仍超宽时用 `…` 截断 model（theme.truncate 按显示列切，CJK 也不会超宽）。
+ * `version` 与 `model` 同为 100，但**不保底**：窄屏先丢 version，再截 model。
  *
  * 宽度口径统一走 `theme.displayWidth`（CJK=2、SGR=0 宽）；`⎇` 在该口径下是 1 列，
  * 故分支前缀 `⎇ ` 占 2 列。
@@ -17,6 +18,8 @@ import { clock, fixed1, rounded } from "../ui/format.ts";
 import { displayWidth, truncate } from "../ui/theme.ts";
 
 export interface StatusSnapshot {
+  /** 版本号，如 "0.4.54"；显示在状态行最左（`v0.4.54`）。 */
+  version: string;
   /** 模型名，如 "deepseek-flash"。 */
   model: string;
   /** 档位，如 "balanced"。 */
@@ -50,7 +53,7 @@ const BAR_CELLS = 5;
 const ELLIPSIS_WIDTH = 1;
 
 /** 内部字段种类：用于识别保底字段（model / ctx）与丢弃目标。 */
-type Kind = "model" | "tier" | "mode" | "branch" | "ctx" | "elapsed" | "tokens" | "queue";
+type Kind = "version" | "model" | "tier" | "mode" | "branch" | "ctx" | "elapsed" | "tokens" | "queue";
 
 interface Built {
   kind: Kind;
@@ -141,6 +144,7 @@ function build(s: StatusSnapshot): Built[] {
     out.push({ kind, seg: { text, role, priority } });
   };
 
+  add("version", `v${s.version}`, "muted", 100);
   add("model", s.model, "accent", 100);
   add("tier", s.tier, "tier", 90);
   if (s.mode !== undefined && s.mode !== "") add("mode", s.mode, "text", 80);
@@ -204,6 +208,10 @@ function clampToMinimum(built: Built[], limit: number): Built[] {
 /**
  * 渲染成一行纯文本（paint 缺省恒等）。
  *
+ * 宽限字段：`version` 与 `model` 同为 priority 100，但**不参与保底**——
+ * 窄终端下先丢 version 再截 model，保证模型名与 ctx 始终可读。
+ * 丢弃循环按 priority 从低到高，version 排在 model 之后（同优先级时后者先被丢）。
+ *
  * paint 只接收「保留下来」的字段文本；分隔符 `" · "` 不参与着色。
  * 宽度判定一律在**纯文本**上做 —— paint 若返回 SGR（零宽）不影响结果；
  * 若返回非 SGR 转义则由调用方自行保证零宽。
@@ -224,7 +232,8 @@ export function renderStatus(
     for (let i = 0; i < keep.length; i++) {
       const item = keep[i];
       if (!item || isProtected(item.kind)) continue;
-      if (item.seg.priority < lowest) {
+      // 同优先级时取靠后的字段：version 与 model 同为 100，窄屏先丢 version 再截 model。
+      if (item.seg.priority <= lowest) {
         lowest = item.seg.priority;
         dropAt = i;
       }

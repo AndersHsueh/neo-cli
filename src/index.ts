@@ -1290,6 +1290,7 @@ async function main(): Promise<number> {
       stdin: process.stdin as unknown as NodeJS.ReadStream,
       stdout: process.stdout,
       getStatus: (): ComposerStatus => ({
+        version: VERSION,
         model: cfg.model,
         tier: tierDisplayName(cfg.modelTier),
         mode:

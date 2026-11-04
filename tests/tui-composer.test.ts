@@ -35,6 +35,7 @@ function makeHarness(overrides: Partial<ComposerDeps> = {}): Harness {
   (stdin as unknown as { setRawMode: (v: boolean) => void }).setRawMode = () => {};
   (stdin as unknown as { isRaw: boolean }).isRaw = false;
   const status: ComposerStatus = {
+    version: "0.4.54",
     model: "deepseek-flash",
     tier: "balanced",
     mode: "ask",
