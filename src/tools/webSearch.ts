@@ -15,11 +15,23 @@ export interface SearchResult {
   snippet: string;
 }
 
+/**
+ * 数字字符引用 → 字符。码点越界（> 0x10FFFF）或落在代理区（0xD800–0xDFFF）
+ * 时 `String.fromCodePoint` 会抛 RangeError，而引用来自外部 RSS，畸形实体
+ * 不该让整个 web_search 崩掉 —— 原样保留。
+ */
+function codePointToString(cp: number, raw: string): string {
+  if (!Number.isInteger(cp) || cp < 0 || cp > 0x10ffff || (cp >= 0xd800 && cp <= 0xdfff)) {
+    return raw;
+  }
+  return String.fromCodePoint(cp);
+}
+
 function decodeXml(s: string): string {
   return s
     .replace(/<!\[CDATA\[([\s\S]*?)\]\]>/g, "$1")
-    .replace(/&#x([0-9a-f]+);/gi, (_, h: string) => String.fromCodePoint(parseInt(h, 16)))
-    .replace(/&#(\d+);/g, (_, d: string) => String.fromCodePoint(parseInt(d, 10)))
+    .replace(/&#x([0-9a-f]+);/gi, (m, h: string) => codePointToString(parseInt(h, 16), m))
+    .replace(/&#(\d+);/g, (m, d: string) => codePointToString(parseInt(d, 10), m))
     .replace(/&lt;/g, "<")
     .replace(/&gt;/g, ">")
     .replace(/&quot;/g, '"')

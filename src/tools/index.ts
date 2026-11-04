@@ -766,6 +766,18 @@ const webFetch: ToolImpl = {
   },
 };
 
+/**
+ * 数字字符引用 → 字符。码点越界（> 0x10FFFF）或落在代理区（0xD800–0xDFFF）
+ * 时 `String.fromCodePoint` 会抛 RangeError，而引用来自外部网页，畸形实体
+ * （如 `&#1114112;`）不该让整个 web_fetch 崩掉 —— 原样保留即可。
+ */
+function codePointToString(cp: number): string {
+  if (!Number.isInteger(cp) || cp < 0 || cp > 0x10ffff || (cp >= 0xd800 && cp <= 0xdfff)) {
+    return `&#${cp};`;
+  }
+  return String.fromCodePoint(cp);
+}
+
 /** 极简 HTML → 文本。移除 script/style，块级标签转换行。 */
 export function htmlToText(html: string): string {
   return html
@@ -781,7 +793,7 @@ export function htmlToText(html: string): string {
     .replace(/&gt;/g, ">")
     .replace(/&quot;/g, '"')
     .replace(/&#39;/g, "'")
-    .replace(/&#(\d+);/g, (_m, d: string) => String.fromCodePoint(Number(d)))
+    .replace(/&#(\d+);/g, (_m, d: string) => codePointToString(Number(d)))
     .replace(/[ \t]+/g, " ")
     .replace(/\n{3,}/g, "\n\n")
     .trim();

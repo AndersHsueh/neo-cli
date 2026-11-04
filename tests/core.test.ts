@@ -419,6 +419,20 @@ describe("htmlToText", () => {
   test("解码实体", () => {
     expect(htmlToText("<p>a &amp; b &lt;c&gt;</p>")).toContain("a & b <c>");
   });
+
+  // 外部网页里的畸形数字实体不该让整个 web_fetch 崩掉（v0.4.19）
+  test("越界数字实体原样保留，不抛 RangeError", () => {
+    expect(() => htmlToText("<p>&#1114112;</p>")).not.toThrow();
+    expect(htmlToText("<p>&#1114112;</p>")).toBe("&#1114112;");
+    expect(htmlToText("<p>&#99999999;</p>")).toBe("&#99999999;");
+    // 代理区码点同样非法
+    expect(htmlToText("<p>&#55357;</p>")).toBe("&#55357;");
+  });
+
+  test("合法数字实体照常解码（含 emoji）", () => {
+    expect(htmlToText("<p>&#65;</p>")).toBe("A");
+    expect(htmlToText("<p>&#128512;</p>")).toBe("😀");
+  });
 });
 
 /* ------------------------------------------------------------------ */

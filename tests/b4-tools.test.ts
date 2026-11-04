@@ -105,6 +105,17 @@ describe("D3 web_search", () => {
     expect(r[1]!.title).toBe("第二篇");
   });
 
+  // 畸形数字字符引用不该让整个 web_search 崩掉（v0.4.19）
+  test("parseBingRss：越界数字实体原样保留，不抛 RangeError", () => {
+    const mk = (t: string) =>
+      `<rss><item><title>${t}</title><link>https://a.com/x</link></item></rss>`;
+    expect(() => parseBingRss(mk("&#1114112;"))).not.toThrow();
+    expect(parseBingRss(mk("&#1114112;"))[0]!.title).toBe("&#1114112;");
+    expect(parseBingRss(mk("&#x110000;"))[0]!.title).toBe("&#x110000;");
+    // 合法实体照常解码
+    expect(parseBingRss(mk("&#x1F600;"))[0]!.title).toBe("😀");
+  });
+
   test("工具返回格式化结果；count 生效", async () => {
     let seenUrl = "";
     const tool = makeWebSearchTool({
