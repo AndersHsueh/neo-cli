@@ -10,7 +10,18 @@
 import { createHash } from "node:crypto";
 import type { EnvSnapshot } from "./types.ts";
 
-/** 字节 → 人类可读（二进制单位，1 位小数）。 */
+/**
+ * 字节 → 人类可读（二进制单位；<10 一位小数，≥10 整数）。
+ *
+ * 档位边界必须「进位即升档」（与 tui/status.ts 的 formatTokens、
+ * ui/toolLog.ts 的 formatDuration 同一纪律）：1023.95K 的 toFixed(1) 是
+ * "1024.0"，若原样输出会得到 "1024K" —— 既跨了档（宽度多 1 列），
+ * 又与下一档的 "1.0M" 表达同一数量级。同理 9.96K 的 toFixed(1) 是 "10.0"，
+ * 若按原始值判断档位会留在小数档，输出 "10.0K" 与真正的 "10K" 撞值。
+ *
+ * 注意 1024 进制下 1000K（= 0.977M）是档内合法值，不强行升档——这点与
+ * 十进制的 formatTokens（999_500 → 1.0M）有意不同。
+ */
 export function formatBytes(bytes: number): string {
   if (!Number.isFinite(bytes) || bytes < 0) return "?";
   const units = ["B", "K", "M", "G", "T", "P"];
@@ -21,7 +32,21 @@ export function formatBytes(bytes: number): string {
     i += 1;
   }
   if (i === 0) return `${Math.round(v)}B`;
-  return `${v >= 10 ? v.toFixed(0) : v.toFixed(1)}${units[i]}`;
+
+  // 档内格式：<10 一位小数，≥10 整数。进位到 1024 说明该升档（末档 P 无处可升，保留 1024P）。
+  // 注意判断必须用「取整后的值」：9.96 的 toFixed(1) 是 "10.0"、999.95 的
+  // Math.round 是 1000，用原始值判断会让它们留在小数档/整数档里跨档。
+  const fmt = (x: number): string => {
+    const one = Number(x.toFixed(1));
+    return one >= 10 ? String(Math.round(x)) : one.toFixed(1);
+  };
+  while (i < units.length - 1) {
+    const text = fmt(v);
+    if (Number(text) < 1024) return `${text}${units[i]}`;
+    v /= 1024;
+    i += 1;
+  }
+  return `${fmt(v)}${units[i]}`;
 }
 
 /** prompt 里展示的核心工具顺序（其余工具只在 `/env` 与 wiki 页出现）。 */
