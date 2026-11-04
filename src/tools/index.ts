@@ -385,7 +385,29 @@ const globTool: ToolImpl = {
   },
 };
 
-/** 最小 glob → RegExp。支持 *, **, ?, {a,b}, 字符类。 */
+/**
+ * glob 字符类 → 正则字符类。
+ *
+ * glob 的 `[!abc]` 是「非 a/b/c」，原样塞进 RegExp 会被读成字面量 `!` 加 `abc`，
+ * 语义正好相反（`[!abc].ts` 会命中 `a.ts` 而漏掉 `d.ts`）。这里做两件事：
+ *  1. `!` / `^` 开头的取反统一转成 JS 的 `[^...]`；
+ *  2. 类内的 `\` 与 `]` 转义，避免生成非法正则（如 `[a\]`）。
+ * 空类（`[]`）在 glob 里是字面量，退化成转义后的 `\[\]` 由调用方处理更简单 ——
+ * 这里返回 `[]` 会让整条正则抛 SyntaxError，故显式兜底成「永不匹配」。
+ */
+function charClass(body: string): string {
+  let inner = body;
+  let negate = false;
+  if (inner.startsWith("!") || inner.startsWith("^")) {
+    negate = true;
+    inner = inner.slice(1);
+  }
+  if (inner === "") return "(?!)"; // 空字符类：不匹配任何字符
+  inner = inner.replace(/\\/g, "\\\\").replace(/\]/g, "\\]");
+  return negate ? `[^${inner}]` : `[${inner}]`;
+}
+
+/** 最小 glob → RegExp。支持 *, **, ?, {a,b}, 字符类（含 [!...] 取反）。 */
 export function globToRegExp(pattern: string): RegExp {
   let re = "";
   let i = 0;
@@ -427,7 +449,7 @@ export function globToRegExp(pattern: string): RegExp {
     if (ch === "[") {
       const end = pattern.indexOf("]", i);
       if (end !== -1) {
-        re += pattern.slice(i, end + 1);
+        re += charClass(pattern.slice(i + 1, end));
         i = end + 1;
         continue;
       }

@@ -238,6 +238,27 @@ describe("glob / grep", () => {
     expect(globToRegExp("a?.txt").test("ab.txt")).toBe(true);
   });
 
+  // v0.4.11：glob 的 [!abc] 是「非 a/b/c」，旧实现原样塞进 RegExp 被读成
+  // 字面量 `!` + `abc`，语义正好相反（d.ts 漏掉、a.ts 反被命中）。
+  test("globToRegExp 字符类取反 [!...] 与 glob 语义一致", () => {
+    expect(globToRegExp("[!abc].ts").test("d.ts")).toBe(true);
+    expect(globToRegExp("[!abc].ts").test("a.ts")).toBe(false);
+    expect(globToRegExp("[!abc].ts").test("!.ts")).toBe(true); // `!` 不在 a/b/c 里，属于取反集
+    // [^...] 不是 glob 标准写法，但按取反处理，避免用户/模型误写时静默反义
+    expect(globToRegExp("[^abc].ts").test("d.ts")).toBe(true);
+    expect(globToRegExp("[^abc].ts").test("a.ts")).toBe(false);
+    // 取反后类内为空 → 不匹配任何字符（不抛 SyntaxError）
+    expect(() => globToRegExp("[!].ts")).not.toThrow();
+    expect(globToRegExp("[!].ts").test("a.ts")).toBe(false);
+  });
+
+  test("globToRegExp 普通字符类与区间不受影响", () => {
+    expect(globToRegExp("[a-c].ts").test("b.ts")).toBe(true);
+    expect(globToRegExp("[a-c].ts").test("d.ts")).toBe(false);
+    expect(globToRegExp("*.[ch]").test("a.c")).toBe(true);
+    expect(globToRegExp("*.[ch]").test("a.ts")).toBe(false);
+  });
+
   test("glob 找到文件", async () => {
     write("g/one.ts", "1");
     write("g/two.ts", "2");
