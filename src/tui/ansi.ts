@@ -148,8 +148,22 @@ export function wrapAnsi(text: string, width: number): string[] {
     if (rowW + t.w > max && row.length > 0) {
       // 恰好塞满时遇到空格：空格本身就是断点，直接丢空格换行。
       // 例：max=11，"hello world" 已占满 11 列，下一个空格不该把 "hello" 拆出去。
+      // 断点后的连续空格同样是「行首空白」，要一起丢 —— 与 buffer.ts 的 wrapSegment
+      // 同口径，否则 `"ab   cd"` 宽 3 会折出 `["ab ", " cd"]`（下一行以空格开头），
+      // 而输入框给出 `["ab ", "cd"]`。
+      // 但整行都是空格时（纯空白行），空格就是内容本身，必须原样折行保留（B1i）。
       if (t.s === " ") {
+        const rowHadContent = row.some((x) => x.kind === "char" && x.s !== " ");
         emitRow();
+        if (rowHadContent) {
+          // 有内容：断点空格与后续连续空格都是行首空白，一起丢。
+          while (i + 1 < tokens.length && tokens[i + 1]!.kind === "char" && tokens[i + 1]!.s === " ") i += 1;
+          continue;
+        }
+        // 纯空白行：这个空格是内容，放不进上一行就落到下一行行首，不能丢。
+        // row 已被 emitRow 清空，直接放进新行（不能 continue，否则空格被吞）。
+        row.push(t);
+        rowW = t.w;
         continue;
       }
       // 找最后一个空格做词边界（空格不进入下一行）
@@ -161,8 +175,12 @@ export function wrapAnsi(text: string, width: number): string[] {
       // 否则 `"  （长行）"` 会被拆成只有空格的残行。
       const breakable = spaceAt > 0 && row.slice(0, spaceAt).some((x) => x.kind === "char" && x.s !== " ");
       if (breakable) {
-        const keep = row.slice(0, spaceAt);
-        const rest = row.slice(spaceAt + 1);
+        // 断点空格留在上一行行尾；断点后的连续空格是「行首空白」，一并丢弃。
+        // 与 buffer.ts 的 wrapSegment 同口径 —— 否则 `"ab   cd"` 宽 3 会折出
+        // `["ab ", " cd"]`（下一行以空格开头），而输入框给出 `["ab ", "cd"]`。
+        const keep = row.slice(0, spaceAt + 1);
+        let rest = row.slice(spaceAt + 1);
+        while (rest.length > 0 && rest[0]!.kind === "char" && rest[0]!.s === " ") rest = rest.slice(1);
         row = keep;
         emitRow();
         row = rest;

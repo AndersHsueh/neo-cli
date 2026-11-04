@@ -102,7 +102,21 @@ describe("A1 wrapAnsi / truncateAnsi", () => {
 
   test("A1b 优先在空格处折行，空格不进入下一行", () => {
     expect(wrapAnsi("hello world foo", 11)).toEqual(["hello world", "foo"]);
-    expect(wrapAnsi("hello world foo", 8)).toEqual(["hello", "world", "foo"]);
+    // 断点空格留在上一行行尾（放得下时），不进入下一行行首 —— 与 buffer.ts 的
+    // layoutBuffer 同口径：layoutBuffer("hello world foo", 0, 8) 同样是
+    // ["hello ", "world ", "foo"]。旧期望 ["hello","world","foo"] 是丢弃断点空格的旧行为。
+    expect(wrapAnsi("hello world foo", 8)).toEqual(["hello ", "world ", "foo"]);
+  });
+
+  test("A1b2 连续空格折行与 layoutBuffer 同口径（下一行不以空格开头）", () => {
+    // 断点后的连续空格是「行首空白」，必须一起丢弃；否则 "ab   cd" 宽 3 会折出
+    // ["ab ", " cd"]，与输入框 layoutBuffer 给出的 ["ab ", "cd"] 对不上。
+    expect(wrapAnsi("ab   cd", 3)).toEqual(["ab ", "cd"]);
+    expect(wrapAnsi("ab    cd", 3)).toEqual(["ab ", "cd"]);
+    expect(wrapAnsi("hello   world", 6)).toEqual(["hello ", "world"]);
+    // 纯空白行是例外：空格就是内容，必须原样折行保留，一个都不能丢。
+    expect(wrapAnsi("    ", 2)).toEqual(["  ", "  "]);
+    expect(wrapAnsi("     ", 2)).toEqual(["  ", "  ", " "]);
   });
 
   test("A1c 单字符超宽时独占一行", () => {
