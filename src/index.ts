@@ -76,6 +76,12 @@ import {
   recordModelContext,
   resolveAndApplyModelWindow,
 } from "./env/modelWindows.ts";
+import {
+  isCapabilityUndeclared,
+  probeCapabilitiesOnFirstUse,
+  writeBackContextLimit,
+  writeBackOutputLimit,
+} from "./env/modelCaps.ts";
 import { syncEnvPage } from "./env/wiki.ts";
 import { ensureScopeLayout } from "./memory/layout.ts";
 import { adoptSession, applyRestored, createSession, listSessions, loadSession, type SessionMeta } from "./session.ts";
@@ -371,17 +377,40 @@ async function main(): Promise<number> {
   // A2：交互模式下异步探测当前模型窗口（/models 元数据）；失败静默。
   // 探测成功会写入 env 事实文件，后续启动/切模型直接命中。
   if (interactiveTTY) {
-    void detectAndRecordModelWindow(cfg)
-      .then((info) => {
-        if (!info?.contextWindow) return;
-        const r = resolveAndApplyModelWindow(cfg);
-        if (r.source !== "config") {
-          ui.info(`模型上下文窗口：${r.tokens.toLocaleString()} tokens（${r.source}）`);
-        }
-      })
-      .catch(() => {
-        /* 探测失败不影响会话 */
-      });
+    // P3 首次使用探测：当前 provider 的能力五项全未填 → 先明确告知用户，再探测并补空字段。
+    // 判定必须在下面那次探测之前做 —— 探测本身会写 env 事实，但不会改 settings 手写值。
+    if (isCapabilityUndeclared(cfg)) {
+      ui.info(
+        `首次使用 ${cfg.providerName}/${cfg.model}：为保障效果，将探测模型能力（上下文窗口 / 输出上限 / 视觉 / 工具 / 推理）并补进 settings.json 的空字段。`,
+      );
+      void probeCapabilitiesOnFirstUse(cfg)
+        .then((r) => {
+          if (r.written.length > 0) {
+            ui.info(`已补进 settings.json：${r.written.join("、")}（手写值不会被覆盖）`);
+          }
+          if (r.contextWindow) {
+            const applied = resolveAndApplyModelWindow(cfg);
+            if (applied.source !== "config") {
+              ui.info(`模型上下文窗口：${applied.tokens.toLocaleString()} tokens（${applied.source}）`);
+            }
+          }
+        })
+        .catch(() => {
+          /* 探测失败不影响会话 */
+        });
+    } else {
+      void detectAndRecordModelWindow(cfg)
+        .then((info) => {
+          if (!info?.contextWindow) return;
+          const r = resolveAndApplyModelWindow(cfg);
+          if (r.source !== "config") {
+            ui.info(`模型上下文窗口：${r.tokens.toLocaleString()} tokens（${r.source}）`);
+          }
+        })
+        .catch(() => {
+          /* 探测失败不影响会话 */
+        });
+    }
 
     // B5：清理过期工具输出与已死 mailbox 会话目录（默认 7 天）。
     try {
@@ -628,6 +657,14 @@ async function main(): Promise<number> {
         contextWindow: tokens,
         source: "overflow_error",
         evidence: "服务端上下文溢出错误",
+      });
+      // P3 撞墙写回：settings 里 context_window 为空才补，已填的保持用户值。
+      writeBackContextLimit(cfg, tokens);
+    },
+    // P3 输出撞墙：finish_reason=length 时探测输出上限，补进空的 max_output_tokens。
+    onOutputLimit: () => {
+      void writeBackOutputLimit(cfg).catch(() => {
+        /* 探测/写回失败不影响重试 */
       });
     },
     askUser: interactiveTTY

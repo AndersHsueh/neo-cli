@@ -127,6 +127,12 @@ export interface ProviderConfig {
   vision?: boolean;
   tools?: boolean;
   reasoning?: boolean;
+  /**
+   * 模型单次输出上限（P3）。与 `maxTokens` 语义不同：后者是「本次请求要多少输出」，
+   * 这里是「模型最多能给多少」。由探测写回填充，也可手写；null/undefined = 未填。
+   * 展示口径仍遵循 P2：能力上限 ≠ cfg.maxTokens（见 buildModelCapabilityView）。
+   */
+  maxOutputTokens?: number | null;
 }
 
 /** 档位 → 目标 {provider, model} 的绑定。跨供应商调度靠这个。 */
@@ -523,6 +529,7 @@ function parseProviders(raw: unknown): ProviderConfig[] {
       vision: boolOrUndef(p["vision"]),
       tools: boolOrUndef(p["tools"]),
       reasoning: boolOrUndef(p["reasoning"]),
+      maxOutputTokens: numOrNull(p["max_output_tokens"]),
     };
   });
 }
@@ -553,6 +560,7 @@ function providerFromLegacy(raw: Raw): ProviderConfig | null {
     vision: boolOrUndef(raw["vision"]),
     tools: boolOrUndef(raw["tools"]),
     reasoning: boolOrUndef(raw["reasoning"]),
+    maxOutputTokens: numOrNull(raw["max_output_tokens"]),
   };
 }
 

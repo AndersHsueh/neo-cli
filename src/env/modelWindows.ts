@@ -266,7 +266,7 @@ export async function detectAndRecordModelWindow(cfg: Config): Promise<ModelCont
 /**
  * 合并能力事实：settings 手写的 vision/tools/reasoning 权威，探测值只补空缺。
  *
- * 为什么不写回 settings：P1 只做「读」，探测结果进 env 快照；
+ * 写回策略见 env/modelCaps.ts（P3）：只补**空缺**字段，手写值（含 false）永不覆盖。
  * 用户显式填过的字段永远优先，避免一次网关元数据抖动就改掉用户的判断。
  */
 export function mergeModelCapabilities(

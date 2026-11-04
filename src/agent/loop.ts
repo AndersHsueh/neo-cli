@@ -376,6 +376,8 @@ export class Agent {
     let nudgeMsg: Message | null = null;
     /** 上下文溢出恢复只做一次（A2），避免无限压缩-重试循环。 */
     let overflowRecovered = false;
+    /** 输出撞墙写回只做一次（P3），避免每轮都打 /models。 */
+    let outputLimitProbed = false;
     /** 本轮是否已产出最终正文（用于收口「循环结束但没回答」）。 */
     let answered = false;
     /** 轮次内是否因用户 abort 退出（循环顶部 break 路径）。 */
@@ -577,6 +579,16 @@ export class Agent {
               65_536,
               Math.max(this.opt.cfg.maxTokens * 2, this.opt.cfg.maxTokens + 4_096),
             );
+            // P3 输出撞墙：把模型的真实输出上限补进 settings 的空字段（不覆盖手写值）。
+            // 后台跑、不 await —— 探测再慢也不该拖住这次重试。
+            if (!outputLimitProbed) {
+              outputLimitProbed = true;
+              try {
+                this.opt.onOutputLimit?.(this.opt.cfg.model);
+              } catch {
+                // 写回失败不影响重试
+              }
+            }
           }
           if (res.reasoning.trim() !== "") {
             this.opt.console.info(
