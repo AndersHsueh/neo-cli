@@ -1,6 +1,6 @@
 # neo 开发踩坑
 
-> 最后更新:2026-10-20
+> 最后更新:2026-11-05
 
 ## 摘要
 
@@ -88,6 +88,19 @@ neo 开发过程中沉淀的教训清单,持续追加。当前十条:zsh 变量�
 根因：15s 心跳只在 REPL 空闲 tick 里刷新；turn 进行中 tick 被 `draining` 挡住，心跳停止。watchdog 只看 `heartbeat_at` 就判死。
 
 修法（v0.2.1）：心跳拆成独立 `setInterval`（turn 中照常刷）；流式输出按 30s 节流计入 `last_progress_at`；`PeerObservation.pid_alive` 用 `process.kill(pid,0)` 做第二道保险，心跳超时但进程存活时降级 `stale` 而非 `dead`。教训：**liveness 信号必须独立于业务忙闲**，不能用「没在处理输入」推断「进程死了」。
+
+### 配置字段存在 ≠ 该代码路径在跑（classifier_provider）
+
+- **现象**：看到 `settings.json` 里写着 `classifier_provider: "IPSA"` / `classifier_model_name: "glm-5.3-flash"`，据此推断「分类器每轮都调一次 LLM，走 IPSA 在花钱」，并建议把分类器切到免费 provider 省钱。
+- **根因**：默认分类器是 `rule`（纯关键词规则），不是 `llm`。判定点在 `src/index.ts:523`：`new Classifier(cfg, (args.auto ?? "rule"))` —— 缺省值 `"rule"` → `src/classifier/index.ts:32` 返回 `new RuleClassifier()` → `src/classifier/rules.ts:198` 遍历 `RULES` 数组逐条 `test()`，零网络调用。`classifier_provider` / `classifier_model_name` 只在 `case "llm"` 分支被 `LlmClassifier`（`src/classifier/llm.ts:67-74`）读取，默认路径下是**死配置**，不产生任何请求。
+- **教训**：判断「某功能是否在跑」必须读默认值所在的调用点，不能从配置字段名反推。配置里出现一个 provider/model 名字，只说明「如果切到那条路径会用谁」，不说明那条路径当前是活的。同类陷阱：`model_routes` 四档全配了也不代表四档都会被触发（取决于分类器是否切档）。
+
+### 开发期组合：rule 分类器 + freeLlmApi(auto) 网关
+
+- **背景**：freeLlmApi（`http://localhost:3001/v1`，model 传 `auto`）是免费无限 token 的本地网关，开发阶段用它替代 IPSA 省钱。
+- **取舍**：`auto` 意味着四个 tier 都路由到同一后端（实测命中 `deepseek-flash`，响应带 `_routed_via.model`），档位语义由网关决定而非配置决定 —— 与「fast 路由模型池判死」是同一类风险。开发期接受，因为省下的钱和心智成本更值钱。
+- **配合**：因为默认分类器是 `rule`，档位几乎不会自动切换，`auto` 的档位语义模糊问题在开发期基本不暴露。等真正需要 LLM 分类（`/auto llm` 或 `--auto llm`）时，才需要重新评估 `auto` 网关能否给 `deep_reasoning` 档提供真推理模型。
+- **潜在风险**：免费网关通常限流。neo 自身会并发打请求（`task` 子代理、多会话协作），限流表现往往不是干净的 429，而是超时或空响应，排查成本高。真遇到时优先怀疑网关而非 neo 的重试逻辑。
 
 ## 2026-10-19 JXA（osascript -l JavaScript）三坑：stdout 污染 / 退出码不可控 / 无 console.error
 
