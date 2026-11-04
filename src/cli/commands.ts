@@ -27,6 +27,7 @@ import {
   type Config,
 } from "../config.ts";
 import {
+  currentModelCapabilityView,
   detectAndRecordModelWindow,
   formatModelWindowLines,
   resolveAndApplyModelWindow,
@@ -182,6 +183,14 @@ export async function handleCommand(line: string, ctx: CommandContext): Promise<
         "window",
         `${cfg.contextWindow.toLocaleString()} tokens ${c.dim(`(${cfg.contextWindowSource ?? resolved.source})`)}`,
       );
+      // P2：当前模型的五项能力（context / max_output / vision / tools / reasoning）。
+      // 未填与 unknown 一律「未知」；手写 settings 优先，env 探测补空缺。
+      const caps = currentModelCapabilityView(cfg);
+      ui.kv("context", caps.contextWindow);
+      ui.kv("max_output", caps.maxOutputTokens);
+      ui.kv("vision", caps.vision);
+      ui.kv("tools", caps.tools);
+      ui.kv("reasoning", caps.reasoning);
       ui.kv("threshold", `${(cfg.compactThreshold * 100).toFixed(0)}% · ${Math.round(
         cfg.compactThreshold * cfg.contextWindow,
       ).toLocaleString()} tokens`);
@@ -514,7 +523,7 @@ export async function handleCommand(line: string, ctx: CommandContext): Promise<
       }
       const windowLines = formatModelWindowLines(cfg);
       if (windowLines.length > 0) {
-        ui.line(c.dim("模型上下文窗口（env 事实）："));
+        ui.line(c.dim("模型能力（env 事实 + settings 手写）："));
         for (const line of windowLines) ui.line(`  ${line}`);
       }
       if (memoryMode === "interactive" && cfg.env?.wikiPage !== false) {

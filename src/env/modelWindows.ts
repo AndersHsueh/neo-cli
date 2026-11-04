@@ -282,14 +282,100 @@ export function mergeModelCapabilities(
   };
 }
 
-/** 给 `/env` 展示用的可读行（失败返回空数组）。 */
+/** 数值缺失时的占位（与窗口行既有文案一致）。 */
+export const UNKNOWN_LABEL = "未知";
+
+/** 三态能力 → 展示文案（全文统一：是/否/未知）。 */
+export function formatCapabilityFlag(v: CapabilityFlag | undefined): string {
+  if (v === true) return "是";
+  if (v === false) return "否";
+  return UNKNOWN_LABEL;
+}
+
+function formatTokens(v: number | null | undefined): string {
+  return typeof v === "number" && Number.isFinite(v) && v > 0
+    ? `${v.toLocaleString()} tokens`
+    : UNKNOWN_LABEL;
+}
+
+/** 当前 provider 在 settings 里手写的能力声明（未填 = undefined）。 */
+export function manualCapabilitiesOf(cfg: Config): {
+  vision?: boolean;
+  tools?: boolean;
+  reasoning?: boolean;
+} | undefined {
+  const p = cfg.providers?.find((x) => x.name === cfg.providerName);
+  if (!p) return undefined;
+  return { vision: p.vision, tools: p.tools, reasoning: p.reasoning };
+}
+
+/** 一个模型的五项能力展示值（全部已归一成可打印字符串）。 */
+export interface ModelCapabilityView {
+  contextWindow: string;
+  maxOutputTokens: string;
+  vision: string;
+  tools: string;
+  reasoning: string;
+}
+
+/**
+ * 把一条模型事实 + settings 手写声明合成展示值（P2）。
+ *
+ * 口径：
+ *  - contextWindow 由调用方传入（已按 resolveContextWindow 解析过，含 source）；
+ *  - maxOutputTokens 只认 ModelContextInfo.maxOutputTokens —— 绝不回落到
+ *    cfg.maxTokens，那是「本次请求要多少输出」，不是模型能力上限；
+ *  - vision/tools/reasoning 走 mergeModelCapabilities：手写优先，探测补空缺，
+ *    二者皆无 = 未知。
+ */
+export function buildModelCapabilityView(
+  info: ModelContextInfo | null,
+  manual: { vision?: boolean; tools?: boolean; reasoning?: boolean } | undefined,
+  contextWindow: number | null | undefined,
+): ModelCapabilityView {
+  const merged = mergeModelCapabilities(manual, info);
+  return {
+    contextWindow: formatTokens(contextWindow),
+    maxOutputTokens: formatTokens(info?.maxOutputTokens),
+    vision: formatCapabilityFlag(merged.vision),
+    tools: formatCapabilityFlag(merged.tools),
+    reasoning: formatCapabilityFlag(merged.reasoning),
+  };
+}
+
+/** 当前模型的能力展示（/context 用）；窗口取 cfg 当前生效值。 */
+export function currentModelCapabilityView(cfg: Config): ModelCapabilityView {
+  return buildModelCapabilityView(
+    readModelContext(cfg),
+    manualCapabilitiesOf(cfg),
+    cfg.contextWindow,
+  );
+}
+
+/** 给 `/env` 展示用的可读行（失败返回空数组）。每行含五项能力。 */
 export function formatModelWindowLines(cfg: Config): string[] {
   const models = readModelContexts(cfg);
   const entries = Object.entries(models);
   if (entries.length === 0) return [];
+  const currentKey = modelKey(cfg.providerName, cfg.model);
   return entries.map(([key, info]) => {
-    const win = info.contextWindow ? `${info.contextWindow.toLocaleString()} tokens` : "未知";
-    const obs = info.observedMaxPromptTokens ? ` · 观测最大 prompt ${info.observedMaxPromptTokens.toLocaleString()}` : "";
-    return `${key}  ${win}  [${info.source}]${obs}`;
+    // 当前模型：窗口用已解析的生效值（可能是配置兜底），手写能力参与合并；
+    // 其它模型：只有 env 事实，没有手写声明可套。
+    const isCurrent = key === currentKey;
+    const view = buildModelCapabilityView(
+      info,
+      isCurrent ? manualCapabilitiesOf(cfg) : undefined,
+      isCurrent ? cfg.contextWindow : info.contextWindow,
+    );
+    const obs = info.observedMaxPromptTokens
+      ? ` · 观测最大 prompt ${info.observedMaxPromptTokens.toLocaleString()}`
+      : "";
+    return (
+      `${key}  ${view.contextWindow}  [${info.source}]${obs}` +
+      ` · max_output ${view.maxOutputTokens}` +
+      ` · vision ${view.vision}` +
+      ` · tools ${view.tools}` +
+      ` · reasoning ${view.reasoning}`
+    );
   });
 }
