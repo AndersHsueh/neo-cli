@@ -17,6 +17,7 @@ import {
   detectModelCapabilitiesFromModelsApi,
   detectModelWindowFromModelsApi,
   mergeModelCapabilities,
+  modelsProbeTimeoutMs,
   readModelContext,
   recordModelContext,
 } from "../src/env/modelWindows.ts";
@@ -161,6 +162,35 @@ describe("detectModelCapabilitiesFromModelsApi", () => {
       expect(await detectModelCapabilitiesFromModelsApi(cfg2)).toBeNull();
     } finally {
       s.stop();
+    }
+  });
+
+  test("探测超时可配置：未设置用 5s，settings 覆盖并夹取", () => {
+    expect(modelsProbeTimeoutMs(makeCfg())).toBe(5_000);
+    expect(modelsProbeTimeoutMs(makeCfg({ env: { modelsProbeTimeoutMs: 8_000 } }))).toBe(8_000);
+    expect(modelsProbeTimeoutMs(makeCfg({ env: { modelsProbeTimeoutMs: 10 } }))).toBe(250);
+    expect(modelsProbeTimeoutMs(makeCfg({ env: { modelsProbeTimeoutMs: 999_999 } }))).toBe(60_000);
+  });
+
+  test("短超时对挂起的 /models 返回 null，不把请求拖到默认 5s", async () => {
+    const server = Bun.serve({
+      port: 0,
+      fetch() {
+        return new Promise(() => {
+          /* 一直不回，用来验证超时真的接到了 fetch */
+        });
+      },
+    });
+    try {
+      const cfg = makeCfg({
+        baseUrl: `http://127.0.0.1:${server.port}/v1`,
+        env: { modelsProbeTimeoutMs: 300 },
+      });
+      const t0 = Date.now();
+      expect(await detectModelCapabilitiesFromModelsApi(cfg)).toBeNull();
+      expect(Date.now() - t0).toBeLessThan(2_000);
+    } finally {
+      server.stop(true);
     }
   });
 

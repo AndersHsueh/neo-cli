@@ -73,12 +73,13 @@ import { describeShell, getShell } from "./shell.ts";
 import { loadEnv } from "./env/probe.ts";
 import {
   detectAndRecordModelWindow,
+  formatCapabilityGapHint,
   recordModelContext,
   resolveAndApplyModelWindow,
 } from "./env/modelWindows.ts";
 import {
-  isCapabilityUndeclared,
   probeCapabilitiesOnFirstUse,
+  undeclaredCapabilityFields,
   writeBackContextLimit,
   writeBackOutputLimit,
 } from "./env/modelCaps.ts";
@@ -376,18 +377,34 @@ async function main(): Promise<number> {
 
   // A2：交互模式下异步探测当前模型窗口（/models 元数据）；失败静默。
   // 探测成功会写入 env 事实文件，后续启动/切模型直接命中。
+  // 同一 provider|model 的「网关没给能力」提示只说一次，避免每轮撞墙都刷屏；
+  // /context 与 /env 仍每次都展示。
+  const announcedCapabilityGap = new Set<string>();
+  const announceCapabilityGap = (): void => {
+    const key = `${cfg.providerName}|${cfg.model}`;
+    if (announcedCapabilityGap.has(key)) return;
+    const hint = formatCapabilityGapHint(cfg);
+    if (!hint) return;
+    announcedCapabilityGap.add(key);
+    ui.info(hint);
+  };
   if (interactiveTTY) {
-    // P3 首次使用探测：当前 provider 的能力五项全未填 → 先明确告知用户，再探测并补空字段。
-    // 判定必须在下面那次探测之前做 —— 探测本身会写 env 事实，但不会改 settings 手写值。
-    if (isCapabilityUndeclared(cfg)) {
+    // #6：按字段补空缺。五项全空才说「首次使用」；只填了窗口时也要探测其余项。
+    // 判定必须在探测之前做 —— 探测会写 env 事实，但手写值（含 false）不会被改掉。
+    const missingCaps = undeclaredCapabilityFields(cfg);
+    if (missingCaps.length > 0) {
       ui.info(
-        `首次使用 ${cfg.providerName}/${cfg.model}：为保障效果，将探测模型能力（上下文窗口 / 输出上限 / 视觉 / 工具 / 推理）并补进 settings.json 的空字段。`,
+        missingCaps.length === 5
+          ? `首次使用 ${cfg.providerName}/${cfg.model}：为保障效果，将探测模型能力（上下文窗口 / 输出上限 / 视觉 / 工具 / 推理）并补进 settings.json 的空字段。`
+          : `${cfg.providerName}/${cfg.model} 仍有未声明能力（${missingCaps.join("、")}），将探测并只补空字段（已手写的值，含 false，不会被覆盖）。`,
       );
       void probeCapabilitiesOnFirstUse(cfg)
         .then((r) => {
           if (r.written.length > 0) {
             ui.info(`已补进 settings.json：${r.written.join("、")}（手写值不会被覆盖）`);
           }
+          // 瘦网关补不出上限时说清楚，避免「探测跑过了」被当成已经学会。
+          announceCapabilityGap();
           if (r.contextWindow) {
             const applied = resolveAndApplyModelWindow(cfg);
             if (applied.source !== "config") {
@@ -661,11 +678,20 @@ async function main(): Promise<number> {
       // P3 撞墙写回：settings 里 context_window 为空才补，已填的保持用户值。
       writeBackContextLimit(cfg, tokens);
     },
-    // P3 输出撞墙：finish_reason=length 时探测输出上限，补进空的 max_output_tokens。
+    // #6 输出撞墙：finish_reason=length（含截断正文与工具轮）时探测输出上限。
+    // 只补空的 max_output_tokens。网关没给就提示手写，绝不把本次 completion_tokens
+    // 或请求预算 max_tokens 记成能力上限。
     onOutputLimit: () => {
-      void writeBackOutputLimit(cfg).catch(() => {
-        /* 探测/写回失败不影响重试 */
-      });
+      void writeBackOutputLimit(cfg)
+        .then((r) => {
+          if (r.written.length > 0) {
+            ui.info(`已从网关 /models 补上：${r.written.join("、")}（只写空字段）。`);
+          }
+          announceCapabilityGap();
+        })
+        .catch(() => {
+          /* 探测/写回失败不影响重试 */
+        });
     },
     askUser: interactiveTTY
       ? (req) => {

@@ -72,27 +72,37 @@ export function currentProviderConfig(cfg: Config): ProviderConfig | undefined {
   return cfg.providers?.find((p) => p.name === cfg.providerName);
 }
 
-/** 一项能力是否「未声明」：数值未填 / 布尔 undefined。 */
-function capabilityUnfilled(p: ProviderConfig | undefined): boolean {
-  if (!p) return false;
-  return (
-    !filledNumber(p.contextWindow) &&
-    !filledNumber(p.maxOutputTokens) &&
-    !filledBool(p.vision) &&
-    !filledBool(p.tools) &&
-    !filledBool(p.reasoning)
-  );
+/**
+ * 当前 provider 仍未声明的能力字段（snake_case，固定顺序）。
+ *
+ * 数值 >0 算已填；布尔 true/false 都算已填。找不到 provider 时返回空数组
+ * （宁可不动，也不把「没有这份配置」当成「五项都空」）。
+ *
+ * #6：按字段看空缺。只填了 context_window 时，输出上限 / 视觉 / 工具 / 推理
+ * 仍然算未声明，首次探测要继续补它们，提示也不能被窗口挡掉。
+ */
+export function undeclaredCapabilityFields(cfg: Config): string[] {
+  const p = currentProviderConfig(cfg);
+  if (!p) return [];
+  const missing: string[] = [];
+  if (!filledNumber(p.contextWindow)) missing.push("context_window");
+  if (!filledNumber(p.maxOutputTokens)) missing.push("max_output_tokens");
+  if (!filledBool(p.vision)) missing.push("vision");
+  if (!filledBool(p.tools)) missing.push("tools");
+  if (!filledBool(p.reasoning)) missing.push("reasoning");
+  return missing;
 }
 
 /**
  * 当前 provider 的手写能力是否「全部未填」。
  *
- * 定义（与 P3 需求一致）：context_window / max_output_tokens / vision / tools / reasoning
- * 五项**全部**没有有效值。任一已填即视为「用户已声明过能力」，不再触发首次探测。
- * 找不到 provider 时返回 false（宁可不动，也不误判）。
+ * 定义：context_window / max_output_tokens / vision / tools / reasoning
+ * 五项**全部**没有有效值。找不到 provider 时返回 false。
+ * 首次探测本身看 `undeclaredCapabilityFields`（有空缺就补），这个函数只回答
+ * 「是不是一次都没声明过」，给启动文案用。
  */
 export function isCapabilityUndeclared(cfg: Config): boolean {
-  return capabilityUnfilled(currentProviderConfig(cfg));
+  return undeclaredCapabilityFields(cfg).length === 5;
 }
 
 /** 读 settings.json；不存在/解析失败返回 null（解析失败绝不覆盖写）。 */
@@ -234,8 +244,10 @@ export function writeBackContextLimit(cfg: Config, tokens: number): SettingsWrit
 /**
  * 输出撞墙写回：`finish_reason === "length"` 时补 `max_output_tokens`。
  *
- * 只走 `/models` 元数据（不额外发试探请求 —— 那既费钱又慢）。
- * 返回写回结果；探测不到时 written 为空，调用方照常重试。
+ * 只走 `/models` 元数据（不额外发试探请求 —— 那既费钱又慢，也不能靠抬高 max_tokens 去摸硬顶）。
+ * 网关没给上限就什么都不写：禁止把 `usage.completion_tokens` 或请求预算 `max_tokens`
+ * 记成能力上限（#6 实测里那会把 64 当成硬顶）。
+ * 返回写回结果；探测不到时 written 为空，调用方用提示告诉用户去手写。
  */
 export async function writeBackOutputLimit(cfg: Config): Promise<SettingsWritebackResult> {
   const caps = await detectModelCapabilitiesFromModelsApi(cfg);
@@ -262,15 +274,18 @@ export interface FirstUseProbeResult {
 }
 
 /**
- * 首次使用探测：当前 provider 的能力五项全未填、且本进程没探测过该 provider|model 时，
+ * 首次使用探测：当前 provider 还有未声明的能力字段、且本进程没探测过该 provider|model 时，
  * 跑一次 `/models` 探测，把空字段写回 settings.json，并继续写 env 快照。
+ *
+ * #6：不再要求五项全空。只填了 context_window 时，vision/tools/reasoning/输出上限
+ * 仍要补；已填字段（含 false）由 writeBackCapabilities 跳过。
  *
  * 调用方负责「明确告知用户」那句提示（本函数不打印，便于单测）。
  * 任何失败都静默返回（探测是增强项，不得阻断会话）。
  */
 export async function probeCapabilitiesOnFirstUse(cfg: Config): Promise<FirstUseProbeResult> {
   const none: FirstUseProbeResult = { ran: false, written: [], contextWindow: null };
-  if (!isCapabilityUndeclared(cfg)) return none;
+  if (undeclaredCapabilityFields(cfg).length === 0) return none;
 
   const key = modelKey(cfg.providerName, cfg.model);
   if (probedThisProcess.has(key)) return none;
