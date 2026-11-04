@@ -1,16 +1,16 @@
 # neo 测试约定
 
-> **最后更新:2026-11-04**（sessionExport 空 tool 段与空 assistant 同口径；cli-json SIGINT 用例修复；v0.4.4 拆分 index/agent；v0.4.3 目标锚 + 手段/目标分层；v0.4.2 tier 视觉 + 切档即时反馈；v0.4.1 实战可靠性修复 + askUser；v0.4.0 平台适配层；v0.3.5 P0 加固；v0.3.4 banner；v0.3.1 会话代号 + resume；v0.3.0 TUI）
+> **最后更新:2026-11-04**（hydrateMessages 图片丢失占位编号对齐 chip；sessionExport 空 tool 段与空 assistant 同口径；cli-json SIGINT 用例修复；v0.4.4 拆分 index/agent；v0.4.3 目标锚 + 手段/目标分层；v0.4.2 tier 视觉 + 切档即时反馈；v0.4.1 实战可靠性修复 + askUser；v0.4.0 平台适配层；v0.3.5 P0 加固；v0.3.4 banner；v0.3.1 会话代号 + resume；v0.3.0 TUI）
 
 ## §1 当前基线
 
 ```bash
 bun x tsc --noEmit    # exit 0（strict + noUncheckedIndexedAccess；不用 bunx：部分 bun 安装没有独立 bunx 入口）
-bun test              # 1069 pass / 0 fail（68 个测试文件，约 9s）
+bun test              # 1073 pass / 0 fail（69 个测试文件，约 9s）
 bash scripts/verify.sh # 全量闸门：上两条 + 真 PTY E2E（21 场景），输出落 docs/evidence/
 ```
 
-v0.4.6 后的基线（2026-11-04 实测）：**1069 pass / 0 fail / 68 文件**（含 sessionExport 空 tool 段跳过修复；此前 1067 含空会话占位修复；v0.4.4 为 1061/0/68；v0.4.3 为 1051/1/67；v0.4.2 为 1039/0/67/PTY20；v0.4.1 为 1027/66，v0.4.0 为 974/59/PTY19；v0.3.5 为 925/57，v0.3.4 为 881/53，v0.3.0 为 839/46，v0.2.4 为 660/37，v0.2.3 为 569/32）。
+v0.4.8 后的基线（2026-11-04 实测）：**1073 pass / 0 fail / 69 文件**（含 hydrateMessages 图片丢失占位编号修复；此前 v0.4.7 为 1069/0/68，含 sessionExport 空 tool 段跳过修复；此前 1067 含空会话占位修复；v0.4.4 为 1061/0/68；v0.4.3 为 1051/1/67；v0.4.2 为 1039/0/67/PTY20；v0.4.1 为 1027/66，v0.4.0 为 974/59/PTY19；v0.3.5 为 925/57，v0.3.4 为 881/53，v0.3.0 为 839/46，v0.2.4 为 660/37，v0.2.3 为 569/32）。
 证据见 `docs/evidence/goal-anchor-*`（v0.4.3 起按功能命名）与 `docs/evidence/v0.4.2-*`（macOS）；v0.4.0 的 Ubuntu sp7 双平台证据仍保留在 `v0.4.0-sp7-*`。改功能前先在干净树上跑一遍，数字对位后再动手。
 
 > **已知失败已清零**：原 `memory-capture.test.ts` D6、以及 `cli-json.test.ts` SIGINT（`Bun.spawn` 杀到启动器 pid、脚本进程收不到信号）均已修复；当前验收口径恢复为 **0 fail**。

@@ -162,7 +162,13 @@ export function saveSession(messages: Message[], meta: SessionMeta): void {
   writeFileSync(meta.path, JSON.stringify(data, null, 2), "utf8");
 }
 
-/** 恢复时把 $ref 重组回 data URL；附件文件缺失 → text part「[Image #N 已丢失]」，不阻塞（PRD §5.6）。 */
+/**
+ * 恢复时把 $ref 重组回 data URL；附件文件缺失 → text part「[Image #N 已丢失]」，不阻塞（PRD §5.6）。
+ *
+ * N 是**图片在会话内的序号**（第几张图），不是「第几个丢失的」：落盘按 part 下标命名
+ * `img-<i>.png`，用户看到的 chip 是 `[Image #<i+1>]`。若按丢失计数，前面有图还在时
+ * 编号会整体前移，模型会对着错误的编号回复。
+ */
 export function hydrateMessages(messages: Message[]): Message[] {
   const dir = sessionsDir();
   let imgSeq = 0;
@@ -171,10 +177,11 @@ export function hydrateMessages(messages: Message[]): Message[] {
     const parts: ContentPart[] = m.content.map((p) => {
       const ref = (p as { type?: string; ref?: string }).ref;
       if ((p as { type?: string }).type !== "image_ref" || !ref) return p as ContentPart;
+      imgSeq += 1; // 每个 image_ref 都占一个序号，无论文件在不在
+      const seq = imgSeq;
       const file = join(dir, ref);
       if (!existsSync(file)) {
-        imgSeq += 1;
-        return { type: "text", text: `[Image #${imgSeq} 已丢失]` };
+        return { type: "text", text: `[Image #${seq} 已丢失]` };
       }
       const b64 = readFileSync(file).toString("base64");
       return { type: "image_url", image_url: { url: `data:image/png;base64,${b64}` } };
