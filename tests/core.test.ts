@@ -433,6 +433,21 @@ describe("htmlToText", () => {
     expect(htmlToText("<p>&#65;</p>")).toBe("A");
     expect(htmlToText("<p>&#128512;</p>")).toBe("😀");
   });
+
+  // 与 decodeXml 对齐：网页里 &#x27; / &#x2F; 这类十六进制实体很常见（v0.4.19）
+  test("解码十六进制实体", () => {
+    expect(htmlToText("<p>it&#x27;s a&#x2F;b</p>")).toBe("it's a/b");
+    expect(htmlToText("<p>&#x4F60;&#x597D;</p>")).toBe("你好");
+    expect(htmlToText("<p>&#x1F600;</p>")).toBe("😀");
+    // 大小写 x 与十六进制数字都要认
+    expect(htmlToText("<p>&#X41;&#x6a;</p>")).toBe("Aj");
+  });
+
+  test("越界十六进制实体原样保留，不抛 RangeError", () => {
+    expect(() => htmlToText("<p>&#x110000;</p>")).not.toThrow();
+    expect(htmlToText("<p>&#x110000;</p>")).toBe("&#x110000;");
+    expect(htmlToText("<p>&#xD83D;</p>")).toBe("&#xD83D;");
+  });
 });
 
 /* ------------------------------------------------------------------ */
