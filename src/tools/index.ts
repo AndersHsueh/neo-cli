@@ -723,7 +723,12 @@ export function rewriteSearchUrl(url: string): { url: string; note: string | nul
     host === "duckduckgo.com" ||
     host === "www.duckduckgo.com" ||
     host === "html.duckduckgo.com" ||
-    host === "lite.duckduckgo.com";
+    host === "lite.duckduckgo.com" ||
+    // bing 主域（v0.4.26）：模型常凭习惯拼 www.bing.com/search?q=…，
+    // 与 description 教的 cn.bing.com 不是同一域名。cn.bing.com 已在上面排除，
+    // 这里只收 bing.com / www.bing.com，避免把 cn 站改写成自身。
+    host === "bing.com" ||
+    host === "www.bing.com";
 
   if (!isSearchHost) return { url, note: null };
 

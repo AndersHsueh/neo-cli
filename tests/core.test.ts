@@ -433,7 +433,7 @@ describe("web_fetch", () => {
     expect(rewriteSearchUrl("not a url")).toEqual({ url: "not a url", note: null });
   });
 
-  // 改写目标本身已是 cn.bing.com 时必须幂等（v0.4.25 修）
+  // 改写目标本身已是 cn.bing.com 时必须幂等（v0.4.26 修）
   test("rewriteSearchUrl: cn.bing.com 搜索页原样返回，不改写也不加 note", () => {
     // web_fetch 的 description 直接教模型拼 cn.bing.com/search?q=…，这条路径最常走
     expect(rewriteSearchUrl("https://cn.bing.com/search?q=neo+cli")).toEqual({
@@ -442,10 +442,32 @@ describe("web_fetch", () => {
     });
     // 旧实现里 bing 不在 isSearchHost 里，靠「无 q → 原样返回」侥幸通过；
     // 但带 q 的 bing 链接一旦进 isSearchHost 就会被改写成自身，note 也谎报「原域名不可达」
-    expect(rewriteSearchUrl("https://www.bing.com/search?q=x").note).toBeNull();
+    // v0.4.26：www.bing.com 现在**应该**改写（与 cn.bing.com 不同域），
+    // 这里只保证改写目标是 cn.bing.com 而非自身。
+    expect(rewriteSearchUrl("https://www.bing.com/search?q=x").url).toBe(
+      "https://cn.bing.com/search?q=x",
+    );
   });
 
-  // 改写时保留原 URL 的其余查询参数（v0.4.25 修）
+  // bing 主域要改写到 cn.bing.com（v0.4.26 修）
+  test("rewriteSearchUrl: www.bing.com / bing.com 搜索页改写到 cn.bing.com", () => {
+    // 模型凭习惯拼 www.bing.com，与 description 教的 cn.bing.com 不同域
+    expect(rewriteSearchUrl("https://www.bing.com/search?q=neo")).toEqual({
+      url: "https://cn.bing.com/search?q=neo",
+      note: expect.stringContaining("cn.bing.com"),
+    });
+    // 裸域同样命中
+    expect(rewriteSearchUrl("https://bing.com/search?q=neo%20cli&count=10").url).toBe(
+      "https://cn.bing.com/search?q=neo%20cli&count=10",
+    );
+    // cn.bing.com 仍是幂等目标，不能被改写成自身
+    expect(rewriteSearchUrl("https://cn.bing.com/search?q=neo")).toEqual({
+      url: "https://cn.bing.com/search?q=neo",
+      note: null,
+    });
+  });
+
+  // 改写时保留原 URL 的其余查询参数（v0.4.26 修）
   test("rewriteSearchUrl: 保留 q 以外的查询参数", () => {
     expect(rewriteSearchUrl("https://www.google.com/search?q=neo&hl=en&num=20").url).toBe(
       "https://cn.bing.com/search?q=neo&hl=en&num=20",
@@ -456,7 +478,7 @@ describe("web_fetch", () => {
     );
   });
 
-  // 查询词里的字面 '+' 不能被当成空格（v0.4.25 修）
+  // 查询词里的字面 '+' 不能被当成空格（v0.4.26 修）
   test("rewriteSearchUrl: 字面 + 与 %2B 不被误解为空格", () => {
     // URL 里的 '+' 是字面加号（真正编码空格的是 %20），解成空格会把「c++」搜成「c  」
     expect(rewriteSearchUrl("https://www.google.com/search?q=c%2B%2B").url).toBe(
