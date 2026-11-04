@@ -5,7 +5,7 @@
  * 真实 ANSI 字节，断言最终屏幕与光标位置 —— 与 scripts/pty-e2e.ts 的 Screen 同源思路。
  */
 import { describe, expect, test } from "bun:test";
-import { truncateAnsi, wrapAnsi } from "../src/tui/ansi.ts";
+import { stripAnsi, truncateAnsi, wrapAnsi } from "../src/tui/ansi.ts";
 import { FrameRenderer, synchronizedEnabled } from "../src/tui/frame.ts";
 import { displayWidth } from "../src/ui/theme.ts";
 
@@ -127,6 +127,24 @@ describe("A1 wrapAnsi / truncateAnsi", () => {
     const out = truncateAnsi("\x1b[32m中文内容\x1b[0m", 5);
     expect(displayWidth(out)).toBeLessThanOrEqual(5);
     expect(out.endsWith("\x1b[0m")).toBe(true);
+  });
+
+  test("A1g OSC 序列（超链接）零宽：正文不计入宽度、折行不错乱", () => {
+    // OSC 8 超链接：终端里只显示 "link"，URL 是不可见控制序列。
+    const link = "\x1b]8;;http://example.com\x1b\\link\x1b]8;;\x1b\\";
+    expect(displayWidth(link)).toBe(4);
+    expect(stripAnsi(link)).toBe("link");
+    expect(wrapAnsi(link, 4)).toHaveLength(1);
+    expect(wrapAnsi(link, 4).map(stripAnsi)).toEqual(["link"]);
+    // 混排：链接在中间，折行只按可见列算
+    expect(wrapAnsi(`ab${link}cd`, 4).map(stripAnsi)).toEqual(["abli", "nkcd"]);
+  });
+
+  test("A1h OSC 以 BEL 结尾时同样零宽", () => {
+    const title = "\x1b]0;窗口标题\x07text";
+    expect(displayWidth(title)).toBe(4);
+    expect(stripAnsi(title)).toBe("text");
+    expect(wrapAnsi(title, 10).map(stripAnsi)).toEqual(["text"]);
   });
 });
 

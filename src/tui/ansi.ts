@@ -32,6 +32,15 @@ export function tokenizeAnsi(text: string): Token[] {
   while (i < text.length) {
     const ch = text[i] as string;
     if (ch === "\x1b") {
+      // OSC 必须先于通用两字符转义匹配：`\x1b]` 会被 `^\x1b[@-_]` 吞成两字符，
+      // 剩下的正文（超链接 URL、窗口标题）就会被当成可见字符计入宽度。
+      const osc = /^\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/.exec(text.slice(i));
+      if (osc) {
+        flush();
+        out.push({ kind: "sgr", s: osc[0], w: 0 });
+        i += osc[0].length;
+        continue;
+      }
       const m = /^\x1b\[[0-9;?]*[ -/]*[@-~]/.exec(text.slice(i));
       if (m) {
         flush();
@@ -161,5 +170,8 @@ export function truncateAnsi(text: string, max: number): string {
 
 /** 剥掉所有 ANSI 序列（不含换行处理），用于把外部传来的「已着色提示」还原成纯文本。 */
 export function stripAnsi(text: string): string {
-  return text.replace(/\x1b\[[0-9;?]*[ -/]*[@-~]/g, "").replace(/\x1b[@-_]/g, "");
+  return text
+    .replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, "") // OSC（超链接/标题）：正文必须整体剥掉
+    .replace(/\x1b\[[0-9;?]*[ -/]*[@-~]/g, "")
+    .replace(/\x1b[@-_]/g, "");
 }
