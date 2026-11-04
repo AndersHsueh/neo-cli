@@ -51,16 +51,26 @@ export function formatDuration(ms: number): string {
 }
 
 /**
- * 清洗工具输出里的控制序列：保留换行，剥掉 SGR/CSI/C0，tab 展开为两空格。
+ * 清洗工具输出里的控制序列：保留换行，剥掉 SGR/CSI/OSC/DCS/C0，tab 展开为两空格。
  *
  * 工具输出是外部数据（stderr 里可能有 `ESC[2J` 清屏、`ESC[K` 清行），
  * 直接回显会破坏整个屏幕；宽度计算也会把它们算成占位。
+ *
+ * v0.4.46：旧实现只有 `\x1b[@-_]` 一条通用转义，它只吃掉「ESC + 一个字符」。
+ * OSC（`\x1b]0;title\x07`）、DCS/SOS/PM/APC（`\x1bP...\x1b\\`）都是
+ * 「ESC + 引导符 + 正文 + 终止符」的多字符序列，于是引导符被吃掉、**正文残留**
+ * （`\x1b]0;title\x07` → "0;title"）。这类序列在真实 stderr 里很常见：
+ * 带颜色的工具会发 OSC 8 超链接（`\x1b]8;;URL\x1b\\文字\x1b]8;;\x1b\\`），
+ * 终端标题同理。剥法照抄 tui/ansi.ts 的 stripAnsi（那条纪律早就写对了）。
  */
 export function sanitizeOutput(s: string): string {
   return s
     .replace(/\r\n/g, "\n")
+    .replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\|$)/g, "") // OSC（标题/超链接）：正文整体剥掉（未终止则吃到结尾）
+    .replace(/\x1b[P^_X][^\x1b]*(?:\x1b\\|$)/g, "") // DCS/SOS/PM/APC：正文整体剥掉
     .replace(/\x1b\[[0-9;?]*[ -/]*[@-~]/g, "") // CSI（含 SGR/清屏/光标）
     .replace(/\x1b[@-_]/g, "") // 其余 ESC 双字符序列
+    .replace(/\x1b/g, "") // 裸 ESC：不构成合法转义，但同样不可见、且会污染终端状态
     .replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g, "")
     .replace(/\t/g, "  ");
 }

@@ -63,6 +63,29 @@ describe("D3a 失败摘要（shell 的 stderr 不再被首行挤掉）", () => {
     expect(out).toContain("red");
     expect(out.split("\n").length).toBe(2);
   });
+
+  // v0.4.46：OSC/DCS 是「ESC + 引导符 + 正文 + 终止符」的多字符序列，
+  // 旧的 `\x1b[@-_]` 只吃掉 ESC + 引导符这一个字符，正文残留在输出里
+  // （`\x1b]0;title\x07` → "0;title"）。stripAnsi（tui/ansi.ts）早已正确剥，
+  // sanitizeOutput 漏了同一条纪律。
+  test("输出清洗：OSC 序列（终端标题/超链接）整体剥掉，不残留正文", () => {
+    expect(sanitizeOutput("a\x1b]0;窗口标题\x07b")).toBe("ab");
+    expect(sanitizeOutput("a\x1b]8;;http://x\x1b\\link\x1b]8;;\x1b\\b")).toBe("alinkb");
+    // OSC 未终止（输出被截断）：吃到结尾，不残留
+    expect(sanitizeOutput("a\x1b]0;未终止")).toBe("a");
+  });
+
+  test("输出清洗：DCS/SOS/PM/APC 序列整体剥掉（ST 结尾）", () => {
+    expect(sanitizeOutput("a\x1bP1;2|data\x1b\\b")).toBe("ab");
+    expect(sanitizeOutput("a\x1bXpayload\x1b\\b")).toBe("ab");
+    expect(sanitizeOutput("a\x1b^payload\x1b\\b")).toBe("ab");
+    expect(sanitizeOutput("a\x1b_payload\x1b\\b")).toBe("ab");
+  });
+
+  test("输出清洗：裸 ESC 不残留（不构成合法转义时同样不可见）", () => {
+    expect(sanitizeOutput("a\x1bb")).toBe("ab"); // 裸 ESC 后跟普通字符
+    expect(sanitizeOutput("a\x1b")).toBe("a"); // 结尾裸 ESC
+  });
 });
 
 describe("D3b 时长与格式化", () => {
