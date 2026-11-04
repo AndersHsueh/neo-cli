@@ -278,6 +278,43 @@ describe("glob / grep", () => {
     expect(r.output).toContain("txt.ts");
     expect(r.output).not.toContain("bin.dat");
   });
+
+  test("grep 目录扫描超限文件必须明说跳过，不能静默假阴性", async () => {
+    // 3MB 以上：内容里确实有 NEEDLE，若静默跳过就会谎报「无匹配」
+    const big = "x".repeat(3_000_001) + "\nNEEDLE_IN_BIG\n";
+    write("big/huge.log", big);
+    const r = await dispatch(
+      "grep",
+      JSON.stringify({ pattern: "NEEDLE_IN_BIG", path: join(SANDBOX, "big") }),
+      makeCtx(),
+    );
+    expect(r.ok).toBe(true);
+    expect(r.output).toContain("无匹配");
+    expect(r.output).toContain("文件过大，跳过");
+    expect(r.output).toContain("huge.log");
+  });
+
+  test("grep 目录扫描有命中时也带上超限跳过说明", async () => {
+    write("mix/huge.log", "y".repeat(3_000_001) + "\nNEEDLE_IN_BIG\n");
+    write("mix/small.ts", "NEEDLE_IN_BIG");
+    const r = await dispatch(
+      "grep",
+      JSON.stringify({ pattern: "NEEDLE_IN_BIG", path: join(SANDBOX, "mix") }),
+      makeCtx(),
+    );
+    expect(r.ok).toBe(true);
+    expect(r.output).toContain("small.ts:1:");
+    expect(r.output).toContain("文件过大，跳过");
+    expect(r.output).toContain("huge.log");
+  });
+
+  test("grep 单文件超限与目录扫描同一口径（都报文件过大）", async () => {
+    const p = write("big2/huge.log", "z".repeat(3_000_001));
+    const r = await dispatch("grep", JSON.stringify({ pattern: "zzz", path: p }), makeCtx());
+    expect(r.ok).toBe(true);
+    expect(r.output).toContain("文件过大");
+    expect(r.output).toContain("跳过");
+  });
 });
 
 describe("shell", () => {

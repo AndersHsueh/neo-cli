@@ -53,6 +53,9 @@ function requireDir(p: string): string {
 
 const MAX_READ = 2_000_000;
 
+/** grep 单文件大小上限：目录扫描与单文件分支共用同一阈值，超限必须明说跳过。 */
+const MAX_GREP_FILE = 3_000_000;
+
 /**
  * 写工具守卫：禁止经软链穿透写入全局技能库（技能是只读资源）。
  *
@@ -484,6 +487,7 @@ const grepTool: ToolImpl = {
     const hits: string[] = [];
     let filesScanned = 0;
     let truncated = false;
+    const skippedLarge: string[] = [];
 
     // 文件清单走 gitignore 语义（git 工作区用 git ls-files，非 git 目录用内置匹配器）；
     // 匹配仍用上面的 JS 正则，不切 git grep —— 保持 \d、lookahead 等语义不变。
@@ -502,7 +506,12 @@ const grepTool: ToolImpl = {
       } catch {
         continue;
       }
-      if (!st.isFile() || st.size > 3_000_000) continue;
+      if (!st.isFile()) continue;
+      if (st.size > MAX_GREP_FILE) {
+        // 与单文件分支口径一致：跳过必须说出来，否则「无匹配」是假阴性
+        skippedLarge.push(`${f.rel} (${st.size}B)`);
+        continue;
+      }
 
       let text: string;
       try {
@@ -527,6 +536,11 @@ const grepTool: ToolImpl = {
     const notes: string[] = [];
     if (listed.backend === "git") notes.push("已按 .gitignore 排除");
     if (listed.truncated) notes.push("文件枚举已截断");
+    if (skippedLarge.length > 0) {
+      const shown = skippedLarge.slice(0, 5).join("、");
+      const more = skippedLarge.length > 5 ? ` 等 ${skippedLarge.length} 个` : "";
+      notes.push(`文件过大，跳过: ${shown}${more}`);
+    }
     const note = notes.length > 0 ? `；${notes.join("；")}` : "";
     if (hits.length === 0) return `无匹配。扫描 ${filesScanned} 个文件（${pattern}）${note}`;
     const tail = truncated ? `\n… 结果截断在 ${limit} 行` : "";
@@ -537,7 +551,7 @@ const grepTool: ToolImpl = {
 /** 在单个文件内搜索。 */
 function grepFile(file: string, re: RegExp, pattern: string, limit: number, label: string | null): string {
   const st = statSync(file);
-  if (st.size > 3_000_000) return `文件过大 (${st.size}B)，跳过: ${file}`;
+  if (st.size > MAX_GREP_FILE) return `文件过大 (${st.size}B)，跳过: ${file}`;
   let text: string;
   try {
     text = readFileSync(file, "utf8");

@@ -42,6 +42,26 @@ describe("cleanupTmpDir", () => {
   test("目录不存在不报错", () => {
     expect(cleanupTmpDir(join(ROOT, "nope")).removed).toBe(0);
   });
+
+  test("过期子目录不删、不报错、不计入 freedBytes", () => {
+    const cwd = join(ROOT, "tmp2");
+    const dir = join(cwd, ".neo", "tmp");
+    mkdirSync(dir, { recursive: true });
+    // 非空过期子目录：非递归 rm 会 EISDIR，修复前会进 errors 且 freedBytes 被目录元数据污染
+    const sub = join(dir, "old-subdir");
+    mkdirSync(sub, { recursive: true });
+    writeFileSync(join(sub, "inner.txt"), "x".repeat(100));
+    age(sub, 8);
+    writeFileSync(join(dir, "tool-old.txt"), "12345");
+    age(join(dir, "tool-old.txt"), 8);
+
+    const r = cleanupTmpDir(cwd);
+    expect(r.removed).toBe(1);
+    expect(r.freedBytes).toBe(5);
+    expect(r.errors).toEqual([]);
+    expect(existsSync(sub)).toBe(true);
+    expect(existsSync(join(dir, "tool-old.txt"))).toBe(false);
+  });
 });
 
 describe("cleanupMailboxDirs", () => {
