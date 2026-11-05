@@ -40,3 +40,6 @@ docs/evidence/
 
 # 项目根 AGENTS.md:由 /init 生成的本地记忆,不入库(用户决定 2026-10-16)
 /AGENTS.md
+
+# 独立子项目:自带 .git,远程为 gitee neo-agent-app,不并入本仓(避免误生成 gitlink)
+neo-agent-app/
