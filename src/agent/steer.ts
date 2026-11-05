@@ -42,7 +42,10 @@ export function budgetMessage(
   goal: string | null,
   capabilityStreak: number,
 ): Message {
-  const remaining = Math.max(0, max - attempt);
+  // attempt 是「第几次请求」（调用方传 iter + 1，iter 从 0 起），本次请求本身还没消耗预算：
+  // 已消耗 = attempt - 1，剩余 = max - (attempt - 1)。旧实现写 max - attempt，
+  // 首轮就报「剩余 79/80」、末轮报「仅剩 0 次」却其实还剩最后一次 —— 模型据此提前收手。
+  const remaining = Math.max(0, max - attempt + 1);
   let text =
     `本轮工具调用：第 ${attempt} 次 / 上限 ${max}（已用 ${attempt - 1}，剩余 ${remaining}）。`;
   if (goal) {

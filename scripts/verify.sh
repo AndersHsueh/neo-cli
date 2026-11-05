@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# scripts/verify.sh — neo 全量验证闸门（v0.2.4 起；证据前缀每版更新）。
+# scripts/verify.sh — neo 全量验证闸门（v0.2.4 起；证据前缀自动取自 package.json）。
 #
 # 顺序：tsc 类型检查 → bun test 单测 → pty-e2e 真 PTY 端到端。
 # 每个阶段的输出同时落到 docs/evidence/<EVIDENCE>-<stage>.txt：
@@ -18,7 +18,14 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
 EVIDENCE_DIR="$ROOT/docs/evidence"
-EVIDENCE_PREFIX="v0.4.4"
+# 证据前缀 = 发布真源 package.json 的 version（v0.4.9 起）。此前是手写常量，
+# 每版都要记得改，漏改就会把新版本的证据写进旧前缀文件、覆盖旧证据。
+# 解析失败直接失败退出，不退化成空前缀（否则会写出 "-tsc.txt" 这种文件）。
+EVIDENCE_PREFIX="v$(sed -n 's/^[[:space:]]*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$ROOT/package.json" | head -n 1)"
+if [ "$EVIDENCE_PREFIX" = "v" ]; then
+  echo "FAILED: 无法从 package.json 解析 version（证据前缀）" >&2
+  exit 1
+fi
 mkdir -p "$EVIDENCE_DIR"
 
 STARTED_AT="$(date '+%Y-%m-%d %H:%M:%S %z')"

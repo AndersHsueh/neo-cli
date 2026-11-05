@@ -55,8 +55,19 @@ const EMAIL_LOCAL = /[A-Za-z0-9._%+-]/;
 export function isAtBoundary(prev: string): boolean {
   return prev !== "@" && !EMAIL_LOCAL.test(prev);
 }
-/** 引用路径末尾可能粘上的标点，解析时剥掉。 */
-const TRAILING_PUNCT = /[,.;:!?)\]}，。；：、！？]+$/;
+/**
+ * 引用路径末尾可能粘上的标点，解析时剥掉。
+ *
+ * v0.4.48：补中文右括号 / 书名号（）］｝〕〉》」』】〗〙〛｠）。
+ * v0.4.49：再补弯引号右半边 ” ’ 〞 〟。左引号 “ ‘ 故意不进集合 ——
+ * 只剥尾部，避免把 `@“a.ts”` 的左引号当尾随标点误剥。
+ * 后果若漏剥：路径带上右引号后 exists 失败，引用**静默不展开**。
+ *
+ * 只剥**尾部**：`@a（b）.ts` 中间的括号不动；以右括号结尾的文件名（如
+ * `@foo）.md`）本来就不是合法路径，剥掉不损失。
+ */
+const TRAILING_PUNCT =
+  /[,.;:!?)\]}，。；：、！？）］｝〕〉》」』】〗〙〛｠”’〞〟]+$/;
 
 function isBoundary(target: string, i: number): boolean {
   const prev = target[i - 1] ?? "";

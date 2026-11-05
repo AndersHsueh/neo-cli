@@ -137,6 +137,36 @@ describe("machineKeyOf / parseVersion / formatBytes", () => {
     expect(formatBytes(3.4 * 1024 ** 3)).toBe("3.4G");
     expect(formatBytes(48 * 1024 ** 3)).toBe("48G");
   });
+
+  test("formatBytes 档位边界「进位即升档」", () => {
+    const K = 1024;
+    // 小数档进位到 1024 → 升单位（旧实现输出 "1024K"/"1024M"/"1024G"/"1024T"）
+    expect(formatBytes(1023.95 * K)).toBe("1.0M");
+    expect(formatBytes(1023.95 * K ** 2)).toBe("1.0G");
+    expect(formatBytes(1023.95 * K ** 3)).toBe("1.0T");
+    expect(formatBytes(1023.95 * K ** 4)).toBe("1.0P");
+    // 小数档进位到 ≥10 → 转整数档，不带 ".0"（旧实现输出 "10.0K"）
+    expect(formatBytes(9.96 * K)).toBe("10K");
+    expect(formatBytes(9.95 * K)).toBe("9.9K");
+    // 未跨档的边界值保持原样
+    expect(formatBytes(1023 * K)).toBe("1023K");
+    expect(formatBytes(99.95 * K)).toBe("100K");
+    // 末档 P 无处可升，保留一位小数
+    expect(formatBytes(K ** 5)).toBe("1.0P");
+    expect(formatBytes(1.5 * K ** 5)).toBe("1.5P");
+    // 末档 P 的整数档：≥10P 不带小数，且单位换算必须真的除到 P
+    // （旧实现循环退出时 v 仍是 T 档的值，1024**6 → "1024P"、2*1024**6 → "2048P"）
+    expect(formatBytes(K ** 6)).toBe("1.0P");
+    expect(formatBytes(1.5 * K ** 6)).toBe("1.5P");
+    expect(formatBytes(2 * K ** 6)).toBe("2.0P");
+    expect(formatBytes(48 * K ** 6)).toBe("48P");
+    expect(formatBytes(1023 * K ** 6)).toBe("1023P");
+    expect(formatBytes(1024 * K ** 6)).toBe("1024P"); // 末档合法值（= 1024**7）
+    // 非法输入
+    expect(formatBytes(-1)).toBe("?");
+    expect(formatBytes(Number.NaN)).toBe("?");
+    expect(formatBytes(Number.POSITIVE_INFINITY)).toBe("?");
+  });
 });
 
 /* ------------------------------------------------------------------ */

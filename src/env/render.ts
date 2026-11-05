@@ -8,9 +8,20 @@
  * 全部纯函数：输入 EnvSnapshot，输出字符串，便于快照式单测与 token 预算断言。
  */
 import { createHash } from "node:crypto";
+import { fixed1 } from "../ui/format.ts";
 import type { EnvSnapshot } from "./types.ts";
 
-/** 字节 → 人类可读（二进制单位，1 位小数）。 */
+/**
+ * 字节 → 人类可读（二进制单位；<10 一位小数，≥10 整数）。
+ *
+ * 档位边界必须「进位即升档」（纪律与实现在 ui/format.ts）：1023.95K 的
+ * toFixed(1) 是 "1024.0"，若原样输出会得到 "1024K" —— 既跨了档（宽度多 1 列），
+ * 又与下一档的 "1.0M" 表达同一数量级。同理 9.96K 的 toFixed(1) 是 "10.0"，
+ * 若按原始值判断档位会留在小数档，输出 "10.0K" 与真正的 "10K" 撞值。
+ *
+ * 注意 1024 进制下 1000K（= 0.977M）是档内合法值，不强行升档——这点与
+ * 十进制的 formatTokens（999_500 → 1.0M）有意不同。
+ */
 export function formatBytes(bytes: number): string {
   if (!Number.isFinite(bytes) || bytes < 0) return "?";
   const units = ["B", "K", "M", "G", "T", "P"];
@@ -21,7 +32,28 @@ export function formatBytes(bytes: number): string {
     i += 1;
   }
   if (i === 0) return `${Math.round(v)}B`;
-  return `${v >= 10 ? v.toFixed(0) : v.toFixed(1)}${units[i]}`;
+
+  // 档内格式：<10 一位小数，≥10 整数（fixed1 已保证进位到 10 时降级）。
+  // 进位到 1024 说明该升档（末档 P 无处可升，保留 1024P）。
+  // 判断必须用「取整后的值」：999.95 的 Math.round 是 1000，用原始值判断会留在整数档里跨档。
+  //
+  // v0.4.47：末档 P 的整数档那一半漏了。旧实现循环在 i 到末档时退出，直接
+  // `fixed1(v)` —— 但此时 v 仍是**上一个单位（T）**的值，循环里那次 `v /= 1024`
+  // 没执行，于是 1024**6（= 1P）输出 "1024P"、2*1024**6 输出 "2048P"，
+  // 所有 ≥1P 的值都被放大 1024 倍。末档与 k/M/G/T 同构：先除到 P，再按
+  // <10 一位小数 / ≥10 整数输出（1024P 是末档合法值，对应 1024**7）。
+  while (i < units.length - 1) {
+    const text = fixed1(v);
+    if (Number(text) < 1024) return `${text}${units[i]}`;
+    v /= 1024;
+    i += 1;
+  }
+  // 走到这里 i 已是末档 P。v 有两种来源，不能一律再除一次：
+  //  - 循环因 `i < units.length - 1` 结束（v 已除到 P 档，如 1024**6 → v = 1）；
+  //  - 循环因 `Number(text) >= 1024` 结束（v 仍是 T 档的值，如 1024**5 → v = 1024）。
+  // 判据是 v 是否已 < 1024：已除到 P 档的 v 必然 < 1024（否则上一步会继续除）。
+  const p = v < 1024 ? v : v / 1024;
+  return `${fixed1(p)}${units[i]}`;
 }
 
 /** prompt 里展示的核心工具顺序（其余工具只在 `/env` 与 wiki 页出现）。 */

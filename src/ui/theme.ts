@@ -181,8 +181,17 @@ export function hostOf(u: string): string {
   }
 }
 
-/** ANSI SGR 转义（颜色/加粗等），不占显示宽度。 */
-const ANSI_SGR = /\x1b\[[0-9;]*m/g;
+/**
+ * 零宽 ANSI 转义，不占显示宽度。
+ *
+ * 只认 SGR（`\x1b[...m`）是不够的：OSC 序列（`\x1b]...BEL` / `\x1b]...ST`，超链接、
+ * 窗口标题都用它）的正文是普通字符，漏掉就会被当成可见文本计入宽度。
+ * 例：`\x1b]8;;http://x\x1b\\link\x1b]8;;\x1b\\` 实际只显示 4 列，漏剥会算成 22 列。
+ *
+ * 覆盖：CSI（含 SGR）、OSC（BEL 或 ST 结尾）、以及两字符的 `\x1b<单字符>` 转义。
+ */
+const ANSI_ESCAPE =
+  /\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b[@-_]|\x1b/g;
 
 /** combining / format 字符（宽度 0）。 */
 const ZERO_WIDTH = /\p{Mn}|\p{Me}|\p{Cf}/u;
@@ -255,7 +264,7 @@ export function graphemeWidth(g: string): number {
 /** 终端可视宽度（忽略 ANSI；按 grapheme 计算，emoji/组合字符不低估）。 */
 export function displayWidth(s: string): number {
   let w = 0;
-  for (const g of graphemes(s.replace(ANSI_SGR, ""))) w += graphemeWidth(g);
+  for (const g of graphemes(s.replace(ANSI_ESCAPE, ""))) w += graphemeWidth(g);
   return w;
 }
 
@@ -277,7 +286,7 @@ export function truncate(s: string, max: number): string {
   const budget = max - 1;
   let out = "";
   let w = 0;
-  for (const g of graphemes(s.replace(ANSI_SGR, ""))) {
+  for (const g of graphemes(s.replace(ANSI_ESCAPE, ""))) {
     const cw = graphemeWidth(g);
     if (w + cw > budget) break;
     out += g;

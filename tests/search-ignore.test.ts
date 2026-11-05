@@ -125,6 +125,23 @@ describe("P0-5 非 git fallback 的 .gitignore 方言", () => {
     expect(matches(" foo", " foo")).toBe(true);
     expect(matches(" foo", "foo")).toBe(false);
   });
+
+  // 以下三条的期望值均以 `git check-ignore` 实测为准（v0.4.29 修复前三条全错）。
+  test("] 作字符类首字符（[]abc] 是合法 gitignore 写法）", () => {
+    expect(matches("[]abc].txt", "a.txt")).toBe(true);
+    expect(matches("[]abc].txt", "].txt")).toBe(true);
+    expect(matches("[]abc].txt", "z.txt")).toBe(false);
+  });
+
+  test("[!] 是空否定类：匹配空集，不能退化成「任意字符」", () => {
+    expect(matches("[!].txt", "a.txt")).toBe(false);
+    expect(matches("[!].txt", "].txt")).toBe(false);
+  });
+
+  test("\\<空格> 转义为字面空格（不是字面反斜杠）", () => {
+    expect(matches("foo\\ bar.txt", "foo bar.txt")).toBe(true);
+    expect(matches("foo\\ bar.txt", "foo")).toBe(false);
+  });
 });
 
 describe("P0-5 非 git 目录：内置 .gitignore 匹配器", () => {

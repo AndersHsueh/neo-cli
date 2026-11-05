@@ -101,8 +101,64 @@ describe("D3 web_search", () => {
     const r = parseBingRss(RSS);
     expect(r).toHaveLength(2);
     expect(r[0]).toMatchObject({ title: "Vue 3.5 发布", url: "https://example.com/vue" });
-    expect(r[0]!.snippet).toContain("Vue 3.5 & 性能提升");
+    // CDATA：剥标签、不解实体 → 高亮去掉，&amp; 保留字面量（v0.4.27）
+    expect(r[0]!.snippet).toContain("Vue 3.5 &amp; 性能提升");
     expect(r[1]!.title).toBe("第二篇");
+  });
+
+  // 畸形数字字符引用不该让整个 web_search 崩掉（v0.4.19）
+  test("parseBingRss：越界数字实体原样保留，不抛 RangeError", () => {
+    const mk = (t: string) =>
+      `<rss><item><title>${t}</title><link>https://a.com/x</link></item></rss>`;
+    expect(() => parseBingRss(mk("&#1114112;"))).not.toThrow();
+    expect(parseBingRss(mk("&#1114112;"))[0]!.title).toBe("&#1114112;");
+    expect(parseBingRss(mk("&#x110000;"))[0]!.title).toBe("&#x110000;");
+    // 合法实体照常解码
+    expect(parseBingRss(mk("&#x1F600;"))[0]!.title).toBe("😀");
+  });
+
+  // NUL 会污染下游，且肉眼不可见（v0.4.21，与 htmlToText 共用 entities.ts）
+  test("parseBingRss：NUL 实体原样保留，不产出 U+0000", () => {
+    const mk = (t: string) =>
+      `<rss><item><title>${t}</title><link>https://a.com/x</link></item></rss>`;
+    expect(parseBingRss(mk("&#0;"))[0]!.title).toBe("&#0;");
+    expect(parseBingRss(mk("&#x0;"))[0]!.title).toBe("&#x0;");
+    expect(parseBingRss(mk("a&#0;b"))[0]!.title).not.toContain("\u0000");
+  });
+
+  // 单次解码：转义后的字面量标签不能被二次解码成真标签再被剥掉（v0.4.22）
+  test("parseBingRss：实体只解一次，&amp;lt;b&amp;gt; 保留为字面量", () => {
+    const mk = (t: string) =>
+      `<rss><item><title>${t}</title><link>https://a.com/x</link></item></rss>`;
+    // 标题里的代码片段：字面量 <b>y</b> 的正规转义写法
+    expect(parseBingRss(mk("&amp;lt;b&amp;gt;y&amp;lt;/b&amp;gt;"))[0]!.title).toBe("&lt;b&gt;y&lt;/b&gt;");
+    // 比较符：a < b 的双重转义
+    expect(parseBingRss(mk("a &amp;lt; b"))[0]!.title).toBe("a &lt; b");
+    // &amp;amp; 停在 &amp;，不会一路解成 &
+    expect(parseBingRss(mk("&amp;amp;"))[0]!.title).toBe("&amp;");
+    // 单层转义仍照常解码（不因修复而回退）
+    expect(parseBingRss(mk("&lt;b&gt;x&lt;/b&gt;"))[0]!.title).toBe("x");
+    // url 侧同样只解一次
+    const r = parseBingRss(
+      `<rss><item><title>t</title><link>https://a.com/x?a=1&amp;amp;b=2</link></item></rss>`,
+    );
+    expect(r[0]!.url).toBe("https://a.com/x?a=1&amp;b=2");
+  });
+
+  // CDATA 是字面量段：段内实体不解码，也不能与段外拼出实体（v0.4.27）
+  test("parseBingRss：CDATA 内容按字面量保留，段内实体不解码", () => {
+    const mk = (t: string) =>
+      `<rss><item><title>${t}</title><link>https://a.com/x</link></item></rss>`;
+    // CDATA 里写什么就是什么，&amp; 不该变成 &
+    expect(parseBingRss(mk("<![CDATA[a &amp; b]]>"))[0]!.title).toBe("a &amp; b");
+    // 段内标签剥掉（Bing 高亮），实体字面量保留
+    expect(parseBingRss(mk("<![CDATA[<b>x</b>]]>"))[0]!.title).toBe("x");
+    // 段外实体照常解码，且与段内互不影响（段内的 &amp; 保持字面量）
+    expect(parseBingRss(mk("&lt;i&gt;<![CDATA[&amp;]]>"))[0]!.title).toBe("&amp;");
+    // 跨 CDATA 边界不能拼出实体：&am + p; 不是 &amp;
+    expect(parseBingRss(mk("<![CDATA[&am]]>p;"))[0]!.title).toBe("&amp;");
+    // 空 CDATA 与多段 CDATA 拼接
+    expect(parseBingRss(mk("<![CDATA[]]>x<![CDATA[y]]>"))[0]!.title).toBe("xy");
   });
 
   test("工具返回格式化结果；count 生效", async () => {

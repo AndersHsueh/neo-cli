@@ -22,6 +22,11 @@ export interface EnvConfig {
   wikiPage?: boolean;
   /** 快照根目录覆盖（测试/多环境隔离用），默认 ~/.neo/env。 */
   dir?: string;
+  /**
+   * `/models` 能力探测超时（毫秒）。缺省 5000。
+   * 旧默认 2500 对慢企业网关的冷启动偏紧，会把「有元数据」误判成探测失败。
+   */
+  modelsProbeTimeoutMs?: number;
 }
 
 export interface ToolInfo {
@@ -73,6 +78,13 @@ export interface EnvStatic {
   models?: Record<string, ModelContextInfo>;
 }
 
+/**
+ * 三态能力标记：true/false 是已知事实，"unknown" 是「没探测到」。
+ * 用三态而不是 boolean 是为了区分「确认不支持」与「不知道」——
+ * 前者可以据此拒绝请求，后者只能保守放行。
+ */
+export type CapabilityFlag = true | false | "unknown";
+
 /** 单个模型的上下文窗口事实（可能来自 /models 元数据或溢出错误）。 */
 export interface ModelContextInfo {
   /** 探测到的窗口；null = 只知道存在但没拿到值。 */
@@ -83,6 +95,18 @@ export interface ModelContextInfo {
   evidence?: string;
   /** 成功请求里见过的最大 prompt tokens（下界证据，不代表上限）。 */
   observedMaxPromptTokens?: number;
+  /**
+   * 模型单次输出上限（P1）。与 settings 的 `max_tokens` 语义不同：
+   * 后者是「本次请求我要多少输出」，这里是「模型最多能给多少」。
+   * 缺省/null = 未探测到。旧快照没有这些字段，读取方必须容忍 undefined。
+   */
+  maxOutputTokens?: number | null;
+  /** 是否支持图像输入。 */
+  vision?: CapabilityFlag;
+  /** 是否支持工具调用。 */
+  tools?: CapabilityFlag;
+  /** 是否为推理模型。 */
+  reasoning?: CapabilityFlag;
 }
 
 export interface EnvDynamic {

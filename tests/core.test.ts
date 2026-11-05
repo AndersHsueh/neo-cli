@@ -15,6 +15,7 @@ import {
   toolNames,
   globToRegExp,
   htmlToText,
+  extractTitle,
   rewriteSearchUrl,
   dispatch,
 } from "../src/tools/index.ts";
@@ -238,6 +239,27 @@ describe("glob / grep", () => {
     expect(globToRegExp("a?.txt").test("ab.txt")).toBe(true);
   });
 
+  // v0.4.11：glob 的 [!abc] 是「非 a/b/c」，旧实现原样塞进 RegExp 被读成
+  // 字面量 `!` + `abc`，语义正好相反（d.ts 漏掉、a.ts 反被命中）。
+  test("globToRegExp 字符类取反 [!...] 与 glob 语义一致", () => {
+    expect(globToRegExp("[!abc].ts").test("d.ts")).toBe(true);
+    expect(globToRegExp("[!abc].ts").test("a.ts")).toBe(false);
+    expect(globToRegExp("[!abc].ts").test("!.ts")).toBe(true); // `!` 不在 a/b/c 里，属于取反集
+    // [^...] 不是 glob 标准写法，但按取反处理，避免用户/模型误写时静默反义
+    expect(globToRegExp("[^abc].ts").test("d.ts")).toBe(true);
+    expect(globToRegExp("[^abc].ts").test("a.ts")).toBe(false);
+    // 取反后类内为空 → 不匹配任何字符（不抛 SyntaxError）
+    expect(() => globToRegExp("[!].ts")).not.toThrow();
+    expect(globToRegExp("[!].ts").test("a.ts")).toBe(false);
+  });
+
+  test("globToRegExp 普通字符类与区间不受影响", () => {
+    expect(globToRegExp("[a-c].ts").test("b.ts")).toBe(true);
+    expect(globToRegExp("[a-c].ts").test("d.ts")).toBe(false);
+    expect(globToRegExp("*.[ch]").test("a.c")).toBe(true);
+    expect(globToRegExp("*.[ch]").test("a.ts")).toBe(false);
+  });
+
   test("glob 找到文件", async () => {
     write("g/one.ts", "1");
     write("g/two.ts", "2");
@@ -278,6 +300,43 @@ describe("glob / grep", () => {
     expect(r.output).toContain("txt.ts");
     expect(r.output).not.toContain("bin.dat");
   });
+
+  test("grep 目录扫描超限文件必须明说跳过，不能静默假阴性", async () => {
+    // 3MB 以上：内容里确实有 NEEDLE，若静默跳过就会谎报「无匹配」
+    const big = "x".repeat(3_000_001) + "\nNEEDLE_IN_BIG\n";
+    write("big/huge.log", big);
+    const r = await dispatch(
+      "grep",
+      JSON.stringify({ pattern: "NEEDLE_IN_BIG", path: join(SANDBOX, "big") }),
+      makeCtx(),
+    );
+    expect(r.ok).toBe(true);
+    expect(r.output).toContain("无匹配");
+    expect(r.output).toContain("文件过大，跳过");
+    expect(r.output).toContain("huge.log");
+  });
+
+  test("grep 目录扫描有命中时也带上超限跳过说明", async () => {
+    write("mix/huge.log", "y".repeat(3_000_001) + "\nNEEDLE_IN_BIG\n");
+    write("mix/small.ts", "NEEDLE_IN_BIG");
+    const r = await dispatch(
+      "grep",
+      JSON.stringify({ pattern: "NEEDLE_IN_BIG", path: join(SANDBOX, "mix") }),
+      makeCtx(),
+    );
+    expect(r.ok).toBe(true);
+    expect(r.output).toContain("small.ts:1:");
+    expect(r.output).toContain("文件过大，跳过");
+    expect(r.output).toContain("huge.log");
+  });
+
+  test("grep 单文件超限与目录扫描同一口径（都报文件过大）", async () => {
+    const p = write("big2/huge.log", "z".repeat(3_000_001));
+    const r = await dispatch("grep", JSON.stringify({ pattern: "zzz", path: p }), makeCtx());
+    expect(r.ok).toBe(true);
+    expect(r.output).toContain("文件过大");
+    expect(r.output).toContain("跳过");
+  });
 });
 
 describe("shell", () => {
@@ -317,14 +376,39 @@ describe("web_fetch", () => {
     expect(r.output).toContain("http");
   });
 
+  // 标题与正文走同一套单次解码（v0.4.23）：旧版标题不解实体，
+  // 输出里 `Title: A &amp; B` 与正文 `A & B` 并存，模型会把 `&amp;` 当原文抄走。
+  test("extractTitle：解实体、剥标签、带属性", () => {
+    expect(extractTitle("<html><head><title>A &amp; B</title></head></html>")).toBe("A & B");
+    // 字面量标签的正规转义写法只解一次，停在字面量
+    expect(extractTitle("<title>&amp;lt;b&amp;gt;y&amp;lt;/b&amp;gt;</title>")).toBe("&lt;b&gt;y&lt;/b&gt;");
+    // 单层转义照常解码
+    expect(extractTitle("<title>&lt;b&gt;x&lt;/b&gt;</title>")).toBe("<b>x</b>");
+    // 标题里夹真标签：先剥后解，不会被当成标签剥掉内容
+    expect(extractTitle("<title><b>neo</b> cli</title>")).toBe("neo cli");
+    // 带属性的 title
+    expect(extractTitle('<title lang="zh">你好</title>')).toBe("你好");
+    // 数字实体与畸形实体
+    expect(extractTitle("<title>it&#39;s &#x1F600;</title>")).toBe("it's 😀");
+    expect(extractTitle("<title>&#1114112;</title>")).toBe("&#1114112;");
+    // 空白折叠
+    expect(extractTitle("<title>\n  a   b \n</title>")).toBe("a b");
+  });
+
+  test("extractTitle：无 title / 空 title 返回 null", () => {
+    expect(extractTitle("<html><body>x</body></html>")).toBeNull();
+    expect(extractTitle("<title></title>")).toBeNull();
+    expect(extractTitle("<title>   </title>")).toBeNull();
+  });
+
   test("rewriteSearchUrl: google/duckduckgo 搜索页改写到 cn.bing.com", () => {
-    // google 带 q → 改写
-    expect(rewriteSearchUrl("https://www.google.com/search?q=hello+world")).toEqual({
+    // google 带 q → 改写。空格的正规编码是 %20（encodeURIComponent 的输出）
+    expect(rewriteSearchUrl("https://www.google.com/search?q=hello%20world")).toEqual({
       url: "https://cn.bing.com/search?q=hello%20world",
       note: expect.stringContaining("cn.bing.com"),
     });
-    // duckduckgo 带 q → 改写
-    expect(rewriteSearchUrl("https://duckduckgo.com/?q=neo+cli")).toEqual({
+    // duckduckgo 带 %20 → 改写
+    expect(rewriteSearchUrl("https://duckduckgo.com/?q=neo%20cli")).toEqual({
       url: "https://cn.bing.com/search?q=neo%20cli",
       note: expect.stringContaining("cn.bing.com"),
     });
@@ -348,6 +432,67 @@ describe("web_fetch", () => {
     // 非法 URL 原样返回
     expect(rewriteSearchUrl("not a url")).toEqual({ url: "not a url", note: null });
   });
+
+  // 改写目标本身已是 cn.bing.com 时必须幂等（v0.4.26 修）
+  test("rewriteSearchUrl: cn.bing.com 搜索页原样返回，不改写也不加 note", () => {
+    // web_fetch 的 description 直接教模型拼 cn.bing.com/search?q=…，这条路径最常走
+    expect(rewriteSearchUrl("https://cn.bing.com/search?q=neo+cli")).toEqual({
+      url: "https://cn.bing.com/search?q=neo+cli",
+      note: null,
+    });
+    // 旧实现里 bing 不在 isSearchHost 里，靠「无 q → 原样返回」侥幸通过；
+    // 但带 q 的 bing 链接一旦进 isSearchHost 就会被改写成自身，会改写成自身
+    // v0.4.26：www.bing.com 现在**应该**改写（与 cn.bing.com 不同域），
+    // 这里只保证改写目标是 cn.bing.com 而非自身。
+    expect(rewriteSearchUrl("https://www.bing.com/search?q=x").url).toBe(
+      "https://cn.bing.com/search?q=x",
+    );
+  });
+
+  // bing 主域要改写到 cn.bing.com（v0.4.26 修）
+  test("rewriteSearchUrl: www.bing.com / bing.com 搜索页改写到 cn.bing.com", () => {
+    // 模型凭习惯拼 www.bing.com，与 description 教的 cn.bing.com 不同域
+    expect(rewriteSearchUrl("https://www.bing.com/search?q=neo")).toEqual({
+      url: "https://cn.bing.com/search?q=neo",
+      note: expect.stringContaining("cn.bing.com"),
+    });
+    // 裸域同样命中
+    expect(rewriteSearchUrl("https://bing.com/search?q=neo%20cli&count=10").url).toBe(
+      "https://cn.bing.com/search?q=neo%20cli&count=10",
+    );
+    // cn.bing.com 仍是幂等目标，不能被改写成自身
+    expect(rewriteSearchUrl("https://cn.bing.com/search?q=neo")).toEqual({
+      url: "https://cn.bing.com/search?q=neo",
+      note: null,
+    });
+  });
+
+  // 改写时保留原 URL 的其余查询参数（v0.4.26 修）
+  test("rewriteSearchUrl: 保留 q 以外的查询参数", () => {
+    expect(rewriteSearchUrl("https://www.google.com/search?q=neo&hl=en&num=20").url).toBe(
+      "https://cn.bing.com/search?q=neo&hl=en&num=20",
+    );
+    // q 不在首位也一样
+    expect(rewriteSearchUrl("https://duckduckgo.com/?kl=cn&q=neo").url).toBe(
+      "https://cn.bing.com/search?q=neo&kl=cn",
+    );
+  });
+
+  // 查询词里的字面 '+' 不能被当成空格（v0.4.26 修）
+  test("rewriteSearchUrl: 字面 + 与 %2B 不被误解为空格", () => {
+    // URL 里的 '+' 是字面加号（真正编码空格的是 %20），解成空格会把「c++」搜成「c  」
+    expect(rewriteSearchUrl("https://www.google.com/search?q=c%2B%2B").url).toBe(
+      "https://cn.bing.com/search?q=c%2B%2B",
+    );
+    // 未编码的 '+' 同样按字面保留
+    expect(rewriteSearchUrl("https://www.google.com/search?q=c++").url).toBe(
+      "https://cn.bing.com/search?q=c%2B%2B",
+    );
+    // 真正的空格（%20）仍解成空格
+    expect(rewriteSearchUrl("https://www.google.com/search?q=neo%20cli").url).toBe(
+      "https://cn.bing.com/search?q=neo%20cli",
+    );
+  });
 });
 
 describe("htmlToText", () => {
@@ -360,6 +505,68 @@ describe("htmlToText", () => {
 
   test("解码实体", () => {
     expect(htmlToText("<p>a &amp; b &lt;c&gt;</p>")).toContain("a & b <c>");
+  });
+
+  // 外部网页里的畸形数字实体不该让整个 web_fetch 崩掉（v0.4.19）
+  test("越界数字实体原样保留，不抛 RangeError", () => {
+    expect(() => htmlToText("<p>&#1114112;</p>")).not.toThrow();
+    expect(htmlToText("<p>&#1114112;</p>")).toBe("&#1114112;");
+    expect(htmlToText("<p>&#99999999;</p>")).toBe("&#99999999;");
+    // 代理区码点同样非法
+    expect(htmlToText("<p>&#55357;</p>")).toBe("&#55357;");
+  });
+
+  test("合法数字实体照常解码（含 emoji）", () => {
+    expect(htmlToText("<p>&#65;</p>")).toBe("A");
+    expect(htmlToText("<p>&#128512;</p>")).toBe("😀");
+  });
+
+  // 与 decodeXml 对齐：网页里 &#x27; / &#x2F; 这类十六进制实体很常见（v0.4.19）
+  test("解码十六进制实体", () => {
+    expect(htmlToText("<p>it&#x27;s a&#x2F;b</p>")).toBe("it's a/b");
+    expect(htmlToText("<p>&#x4F60;&#x597D;</p>")).toBe("你好");
+    expect(htmlToText("<p>&#x1F600;</p>")).toBe("😀");
+    // 大小写 x 与十六进制数字都要认
+    expect(htmlToText("<p>&#X41;&#x6a;</p>")).toBe("Aj");
+  });
+
+  test("越界十六进制实体原样保留，不抛 RangeError", () => {
+    expect(() => htmlToText("<p>&#x110000;</p>")).not.toThrow();
+    expect(htmlToText("<p>&#x110000;</p>")).toBe("&#x110000;");
+    expect(htmlToText("<p>&#xD83D;</p>")).toBe("&#xD83D;");
+  });
+
+  // NUL 会污染下游（模型上下文 / 终端 / JSON），且肉眼不可见（v0.4.21）
+  test("NUL 实体原样保留，不产出 U+0000", () => {
+    expect(htmlToText("<p>&#0;</p>")).toBe("&#0;");
+    expect(htmlToText("<p>&#x0;</p>")).toBe("&#x0;");
+    expect(htmlToText("<p>&#x0000;</p>")).toBe("&#x0000;");
+    expect(htmlToText("<p>a&#0;b</p>")).not.toContain("\u0000");
+  });
+
+  // 与 web_search 的 decodeXml 共用 ./entities.ts，实体表不再漂移（v0.4.21）
+  test("&apos; 与 XML 侧行为一致", () => {
+    expect(htmlToText("<p>it&apos;s</p>")).toBe("it's");
+  });
+
+  // &#39; 必须走十进制数字实体（码点 39），不能塞进命名组抢匹配（v0.4.23 审阅修正）
+  test("&#39; / &#x27; 解成单引号", () => {
+    expect(htmlToText("<p>it&#39;s</p>")).toBe("it's");
+    expect(htmlToText("<p>it&#x27;s</p>")).toBe("it's");
+  });
+
+  // 单次解码：命名实体与数字实体各扫一遍，解出的字符不再参与后续匹配（v0.4.23）
+  test("实体只解一次：&amp;lt; / &amp;amp; / &amp;#65; 都停在字面量", () => {
+    // 网页里字面量 <b>y</b> 的正规转义写法，必须原样保留成字面量
+    expect(htmlToText("<p>&amp;lt;b&amp;gt;y&amp;lt;/b&amp;gt;</p>")).toBe("&lt;b&gt;y&lt;/b&gt;");
+    // 比较符的双重转义
+    expect(htmlToText("<p>a &amp;lt; b</p>")).toBe("a &lt; b");
+    // &amp;amp; 停在 &amp;，不会一路解成 &
+    expect(htmlToText("<p>&amp;amp;</p>")).toBe("&amp;");
+    // &amp;#65; 停在 &#65;，不会解成 A（旧版行为是 A，属二次解码）
+    expect(htmlToText("<p>&amp;#65;</p>")).toBe("&#65;");
+    // 单层转义仍照常解码，不因修复而回退
+    expect(htmlToText("<p>&lt;b&gt;x&lt;/b&gt;</p>")).toBe("<b>x</b>");
   });
 });
 

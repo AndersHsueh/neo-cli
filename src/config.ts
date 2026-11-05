@@ -120,6 +120,19 @@ export interface ProviderConfig {
   maxTokens: number | null;
   temperature: number | null;
   contextWindow: number | null;
+  /**
+   * 模型能力的手写声明（P1）。undefined = 未填，交给 /models 探测补；
+   * 填了就权威，探测结果不得覆盖。注意 maxTokens 是「请求输出预算」，不是能力上限。
+   */
+  vision?: boolean;
+  tools?: boolean;
+  reasoning?: boolean;
+  /**
+   * 模型单次输出上限（P3）。与 `maxTokens` 语义不同：后者是「本次请求要多少输出」，
+   * 这里是「模型最多能给多少」。由探测写回填充，也可手写；null/undefined = 未填。
+   * 展示口径仍遵循 P2：能力上限 ≠ cfg.maxTokens（见 buildModelCapabilityView）。
+   */
+  maxOutputTokens?: number | null;
 }
 
 /** 档位 → 目标 {provider, model} 的绑定。跨供应商调度靠这个。 */
@@ -339,6 +352,10 @@ function resolveEnvConfig(raw: unknown): EnvConfig | undefined {
   if (typeof r["wiki_page"] === "boolean") out.wikiPage = r["wiki_page"];
   const dir = r["dir"];
   if (typeof dir === "string" && dir.trim() !== "") out.dir = dir.trim();
+  if (typeof r["models_probe_timeout_ms"] === "number" && Number.isFinite(r["models_probe_timeout_ms"])) {
+    // 与 modelWindows.modelsProbeTimeoutMs 同一夹取范围：过小会假阴性，过大拖住后台探测。
+    out.modelsProbeTimeoutMs = Math.min(60_000, Math.max(250, Math.floor(r["models_probe_timeout_ms"])));
+  }
   return Object.keys(out).length > 0 ? out : undefined;
 }
 
@@ -438,6 +455,10 @@ function numOrNull(v: unknown): number | null {
 function bool(v: unknown, d: boolean): boolean {
   return typeof v === "boolean" ? v : d;
 }
+/** 三态布尔：只认 true/false，其余（含缺失、"true" 字符串）一律 undefined = 未填。 */
+function boolOrUndef(v: unknown): boolean | undefined {
+  return typeof v === "boolean" ? v : undefined;
+}
 function str(v: unknown, d: string): string {
   return typeof v === "string" && v.length > 0 ? v : d;
 }
@@ -509,6 +530,10 @@ function parseProviders(raw: unknown): ProviderConfig[] {
       maxTokens: numOrNull(p["max_tokens"]),
       temperature: numOrNull(p["temperature"]),
       contextWindow: numOrNull(p["context_window"]),
+      vision: boolOrUndef(p["vision"]),
+      tools: boolOrUndef(p["tools"]),
+      reasoning: boolOrUndef(p["reasoning"]),
+      maxOutputTokens: numOrNull(p["max_output_tokens"]),
     };
   });
 }
@@ -536,6 +561,10 @@ function providerFromLegacy(raw: Raw): ProviderConfig | null {
     maxTokens: numOrNull(raw["max_tokens"]),
     temperature: numOrNull(raw["temperature"]),
     contextWindow: numOrNull(raw["context_window"]),
+    vision: boolOrUndef(raw["vision"]),
+    tools: boolOrUndef(raw["tools"]),
+    reasoning: boolOrUndef(raw["reasoning"]),
+    maxOutputTokens: numOrNull(raw["max_output_tokens"]),
   };
 }
 

@@ -55,18 +55,21 @@ export function cleanupTmpFiles(
   for (const name of entries) {
     if (name.startsWith(".")) continue;
     const p = join(dir, name);
-    const age = ageOf(p, now);
-    if (age === null || age < maxAge) continue;
-    let size = 0;
+    let st;
     try {
-      size = statSync(p).size;
+      st = statSync(p);
     } catch {
-      /* 忽略 */
+      continue;
     }
+    // 只清普通文件：目录既不该被当垃圾删（非递归 rm 会 EISDIR 并污染 errors），
+    // 其 size 也不是「释放字节」，计入 freedBytes 会让返回值失真。
+    if (!st.isFile()) continue;
+    const age = now - st.mtimeMs;
+    if (age < maxAge) continue;
     try {
       rmSync(p, { force: true });
       removed += 1;
-      freedBytes += size;
+      freedBytes += st.size;
     } catch (e) {
       errors.push(`${name}: ${(e as Error).message}`);
     }

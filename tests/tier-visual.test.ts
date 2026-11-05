@@ -27,6 +27,7 @@ afterAll(() => {
 });
 
 const snap = (tier: string): StatusSnapshot => ({
+  version: "0.4.54",
   model: "deepseek-flash",
   tier,
   mode: "ask",

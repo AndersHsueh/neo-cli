@@ -14,6 +14,7 @@ import { describeSource, insideGlobalSkills, isRealDir, listSkillFiles, resolveS
 import { insideRawDir } from "../wiki/paths.ts";
 import { ToolError, type ToolCtx, type ToolImpl, type ToolKind, type DispatchResult } from "./types.ts";
 import { webSearchTool } from "./webSearch.ts";
+import { decodeHtmlEntities } from "./entities.ts";
 import { toolTmpDir } from "../runtimeTmp.ts";
 import { shellMarks } from "./shellMarks.ts";
 import { listSearchFiles } from "./fileList.ts";
@@ -52,6 +53,9 @@ function requireDir(p: string): string {
 }
 
 const MAX_READ = 2_000_000;
+
+/** grep 单文件大小上限：目录扫描与单文件分支共用同一阈值，超限必须明说跳过。 */
+const MAX_GREP_FILE = 3_000_000;
 
 /**
  * 写工具守卫：禁止经软链穿透写入全局技能库（技能是只读资源）。
@@ -382,7 +386,29 @@ const globTool: ToolImpl = {
   },
 };
 
-/** 最小 glob → RegExp。支持 *, **, ?, {a,b}, 字符类。 */
+/**
+ * glob 字符类 → 正则字符类。
+ *
+ * glob 的 `[!abc]` 是「非 a/b/c」，原样塞进 RegExp 会被读成字面量 `!` 加 `abc`，
+ * 语义正好相反（`[!abc].ts` 会命中 `a.ts` 而漏掉 `d.ts`）。这里做两件事：
+ *  1. `!` / `^` 开头的取反统一转成 JS 的 `[^...]`；
+ *  2. 类内的 `\` 与 `]` 转义，避免生成非法正则（如 `[a\]`）。
+ * 空类（`[]`）在 glob 里是字面量，退化成转义后的 `\[\]` 由调用方处理更简单 ——
+ * 这里返回 `[]` 会让整条正则抛 SyntaxError，故显式兜底成「永不匹配」。
+ */
+function charClass(body: string): string {
+  let inner = body;
+  let negate = false;
+  if (inner.startsWith("!") || inner.startsWith("^")) {
+    negate = true;
+    inner = inner.slice(1);
+  }
+  if (inner === "") return "(?!)"; // 空字符类：不匹配任何字符
+  inner = inner.replace(/\\/g, "\\\\").replace(/\]/g, "\\]");
+  return negate ? `[^${inner}]` : `[${inner}]`;
+}
+
+/** 最小 glob → RegExp。支持 *, **, ?, {a,b}, 字符类（含 [!...] 取反）。 */
 export function globToRegExp(pattern: string): RegExp {
   let re = "";
   let i = 0;
@@ -424,7 +450,7 @@ export function globToRegExp(pattern: string): RegExp {
     if (ch === "[") {
       const end = pattern.indexOf("]", i);
       if (end !== -1) {
-        re += pattern.slice(i, end + 1);
+        re += charClass(pattern.slice(i + 1, end));
         i = end + 1;
         continue;
       }
@@ -484,6 +510,7 @@ const grepTool: ToolImpl = {
     const hits: string[] = [];
     let filesScanned = 0;
     let truncated = false;
+    const skippedLarge: string[] = [];
 
     // 文件清单走 gitignore 语义（git 工作区用 git ls-files，非 git 目录用内置匹配器）；
     // 匹配仍用上面的 JS 正则，不切 git grep —— 保持 \d、lookahead 等语义不变。
@@ -502,7 +529,12 @@ const grepTool: ToolImpl = {
       } catch {
         continue;
       }
-      if (!st.isFile() || st.size > 3_000_000) continue;
+      if (!st.isFile()) continue;
+      if (st.size > MAX_GREP_FILE) {
+        // 与单文件分支口径一致：跳过必须说出来，否则「无匹配」是假阴性
+        skippedLarge.push(`${f.rel} (${st.size}B)`);
+        continue;
+      }
 
       let text: string;
       try {
@@ -527,6 +559,11 @@ const grepTool: ToolImpl = {
     const notes: string[] = [];
     if (listed.backend === "git") notes.push("已按 .gitignore 排除");
     if (listed.truncated) notes.push("文件枚举已截断");
+    if (skippedLarge.length > 0) {
+      const shown = skippedLarge.slice(0, 5).join("、");
+      const more = skippedLarge.length > 5 ? ` 等 ${skippedLarge.length} 个` : "";
+      notes.push(`文件过大，跳过: ${shown}${more}`);
+    }
     const note = notes.length > 0 ? `；${notes.join("；")}` : "";
     if (hits.length === 0) return `无匹配。扫描 ${filesScanned} 个文件（${pattern}）${note}`;
     const tail = truncated ? `\n… 结果截断在 ${limit} 行` : "";
@@ -537,7 +574,7 @@ const grepTool: ToolImpl = {
 /** 在单个文件内搜索。 */
 function grepFile(file: string, re: RegExp, pattern: string, limit: number, label: string | null): string {
   const st = statSync(file);
-  if (st.size > 3_000_000) return `文件过大 (${st.size}B)，跳过: ${file}`;
+  if (st.size > MAX_GREP_FILE) return `文件过大 (${st.size}B)，跳过: ${file}`;
   let text: string;
   try {
     text = readFileSync(file, "utf8");
@@ -659,6 +696,15 @@ const shell: ToolImpl = {
  * 背景：本机在中国境内，google.com / duckduckgo.com 均连接超时（实测 000）。
  * 模型可能凭习惯拼出这些 URL，这里兜底改写，避免白跑一次抓取。
  * 只改「搜索页」URL；普通网页抓取不受影响。
+ *
+ * v0.4.25 修三处口径问题：
+ * 1. **幂等**：`cn.bing.com` 是改写目标，必须显式排除。旧版靠「bing 不在
+ *    isSearchHost 里」侥幸不命中，但 web_fetch 的 description 恰恰教模型拼
+ *    `cn.bing.com/search?q=…` —— 一旦有人把 bing 加进 isSearchHost，就会改写成
+ *    自身并改写成自身。现在把「目标域名」写成显式排除，意图可读。
+ * 2. **保留其余参数**：旧版只留 `q`，`&hl=en&num=20` 这类参数被静默丢弃。
+ * 3. **`+` 是字面加号**：`URLSearchParams.get` 会把 `+` 解成空格，`?q=c++`
+ *    被搜成 `c  `。这里手工取原始串，只把 `%20` 解成空格（`+` 保留为字面量）。
  */
 export function rewriteSearchUrl(url: string): { url: string; note: string | null } {
   let u: URL;
@@ -668,6 +714,8 @@ export function rewriteSearchUrl(url: string): { url: string; note: string | nul
     return { url, note: null };
   }
   const host = u.hostname.toLowerCase();
+  // 改写目标自身：幂等，原样返回（见上「1. 幂等」）
+  if (host === "cn.bing.com" || host === "www.cn.bing.com") return { url, note: null };
   const isSearchHost =
     host === "www.google.com" ||
     host === "google.com" ||
@@ -675,16 +723,77 @@ export function rewriteSearchUrl(url: string): { url: string; note: string | nul
     host === "duckduckgo.com" ||
     host === "www.duckduckgo.com" ||
     host === "html.duckduckgo.com" ||
-    host === "lite.duckduckgo.com";
+    host === "lite.duckduckgo.com" ||
+    // bing 主域（v0.4.26）：模型常凭习惯拼 www.bing.com/search?q=…，
+    // 与 description 教的 cn.bing.com 不是同一域名。cn.bing.com 已在上面排除，
+    // 这里只收 bing.com / www.bing.com，避免把 cn 站改写成自身。
+    host === "bing.com" ||
+    host === "www.bing.com";
 
   if (!isSearchHost) return { url, note: null };
 
-  // 提取查询词：google 用 q，duckduckgo 用 q
-  const q = u.searchParams.get("q");
+  // 提取查询词：google 与 duckduckgo 都用 q
+  const q = rawQueryParam(u, "q");
   if (!q) return { url, note: null };
 
-  const next = `https://cn.bing.com/search?q=${encodeURIComponent(q)}`;
-  return { url: next, note: `已将 ${host} 的搜索改写为 cn.bing.com（原域名在中国境内不可达）` };
+  // 保留 q 以外的参数（顺序不变），只替换 q 的值
+  const rest = u.searchParams
+    .entries()
+    .filter(([k]) => k !== "q")
+    .map(([k, v]) => `&${encodeURIComponent(k)}=${encodeURIComponent(v)}`)
+    .toArray()
+    .join("");
+  const next = `https://cn.bing.com/search?q=${encodeURIComponent(q)}${rest}`;
+  return { url: next, note: `已将 ${host} 的搜索改写为 cn.bing.com` };
+}
+
+/**
+ * 取查询串里某个参数的**原始值**，只解 `%XX`，不把 `+` 当空格。
+ *
+ * `URLSearchParams` 按 `application/x-www-form-urlencoded` 解析，`+` → 空格。
+ * 但 URL 查询串里 `+` 是合法字面字符（空格的正规编码是 `%20`），`?q=c++`
+ * 应该搜「c++」而不是「c  」。解码失败（畸形 `%`）时退回原文，不抛错。
+ */
+function rawQueryParam(u: URL, name: string): string | null {
+  const search = u.search.startsWith("?") ? u.search.slice(1) : u.search;
+  for (const pair of search.split("&")) {
+    if (pair === "") continue;
+    const eq = pair.indexOf("=");
+    const key = eq === -1 ? pair : pair.slice(0, eq);
+    if (safeDecodeURIComponent(key) !== name) continue;
+    return eq === -1 ? "" : safeDecodeURIComponent(pair.slice(eq + 1));
+  }
+  return null;
+}
+
+function safeDecodeURIComponent(s: string): string {
+  try {
+    return decodeURIComponent(s);
+  } catch {
+    return s;
+  }
+}
+
+/**
+ * 从 HTML 里取 `<title>` 并解码实体；取不到返回 null。
+ *
+ * 为什么要单独抽出来（v0.4.23）：旧版在 web_fetch 里直接
+ * `/<title[^>]*>([\s\S]*?)<\/title>/i.exec(body)?.[1]?.trim()`，**没解实体**。
+ * 于是 `<title>A &amp; B</title>` 输出成 `Title: A &amp; B`，而正文经
+ * `htmlToText` 已是 `A & B` —— 同一份内容在输出里两种写法，模型容易把
+ * `&amp;` 当成页面原文抄进回答。标题走同一套单次解码。
+ *
+ * 顺带把两个边角一并处理：`<title>` 里带属性（`<title lang="zh">`）能匹配；
+ * 标题里夹标签（`<title><b>x</b></title>`）先剥标签再解码，与 htmlToText 同序
+ * （先剥后解，避免解出的 `<` 被当标签剥掉）。
+ */
+export function extractTitle(html: string): string | null {
+  const raw = /<title[^>]*>([\s\S]*?)<\/title>/i.exec(html)?.[1];
+  if (raw === undefined) return null;
+  const title = decodeHtmlEntities(raw.replace(/<[^>]+>/g, " "))
+    .replace(/\s+/g, " ")
+    .trim();
+  return title === "" ? null : title;
 }
 
 const webFetch: ToolImpl = {
@@ -723,29 +832,38 @@ const webFetch: ToolImpl = {
     const ct = res.headers.get("content-type") ?? "";
     const body = await res.text();
     const text = ct.includes("html") ? htmlToText(body) : body;
-    const title = /<title[^>]*>([\s\S]*?)<\/title>/i.exec(body)?.[1]?.trim();
+    const title = extractTitle(body);
     return [note, `URL: ${url}`, title ? `Title: ${title}` : "", "", text.slice(0, 60_000)]
       .filter((x) => x !== undefined && x !== null && x !== "")
       .join("\n");
   },
 };
 
-/** 极简 HTML → 文本。移除 script/style，块级标签转换行。 */
+/**
+ * 数字字符引用解码见 ./entities.ts（与 web_search 共用，v0.4.21 抽出）。
+ */
+
+/**
+ * 极简 HTML → 文本。移除 script/style，块级标签转换行。
+ *
+ * 实体解码顺序有讲究：**先剥标签，再一次性解实体**（`decodeHtmlEntities`）。
+ *
+ * v0.4.23 修：旧版先链式解命名实体、再调 `decodeNumericEntities`，于是
+ * `&amp;lt;b&amp;gt;` 被解两遍（→ `&lt;b&gt;` → `<b>`），`&amp;amp;` 一路解成 `&`、
+ * `&amp;#65;` 解成 `A` —— 都是二次解码。现在命名与数字实体共用一次扫描：
+ * `&amp;lt;b&amp;gt;` → `&lt;b&gt;`（字面量），`&amp;amp;` → `&amp;`，`&amp;#65;` → `&#65;`。
+ * 与 web_search 的 `decodeXml` 行为对齐。
+ */
 export function htmlToText(html: string): string {
-  return html
-    .replace(/<!--[\s\S]*?-->/g, "")
-    .replace(/<(script|style|noscript|svg)[\s\S]*?<\/\1>/gi, "")
-    .replace(/<\/(p|div|section|article|h[1-6]|li|tr|br)>/gi, "\n")
-    .replace(/<br\s*\/?>/gi, "\n")
-    .replace(/<li[^>]*>/gi, "  • ")
-    .replace(/<[^>]+>/g, "")
-    .replace(/&nbsp;/g, " ")
-    .replace(/&amp;/g, "&")
-    .replace(/&lt;/g, "<")
-    .replace(/&gt;/g, ">")
-    .replace(/&quot;/g, '"')
-    .replace(/&#39;/g, "'")
-    .replace(/&#(\d+);/g, (_m, d: string) => String.fromCodePoint(Number(d)))
+  return decodeHtmlEntities(
+    html
+      .replace(/<!--[\s\S]*?-->/g, "")
+      .replace(/<(script|style|noscript|svg)[\s\S]*?<\/\1>/gi, "")
+      .replace(/<\/(p|div|section|article|h[1-6]|li|tr|br)>/gi, "\n")
+      .replace(/<br\s*\/?>/gi, "\n")
+      .replace(/<li[^>]*>/gi, "  • ")
+      .replace(/<[^>]+>/g, ""),
+  )
     .replace(/[ \t]+/g, " ")
     .replace(/\n{3,}/g, "\n\n")
     .trim();

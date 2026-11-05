@@ -398,6 +398,40 @@ describe("compactNow / compact", () => {
     expect(tail[0]!.role).toBe("user");
   });
 
+  test("v0.4.8：被压缩的带图提问在摘要器输入里留占位，不静默消失", async () => {
+    const { fn, inputs } = fakeStream([() => ({ content: "摘要" })]);
+    const agent = new Agent({
+      cfg: makeCfg(),
+      console: spyConsole(),
+      mode: "auto-all",
+      systemPrompt: "sys",
+      chatStream: fn,
+    });
+    // 带图提问落在 head（被压缩段）：contentText 对 image part 返回空串，
+    // 修复前摘要器只看到 `user: `，模型无从得知这一轮贴过图。
+    agent.messages.push(
+      {
+        role: "user",
+        content: [
+          { type: "text", text: "这个报错怎么修" },
+          { type: "image_url", image_url: { url: "data:image/png;base64,AAAA" } },
+        ],
+      },
+      { role: "assistant", content: "a1" },
+      { role: "user", content: "u2" },
+      { role: "assistant", content: "a2" },
+      { role: "user", content: "u3" },
+      { role: "assistant", content: "a3" },
+      { role: "user", content: "u4" },
+      { role: "assistant", content: "a4" },
+    );
+    await agent.compactNow();
+
+    const prompt = contentText(inputs[0]?.[1]?.content ?? null) ?? "";
+    expect(prompt).toContain("这个报错怎么修");
+    expect(prompt).toContain("[图片");
+  });
+
   test("P0-2：10–11 条历史仍保留 ≥6 条原文", async () => {
     for (const len of [10, 11]) {
       const { fn } = fakeStream([() => ({ content: "摘要" })]);

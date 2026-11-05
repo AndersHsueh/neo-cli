@@ -109,6 +109,14 @@ export interface AgentOptions {
    */
   onContextLimit?: (tokens: number, model: string) => void;
   /**
+   * 输出撞墙回调（P3 / #6）：本轮第一次 `finish_reason === "length"` 时调用。
+   * 空正文、非空截断正文、工具轮上的 length 都算同一次命中。
+   * 组合根只探测 `/models` 并补 settings 的空字段；不得把本次
+   * `usage.completion_tokens` 或请求预算 `max_tokens` 写成能力上限。
+   * 同步返回 void —— 探测在后台跑，绝不阻断重试。
+   */
+  onOutputLimit?: (model: string) => void;
+  /**
    * 每轮开始前刷新上下文窗口（v0.4.1 A2）：/model、/tier 切模型后从 env 缓存
    * 重新解析当前模型窗口，避免沿用上一个模型的值。
    */

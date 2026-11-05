@@ -65,6 +65,14 @@ describe("C4b 行尾反斜杠模式（探针不可用时的回退触发）", () 
   test("双反斜杠不是续行（转义）", () => {
     expect(stripContinuationMarker("a\\\\")).toEqual({ text: "a\\\\", cont: false });
   });
+
+  test("奇数个行尾反斜杠 = 转义对 + 续行符（≥3 也要续行）", () => {
+    // 3 个：最后一对是转义、剩下那个是续行标记 → 续行并剥掉一个
+    expect(stripContinuationMarker("a\\\\\\")).toEqual({ text: "a\\\\", cont: true });
+    expect(stripContinuationMarker("a\\\\\\\\\\")).toEqual({ text: "a\\\\\\\\", cont: true });
+    // 4 个：两对转义 → 不续行
+    expect(stripContinuationMarker("a\\\\\\\\")).toEqual({ text: "a\\\\\\\\", cont: false });
+  });
 });
 
 describe("C4c 提交字节判定（Ctrl+J=0x0A / Enter=0x0D）", () => {

@@ -5,7 +5,7 @@
  * 真实 ANSI 字节，断言最终屏幕与光标位置 —— 与 scripts/pty-e2e.ts 的 Screen 同源思路。
  */
 import { describe, expect, test } from "bun:test";
-import { truncateAnsi, wrapAnsi } from "../src/tui/ansi.ts";
+import { stripAnsi, tokenizeAnsi, truncateAnsi, wrapAnsi } from "../src/tui/ansi.ts";
 import { FrameRenderer, synchronizedEnabled } from "../src/tui/frame.ts";
 import { displayWidth } from "../src/ui/theme.ts";
 
@@ -102,7 +102,21 @@ describe("A1 wrapAnsi / truncateAnsi", () => {
 
   test("A1b 优先在空格处折行，空格不进入下一行", () => {
     expect(wrapAnsi("hello world foo", 11)).toEqual(["hello world", "foo"]);
-    expect(wrapAnsi("hello world foo", 8)).toEqual(["hello", "world", "foo"]);
+    // 断点空格留在上一行行尾（放得下时），不进入下一行行首 —— 与 buffer.ts 的
+    // layoutBuffer 同口径：layoutBuffer("hello world foo", 0, 8) 同样是
+    // ["hello ", "world ", "foo"]。旧期望 ["hello","world","foo"] 是丢弃断点空格的旧行为。
+    expect(wrapAnsi("hello world foo", 8)).toEqual(["hello ", "world ", "foo"]);
+  });
+
+  test("A1b2 连续空格折行与 layoutBuffer 同口径（下一行不以空格开头）", () => {
+    // 断点后的连续空格是「行首空白」，必须一起丢弃；否则 "ab   cd" 宽 3 会折出
+    // ["ab ", " cd"]，与输入框 layoutBuffer 给出的 ["ab ", "cd"] 对不上。
+    expect(wrapAnsi("ab   cd", 3)).toEqual(["ab ", "cd"]);
+    expect(wrapAnsi("ab    cd", 3)).toEqual(["ab ", "cd"]);
+    expect(wrapAnsi("hello   world", 6)).toEqual(["hello ", "world"]);
+    // 纯空白行是例外：空格就是内容，必须原样折行保留，一个都不能丢。
+    expect(wrapAnsi("    ", 2)).toEqual(["  ", "  "]);
+    expect(wrapAnsi("     ", 2)).toEqual(["  ", "  ", " "]);
   });
 
   test("A1c 单字符超宽时独占一行", () => {
@@ -127,6 +141,92 @@ describe("A1 wrapAnsi / truncateAnsi", () => {
     const out = truncateAnsi("\x1b[32m中文内容\x1b[0m", 5);
     expect(displayWidth(out)).toBeLessThanOrEqual(5);
     expect(out.endsWith("\x1b[0m")).toBe(true);
+  });
+
+  test("A1g OSC 序列（超链接）零宽：正文不计入宽度、折行不错乱", () => {
+    // OSC 8 超链接：终端里只显示 "link"，URL 是不可见控制序列。
+    const link = "\x1b]8;;http://example.com\x1b\\link\x1b]8;;\x1b\\";
+    expect(displayWidth(link)).toBe(4);
+    expect(stripAnsi(link)).toBe("link");
+    expect(wrapAnsi(link, 4)).toHaveLength(1);
+    expect(wrapAnsi(link, 4).map(stripAnsi)).toEqual(["link"]);
+    // 混排：链接在中间，折行只按可见列算
+    expect(wrapAnsi(`ab${link}cd`, 4).map(stripAnsi)).toEqual(["abli", "nkcd"]);
+  });
+
+  test("A1h OSC 以 BEL 结尾时同样零宽", () => {
+    const title = "\x1b]0;窗口标题\x07text";
+    expect(displayWidth(title)).toBe(4);
+    expect(stripAnsi(title)).toBe("text");
+    expect(wrapAnsi(title, 10).map(stripAnsi)).toEqual(["text"]);
+  });
+
+  test("A1i 裸 ESC（不构成合法转义）零宽且不残留", () => {
+    // 裸 ESC = 后面跟普通字符或直接到结尾，不构成 CSI/OSC/两字符转义。
+    // 它本身不渲染任何内容，但留在输出里会把终端推进转义状态，吞掉后续输出。
+    const bare = "abc\x1bdef";
+    expect(displayWidth(bare)).toBe(6); // 只算可见字符，ESC 自身 0 宽
+    expect(stripAnsi(bare)).toBe("abcdef");
+    expect(tokenizeAnsi(bare).filter((t) => t.kind === "sgr")).toEqual([]);
+    // 截断后不能以裸 ESC 收尾
+    expect(truncateAnsi("hello\x1bworld", 5)).toBe("hello");
+    expect(truncateAnsi("hello\x1bworld", 7)).toBe("hellowo");
+    // 结尾裸 ESC 也不能留
+    expect(truncateAnsi("abc\x1b", 3)).toBe("abc");
+    expect(stripAnsi("abc\x1b")).toBe("abc");
+    // 折行同理
+    expect(wrapAnsi("abc\x1bdef", 3)).toEqual(["abc", "def"]);
+  });
+
+  test("A1j 行内才开始的 SGR 也要在行尾补 RESET", () => {
+    // 颜色从行首开始（rowStartActive 非空）时行尾补 RESET 已有覆盖（A1d）；
+    // 这里覆盖「行首无颜色、行内才出现 SGR」：整行颜色在行尾仍未闭合，
+    // 不补 RESET 会让后续输出（下一行、提示符）全部染上该颜色。
+    const red = "\x1b[31m";
+    const reset = "\x1b[0m";
+
+    // 不折行：单行内出现 SGR
+    const single = wrapAnsi(`ab${red}cd`, 10);
+    expect(single).toHaveLength(1);
+    expect(single[0]).toBe(`ab${red}cd${reset}`);
+
+    // 折行：第一行行首无颜色、行内出现 SGR，行尾同样要补
+    const wrapped = wrapAnsi(`ab${red}cdef`, 3);
+    expect(wrapped).toEqual([`ab${red}c${reset}`, `${red}def${reset}`]);
+
+    // 行内 SGR 后又被 reset 闭合：颜色已闭合，行尾再补一个 RESET 是幂等冗余（无害），
+    // 这里只断言「不会漏补」，不要求「不多补」—— 折行时 emitRow 拿不到本行精确的末态。
+    const closed = wrapAnsi(`ab${red}cd${reset}ef`, 10);
+    expect(closed).toHaveLength(1);
+    expect(closed[0]!.endsWith(reset)).toBe(true);
+    expect(stripAnsi(closed[0]!)).toBe("abcdef");
+  });
+
+  test("A1k 复合参数 SGR 里的 0 参数按 reset 处理", () => {
+    // SGR 参数是「分号分隔的列表」，`0` 出现在任意位置都表示 reset：
+    //  - `\x1b[31;0m` = 先红再 reset，净效果无色；
+    //  - `\x1b[0;31m` = 先 reset 再红，净效果红色。
+    // 旧实现只比较整串是否等于 "0"，把 `\x1b[31;0m` 当普通上色追加进 active，
+    // 导致下一行被错误地染上红色（\x1b[31mAAA\x1b[31;0mBBB 折行后第二行变红）。
+    const red = "\x1b[31m";
+    const reset = "\x1b[0m";
+
+    // 复合参数以 reset 结尾：颜色已闭合，下一行不能带颜色前缀，也不该多补 RESET
+    const tailReset = wrapAnsi(`${red}AAA\x1b[31;0mBBB`, 3);
+    expect(tailReset.map(stripAnsi)).toEqual(["AAA", "BBB"]);
+    expect(tailReset[1]).toBe("BBB");
+
+    // 纯 reset 复合参数同样清空 active（不额外残留）
+    const allReset = truncateAnsi(`${red}AAA\x1b[0;0mBBB`, 6);
+    expect(allReset).toBe(`${red}AAA\x1b[0;0mBBB`);
+
+    // 复合参数以 reset 开头：净效果是红色，下一行仍要带颜色
+    const headReset = wrapAnsi(`${red}AAA\x1b[0;31mBBB`, 3);
+    expect(headReset[1]).toBe(`${red}BBB${reset}`);
+
+    // 非 0 的复合参数（如 \x1b[1;31m 粗体红）仍按上色累积
+    const bold = wrapAnsi(`\x1b[1;31mAAA BBB`, 3);
+    expect(bold[1]).toContain("\x1b[1;31m");
   });
 });
 

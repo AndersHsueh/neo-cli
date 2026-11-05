@@ -23,6 +23,7 @@ import {
 } from "../src/tui/status.ts";
 
 const snap = (over: Partial<StatusSnapshot> = {}): StatusSnapshot => ({
+  version: "0.4.54",
   model: "deepseek-flash",
   tier: "balanced",
   mode: "ask",
@@ -35,18 +36,18 @@ const snap = (over: Partial<StatusSnapshot> = {}): StatusSnapshot => ({
   ...over,
 });
 
-/** 全量字段的纯文本（宽度 73）。 */
+/** 全量字段的纯文本（宽度 83）。 */
 const FULL =
-  "deepseek-flash · balanced · ask · ⎇ main · ctx ▓▓░░░ 42% · 0:42 · 12k tok";
+  "v0.4.54 · deepseek-flash · balanced · ask · ⎇ main · ctx ▓▓░░░ 42% · 0:42 · 12k tok";
 
 describe("S1a 字段顺序与精确拼接", () => {
   test("S1a 完整状态行：model · tier · mode · ⎇ branch · ctx bar % · elapsed · tok", () => {
     expect(renderStatus(snap())).toBe(FULL);
   });
 
-  test("S1a 全宽 73 列恰好放下所有字段", () => {
-    expect(displayWidth(FULL)).toBe(73);
-    expect(renderStatus(snap({ width: 73 }))).toBe(FULL);
+  test("S1a 全宽 83 列恰好放下所有字段", () => {
+    expect(displayWidth(FULL)).toBe(83);
+    expect(renderStatus(snap({ width: 83 }))).toBe(FULL);
   });
 
   test("S1a 可选字段缺省：mode/branch 不出现在拼接里", () => {
@@ -54,7 +55,7 @@ describe("S1a 字段顺序与精确拼接", () => {
       renderStatus(
         snap({ mode: undefined, branch: null, elapsedMs: 0, active: false, tokensTotal: 0 }),
       ),
-    ).toBe("deepseek-flash · balanced · ctx ▓▓░░░ 42% · 0:00 · 0 tok");
+    ).toBe("v0.4.54 · deepseek-flash · balanced · ctx ▓▓░░░ 42% · 0:00 · 0 tok");
   });
 
   test("S1a branch 为 null / 空串 / 纯空白都不显示", () => {
@@ -158,13 +159,81 @@ describe("S1d token 格式", () => {
     expect(formatTokens(-5)).toBe("0");
     expect(formatTokens(Number.NaN)).toBe("0");
   });
+
+  // v0.4.13：档位边界不能因四舍五入而跨档——跨档会让状态栏宽度突然多 2 列再缩回。
+  test("S1d 一位小数档进位到 10.0 时降级为整数 k", () => {
+    expect(formatTokens(9_999)).toBe("10k");
+    expect(formatTokens(9_960)).toBe("10k"); // toFixed(1) 已进位到 "10.0"
+    expect(formatTokens(9_950)).toBe("9.9k"); // 9.95 的 toFixed(1) 仍是 "9.9"（舍入到偶）
+    expect(formatTokens(9_949)).toBe("9.9k");
+  });
+
+  test("S1d 整数 k 档进位到 1000 时升级为 M", () => {
+    expect(formatTokens(999_999)).toBe("1.0M");
+    expect(formatTokens(999_500)).toBe("1.0M");
+    expect(formatTokens(999_499)).toBe("999k");
+  });
+
+  // v0.4.31：M 档是「一位小数」档，同样要守档内纪律——
+  // 9_999_999 的 toFixed(1) 是 "10.0"，999_999_999 是 "1000.0"，
+  // 原样输出会得到 "10.0M"/"1000.0M"：既跨档（宽度多 2 列）又与下一档的
+  // "10M"/"1.0G" 撞值。与 k 档的 9_999 → "10k" 是同一类缺陷。
+  test("S1d M 档进位到 10.0 时降级为整数 M", () => {
+    expect(formatTokens(9_999_999)).toBe("10M");
+    expect(formatTokens(9_960_000)).toBe("10M"); // toFixed(1) 已进位到 "10.0"
+    expect(formatTokens(9_500_000)).toBe("9.5M");
+  });
+
+  test("S1d M 档进位到 1000 时升级为 G", () => {
+    expect(formatTokens(999_999_999)).toBe("1.0G");
+    expect(formatTokens(999_500_000)).toBe("1.0G");
+    expect(formatTokens(999_499_999)).toBe("999M");
+  });
+
+  test("S1d G 档同样守档内纪律", () => {
+    expect(formatTokens(1_000_000_000)).toBe("1.0G");
+    expect(formatTokens(9_999_999_999)).toBe("10G");
+    expect(formatTokens(999_999_999_999)).toBe("1.0T");
+  });
+
+  // v0.4.44：T 档原被当作末档，999_999_999_999_999 与 1e15 都输出 "1000T"，
+  // 既跨档又与「1.0P」数量级撞值。现与 k/M/G 档同构补上 P 档。
+  test("S1d T 档进位到 1000 时升级为 P", () => {
+    expect(formatTokens(9_999_999_999_999)).toBe("10T");
+    expect(formatTokens(10_000_000_000_000)).toBe("10T");
+    expect(formatTokens(12_300_000_000_000)).toBe("12T");
+    expect(formatTokens(999_499_999_999_999)).toBe("999T");
+    expect(formatTokens(999_999_999_999_999)).toBe("1.0P");
+    expect(formatTokens(1_000_000_000_000_000)).toBe("1.0P");
+  });
+
+  test("S1d P 档是末档，一位小数转整数", () => {
+    expect(formatTokens(1_234_567_890_123_456)).toBe("1.2P");
+    expect(formatTokens(9_999_999_999_999_999)).toBe("10P");
+  });
+
+  // v0.4.45：v0.4.44 补 P 档时只写了 `fixed1(v / 1e15)`，漏了末档的「整数档」那一半。
+  // fixed1 只把 10.0 降级成 10，不负责把 1000.0 收成整数，于是 1e18 输出 "1000P"、
+  // 1e21 输出 "1000000P"、1e300 输出 "1.0000000000000001e+285P" —— 宽度随数量级
+  // 无限增长（状态栏单行硬约束被打破），且出现科学计数法。与 v0.4.31 的 M 档、
+  // v0.4.44 的 T 档是同一类缺陷：末档也必须有「<10P 一位小数 / ≥10P 整数」两档。
+  test("S1d P 档末档：<10P 一位小数，≥10P 整数（不出现 1000.0P/科学计数法）", () => {
+    expect(formatTokens(9_950_000_000_000_000)).toBe("9.9P"); // 9.95 的 toFixed(1) 仍是 "9.9"
+    expect(formatTokens(9_960_000_000_000_000)).toBe("10P"); // toFixed(1) 进位到 "10.0" → 降级
+    expect(formatTokens(1e16)).toBe("10P");
+    expect(formatTokens(1e17)).toBe("100P");
+    expect(formatTokens(1.5e17)).toBe("150P");
+    expect(formatTokens(1e18)).toBe("1000P"); // 末档无处可升，保留整数档
+    expect(formatTokens(1e21)).toBe("1000000P"); // 仍是整数，不是 "1e+6"
+  });
 });
 
 describe("S1e 优先级与丢弃顺序", () => {
   test("S1e 优先级数值固定", () => {
     const segs = statusSegments(snap({ queueCount: 2 }));
-    expect(segs.map((s) => s.priority)).toEqual([100, 90, 80, 50, 70, 60, 40, 30]);
+    expect(segs.map((s) => s.priority)).toEqual([100, 100, 90, 80, 50, 70, 60, 40, 30]);
     expect(segs.map((s) => s.text)).toEqual([
+      "v0.4.54",
       "deepseek-flash",
       "balanced",
       "ask",
@@ -179,6 +248,7 @@ describe("S1e 优先级与丢弃顺序", () => {
   test("S1e 角色语义", () => {
     const segs = statusSegments(snap({ queueCount: 2 }));
     expect(segs.map((s) => s.role)).toEqual([
+      "muted",
       "accent",
       "tier",
       "text",
@@ -191,30 +261,30 @@ describe("S1e 优先级与丢弃顺序", () => {
   });
 
   test("S1e ctx 接近上限 / 超限用 warn，非活动时长用 muted", () => {
-    expect(statusSegments(snap({ ctxUsage: 0.95 }))[4]?.role).toBe("warn");
-    expect(statusSegments(snap({ ctxUsage: 1.2 }))[4]?.role).toBe("warn");
-    expect(statusSegments(snap({ active: false }))[5]?.role).toBe("muted");
+    expect(statusSegments(snap({ ctxUsage: 0.95 }))[5]?.role).toBe("warn");
+    expect(statusSegments(snap({ ctxUsage: 1.2 }))[5]?.role).toBe("warn");
+    expect(statusSegments(snap({ active: false }))[6]?.role).toBe("muted");
   });
 
-  test("S1e 宽度不足按优先级从低到高丢字段（84→80→73→72）", () => {
-    // 84 列：queue 也放得下（73 + 3 + 8）；80 列：queue(30) 先被丢
-    expect(renderStatus(snap({ queueCount: 2, width: 84 }))).toBe(`${FULL} · ⇥ 2 排队`);
-    expect(renderStatus(snap({ queueCount: 2, width: 80 }))).toBe(FULL);
-    // 72 列：tokens(40) 被丢（73 > 72）
-    expect(renderStatus(snap({ width: 72 }))).toBe(
-      "deepseek-flash · balanced · ask · ⎇ main · ctx ▓▓░░░ 42% · 0:42",
+  test("S1e 宽度不足按优先级从低到高丢字段（94→90→83→82）", () => {
+    // 94 列：queue 也放得下（83 + 3 + 8）；90 列：queue(30) 先被丢
+    expect(renderStatus(snap({ queueCount: 2, width: 94 }))).toBe(`${FULL} · ⇥ 2 排队`);
+    expect(renderStatus(snap({ queueCount: 2, width: 90 }))).toBe(FULL);
+    // 82 列：tokens(40) 被丢（83 > 82）
+    expect(renderStatus(snap({ width: 82 }))).toBe(
+      "v0.4.54 · deepseek-flash · balanced · ask · ⎇ main · ctx ▓▓░░░ 42% · 0:42",
     );
   });
 
   test("S1e/S2a 60 列：丢 queue→tokens→branch，结果 ≤60 且不折行", () => {
     const out = renderStatus(snap({ queueCount: 1, width: 60 }));
-    expect(out).toBe("deepseek-flash · balanced · ask · ctx ▓▓░░░ 42% · 0:42");
+    expect(out).toBe("v0.4.54 · deepseek-flash · balanced · ask · ctx ▓▓░░░ 42%");
     expect(displayWidth(out)).toBeLessThanOrEqual(60);
   });
 
   test("S1e/S2b 40 列：继续丢 elapsed→mode", () => {
     const out = renderStatus(snap({ width: 40 }));
-    expect(out).toBe("deepseek-flash · ctx ▓▓░░░ 42%");
+    expect(out).toBe("v0.4.54 · deepseek-flash · ctx ▓▓░░░ 42%");
     expect(displayWidth(out)).toBeLessThanOrEqual(40);
   });
 
@@ -224,8 +294,8 @@ describe("S1e 优先级与丢弃顺序", () => {
     expect(displayWidth(out)).toBe(20);
   });
 
-  test("S1e 每个宽度档位都不超宽（20/40/60/72/73/84/120）", () => {
-    for (const width of [20, 40, 60, 72, 73, 84, 120]) {
+  test("S1e 每个宽度档位都不超宽（20/40/60/72/82/83/94/120）", () => {
+    for (const width of [20, 40, 60, 72, 82, 83, 94, 120]) {
       const out = renderStatus(snap({ queueCount: 2, width }));
       expect(displayWidth(out)).toBeLessThanOrEqual(width);
       // 最小保底一定在
@@ -236,18 +306,18 @@ describe("S1e 优先级与丢弃顺序", () => {
 
 describe("S1f CJK 宽度", () => {
   test("S1f CJK 分支名按显示宽度参与丢弃（不按 UTF-16 长度）", () => {
-    // 全量显示宽度 = 14+8+3+13+13+4+7 + 6*3(分隔) = 80
-    const all = renderStatus(snap({ branch: "功能/状态条", width: 80 }));
-    expect(displayWidth(all)).toBe(80);
+    // 全量显示宽度 = 7+14+8+3+13+13+4+7 + 7*3(分隔) = 90
+    const all = renderStatus(snap({ branch: "功能/状态条", width: 90 }));
+    expect(displayWidth(all)).toBe(90);
     expect(all).toContain("⎇ 功能/状态条");
     expect(all).toContain("tok");
 
-    // 78 列：按显示宽度应丢 tokens（80>78→70）；按 code unit 会误判 75 而保留 tokens（实际 80 超宽）
-    const out = renderStatus(snap({ branch: "功能/状态条", width: 78 }));
+    // 88 列：按显示宽度应丢 tokens（90>88→80）；按 code unit 会误判 85 而保留 tokens（实际 90 超宽）
+    const out = renderStatus(snap({ branch: "功能/状态条", width: 88 }));
     expect(out).toBe(
-      "deepseek-flash · balanced · ask · ⎇ 功能/状态条 · ctx ▓▓░░░ 42% · 0:42",
+      "v0.4.54 · deepseek-flash · balanced · ask · ⎇ 功能/状态条 · ctx ▓▓░░░ 42% · 0:42",
     );
-    expect(displayWidth(out)).toBe(70);
+    expect(displayWidth(out)).toBe(80);
     expect(out).not.toContain("tok");
   });
 });
@@ -263,7 +333,7 @@ describe("S1g queue", () => {
   });
 
   test("S1g queue 先于 tokens 被丢弃", () => {
-    const out = renderStatus(snap({ queueCount: 9, width: 73 }));
+    const out = renderStatus(snap({ queueCount: 9, width: 83 }));
     expect(out).toBe(FULL);
     expect(out).not.toContain("排队");
   });
@@ -276,7 +346,9 @@ describe("S1h paint 钩子", () => {
 
   test("S1h paint 按角色着色，只作用于保留字段", () => {
     const painted = renderStatus(snap(), (role, text) => `<${role}>${text}`);
-    expect(painted.startsWith("<accent>deepseek-flash · <tier>balanced · <text>ask")).toBe(true);
+    expect(
+      painted.startsWith("<muted>v0.4.54 · <accent>deepseek-flash · <tier>balanced · <text>ask"),
+    ).toBe(true);
     expect(painted).toContain("<muted>⎇ main");
     expect(painted).toContain("<dim>ctx ▓▓░░░ 42%");
   });

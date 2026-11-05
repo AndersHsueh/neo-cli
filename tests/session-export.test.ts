@@ -61,4 +61,50 @@ describe("renderSessionMarkdown", () => {
     const md = renderSessionMarkdown(meta, [{ role: "system", content: "x" }]);
     expect(md).toContain("（空会话）");
   });
+
+  test("只有无正文的 assistant 也算空会话（占位不能漏）", () => {
+    // 计数只算写进正文的段：空 assistant 被跳过，不能把它算作「有内容」。
+    const md = renderSessionMarkdown(meta, [
+      { role: "system", content: "x" },
+      { role: "assistant", content: "" },
+      { role: "assistant", content: null },
+    ]);
+    expect(md).toContain("（空会话）");
+    expect(md).not.toContain("## 助手");
+  });
+
+  test("有正文时不出占位", () => {
+    const md = renderSessionMarkdown(meta, [
+      { role: "assistant", content: "" },
+      { role: "user", content: "hi" },
+    ]);
+    expect(md).not.toContain("（空会话）");
+    expect(md).toContain("## 用户\n\nhi");
+  });
+
+  test("空正文的 tool 消息不渲染空围栏、也不抬高段数（占位不能漏）", () => {
+    // 与空 assistant 同一类：只有空 tool 的会话仍是空会话。
+    const md = renderSessionMarkdown(meta, [
+      { role: "system", content: "x" },
+      { role: "tool", content: "", tool_call_id: "c1", name: "read_file" },
+      { role: "tool", content: null, tool_call_id: "c2", name: "grep" },
+    ]);
+    expect(md).toContain("（空会话）");
+    expect(md).not.toContain("### 工具结果");
+    expect(md).not.toContain("```");
+  });
+
+  test("空 tool 混在有正文的会话里被跳过，非空 tool 照常导出", () => {
+    const md = renderSessionMarkdown(meta, [
+      { role: "user", content: "hi" },
+      { role: "tool", content: "", tool_call_id: "c1", name: "shell" },
+      { role: "tool", content: "   \n  ", tool_call_id: "c2", name: "grep" },
+      { role: "tool", content: "真实输出", tool_call_id: "c3", name: "read_file" },
+    ]);
+    expect(md).not.toContain("（空会话）");
+    expect(md).not.toContain("### 工具结果 · shell");
+    expect(md).not.toContain("### 工具结果 · grep");
+    expect(md).toContain("### 工具结果 · read_file");
+    expect(md).toContain("真实输出");
+  });
 });

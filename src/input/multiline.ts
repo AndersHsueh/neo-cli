@@ -40,11 +40,16 @@ export function finishContinuation(c: Continuation, last: string): string {
 /**
  * 行尾反斜杠模式（探针不可用时的回退触发）：
  * 单反斜杠结尾表示续行并剥掉它；双反斜杠是转义，不算续行。
+ *
+ * 判定必须数「连续反斜杠的奇偶」而不是只看末尾两个字符：`a\\\`（3 个）是
+ * 「转义对 + 续行符」，应续行并剥掉一个；旧实现用 `endsWith("\\\\")` 直接
+ * 判成不续行，≥3 个反斜杠的输入就永远续不了行。
  */
 export function stripContinuationMarker(line: string): { text: string; cont: boolean } {
-  if (line.endsWith("\\\\")) return { text: line, cont: false };
-  if (line.endsWith("\\")) return { text: line.slice(0, -1), cont: true };
-  return { text: line, cont: false };
+  let n = 0;
+  for (let i = line.length - 1; i >= 0 && line[i] === "\\"; i--) n++;
+  if (n === 0 || n % 2 === 0) return { text: line, cont: false };
+  return { text: line.slice(0, -1), cont: true };
 }
 
 /**

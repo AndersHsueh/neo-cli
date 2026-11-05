@@ -87,6 +87,19 @@ describe("B1 layoutBuffer 按显示列折行", () => {
     expect(second?.start).toBe(6);
   });
 
+  test("B1f2 断点后的连续空格一并丢弃，不产生纯空格视觉行", () => {
+    // 旧实现只跳过断点那一个空格，"ab   cd"（宽 3）折出 ["ab ", "  ", "cd"]：
+    // 中间多一条纯空格行，输入框凭空变高、↑↓ 多跳一行。
+    expect(lineTexts("ab   cd", 3)).toEqual(["ab ", "cd"]);
+    expect(lineTexts("x     y", 3)).toEqual(["x  ", "y"]);
+    // 任何折出来的行都不以空格开头（除非原文整行就是空白，见 B1i）
+    for (const [text, w] of [["ab   cd", 3], ["x     y", 3], ["abc     def", 3]] as const) {
+      for (const line of lineTexts(text, w)) {
+        expect(line.startsWith(" ")).toBe(false);
+      }
+    }
+  });
+
   test("B1g 空文本是一行空行", () => {
     const layout = layoutBuffer("", 0, 10);
     expect(layout.lines).toEqual([{ text: "", start: 0, end: 0 }]);
@@ -498,5 +511,39 @@ describe("B4 InputHistory 历史导航", () => {
     history.push("b");
     expect(source).toEqual(["a"]);
     expect(history.size).toBe(2);
+  });
+});
+
+describe("B1e 折行按 grapheme 取宽（v0.4.29）", () => {
+  // 根因：wrapSegment 曾逐 code point 用 charWidth 累加，与 displayWidth 的
+  // grapheme 口径分叉 —— VS16 / ZWJ / 区域指示符三类输入会折错行。
+  test("VS16 变体 ❤️ 不被低估宽度（视觉行不超宽）", () => {
+    const text = "❤️❤️❤️";
+    const width = 5;
+    const lines = layoutBuffer(text, 0, width).lines;
+    for (const l of lines) expect(displayWidth(l.text)).toBeLessThanOrEqual(width);
+    // 每颗 ❤️ 2 列 → 5 列只能放 2 颗
+    expect(lines.map((l) => l.text)).toEqual(["❤️❤️", "❤️"]);
+  });
+
+  test("ZWJ 家庭 emoji 不被拆到两行", () => {
+    const family = "👨‍👩‍👧‍👦";
+    const lines = layoutBuffer(family, 0, 3).lines;
+    expect(lines.map((l) => l.text)).toEqual([family]);
+    expect(displayWidth(lines[0]!.text)).toBeLessThanOrEqual(3);
+  });
+
+  test("区域指示符国旗按整体 2 列折行", () => {
+    const lines = layoutBuffer("🇨🇳🇨🇳", 0, 4).lines;
+    expect(lines.map((l) => l.text)).toEqual(["🇨🇳🇨🇳"]);
+    expect(lines.every((l) => displayWidth(l.text) <= 4)).toBe(true);
+  });
+
+  test("start/end 仍是码点下标（grapheme 不改变下标口径）", () => {
+    const lines = layoutBuffer("❤️❤️", 0, 2).lines;
+    expect(lines.map((l) => [l.start, l.end])).toEqual([
+      [0, 2],
+      [2, 4],
+    ]);
   });
 });

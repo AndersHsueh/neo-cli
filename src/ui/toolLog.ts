@@ -8,6 +8,7 @@
  *     而不是被第一行 `$ cmd` 挤掉唯一有用信息；
  *  3. 工具正文的「缩进 + 限高 + 省略提示」只有一份实现，console 与 `/last` 共用。
  */
+import { clock, fixed1Raw } from "./format.ts";
 import { shellMarks } from "../tools/shellMarks.ts";
 import { c, displayWidth, truncate } from "./theme.ts";
 import { oneLine, paintTail, toolLineSegments, toolLineText } from "./toolLine.ts";
@@ -31,22 +32,45 @@ export interface ToolCallRecord {
   at: number;
 }
 
+/**
+ * 耗时：<1s 用 ms，<1min 用一位小数 s，<1h 用 `m:ss`，其余 `h:mm:ss`。
+ *
+ * 档位边界必须「进位即升档」（纪律与实现在 ui/format.ts）：
+ * 59_950ms 的 toFixed(1) 是 "60.0"、3_599_950ms 是 "3600.0"，若原样输出会得到
+ * "60.0s"/"3600.0s" —— 既跨了档（宽度多 1~2 列，`/last` 单行头抖动），
+ * 又与下一档的 "1:00"/"1:00:00" 表达同一时长却不同写法。
+ */
 export function formatDuration(ms: number): string {
-  const n = Math.max(0, Math.trunc(ms));
-  return n < 1000 ? `${n}ms` : `${(n / 1000).toFixed(1)}s`;
+  const n = Number.isFinite(ms) ? Math.max(0, Math.trunc(ms)) : 0;
+  if (n < 1_000) return `${n}ms`;
+  if (n < 60_000) {
+    const s = fixed1Raw(n / 1_000);
+    return s === "60.0" ? "1:00" : `${s}s`; // 59_950~59_999 进位到 60.0 → 升分钟档
+  }
+  return clock(n / 1_000);
 }
 
 /**
- * 清洗工具输出里的控制序列：保留换行，剥掉 SGR/CSI/C0，tab 展开为两空格。
+ * 清洗工具输出里的控制序列：保留换行，剥掉 SGR/CSI/OSC/DCS/C0，tab 展开为两空格。
  *
  * 工具输出是外部数据（stderr 里可能有 `ESC[2J` 清屏、`ESC[K` 清行），
  * 直接回显会破坏整个屏幕；宽度计算也会把它们算成占位。
+ *
+ * v0.4.46：旧实现只有 `\x1b[@-_]` 一条通用转义，它只吃掉「ESC + 一个字符」。
+ * OSC（`\x1b]0;title\x07`）、DCS/SOS/PM/APC（`\x1bP...\x1b\\`）都是
+ * 「ESC + 引导符 + 正文 + 终止符」的多字符序列，于是引导符被吃掉、**正文残留**
+ * （`\x1b]0;title\x07` → "0;title"）。这类序列在真实 stderr 里很常见：
+ * 带颜色的工具会发 OSC 8 超链接（`\x1b]8;;URL\x1b\\文字\x1b]8;;\x1b\\`），
+ * 终端标题同理。剥法照抄 tui/ansi.ts 的 stripAnsi（那条纪律早就写对了）。
  */
 export function sanitizeOutput(s: string): string {
   return s
     .replace(/\r\n/g, "\n")
+    .replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\|$)/g, "") // OSC（标题/超链接）：正文整体剥掉（未终止则吃到结尾）
+    .replace(/\x1b[P^_X][^\x1b]*(?:\x1b\\|$)/g, "") // DCS/SOS/PM/APC：正文整体剥掉
     .replace(/\x1b\[[0-9;?]*[ -/]*[@-~]/g, "") // CSI（含 SGR/清屏/光标）
     .replace(/\x1b[@-_]/g, "") // 其余 ESC 双字符序列
+    .replace(/\x1b/g, "") // 裸 ESC：不构成合法转义，但同样不可见、且会污染终端状态
     .replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g, "")
     .replace(/\t/g, "  ");
 }
