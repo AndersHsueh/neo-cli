@@ -293,3 +293,5 @@ grep -E -A3 "^## \[[0-9-]+\] todo \|" wiki/log.md
 ## [2026-11-04] wiki | v0.4.48 修复 @path 引用漏剥中文右引号/右括号/书名号（引用静默不展开）
 ## [2026-11-04] wiki | v0.4.49 修复 @path 引用漏剥弯引号右半边（”’〞〟）
 ## [2026-11-05] wiki | 追加两条踩坑：配置字段存在≠路径在跑（classifier_provider 默认 rule）；开发期 rule+freeLlmApi(auto) 组合的取舍与风险
+## [2026-11-05] wiki | 自动记忆：project/合并-1105-本地与github-main合并.md（create）
+## [2026-11-05] wiki | 自动记忆：project/neo-开发踩坑-续1.md（create）
