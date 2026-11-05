@@ -296,3 +296,4 @@ grep -E -A3 "^## \[[0-9-]+\] todo \|" wiki/log.md
 ## [2026-11-05] wiki | 自动记忆：project/合并-1105-本地与github-main合并.md（create）
 ## [2026-11-05] wiki | 自动记忆：project/neo-开发踩坑-续1.md（create）
 ## [2026-11-05] deliverable | 双端推送完成：main + 81 tags 同步到 GitHub(neo-cli)与 Gitee(neo-agent)，两端 main 同为 8c563e3；remote 规范化 origin=GitHub、gitee=Gitee；neo-agent-app/ 写入 .gitignore
+## [2026-11-05] wiki | 清理冗余分支：本地 3 个 + Gitee 侧 3 个 feature/*，删除前核对独占提交均为 0；两端分支集统一为 main + cursor/thin-gateway-output-limit-e755

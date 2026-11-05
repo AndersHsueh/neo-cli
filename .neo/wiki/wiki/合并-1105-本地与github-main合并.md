@@ -18,4 +18,4 @@
 - `tests/README.md` 里写的基线 `1097 pass / 0 fail / 70 文件`（v0.4.12 实测）已过时，合并后实际是 `1216 / 0 / 75`；远程 v0.4.13–v0.4.55 期间没同步更新该文件。
 - `neo-agent-app/` 是**独立子项目**（自带 `.git`，远程 `gitee neo-agent-app`），已写入 `.gitignore`，不再出现在 `git status` 里，也避免误 `git add` 生成 gitlink。
 - **remote 命名已规范化**：`origin` → GitHub `neo-cli.git`（`git push`/`git pull` 默认目标，另设 `remote.pushDefault=origin`），`gitee` → Gitee `neo-agent.git`；`main` 跟踪 `origin/main`。此前 `origin` 指向 gitee、`github` 指向 GitHub，两仓库名不同易混，现两仓互为镜像。
-- 本地仍有三个未上远端的分支：`backup/pre-merge-20261105-154601`、`dev/memory-v0.1.0`、`feature/skills`（两端都没有，保持一致口径故未推）。
+- 本地与远端的冗余分支已清理：删除本地 `backup/pre-merge-20261105-154601`、`dev/memory-v0.1.0`、`feature/skills`，删除 Gitee 上 GitHub 没有的 `feature/memory-prd-final`、`feature/v0.1.0-prd`、`feature/v0.1.0-rc`（及其本地同名分支）。删除前逐个核对：六个分支 tip 均为 `main` 的祖先，独有提交数 0，删除不丢任何历史。两端最终分支集完全相同：`main` + `cursor/thin-gateway-output-limit-e755`。
