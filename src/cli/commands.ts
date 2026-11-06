@@ -55,7 +55,15 @@ import {
   type SessionMeta,
 } from "../session.ts";
 import { renderSessionMarkdown } from "../sessionExport.ts";
-import { discoverSkills, formatSkillLine, isValidSkillName, normalizeDescription } from "../skills.ts";
+import {
+  buildSkillSlashPrompt,
+  describeSource,
+  discoverSkills,
+  formatSkillLine,
+  isValidSkillName,
+  normalizeDescription,
+  tryLoadSkillForSlash,
+} from "../skills.ts";
 import { makeListPeersTool } from "../tools/mailbox.ts";
 import { runSubagent } from "../tools/task.ts";
 import { toolNames } from "../tools/index.ts";
@@ -100,6 +108,14 @@ export interface CommandContext {
   onMailboxRekey?: () => void;
   onNameChange?: (name: string) => void;
   memoryMode?: "interactive" | "oneshot";
+  /**
+   * 把合成的用户消息排进主循环队列，作为下一轮发给模型（issue #13）。
+   *
+   * `/技能名` 命中后走这里而不是直接 agent.send：drain 正在跑，直接 send 会重入
+   * 并打乱 draining 状态机。入队后 dispatchCommand 正常返回，drain 的 while
+   * 会在下一轮取出该消息（文本不以 `/` 开头，自然走 agent.send 路径）。
+   */
+  enqueueUserTurn?: (text: string) => void;
 }
 
 export async function handleCommand(line: string, ctx: CommandContext): Promise<void> {
@@ -715,7 +731,8 @@ export async function handleCommand(line: string, ctx: CommandContext): Promise<
         }
         if (first) ui.kv("标题", first);
         ui.blank();
-        ui.info("完整正文请让模型调用 use_skill。");
+        // 约束 16：这里仍不打印正文。正文的两条入口都写明 —— 人直接 /名称，模型 use_skill。
+        ui.info(`完整正文：直接输入 /${hit.name} [参数] 调用，或让模型 use_skill 加载。`);
         break;
       }
 
@@ -736,7 +753,7 @@ export async function handleCommand(line: string, ctx: CommandContext): Promise<
         ui.line(`  ${dot} ${formatSkillLine(s.name, s.description)}${origin ? `　[${origin}]` : ""}`);
       }
       ui.blank();
-      ui.info("用 /skills <名称> 查看详情，或让模型按需 use_skill。");
+      ui.info("直接输入 /名称 [参数] 调用技能，或让模型按需 use_skill；/skills <名称> 看详情。");
       ui.blank();
       break;
     }
@@ -1163,13 +1180,53 @@ export function wireCommands(): void {
 
 export async function dispatchCommand(line: string, ctx: CommandContext): Promise<void> {
   wireCommands();
-  const name = (line.slice(1).split(/\s+/)[0] ?? "").toLowerCase();
+  const [nameRaw, ...rest] = line.slice(1).split(/\s+/);
+  const name = (nameRaw ?? "").toLowerCase();
+  const args = rest.join(" ").trim();
   const handler = commandHandler(name);
-  if (!handler) {
+
+  if (handler) {
+    // 内置优先（issue #13 验收 3）：同名技能被遮挡时必须说一句，
+    // 否则用户会以为技能正文已经加载了，而模型那边什么也没收到。
+    if (isValidSkillName(name) && discoverSkills(ctx.cfg).some((s) => s.name === name)) {
+      ctx.ui.info(
+        `/${name} 是内置命令，同名技能未触发；要用这个技能请改名，或让模型 use_skill 加载。`,
+      );
+    }
+    await handler(line, ctx);
+    return;
+  }
+
+  // 未命中内置命令 → 尝试当作技能名（技能是动态发现的，不登记进补全表）
+  if (!isValidSkillName(name)) {
     ctx.ui.warn(`未知命令 /${name}。用 /help 查看全部命令。`);
     return;
   }
-  await handler(line, ctx);
+
+  const loaded = tryLoadSkillForSlash(ctx.cfg, name);
+  if (!loaded.ok) {
+    const avail = loaded.available.length > 0 ? `\n可用技能：${loaded.available.join(", ")}` : "";
+    ctx.ui.warn(`未知命令 /${name}：无此技能。${loaded.message}${avail}`);
+    ctx.ui.info("用 /help 查看内置命令，/skills 列出全部技能。");
+    return;
+  }
+
+  if (!ctx.enqueueUserTurn) {
+    // 单次模式（-p）等没有主循环队列的入口：明确告知，不静默吞掉
+    ctx.ui.warn(`当前模式无法通过 /${name} 启动一轮，请让模型 use_skill 加载。`);
+    return;
+  }
+
+  const text = buildSkillSlashPrompt({
+    name: loaded.meta.name,
+    body: loaded.body,
+    args,
+    files: loaded.files,
+    sourceLine: describeSource(ctx.cfg, loaded.meta, loaded.createdLink),
+  });
+  ctx.enqueueUserTurn(text);
+  ctx.ui.success(`已调用技能 ${loaded.meta.name}${args ? `（参数：${args}）` : ""}，下一轮发送给模型。`);
+  ctx.ui.info(`${describeSource(ctx.cfg, loaded.meta, loaded.createdLink)} · ${loaded.meta.absPath}`);
 }
 
 /** 顶层 case 名。嵌套 switch（/memory）缩进更深，不会被算进来。 */

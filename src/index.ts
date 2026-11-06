@@ -1100,6 +1100,12 @@ async function main(): Promise<number> {
               sessionLabel = name;
               titleAnimator?.setName(name);
             },
+            // issue #13：/技能名 把合成消息排进队列，由 drain 的 while 在下一轮取出。
+            // 不在这里直接 agent.send —— drain 正在跑，重入会打乱 draining 状态机。
+            enqueueUserTurn: (text) => {
+              queue.push({ text, attachments: [], origin: "user" });
+              composerRef?.setQueueCount(queue.length);
+            },
             memoryMode,
           });
           continue;

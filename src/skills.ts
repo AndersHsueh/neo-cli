@@ -541,3 +541,108 @@ export function describeSource(_cfg: Config, meta: SkillMeta, createdLink: boole
   const linked = createdLink || (meta.linked && meta.source === "global");
   return `来源：${meta.name}（${meta.source} / ${linked ? "软链" : "本地"}）`;
 }
+
+/* ------------------------------------------------------------------ */
+/* 用户直接 /技能名 调用（issue #13）                                   */
+/* ------------------------------------------------------------------ */
+
+/** `$ARGUMENTS` 占位符。整词替换，正文里出现几次就替换几次。 */
+const ARGUMENTS_PLACEHOLDER = "$ARGUMENTS";
+
+/**
+ * 把 SKILL.md 正文与用户参数合成一轮用户消息（issue #13 的纯函数核心）。
+ *
+ * 与 use_skill 的输出形态刻意对齐（正文 + `---` + 附件 + 来源），
+ * 差别只在开头多一句「这是用户主动调用」—— 模型需要知道这次不是它自己判断
+ * 「相关才加载」，而是人明确要求按这份说明执行。
+ *
+ * 参数注入规则：
+ *  - 正文含 `$ARGUMENTS` → 全部替换为 args（args 可为空串，占位符照样消失）
+ *  - 不含且 args 非空 → 正文后追加「用户参数」段，绝不丢用户输入
+ *  - 不含且 args 为空 → 不追加空段（避免正文尾部挂一个空标题）
+ */
+export function buildSkillSlashPrompt(opts: {
+  name: string;
+  body: string;
+  args: string;
+  files?: string[];
+  sourceLine?: string;
+}): string {
+  const { name, body, args } = opts;
+  const files = opts.files ?? [];
+  const hasPlaceholder = body.includes(ARGUMENTS_PLACEHOLDER);
+
+  const parts: string[] = [
+    `用户通过 /${name} 主动调用了技能「${name}」，请按下面的技能说明执行。` +
+      (hasPlaceholder
+        ? "用户参数已替换进正文的占位符处。"
+        : args
+          ? "用户参数见末尾「用户参数」段。"
+          : "本次没有附带参数。"),
+    "",
+  ];
+
+  const filled = hasPlaceholder ? body.split(ARGUMENTS_PLACEHOLDER).join(args) : body;
+  parts.push(filled.trimEnd());
+
+  if (!hasPlaceholder && args) {
+    parts.push("---", "用户参数：", args);
+  }
+
+  if (files.length > 0) {
+    parts.push("---", "附件（按需自行 read_file 或执行）：");
+    for (const f of files) parts.push(`- ${f}`);
+  }
+
+  if (opts.sourceLine) parts.push("---", opts.sourceLine);
+
+  return parts.join("\n");
+}
+
+/** `/技能名` 只读解析的结果。 */
+export type SlashSkillResult =
+  | { ok: true; meta: SkillMeta; body: string; files: string[]; createdLink: boolean }
+  | { ok: false; reason: "invalid" | "not_found"; message: string; available: string[] };
+
+/**
+ * 解析用户直接输入的 `/技能名`，读正文与附件清单。**只读**，不建软链。
+ *
+ * 为什么强制 `createLink: false`（而不是像 use_skill 那样懒建链）：
+ *  - 约束 16 划的职责边界是「人发起的入口只读，写文件系统只由模型行为触发」。
+ *    `/skills` 诊断命令已经按这条走；`/技能名` 同样是**人**发起的入口，
+ *    若它顺手在项目里建软链，那条边界就形同虚设 —— 用户敲一次斜杠命令
+ *    就悄悄改了自己的工作目录。
+ *  - 代价是正文里的相对路径（如 `references/x.md`）在项目区不可达，
+ *    因此 prompt 里必须给出技能目录的**绝对路径**（见 files 的拼接方式），
+ *    模型照样能读到附件。
+ */
+export function tryLoadSkillForSlash(cfg: Config, name: string): SlashSkillResult {
+  if (!isValidSkillName(name)) {
+    return {
+      ok: false,
+      reason: "invalid",
+      message: `技能名非法: ${name}`,
+      available: discoverSkills(cfg).map((s) => s.name),
+    };
+  }
+
+  const r = resolveSkill(cfg, name, { createLink: false });
+  if (!r.ok) {
+    // malformed（目录存在但缺 SKILL.md）也归到 not_found 之外的单一路径：
+    // 对用户来说都是「这个技能用不了」，但消息要原样保留，别吞掉真实原因。
+    return {
+      ok: false,
+      reason: "not_found",
+      message: r.message,
+      available: r.available.length > 0 ? r.available : discoverSkills(cfg).map((s) => s.name),
+    };
+  }
+
+  const body = readFileSync(join(r.meta.absPath, "SKILL.md"), "utf8");
+  // 附件给绝对路径：slash 路径不建软链，相对路径在项目区可能不可达。
+  const files = listSkillFiles(r.meta.absPath)
+    .filter((f) => f !== "SKILL.md")
+    .map((f) => join(r.meta.absPath, f));
+
+  return { ok: true, meta: r.meta, body, files, createdLink: r.createdLink };
+}

@@ -48,6 +48,7 @@ ${c.bold("交互命令")}
   /inbox           查看 held 消息；/inbox release <id> 放行一条
   /rename <name>   设置本会话名字（跨会话寻址；撞名自动加后缀）
   /skills          列出可用技能    /skills <名>  查看技能详情
+  /<技能名> [参数]  直接调用技能（正文随下一轮发给模型；$ARGUMENTS 替换为参数）
   /wiki-lint       wiki 体检：断链/orphan/摘要/日期戳/链接密度
   /ingest [f|i]    编译 raw → wiki（无参按 log 判定：超 1 周全量并告知，否则增量）
   /init            生成 AGENTS.md  /history     历史统计
