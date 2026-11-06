@@ -68,6 +68,9 @@
     "stream_idle_timeout_ms": 120000
   },
 
+  "parallel_tool_calls": "readonly",
+  "parallel_tool_calls_note": "工具并行策略。readonly（默认）= 请求体 parallel_tool_calls=true，本地只把连续的可并行只读工具（read_file/list_dir/glob/grep/web_fetch/web_search/wiki_search）并行执行，写工具与 shell 仍是串行屏障；off = 请求体 false 且本地一律串行（瘦网关不认该字段或排障时用）。也接受布尔值：true=readonly，false=off。",
+
   "theme": "matrix",
   "show_reasoning": true,
   "toolcall_info_details": false,

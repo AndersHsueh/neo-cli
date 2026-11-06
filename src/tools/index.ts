@@ -108,6 +108,7 @@ function shortArgs(args: Record<string, unknown>, keys: string[]): string {
 const readFile: ToolImpl = {
   sensitive: false,
   kind: "evidence",
+  parallelizable: true,
   spec: {
     type: "function",
     function: {
@@ -261,6 +262,7 @@ const editFile: ToolImpl = {
 const listDir: ToolImpl = {
   sensitive: false,
   kind: "evidence",
+  parallelizable: true,
   spec: {
     type: "function",
     function: {
@@ -336,6 +338,7 @@ const listDir: ToolImpl = {
 const globTool: ToolImpl = {
   sensitive: false,
   kind: "evidence",
+  parallelizable: true,
   spec: {
     type: "function",
     function: {
@@ -468,6 +471,7 @@ export function globToRegExp(pattern: string): RegExp {
 const grepTool: ToolImpl = {
   sensitive: false,
   kind: "evidence",
+  parallelizable: true,
   spec: {
     type: "function",
     function: {
@@ -799,6 +803,7 @@ export function extractTitle(html: string): string | null {
 const webFetch: ToolImpl = {
   sensitive: false,
   kind: "evidence",
+  parallelizable: true,
   spec: {
     type: "function",
     function: {
@@ -984,6 +989,18 @@ const registry = new Map(TOOLS.map((t) => [t.spec.function.name, t]));
  */
 export function toolKindOf(name: string): ToolKind {
   return registry.get(name)?.kind ?? "neither";
+}
+
+/**
+ * 该工具能否与同批次相邻工具并行执行（issue #11）。
+ *
+ * 唯一判据是注册表上的 `parallelizable` 标记，**不**从 sensitive/kind 推断：
+ *  - use_skill / compact_ctx 都是 sensitive:false，但一个会建软链、一个改宿主状态；
+ *  - 将来新增的只读工具也该显式声明，而不是靠「恰好不敏感」被卷进并行。
+ * 未注册（模型幻觉出来的工具名）→ false，走串行路径，由 dispatch 报「未知工具」。
+ */
+export function isParallelizable(name: string): boolean {
+  return registry.get(name)?.parallelizable === true;
 }
 
 /**

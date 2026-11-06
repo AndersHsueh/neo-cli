@@ -58,6 +58,7 @@ function ensureUserLayout(cfg: Config): WikiLayout {
 export const wikiSearchTool: ToolImpl = {
   sensitive: false,
   kind: "evidence",
+  parallelizable: true,
   spec: {
     type: "function",
     function: {

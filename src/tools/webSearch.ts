@@ -133,6 +133,7 @@ export function makeWebSearchTool(deps: { fetchImpl?: typeof fetch } = {}): Tool
   return {
     sensitive: false,
     kind: "evidence",
+    parallelizable: true,
     spec: {
       type: "function",
       function: {

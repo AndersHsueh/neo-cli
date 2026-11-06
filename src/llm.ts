@@ -7,7 +7,7 @@
  *  2. tool_calls 以增量形式下发（delta.tool_calls 带 index），需按 index 拼接。
  *  3. SSE 以空行分隔事件，末条为 data: [DONE]。
  */
-import { DEFAULT_RETRY_CONFIG, type Config, type RetryConfig } from "./config.ts";
+import { DEFAULT_PARALLEL_TOOL_CALLS, DEFAULT_RETRY_CONFIG, type Config, type RetryConfig } from "./config.ts";
 
 export type Role = "system" | "user" | "assistant" | "tool";
 
@@ -115,11 +115,28 @@ function buildBody(cfg: Config, messages: Message[], tools: ToolSpec[], stream: 
   if (tools.length > 0) {
     body.tools = tools;
     body.tool_choice = "auto";
-    // 推理模型 + tools 的常见约束：并行调用会产生不确定结果，强制单个。
-    body.parallel_tool_calls = false;
+    // issue #11：并行策略由配置决定，默认 "readonly"（只读工具可并行）。
+    // 缺省（旧测试/旧调用方没填该字段）按 "readonly" 处理，与 loadConfig 的默认一致；
+    // 显式 "off" 才下发 false —— 瘦网关不认这个字段时由 chatStream 的同轮降级兜底。
+    body.parallel_tool_calls = (cfg.parallelToolCalls ?? DEFAULT_PARALLEL_TOOL_CALLS) !== "off";
   }
   if (cfg.thinking !== undefined) body.thinking = cfg.thinking;
   return body;
+}
+
+/**
+ * 服务端是否在抱怨 parallel_tool_calls 这个字段（瘦网关常见：400 unknown field）。
+ *
+ * 只在 4xx 且错误文本里同时出现字段名与「不认识/不支持」语义时才认，
+ * 避免把普通的参数错误误判成降级信号。
+ */
+export function isParallelToolCallsRejection(err: unknown): boolean {
+  if (!(err instanceof LLMError)) return false;
+  const status = err.status;
+  if (status === undefined || status < 400 || status >= 500) return false;
+  const text = `${err.message}\n${err.body ?? ""}`.toLowerCase();
+  if (!text.includes("parallel_tool_calls")) return false;
+  return /(unknown|unsupported|not supported|unrecognized|invalid|not allowed|unexpected|不支持|未知)/.test(text);
 }
 
 function authHeaders(cfg: Config): Record<string, string> {
@@ -216,6 +233,8 @@ interface PartialToolCall {
  *    已经回调给 handlers，重试会造成重复输出或重复工具调用，一律不重试；
  *  - 4xx（408/409/425/429 除外）不重试；
  *  - 用户 abort 不重试（agent 按 signal.aborted 走取消路径）。
+ *  - 例外：4xx 且服务端明确拒绝 parallel_tool_calls 时，降级为 false 重发一次
+ *    （不占重试预算，见 issue #11）。
  */
 export async function chatStream(
   cfg: Config,
@@ -228,13 +247,26 @@ export async function chatStream(
   // 已经取消的 signal 不应再发请求（调用方可能在进入前就按了 ESC）。
   if (signal?.aborted) throw abortError();
   let attempt = 0;
+  /**
+   * 瘦网关降级（issue #11）：服务端明确拒绝 parallel_tool_calls 时，本次请求内
+   * 改用 false 重发一次。只降级这一轮，不写回配置 —— 用户配的是意图，
+   * 网关能力是运行时事实，混在一起会让「为什么没并行」变得无法解释。
+   */
+  let downgraded = false;
   for (;;) {
     attempt += 1;
     try {
-      return await streamOnce(cfg, messages, tools, handlers, signal, policy);
+      return await streamOnce(cfg, messages, tools, handlers, signal, policy, downgraded);
     } catch (e) {
       if (signal?.aborted) throw abortError();
       const err = e instanceof LLMError ? e : new LLMError((e as Error)?.message ?? String(e));
+      // 网关不认 parallel_tool_calls：不占用重试预算，直接降级重发一次。
+      // 必须放在 canRetry 判定之前 —— 4xx 本来不重试，否则这里会直接抛给主循环。
+      if (!downgraded && isParallelToolCallsRejection(err)) {
+        downgraded = true;
+        handlers.onNotice?.("网关不支持 parallel_tool_calls，本次请求已降级为串行（false）重发。");
+        continue;
+      }
       const canRetry = err.retryable && isRetryableStatus(err.status);
       if (!canRetry || attempt >= policy.maxAttempts) {
         if (attempt > 1) err.message = `${err.message}（已尝试 ${attempt} 次）`;
@@ -318,6 +350,8 @@ async function streamOnce(
   handlers: StreamHandlers,
   signal: AbortSignal | undefined,
   policy: RetryConfig,
+  /** 网关拒绝 parallel_tool_calls 后的降级重发：本次请求体强制 false。 */
+  forceSerial = false,
 ): Promise<StreamResult> {
   const ctrl = new AbortController();
   let timedOut: "connect" | "idle" | null = null;
@@ -343,7 +377,9 @@ async function streamOnce(
     const res = await fetch(`${cfg.baseUrl}/chat/completions`, {
       method: "POST",
       headers: authHeaders(cfg),
-      body: JSON.stringify(buildBody(cfg, messages, tools, true)),
+      body: JSON.stringify(
+        buildBody(forceSerial ? { ...cfg, parallelToolCalls: "off" } : cfg, messages, tools, true),
+      ),
       signal: ctrl.signal,
     });
     clearTimeout(connectTimer);

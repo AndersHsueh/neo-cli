@@ -14,7 +14,7 @@ import { applyTier, type Config } from "../config.ts";
 import { StreamFormatter } from "../ui/stream.ts";
 import { renderMarkdown } from "../ui/render.ts";
 import { c, colorEnabled } from "../ui/theme.ts";
-import { dispatch, toolSpecs, toolKindOf, TOOL_NAMES_EXCLUDED_FOR_SUBAGENT } from "../tools/index.ts";
+import { dispatch, toolSpecs, toolKindOf, isParallelizable, TOOL_NAMES_EXCLUDED_FOR_SUBAGENT } from "../tools/index.ts";
 import { ToolError, type ToolCtx } from "../tools/types.ts";
 import { appendTurnLog } from "../turnDiagnostics.ts";
 import { isContextOverflowError, parseContextLimitFromError } from "../contextWindow.ts";
@@ -434,8 +434,9 @@ export class Agent {
       // 不塞进 tools 数组：那是静态 schema，掺文本会污染 tool_choice 语义，
       // 部分服务端还会校验 schema。system 是 OpenAI 兼容协议里最稳的旁路。
       // 计数用 iter+1（第几次 LLM 请求）而非 toolCalls：
-      // parallel_tool_calls=false 下两者相等，但 iter 与硬上限严格对齐，
-      // 不会出现「显示 5/80 而循环已跑到 78」的错位。
+      // 两者在「一轮一个工具调用」时相等，但 iter 与硬上限严格对齐，
+      // 不会出现「显示 5/80 而循环已跑到 78」的错位（issue #11 起一轮可含多个工具调用，
+      // toolCalls 会大于 iter，这个理由更充分）。
       const budgetMsg = this.budgetMessage(iter + 1, maxIter);
       this.messages.push(budgetMsg);
 
@@ -625,39 +626,72 @@ export class Agent {
 
         const ctx = this.makeCtx(signal);
 
-        for (const call of res.toolCalls) {
-          toolCalls++;
-          const name = call.function.name;
-          this.opt.onEvent?.({ type: "tool_start", data: { name, args: call.function.arguments } });
-          this.opt.console.toolHeader(name, previewArgs(call.function.arguments));
+        // ---- 工具执行（issue #11：只读工具可并行）----
+        // 调度语义：
+        //  1. 连续的「可并行」工具（registry 上 parallelizable=true）组成一个并行段，
+        //     段内同时执行；段与段之间、以及任何不可并行工具都是**串行屏障**。
+        //  2. 因此 [read, write, read] 退化为全串行 —— 写工具不会与相邻读写并发，
+        //     依赖顺序不会被破坏。
+        //  3. messages 里 tool 结果**严格按 tool_calls 原序**回填（服务端按 id 配对，
+        //     乱序会被拒或错配）；tool_start 在段内先按序全部发出，tool_end 按序发出。
+        //  4. 计数（consecutiveFailures / capabilityStreak / toolCalls）按原序结算，
+        //     与串行实现逐条等价。
+        const parallelOn = this.opt.cfg.parallelToolCalls !== "off";
+        const calls = res.toolCalls;
+        let ci = 0;
+        while (ci < calls.length) {
+          const head = calls[ci]!;
+          const headName = head.function.name;
+          const canParallel = parallelOn && isParallelizable(headName);
 
-          const r = await dispatch(name, call.function.arguments, ctx);
-          this.opt.console.toolResult(r.output, 2, r.ok);
-          this.opt.onEvent?.({ type: "tool_end", data: { name, ok: r.ok, truncated: r.truncated } });
-
-          // 连续失败计数：分类器据此判断当前档位是否撑不住。
-          // 成功即清零 —— 只关心连续失败，不累计历史失败。
-          if (r.ok) {
-            this.consecutiveFailures = 0;
-          } else {
-            this.consecutiveFailures++;
+          if (!canParallel) {
+            toolCalls++;
+            this.opt.onEvent?.({ type: "tool_start", data: { name: headName, args: head.function.arguments } });
+            this.opt.console.toolHeader(headName, previewArgs(head.function.arguments));
+            const r = await dispatch(headName, head.function.arguments, ctx);
+            this.opt.console.toolResult(r.output, 2, r.ok);
+            this.opt.onEvent?.({ type: "tool_end", data: { name: headName, ok: r.ok, truncated: r.truncated } });
+            this.settleToolOutcome(headName, r.ok);
+            this.messages.push({ role: "tool", tool_call_id: head.id, name: headName, content: r.output });
+            ci++;
+            continue;
           }
 
-          // 手段/目标分层计数（2026-10-26）：evidence 产出即清零，
-          // capability 累加，neither 不影响（交付/管理动作不算漂移）。
-          const kind = toolKindOf(name);
-          if (kind === "evidence") {
-            this.capabilityStreak = 0;
-          } else if (kind === "capability") {
-            this.capabilityStreak++;
-          }
+          // 收集连续可并行段
+          let cj = ci;
+          while (cj < calls.length && isParallelizable(calls[cj]!.function.name)) cj++;
+          const slice = calls.slice(ci, cj);
 
-          this.messages.push({
-            role: "tool",
-            tool_call_id: call.id,
-            name,
-            content: r.output,
-          });
+          // 段内先按序发 start（UI 立刻看到「要做什么」），再并发执行
+          for (const call of slice) {
+            toolCalls++;
+            this.opt.onEvent?.({
+              type: "tool_start",
+              data: { name: call.function.name, args: call.function.arguments },
+            });
+            this.opt.console.toolHeader(call.function.name, previewArgs(call.function.arguments));
+          }
+          // dispatch 内部已把 ToolError / 参数错误收敛成 ok:false，不会让 Promise.all 炸掉批次
+          const results = await Promise.all(
+            slice.map((call) => dispatch(call.function.name, call.function.arguments, ctx)),
+          );
+          for (let k = 0; k < slice.length; k++) {
+            const call = slice[k]!;
+            const r = results[k]!;
+            this.opt.console.toolResult(r.output, 2, r.ok);
+            this.opt.onEvent?.({
+              type: "tool_end",
+              data: { name: call.function.name, ok: r.ok, truncated: r.truncated },
+            });
+            this.settleToolOutcome(call.function.name, r.ok);
+            this.messages.push({
+              role: "tool",
+              tool_call_id: call.id,
+              name: call.function.name,
+              content: r.output,
+            });
+          }
+          ci = cj;
         }
 
         // ---- 工具循环收口：安全切点，处理 compact_ctx 登记的压缩请求 ----
@@ -906,6 +940,28 @@ export class Agent {
   private dropTransientMessage(msg: Message): void {
     const i = this.messages.lastIndexOf(msg);
     if (i !== -1) this.messages.splice(i, 1);
+  }
+
+  /**
+   * 单次工具结果的记账（issue #11 抽出：串行与并行段共用，保证两条路径口径一致）。
+   *
+   *  - 连续失败计数：分类器据此判断当前档位是否撑不住。成功即清零，只关心连续失败。
+   *  - 手段/目标分层计数（2026-10-26）：evidence 产出即清零，capability 累加，
+   *    neither 不影响（交付/管理动作不算漂移）。
+   * 并行段内按 tool_calls 原序逐条调用，结果与串行实现逐条等价。
+   */
+  private settleToolOutcome(name: string, ok: boolean): void {
+    if (ok) {
+      this.consecutiveFailures = 0;
+    } else {
+      this.consecutiveFailures++;
+    }
+    const kind = toolKindOf(name);
+    if (kind === "evidence") {
+      this.capabilityStreak = 0;
+    } else if (kind === "capability") {
+      this.capabilityStreak++;
+    }
   }
 
   private makeCtx(signal: AbortSignal): ToolCtx {

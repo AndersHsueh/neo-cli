@@ -92,6 +92,21 @@ export interface ToolImpl {
   sensitive: boolean;
   /** 手段/目标分层。缺省视为 "neither"（不参与偏离判定）。 */
   kind?: ToolKind;
+  /**
+   * 是否可与同批次相邻的其它可并行工具**同时执行**（issue #11）。
+   *
+   * 缺省 false —— 默认串行是安全侧：新工具忘了标，代价只是慢一点；
+   * 标错成 true 的代价是写操作乱序，那不可接受。
+   *
+   * 只有「纯读、无副作用、不依赖前序工具结果」的工具才该标 true：
+   * read_file / list_dir / glob / grep / web_fetch / web_search / wiki_search。
+   * 特别注意 use_skill（首次加载会建软链）、compact_ctx（改宿主状态）、
+   * remember / wiki_write / send_message（写盘/发消息）都**不是**只读。
+   *
+   * 注意：该标记只影响**本地调度**。请求体里的 parallel_tool_calls 由
+   * cfg.parallelToolCalls 决定（见 src/llm.ts buildBody）。
+   */
+  parallelizable?: boolean;
   execute: (args: Record<string, unknown>, ctx: ToolCtx) => Promise<string> | string;
 }
 

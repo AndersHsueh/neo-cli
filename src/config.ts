@@ -167,6 +167,33 @@ export const DEFAULT_RETRY_CONFIG: RetryConfig = {
   streamIdleTimeoutMs: 120_000,
 };
 
+/**
+ * 工具并行策略（issue #11）。
+ *
+ * 刻意不做成 boolean：boolean 只有「全串行 / 全并行」两档，而全并行会让
+ * write_file / edit_file / shell 之间失去顺序保证 —— 那不是我们要的。
+ *  - "off"：请求体 parallel_tool_calls=false，本地一律串行（瘦网关兜底/排障用）；
+ *  - "readonly"（默认）：请求体 true，本地只并行连续的可并行只读工具。
+ */
+export type ParallelToolCallsMode = "off" | "readonly";
+
+export const DEFAULT_PARALLEL_TOOL_CALLS: ParallelToolCallsMode = "readonly";
+
+/**
+ * 解析 settings.parallel_tool_calls。接受 "off"/"readonly"（大小写不敏感），
+ * 也接受布尔（true → readonly，false → off）方便手写；其余值一律回落到默认，
+ * 不抛错 —— 一个拼错的开关不值得让整个 CLI 起不来。
+ */
+export function resolveParallelToolCalls(raw: unknown): ParallelToolCallsMode {
+  if (typeof raw === "boolean") return raw ? "readonly" : "off";
+  if (typeof raw === "string") {
+    const v = raw.trim().toLowerCase();
+    if (v === "off" || v === "false" || v === "none" || v === "serial") return "off";
+    if (v === "readonly" || v === "read_only" || v === "true" || v === "on") return "readonly";
+  }
+  return DEFAULT_PARALLEL_TOOL_CALLS;
+}
+
 export interface Config {
   /** 当前选中的 provider（已解析为具体值）。 */
   providerName: string;
@@ -226,6 +253,14 @@ export interface Config {
   crossSessionInbound: InboundPolicy | "auto";
   /** 透传给服务端的思考开关；不设则不下发该字段，由服务端自行决定。 */
   thinking?: { type: "enabled" | "disabled" };
+  /**
+   * 工具并行策略（issue #11）。默认 "readonly"。
+   *  - "off"：请求体 parallel_tool_calls=false，本地一律串行；
+   *  - "readonly"：请求体 parallel_tool_calls=true，本地只把**连续的可并行只读工具**
+   *    并行执行，写工具/有副作用的工具仍是串行屏障。
+   * 不要把它做成「全并行」：写工具之间、写与其前后依赖必须保持顺序。
+   */
+  parallelToolCalls: ParallelToolCallsMode;
   cwd: string;
   settingsPath: string | null;
   /**
@@ -722,6 +757,7 @@ export function loadConfig(overrides: Partial<Config> = {}): Config {
     maxToolIterations: num(raw["max_tool_iterations"], num(dflt["max_tool_iterations"], 80)),
     toolOutputLimit: num(raw["tool_output_limit"], num(dflt["tool_output_limit"], 30_000)),
     retry: resolveRetryConfig(raw["retry"]),
+    parallelToolCalls: resolveParallelToolCalls(raw["parallel_tool_calls"]),
     theme: str(raw["theme"], str(dflt["theme"], "matrix")),
     showReasoning: bool(raw["show_reasoning"], bool(dflt["show_reasoning"], true)),
     // 兼容用户手写的连字符键名；项目惯例仍是 snake_case。
