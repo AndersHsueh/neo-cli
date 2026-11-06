@@ -67,6 +67,7 @@ import {
 import { makeListPeersTool } from "../tools/mailbox.ts";
 import { runSubagent } from "../tools/task.ts";
 import { toolNames } from "../tools/index.ts";
+import { formatTodos, type TodoItem } from "../tools/todo.ts";
 import type { ToolCtx } from "../tools/types.ts";
 import { select, type SelectDeps } from "../ui/select.ts";
 import type { Console } from "../ui/console.ts";
@@ -116,6 +117,11 @@ export interface CommandContext {
    * 会在下一轮取出该消息（文本不以 `/` 开头，自然走 agent.send 路径）。
    */
   enqueueUserTurn?: (text: string) => void;
+  /**
+   * 读本会话的结构化待办（issue #10）。组合根持有内存态（resume 后来自 meta.todos），
+   * 优先于 meta.todos 读 —— 工具刚写完还没落盘时 meta 是旧的。
+   */
+  todos?: () => TodoItem[];
 }
 
 export async function handleCommand(line: string, ctx: CommandContext): Promise<void> {
@@ -669,6 +675,19 @@ export async function handleCommand(line: string, ctx: CommandContext): Promise<
       } catch (e) {
         ui.warn(`设置目标失败：${(e as Error).message}`);
       }
+      break;
+    }
+
+    // 结构化待办（issue #10）：只读查看。写入只走 todo_write 工具（模型侧整表替换）。
+    case "todos": {
+      const items = ctx.todos?.() ?? meta.todos ?? [];
+      const body = formatTodos(items);
+      if (body === "") {
+        ui.info("暂无待办。长任务里模型会用 todo_write 建清单。");
+        break;
+      }
+      for (const l of body.split("\n")) ui.line(l);
+      ui.blank();
       break;
     }
 

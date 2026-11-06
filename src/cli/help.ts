@@ -59,6 +59,7 @@ ${c.bold("交互命令")}
   /last [n]        回看最近 n 次工具调用（默认 1；紧凑模式的信息找回入口）
   /undo [n]        撤销最近 n 次 write/edit（默认 1；仅工具写，不含 shell）
   /checkpoints [n] 列出最近的写文件检查点（默认 10）
+  /todos           查看本会话结构化待办（模型用 todo_write 维护）
   /tier [name]     查看/切档位      /auto [name] 切换分类器（off/rule/llm）
   /fast /balanced /deep            档位快捷方式（等价 /tier）
   /why             上次分类判定与理由

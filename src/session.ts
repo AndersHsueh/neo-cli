@@ -7,6 +7,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import type { ContentPart, Message } from "./llm.ts";
 import type { LastTurnMeta } from "./turnDiagnostics.ts";
+import type { TodoItem } from "./tools/todo.ts";
 
 export interface SessionMeta {
   id: string;
@@ -21,6 +22,13 @@ export interface SessionMeta {
    * 仅用于 resume 告警与 /sessions 标记，不参与消息恢复。
    */
   lastTurn?: LastTurnMeta;
+  /**
+   * 本会话的结构化待办（issue #10）。旧会话没有该字段 = 空清单。
+   *
+   * 放在 meta 而不是 messages 里是刻意的：压缩（/compact、compact_ctx、自动压缩）
+   * 只替换 messages，meta 原样保留，所以清单独立于对话摘要存活。
+   */
+  todos?: TodoItem[];
 }
 
 export interface SessionFile {

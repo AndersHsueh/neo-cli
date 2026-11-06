@@ -339,6 +339,35 @@ describe("S1g queue", () => {
   });
 });
 
+describe("S1i 待办摘要（issue #10）", () => {
+  test("S1i 有摘要时出现在 tokens 之后、queue 之前", () => {
+    expect(renderStatus(snap({ todosSummary: "✓2/5" }))).toBe(`${FULL} · ✓2/5`);
+    expect(renderStatus(snap({ todosSummary: "✓2/5", queueCount: 1 }))).toBe(
+      `${FULL} · ✓2/5 · ⇥ 1 排队`,
+    );
+    const segs = statusSegments(snap({ todosSummary: "✓2/5" }));
+    expect(segs.map((s) => s.text)).toContain("✓2/5");
+    expect(segs.find((s) => s.text === "✓2/5")?.priority).toBe(35);
+  });
+
+  test("S1i 无摘要（null / undefined / 空串）不出现", () => {
+    expect(renderStatus(snap({ todosSummary: null }))).toBe(FULL);
+    expect(renderStatus(snap())).toBe(FULL);
+    expect(renderStatus(snap({ todosSummary: "" }))).toBe(FULL);
+  });
+
+  test("S1i 窄屏可丢弃：先丢 queue(30)，再丢 todos(35)，再丢 tokens(40)", () => {
+    // 全量 + 待办 = 83 + 3 + 4 = 90 列
+    expect(renderStatus(snap({ todosSummary: "✓2/5", width: 90 }))).toBe(`${FULL} · ✓2/5`);
+    // 93 列：全量+待办+queue = 90+3+8 = 101 > 93 → queue(30) 先丢，待办还在
+    expect(renderStatus(snap({ todosSummary: "✓2/5", queueCount: 1, width: 93 }))).toBe(
+      `${FULL} · ✓2/5`,
+    );
+    // 89 列且无 queue：todos(35) 先于 tokens(40) 被丢
+    expect(renderStatus(snap({ todosSummary: "✓2/5", width: 89 }))).toBe(FULL);
+  });
+});
+
 describe("S1h paint 钩子", () => {
   test("S1h 缺省 paint 是恒等（纯文本）", () => {
     expect(renderStatus(snap(), (_, text) => text)).toBe(FULL);

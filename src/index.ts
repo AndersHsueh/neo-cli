@@ -64,6 +64,7 @@ import {
 import { buildSystemPrompt } from "./system-prompt.ts";
 import { createMemoryBridge, type MemoryBridge } from "./memory/bridge.ts";
 import { makeRememberTool } from "./tools/memory.ts";
+import { makeTodoWriteTool, todosSummary, type TodoItem } from "./tools/todo.ts";
 import { contentText, type Message } from "./llm.ts";
 import { toolNames, registerTool } from "./tools/index.ts";
 import { makeTaskTool, runSubagent } from "./tools/task.ts";
@@ -779,6 +780,22 @@ async function main(): Promise<number> {
   // 记忆工具：模型显式写入（与自动归纳共用同一合并管线；子代理不可见）。
   registerTool(makeRememberTool({ remember: (body, scope) => memory.remember(body, scope) }));
 
+  // 结构化待办（issue #10）：会话级 checklist，整表替换。
+  // 状态存 sess.meta.todos（与 messages 并列），压缩只换 messages，清单因此不受影响。
+  // 子代理不可见（TOOL_NAMES_EXCLUDED_FOR_SUBAGENT）：子代理不该改主会话的清单。
+  let sessionTodos: TodoItem[] = Array.isArray(sess.meta.todos) ? sess.meta.todos : [];
+  registerTool(
+    makeTodoWriteTool({
+      get: () => sessionTodos,
+      set: (items) => {
+        sessionTodos = items;
+        sess.meta.todos = items;
+      },
+      // 写完立刻落盘：长任务中途进程被杀时清单不丢（persist 内部已吞异常）。
+      persist: () => persist(agent.messages, sess.meta),
+    }),
+  );
+
   // ask_user（v0.4.1 B2）：只在交互 TUI 注册；-p / 管道里模型看不到该工具。
   if (interactiveTTY) {
     registerTool(
@@ -829,6 +846,10 @@ async function main(): Promise<number> {
     // 用户裁决：恢复对话/名字/信箱，但不偷偷切换工作目录。
     if (meta?.cwd && meta.cwd !== cfg.cwd) {
       ui.info(`会话原目录 ${meta.cwd}，本次按 ${cfg.cwd} 运行`);
+    }
+    // issue #10：待办随会话恢复（存在 meta 里，与对话摘要无关）。
+    if (sessionTodos.length > 0) {
+      ui.info(`已恢复待办 ${sessionTodos.length} 项（/todos 查看）`);
     }
     // v0.4.1 A1：上次会话最后一轮失败/空转 → 明确告警，避免用户以为上下文正常。
     const resumeWarn = formatResumeWarning(meta);
@@ -1107,6 +1128,7 @@ async function main(): Promise<number> {
               composerRef?.setQueueCount(queue.length);
             },
             memoryMode,
+            todos: () => sessionTodos,
           });
           continue;
         }
@@ -1306,6 +1328,7 @@ async function main(): Promise<number> {
         elapsedMs: turnActive ? Math.max(0, Date.now() - turnStartedAt) : lastTurnMs,
         active: turnActive,
         tokensTotal: agent.cumulative.prompt + agent.cumulative.completion,
+        todosSummary: todosSummary(sessionTodos),
       }),
       commands: COMMANDS,
       files: () => fileIndex.list(),

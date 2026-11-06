@@ -6,7 +6,7 @@
  * 版式（字段顺序固定，与优先级解耦）：
  *   `v0.4.54 · model · tier · mode · ⎇ branch · ctx ▓▓░░░ 42% · 0:42 · 12k tok`
  *
- * 宽度不足时按 priority **从低到高**丢字段（queue 30 → tokens 40 → branch 50 →
+ * 宽度不足时按 priority **从低到高**丢字段（queue 30 → todos 35 → tokens 40 → branch 50 →
  * elapsed 60 → ctx 70 → mode 80 → tier 90 → version/model 100），但 `model` 与 `ctx` 是保底：
  * 两者仍超宽时用 `…` 截断 model（theme.truncate 按显示列切，CJK 也不会超宽）。
  * `version` 与 `model` 同为 100，但**不保底**：窄屏先丢 version，再截 model。
@@ -38,6 +38,12 @@ export interface StatusSnapshot {
   tokensTotal: number;
   /** 排队消息数；>0 时追加 `⇥ N 排队`。 */
   queueCount?: number;
+  /**
+   * 待办短摘要（issue #10），如 `✓2/5`；null / 空串 = 不显示。
+   * 优先级 35：比 queue(30) 先保留、比 tokens(40) 先丢 —— 窄屏时先丢「排队数」，
+   * 因为待办是长任务的进度锚，排队数只是瞬时状态。
+   */
+  todosSummary?: string | null;
   /** 终端列数。 */
   width: number;
 }
@@ -53,7 +59,7 @@ const BAR_CELLS = 5;
 const ELLIPSIS_WIDTH = 1;
 
 /** 内部字段种类：用于识别保底字段（model / ctx）与丢弃目标。 */
-type Kind = "version" | "model" | "tier" | "mode" | "branch" | "ctx" | "elapsed" | "tokens" | "queue";
+type Kind = "version" | "model" | "tier" | "mode" | "branch" | "ctx" | "elapsed" | "tokens" | "queue" | "todos";
 
 interface Built {
   kind: Kind;
@@ -162,6 +168,11 @@ function build(s: StatusSnapshot): Built[] {
 
   add("elapsed", formatElapsed(s.elapsedMs), s.active ? "text" : "muted", 60);
   add("tokens", `${formatTokens(s.tokensTotal)} tok`, "dim", 40);
+
+  // 待办摘要（issue #10）：priority 35 —— 窄屏时先于 tokens 被丢，后于 queue。
+  // 版式上紧挨 tokens 之后、queue 之前，与「进度类字段聚在一起」的直觉一致。
+  const todos = s.todosSummary ?? "";
+  if (todos.trim() !== "") add("todos", todos, "dim", 35);
 
   const queue = s.queueCount ?? 0;
   if (queue > 0) add("queue", `⇥ ${queue} 排队`, "warn", 30);
