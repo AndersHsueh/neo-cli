@@ -11,7 +11,7 @@
 import { clock, fixed1Raw } from "./format.ts";
 import { shellMarks } from "../tools/shellMarks.ts";
 import { c, displayWidth, truncate } from "./theme.ts";
-import { oneLine, paintTail, toolLineSegments, toolLineText } from "./toolLine.ts";
+import { isCardTool, oneLine, paintTail, toolCardRows, toolLineSegments, toolLineText } from "./toolLine.ts";
 
 /** 内存里保留的调用条数（只存引用，不复制正文；20 条 × 上游限流后的输出）。 */
 export const MAX_TOOL_HISTORY = 20;
@@ -153,6 +153,50 @@ export function failureDetailRows(
   return rows;
 }
 
+// ---------- 工具卡片效果行（v0.4.59 P0） ----------
+
+/** `已创建 /path（12 字符，3 行）` / `已覆盖 …` —— write_file 的返回格式。 */
+const WRITE_FILE_RE = /^(已创建|已覆盖)\s+(.+?)（(\d+) 字符，(\d+) 行）$/;
+/** `已修改 /path（N 处）` —— edit_file 的返回格式。 */
+const EDIT_FILE_RE = /^已修改\s+(.+?)（(\d+) 处）$/;
+
+/**
+ * 从工具结果里提炼卡片的「效果行」——**只读真实输出，解析不到就返回空串**。
+ *
+ *  - shell：`[exit N]` 末行（成功显示 `退出码 0`，失败交给失败摘要）；
+ *  - write_file / edit_file：工具输出里的真实行数/处数（**不编加减行**：
+ *    当前工具协议没有统一的 diff 摘要，只有「N 行」「N 处」）；
+ *  - remember / wiki_write：工具自己给的落页回执首句。
+ *
+ * 为什么不做 diff 统计：输出里没有 old/new 全文，凭 args 里的字符串猜加减行
+ * 就是假数据。等工具协议补了统一 diff 摘要（`+a -b`）再在这里加一条正则即可。
+ */
+export function toolCardEffect(name: string, output: string, ok: boolean): string {
+  const text = sanitizeOutput(output ?? "");
+  if (name === "shell") {
+    const lines = text.split("\n").map((l) => l.trimEnd()).filter((l) => l.trim() !== "");
+    const m = shellMarks.exitRe.exec(lines.at(-1) ?? "");
+    if (!m) return "";
+    const code = Number(m[1]);
+    return ok ? `退出码 ${code}` : `退出码 ${code}（非零）`;
+  }
+  if (name === "write_file") {
+    const m = WRITE_FILE_RE.exec(oneLine(text));
+    if (!m) return "";
+    return `${m[1]} · ${m[3]} 字符 · ${m[4]} 行`;
+  }
+  if (name === "edit_file") {
+    const m = EDIT_FILE_RE.exec(oneLine(text));
+    if (!m) return "";
+    return `替换 ${m[2]} 处`;
+  }
+  if (name === "remember" || name === "wiki_write") {
+    const first = text.split("\n").map((l) => l.trim()).find((l) => l !== "") ?? "";
+    return first === "" ? "" : truncate(oneLine(first), 60);
+  }
+  return "";
+}
+
 /**
  * 把一条调用记录渲染成多行（供 `/last` 使用）。
  * 失败摘要与紧凑行共用同一套宽度收敛，保证单行头不超宽。
@@ -175,5 +219,8 @@ export function formatToolCall(
     errorText: summary?.tail ?? "",
   });
   const head = toolLineText(seg, paintTail(seg, rec.ok ? "ok" : "error") + c.dim(` ${duration}`));
-  return [head, ...formatOutputLines(rec.output, { maxLines, width: w, margin: "  │ ", totalHint: true })];
+  // v0.4.59：写/执行类工具在 /last 里也先给卡片效果行（与实时卡片同口径）
+  const effect = isCardTool(rec.name) ? toolCardEffect(rec.name, rec.output, rec.ok) : "";
+  const card = effect === "" ? [] : toolCardRows({ name: rec.name, subject: "", effect, width: w, status: rec.ok ? "ok" : "error" });
+  return [head, ...card, ...formatOutputLines(rec.output, { maxLines, width: w, margin: "  │ ", totalHint: true })];
 }
