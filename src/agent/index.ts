@@ -13,5 +13,21 @@ export {
   type TurnStats,
 } from "./loop.ts";
 export { decidePermission, type PermissionDecision } from "./policy.ts";
+export {
+  PlanSession,
+  PLAN_READONLY_TOOLS,
+  PLAN_CONTROL_TOOLS,
+  PLAN_VISIBLE_TOOLS,
+  effectivePermissionMode,
+  filterPlanTools,
+  implementationMessage,
+  parsePlanDraft,
+  planModeMessage,
+  renderPlan,
+  type PlanDraft,
+  type PlanPhase,
+  type PlanSnapshot,
+  type PlanStep,
+} from "./plan-mode.ts";
 export { CAPABILITY_STREAK_LIMIT, budgetMessage, readGoalSafe } from "./steer.ts";
 export { planCompaction, applyCompaction } from "./compact.ts";

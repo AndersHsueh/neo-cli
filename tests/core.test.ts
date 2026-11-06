@@ -13,6 +13,7 @@ import {
   TOOLS,
   toolSpecs,
   toolNames,
+  mainToolNames,
   globToRegExp,
   htmlToText,
   extractTitle,
@@ -57,6 +58,9 @@ function cleanup(): void {
 /* ------------------------------------------------------------------ */
 
 describe("F1 工具集完整性", () => {
+  // 主代理默认可见的工具（顺序即注册表顺序）。
+  // issue #14：注册表尾部还有 submit_plan / exit_plan_mode，它们只在规划态
+  // 进入工具清单（见 PLAN_CONTROL_TOOLS），因此默认清单用 mainToolNames()。
   const EXPECTED = [
     ["read_file", false],
     ["write_file", true],
@@ -71,8 +75,17 @@ describe("F1 工具集完整性", () => {
     ["compact_ctx", false],
   ] as const;
 
+  /** 规划态控制工具：注册但默认不可见。 */
+  const PLAN_ONLY = ["submit_plan", "exit_plan_mode"] as const;
+
   test("工具名与顺序符合注册表", () => {
-    expect(toolNames()).toEqual(EXPECTED.map(([n]) => n));
+    expect(mainToolNames()).toEqual(EXPECTED.map(([n]) => n));
+  });
+
+  test("规划态控制工具注册在尾部，且不在主代理默认清单里", () => {
+    const all = toolNames();
+    expect(all.slice(-PLAN_ONLY.length)).toEqual([...PLAN_ONLY]);
+    for (const n of PLAN_ONLY) expect(mainToolNames()).not.toContain(n);
   });
 
   test("敏感标记与 PRD 2.1 表格一致", () => {
@@ -80,6 +93,8 @@ describe("F1 工具集完整性", () => {
     for (const [name, sensitive] of EXPECTED) {
       expect(`${name}=${actual.get(name)}`).toBe(`${name}=${sensitive}`);
     }
+    // 规划态控制工具不产生写副作用，不算敏感动作。
+    for (const n of PLAN_ONLY) expect(`${n}=${actual.get(n)}`).toBe(`${n}=false`);
   });
 
   test("每个 spec 都是合法的 function 定义且有 required", () => {
@@ -90,8 +105,8 @@ describe("F1 工具集完整性", () => {
       const params = s.function.parameters as { type?: string; required?: string[] };
       expect(params.type).toBe("object");
       expect(Array.isArray(params.required)).toBe(true);
-      // compact_ctx 的 reason 是可选说明，不设必填；其余工具至少一个必填参数。
-      if (s.function.name !== "compact_ctx") {
+      // compact_ctx 的 reason 是可选说明，不设必填；exit_plan_mode 的 reason 同理。
+      if (s.function.name !== "compact_ctx" && s.function.name !== "exit_plan_mode") {
         expect((params.required ?? []).length).toBeGreaterThan(0);
       }
     }

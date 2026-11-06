@@ -14,4 +14,5 @@ export {
   type TurnStats,
 } from "./agent/loop.ts";
 export { toolNames } from "./tools/index.ts";
+export { renderPlan, type PlanDraft, type PlanSnapshot } from "./agent/plan-mode.ts";
 export { c } from "./ui/theme.ts";

@@ -54,7 +54,9 @@ export interface AgentEvent {
     | "error"
     | "compact"
     | "tier_switch"
-    | "aborted";
+    | "aborted"
+    /** 规划态变化（issue #14）：data = PlanSnapshot。 */
+    | "plan";
   data?: unknown;
 }
 
@@ -125,6 +127,22 @@ export interface AgentOptions {
   askUser?: (req: AskUserRequest) => Promise<AskUserAnswer>;
   /** 强制关闭提问模态（用户 abort 时）。 */
   cancelAskUser?: () => void;
+  /**
+   * 交互式规划工作流（issue #14）：进入规划态前的权限模式。
+   *
+   * 只由 `/plan` 命令设置（`--plan` / `/mode plan` 是只读闸门，不走这里）。
+   * 规划态期间 effective mode 恒为 "plan"，工具清单收窄到只读集合；
+   * 用户确认后由宿主调 Agent.approvePlan() 切回这个模式。
+   */
+  planBaseMode?: PermissionMode;
+  /**
+   * 模型提交方案后请宿主提示用户确认（issue #14）。
+   *
+   * 由 exit_plan_mode 触发：宿主负责把「方案待确认」这件事摆到用户眼前
+   * （例如提示去 `/plan approve` 开始实施或 `/plan revise` 修改）。
+   * 循环**不会**在这里自动批准 —— 批准是用户的动作，不是宿主的。
+   */
+  requestPlanApproval?: () => void;
   /**
    * 目标锚读取（2026-10-26）。每轮请求前调用一次，结果写进临时 system 提示。
    *

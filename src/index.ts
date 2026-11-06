@@ -701,6 +701,14 @@ async function main(): Promise<number> {
         }
       : undefined,
     cancelAskUser: () => composerRef?.cancelAskUser(),
+    // 交互式规划工作流（issue #14）：模型提交方案（exit_plan_mode）后把「待确认」
+    // 摆到用户眼前。绝不在这里自动批准 —— 批准是用户的动作。
+    requestPlanApproval: () => {
+      if (jsonMode) return;
+      ui.blank();
+      ui.line(`${c.warn("◆")} 方案待确认：${c.dim("/plan approve 开始实施 · /plan revise 修改 · /plan cancel 放弃")}`);
+      composerRef?.rerender();
+    },
     // -p 单次模式：即使终端是 TTY 也按非交互块级渲染，避免 spinner/ANSI 污染输出
     nonInteractive: args.print !== null,
     pollInbox: mailbox
@@ -1323,6 +1331,8 @@ async function main(): Promise<number> {
         tier: tierDisplayName(cfg.modelTier),
         mode:
           args.mode === "auto-edit" ? "edit" : args.mode === "auto-all" ? "yolo" : args.mode,
+        // 规划态（issue #14）单独显示，避免与 /mode plan 的只读闸门混淆。
+        planning: agent.planning,
         branch: getBranch(cfg.cwd),
         ctxUsage: ctxUsage(),
         elapsedMs: turnActive ? Math.max(0, Date.now() - turnStartedAt) : lastTurnMs,

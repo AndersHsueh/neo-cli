@@ -5,7 +5,7 @@
 import { existsSync, readdirSync, readFileSync, type Dirent } from "node:fs";
 import { join, relative, sep } from "node:path";
 import type { Config } from "./config.ts";
-import { toolNames } from "./tools/index.ts";
+import { mainToolNames } from "./tools/index.ts";
 import { buildSkillIndex, discoverSkills, isRealDir } from "./skills.ts";
 import { resolveUserWikiLayout, resolveWikiLayout } from "./wiki/paths.ts";
 import { getEnvForPrompt } from "./env/probe.ts";
@@ -60,7 +60,7 @@ export function buildSystemPrompt(cfg: Config, opts: { mailbox?: boolean; askUse
       ? `\n工作目录结构（最多两层）：\n${tree.map((t) => `  ${t}`).join("\n")}`
       : `\n工作目录为空。`;
 
-  const tools = toolNames().join(", ");
+  const tools = mainToolNames().join(", ");
   const mailboxText = opts.mailbox ? buildMailboxSection() : "";
   const askUserRule = opts.askUser
     ? "遇到只有用户能拍板的分叉（模板分组/业务口径/删除或覆盖交付物/不可逆操作），先用 ask_user 问清楚，不要替用户猜；能自己查证的事实不要问。交付物默认保留旧版本，不主动建议删除。"
@@ -130,6 +130,7 @@ ${opts.askUser ? "- ask_user：向用户提问（单选/多选/自由输入，Es
 - remember：把长期有价值的结论/用户偏好写入记忆（自动判断项目级或用户级）。
 - todo_write：写入/更新本会话的结构化待办（整表替换；同时最多一项 in_progress）。长任务用它维持清单，压缩上下文后清单仍在，用户可用 /todos 查看。
 - compact_ctx：请求压缩对话上下文（历史→结构化摘要）。大范围探索完成、进入下一阶段前可主动调用；实际压缩在当前工具批次结束后执行。
+- 规划态（用户用 /plan 进入）时工具清单会收窄为只读集合，并额外出现 submit_plan / exit_plan_mode：先澄清范围与取舍，用 submit_plan 提交「步骤 / 风险 / 涉及文件」，用户确认后才恢复写盘与执行。
 ${opts.mailbox ? "- send_message：给另一个存活的 neo 会话投递纯文本消息（派活/回信）；回信时把原任务消息 id 传给 reply_to。\n- list_peers：列出存活会话及其状态机摘要（空闲/工作中/等待人类/在等别人/停滞/已死）；带 target 查单个。\n" : ""}${skillText}${wikiText}${mailboxText}
 ## 如何思考
 

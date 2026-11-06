@@ -20,6 +20,16 @@ import { appendTurnLog } from "../turnDiagnostics.ts";
 import { isContextOverflowError, parseContextLimitFromError } from "../contextWindow.ts";
 import { applyCompaction, planCompaction } from "./compact.ts";
 import { decidePermission } from "./policy.ts";
+import {
+  PlanSession,
+  PLAN_CONTROL_TOOLS,
+  effectivePermissionMode,
+  filterPlanTools,
+  implementationMessage,
+  planModeMessage,
+  type PlanDraft,
+  type PlanSnapshot,
+} from "./plan-mode.ts";
 import { previewArgs } from "./render.ts";
 import { budgetMessage as buildBudgetMessage, readGoalSafe } from "./steer.ts";
 import type { AgentIO, AgentOptions, PermissionMode, TurnStats } from "./types.ts";
@@ -60,10 +70,95 @@ export class Agent {
   private turnCounter = 0;
   /** 最近一次压缩的前后 tokens（只用于本轮诊断日志）。 */
   private lastCompact: { beforeTokens: number; afterTokens: number } | null = null;
+  /**
+   * 交互式规划工作流（issue #14）。null = 不在规划态。
+   * 与 `mode` 分开存：`mode` 是只读闸门，这里是「先设计再动手」的会话态。
+   */
+  private planSession: PlanSession | null = null;
 
   constructor(private readonly opt: AgentOptions) {
     this.mode = opt.mode;
     this.messages = [{ role: "system", content: opt.systemPrompt }];
+    // 规划态由宿主显式开启（/plan）。--plan / /mode plan 不设 planBaseMode，
+    // 因此只读闸门不会顺带把会话拖进交互规划工作流。
+    if (opt.planBaseMode) this.planSession = new PlanSession(opt.planBaseMode);
+  }
+
+  /* ---------------- 交互式规划工作流（issue #14） ---------------- */
+
+  /** 是否处于规划态（澄清中 / 已提交方案）。 */
+  get planning(): boolean {
+    return this.planSession?.active === true;
+  }
+
+  /** 规划态快照；不在规划态返回 null。 */
+  get plan(): PlanSnapshot | null {
+    return this.planSession?.snapshot() ?? null;
+  }
+
+  /** 当前生效的权限模式：规划态恒为 "plan"（借用只读闸门）。 */
+  get effectiveMode(): PermissionMode {
+    return effectivePermissionMode(this.mode, this.planning);
+  }
+
+  /**
+   * 进入规划态。base = 进入前的权限模式，确认后切回它。
+   * 已在规划态时只更新 base，不重置已提交的方案（重复 /plan 不该丢方案）。
+   */
+  enterPlan(base: PermissionMode = this.mode): PlanSnapshot {
+    if (this.planSession?.active) {
+      this.mode = base;
+    } else {
+      this.planSession = new PlanSession(base);
+      this.mode = base;
+    }
+    return this.emitPlan();
+  }
+
+  /** 模型调用 submit_plan：方案进入「待确认」。 */
+  submitPlan(draft: PlanDraft): PlanSnapshot {
+    if (!this.planSession?.active) throw new Error("当前不在规划态，不能提交方案");
+    this.planSession.submit(draft);
+    return this.emitPlan();
+  }
+
+  /** 用户要求改方案：回到澄清态，保留上一版。 */
+  revisePlan(): PlanSnapshot {
+    if (!this.planSession?.active) throw new Error("当前不在规划态");
+    this.planSession.revise();
+    return this.emitPlan();
+  }
+
+  /**
+   * 用户确认方案 → 离开规划态，权限模式切回进入前的那个，写操作从此放行。
+   * 返回 null 表示本来就不在规划态。
+   */
+  approvePlan(): PlanSnapshot | null {
+    const s = this.planSession;
+    if (!s?.active) return null;
+    const draft = s.draft;
+    s.approve();
+    this.mode = s.baseMode;
+    this.planSession = null;
+    this.opt.onEvent?.({ type: "plan", data: { phase: "implementing", baseMode: s.baseMode, draft, revisions: s.revisions } });
+    // 把已确认的方案钉进历史：模型下一轮看得见「按这份方案做」，不会自由发挥。
+    this.messages.push({ role: "system", content: implementationMessage(draft) });
+    return { phase: "implementing", baseMode: s.baseMode, draft, revisions: s.revisions };
+  }
+
+  /** 放弃规划态：不切模式、不注入实施提示，直接回到进入前的权限模式。 */
+  cancelPlan(): void {
+    const s = this.planSession;
+    if (!s?.active) return;
+    this.mode = s.baseMode;
+    this.planSession = null;
+    this.opt.onEvent?.({ type: "plan", data: { phase: "implementing", baseMode: s.baseMode, draft: s.draft, revisions: s.revisions } });
+  }
+
+  private emitPlan(): PlanSnapshot {
+    const snap = this.planSession!.snapshot();
+    this.opt.onEvent?.({ type: "plan", data: snap });
+    return snap;
   }
 
   /** LLM 流式函数：注入优先，缺省真实实现。 */
@@ -123,8 +218,15 @@ export class Agent {
    */
   toolSpecsFor(): ToolSpec[] {
     const all = toolSpecs();
-    if (!this.opt.isSubagent) return all;
-    return all.filter((s) => !TOOL_NAMES_EXCLUDED_FOR_SUBAGENT.includes(s.function.name));
+    // 规划态（issue #14）：只给只读工具 + 提交/退出方案两个控制工具。
+    // 写盘/执行类工具从清单里摘掉，模型不会「先试着调一下再被拒」。
+    if (this.planning) return filterPlanTools(all);
+    // 非规划态不把规划控制工具交给模型：平时调不通，留在清单里只会诱使误调。
+    // 主代理仍拿其余全量工具（含运行时注册的 task/wiki/remember 等）。
+    // v0.2.0 曾把子代理排除表误用于主代理，导致那些工具从未出现。
+    const withoutPlan = all.filter((s) => !PLAN_CONTROL_TOOLS.includes(s.function.name));
+    if (!this.opt.isSubagent) return withoutPlan;
+    return withoutPlan.filter((s) => !TOOL_NAMES_EXCLUDED_FOR_SUBAGENT.includes(s.function.name));
   }
 
   cancel(): void {
@@ -933,7 +1035,14 @@ export class Agent {
    * 目标由用户/宿主写入，模型只读 —— 提示里明确写出这一点，防止它自行重述。
    */
   private budgetMessage(attempt: number, max: number): Message {
-    return buildBudgetMessage(attempt, max, readGoalSafe(this.opt.readGoal), this.capabilityStreak);
+    const base = buildBudgetMessage(attempt, max, readGoalSafe(this.opt.readGoal), this.capabilityStreak);
+    // 规划态约束（issue #14）：每轮请求前注入、请求后摘除。
+    // 不写进系统提示 —— 系统提示是会话级的，进出规划态反复改写会与
+    // noteModelChange 的正则改写互相踩。
+    const plan = this.planSession?.snapshot();
+    if (!plan) return base;
+    const text = typeof base.content === "string" ? base.content : "";
+    return { role: "system", content: `${text}\n\n${planModeMessage(plan)}` };
   }
 
   /** 移除临时消息（预算提示 / 重试提示）。按引用比对，避免误删历史里内容相同的消息。 */
@@ -965,7 +1074,9 @@ export class Agent {
   }
 
   private makeCtx(signal: AbortSignal): ToolCtx {
-    const mode = this.mode;
+    // 规划态借用只读闸门：approve 与 readOnly 都按生效模式判定，
+    // 避免「工具清单已收窄、审批却还按旧模式放行」的第二条旁路。
+    const mode = this.effectiveMode;
     const ui = this.opt.console;
     return {
       cfg: this.opt.cfg,
@@ -985,7 +1096,26 @@ export class Agent {
       onProgress: (m) => ui.updateSpinner(m),
       askUser: this.opt.askUser,
       cancelAskUser: this.opt.cancelAskUser,
-      readOnly: this.opt.mode === "plan",
+      readOnly: mode === "plan",
+      planHost: this.planning
+        ? {
+            planning: true,
+            submitPlan: (draft) => this.submitPlan(draft),
+            requestPlanApproval: () => this.requestPlanApproval(),
+          }
+        : undefined,
     };
+  }
+
+  /**
+   * 模型请求开始实施（exit_plan_mode）。
+   *
+   * 宿主（index.ts）注入的确认回调负责问用户并调 approvePlan()；
+   * 没有注入时只发事件，由宿主的事件监听兜底 —— 绝不在这里自动批准，
+   * 那等于把「用户确认」这一步删掉。
+   */
+  private requestPlanApproval(): void {
+    this.opt.onEvent?.({ type: "plan", data: { ...this.planSession?.snapshot(), requestApproval: true } });
+    this.opt.requestPlanApproval?.();
   }
 }

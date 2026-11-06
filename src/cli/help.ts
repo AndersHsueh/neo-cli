@@ -27,7 +27,7 @@ ${c.bold("选项")}
   -C, --cwd <dir>       切换工作目录
   -y, --yes             自动批准所有操作（慎用）
       --edit            自动批准文件写入，shell 仍需批准
-      --plan            只读模式，禁止一切写操作
+      --plan            只读闸门：禁止一切写操作（≠ 交互规划工作流，后者在会话里用 /plan）
   -c, --continue        继续上一次会话
       --resume [id]     恢复会话（默认 last）
       --sessions        列出历史会话
@@ -43,6 +43,14 @@ ${c.bold("交互命令")}
   /export [id]     导出会话 Markdown
   /provider        切换 provider   /model       查看/切模型
   /tools           工具列表        /mode        权限模式
+  /plan [子命令]   交互规划工作流：先澄清 → 出方案 → 用户确认 → 开始实施
+                   /plan            进入规划态（默认不写盘，先澄清再出方案）
+                   /plan approve    确认方案并开始实施（别名 /plan go）
+                   /plan revise     要求改方案（回到澄清态，保留上一版）
+                   /plan cancel     放弃规划态（方案不生效）
+                   规划态期间生效模式恒为 plan（借用只读闸门），确认后切回进入前的模式
+                   注意：/mode plan 与 --plan 是「只读闸门」（禁止一切写操作，没有确认后放开
+                   这一步），与 /plan 不是一回事
   /env [refresh]   环境快照（平台/shell/资源/工具链）；refresh 重采并写 wiki 页
   /peers [name]    跨会话状态：列出存活会话 / 查单个
   /inbox           查看 held 消息；/inbox release <id> 放行一条

@@ -14,6 +14,7 @@ import { describeSource, insideGlobalSkills, isRealDir, listSkillFiles, resolveS
 import { insideRawDir } from "../wiki/paths.ts";
 import { ToolError, type ToolCtx, type ToolImpl, type ToolKind, type DispatchResult } from "./types.ts";
 import { webSearchTool } from "./webSearch.ts";
+import { submitPlanTool, exitPlanModeTool } from "./plan.ts";
 import { decodeHtmlEntities } from "./entities.ts";
 import { toolTmpDir } from "../runtimeTmp.ts";
 import { shellMarks } from "./shellMarks.ts";
@@ -979,6 +980,10 @@ export const TOOLS: ToolImpl[] = [
   webSearchTool,
   useSkill,
   compactCtx,
+  // 规划态控制工具（issue #14）：注册但只在规划态进入工具清单，
+  // 见 agent/plan-mode.ts 的 PLAN_CONTROL_TOOLS 与 Agent.toolSpecsFor()。
+  submitPlanTool,
+  exitPlanModeTool,
 ];
 
 const registry = new Map(TOOLS.map((t) => [t.spec.function.name, t]));
@@ -1045,6 +1050,9 @@ export const TOOL_NAMES_EXCLUDED_FOR_SUBAGENT: readonly string[] = [
   "list_peers",
   "ask_user",
   "todo_write",
+  // 规划态控制工具：子代理不在规划态，调用只会报错。
+  "submit_plan",
+  "exit_plan_mode",
 ];
 
 export function toolSpecs(): ToolSpec[] {
@@ -1054,6 +1062,20 @@ export function toolSpecs(): ToolSpec[] {
 export function toolNames(): string[] {
   return TOOLS.map((t) => t.spec.function.name);
 }
+
+/**
+ * 主代理默认可见的工具名（issue #14）。
+ *
+ * 规划态控制工具（submit_plan / exit_plan_mode）只在规划态进入工具清单，
+ * 但它们在注册表里是常驻的 —— 系统提示与 banner 用它，避免把两个
+ * 平时调不通的工具名教给模型。
+ */
+export function mainToolNames(): string[] {
+  return toolNames().filter((n) => !PLAN_ONLY_TOOL_NAMES.includes(n));
+}
+
+/** 只在规划态可见的工具（与 agent/plan-mode.ts 的 PLAN_CONTROL_TOOLS 同口径）。 */
+export const PLAN_ONLY_TOOL_NAMES: readonly string[] = ["submit_plan", "exit_plan_mode"];
 
 export async function dispatch(
   name: string,

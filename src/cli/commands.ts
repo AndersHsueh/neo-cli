@@ -8,6 +8,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 
 import type { Agent, PermissionMode } from "../agent.ts";
+import { renderPlan } from "../agent.ts";
 import {
   CLASSIFIER_NAMES,
   isClassifierName,
@@ -66,7 +67,7 @@ import {
 } from "../skills.ts";
 import { makeListPeersTool } from "../tools/mailbox.ts";
 import { runSubagent } from "../tools/task.ts";
-import { toolNames } from "../tools/index.ts";
+import { mainToolNames, toolNames } from "../tools/index.ts";
 import { formatTodos, type TodoItem } from "../tools/todo.ts";
 import type { ToolCtx } from "../tools/types.ts";
 import { select, type SelectDeps } from "../ui/select.ts";
@@ -522,12 +523,21 @@ export async function handleCommand(line: string, ctx: CommandContext): Promise<
       break;
     }
 
-    case "tools":
+    case "tools": {
+      // 规划态控制工具只在规划态可见（issue #14），平时不列出来 ——
+      // 否则用户会以为现在就能调 submit_plan。
+      const names = agent.planning ? toolNames() : mainToolNames();
       ui.blank();
-      ui.kv("可用工具", String(toolNames().length));
-      for (const t of toolNames()) ui.line(`  ${c.tool("⚡")} ${c.text(t)}`);
+      ui.kv("可用工具", String(names.length));
+      for (const t of names) ui.line(`  ${c.tool("⚡")} ${c.text(t)}`);
+      if (agent.planning) {
+        ui.line(c.dim("  当前在规划态：只读工具 + submit_plan / exit_plan_mode"));
+      } else {
+        ui.line(c.dim("  规划态（/plan）会额外出现 submit_plan / exit_plan_mode"));
+      }
       ui.blank();
       break;
+    }
 
     case "env": {
       const refresh = arg === "refresh";
@@ -848,11 +858,14 @@ export async function handleCommand(line: string, ctx: CommandContext): Promise<
         ["1", "ask — 写文件/执行命令都需批准"],
         ["2", "auto-edit — 自动批准写文件，命令仍需批准"],
         ["3", "auto-all — 全部自动批准（慎用）"],
-        ["4", "plan — 只读，禁止一切写操作"],
+        ["4", "plan — 只读，禁止一切写操作（要先出方案再动手请用 /plan）"],
       ];
       if (!arg) {
         ui.blank();
         ui.kv("当前模式", c.accent(agent.mode));
+        if (agent.planning) {
+          ui.kv("规划态", c.warn("进行中（生效模式恒为 plan）"));
+        }
         // TTY：选择器接入（与 /model 同款）；hint = 模式说明，initial 定位当前模式
         if (process.stdin.isTTY) {
           ui.stopSpinner(); // C1
@@ -861,7 +874,7 @@ export async function handleCommand(line: string, ctx: CommandContext): Promise<
             { name: "ask", desc: "写文件/执行命令都需批准" },
             { name: "auto-edit", desc: "自动批准写文件，命令仍需批准" },
             { name: "auto-all", desc: "全部自动批准（慎用）" },
-            { name: "plan", desc: "只读，禁止一切写操作" },
+            { name: "plan", desc: "只读，禁止一切写操作；要先出方案再动手请用 /plan" },
           ];
           const options = modeList.map((m) => ({
             label: m.name,
@@ -906,6 +919,93 @@ export async function handleCommand(line: string, ctx: CommandContext): Promise<
         // 状态同步失败不影响模式切换
       }
       ui.success(`权限模式 → ${m}`);
+      // 两套概念别混（issue #14）：/mode plan 只是只读闸门，不会进入交互规划工作流。
+      if (m === "plan") {
+        ui.info("这是只读闸门：禁止一切写操作，没有「确认后放开」这一步。");
+        ui.info("要「先澄清 → 出方案 → 用户确认 → 开始实施」，用 /plan。");
+      }
+      break;
+    }
+
+    case "plan": {
+      // 交互式规划工作流（issue #14）。与 /mode plan（只读闸门）是两套概念：
+      // 这里进入的是会话态，规划期借用只读闸门，用户确认后切回进入前的权限模式。
+      const sub = (rest[0] ?? "").toLowerCase();
+      const snap = agent.plan;
+
+      if (sub === "" || sub === "start") {
+        if (agent.planning) {
+          // 重复进入不重置已提交的方案，只把当前状态摆出来。
+          ui.info("已在规划态。");
+        } else {
+          const base = agent.mode;
+          agent.enterPlan(base);
+          ui.success(`已进入规划态（规划期间生效模式 plan，确认后切回 ${base}）。`);
+          ui.info("默认不写盘：先澄清范围/约束/取舍，再产出分步方案。");
+        }
+        const cur = agent.plan;
+        if (cur?.draft) {
+          ui.blank();
+          ui.line(renderPlan(cur.draft));
+          ui.blank();
+          ui.line(c.dim("  方案待确认：/plan approve 开始实施 · /plan revise 修改 · /plan cancel 放弃"));
+        } else {
+          ui.line(c.dim("  直接说需求即可；模型会先澄清再提交方案，确认用 /plan approve。"));
+        }
+        break;
+      }
+
+      if (sub === "approve" || sub === "go") {
+        if (!agent.planning) {
+          ui.warn("当前不在规划态。用 /plan 进入。");
+          break;
+        }
+        if (!snap?.draft) {
+          ui.warn("还没有已提交的方案。先让模型提交方案（submit_plan），或 /plan cancel 放弃规划。");
+          break;
+        }
+        const done = agent.approvePlan();
+        const base = done?.baseMode ?? agent.mode;
+        ui.success(`方案已确认，开始实施（权限模式 → ${base}，写盘/执行已恢复）。`);
+        ui.info("已确认的方案已钉进上下文，模型按它动手。");
+        break;
+      }
+
+      if (sub === "revise") {
+        if (!agent.planning) {
+          ui.warn("当前不在规划态。用 /plan 进入。");
+          break;
+        }
+        agent.revisePlan();
+        ui.success("已回到澄清态：告诉模型要改哪几步，它会提交修订版方案。");
+        if (snap?.draft) {
+          ui.blank();
+          ui.line(renderPlan(snap.draft));
+          ui.blank();
+          ui.line(c.dim("  上一版方案保留在上下文里，供模型参考。"));
+        }
+        break;
+      }
+
+      if (sub === "cancel") {
+        if (!agent.planning) {
+          ui.warn("当前不在规划态。");
+          break;
+        }
+        const base = snap?.baseMode ?? agent.mode;
+        agent.cancelPlan();
+        ui.success(`已退出规划态（权限模式 → ${base}），未确认的方案不生效。`);
+        break;
+      }
+
+      // /plan 带其它参数：当作「进入规划态 + 这条需求」一起发出去。
+      // 用户不用先 /plan 再打一遍需求，两步合成一步。
+      if (!agent.planning) {
+        const base = agent.mode;
+        agent.enterPlan(base);
+        ui.success(`已进入规划态（确认后切回 ${base}）。`);
+      }
+      await agent.send(arg);
       break;
     }
 

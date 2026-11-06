@@ -10,6 +10,7 @@
 import type { ToolSpec } from "../llm.ts";
 import type { Config } from "../config.ts";
 import type { AskUserAnswer, AskUserRequest } from "../ui/askUser.ts";
+import type { PlanDraft } from "../agent/plan-mode.ts";
 
 export class ToolError extends Error {
   constructor(message: string) {
@@ -26,6 +27,19 @@ export class ToolError extends Error {
 export interface CompactHost {
   /** 登记一次上下文压缩请求；宿主在安全时机（工具循环收口）统一执行。 */
   requestCompact(): void;
+}
+
+/**
+ * 规划态宿主能力（issue #14）。结构化类型，避免工具层反向依赖 agent/plan-mode.ts。
+ * 只有处于规划态的主代理会满足它；其余宿主（子代理 / 测试裸 ctx）不传。
+ */
+export interface PlanHost {
+  /** 提交方案：进入「待用户确认」。 */
+  submitPlan(draft: PlanDraft): unknown;
+  /** 请求开始实施：宿主负责切回进入前的权限模式并注入实施提示。 */
+  requestPlanApproval(): unknown;
+  /** 当前是否仍在规划态。 */
+  readonly planning: boolean;
 }
 
 /** 写文件检查点（P0-4）。结构化类型，避免工具层反向依赖 checkpoint 模块。 */
@@ -46,6 +60,11 @@ export interface ToolCtx {
    * 宿主代理（可选，测试的裸 ctx 可不传）。compact_ctx 用它登记压缩请求。
    */
   host?: CompactHost;
+  /**
+   * 规划态宿主（issue #14，可选）。submit_plan / exit_plan_mode 用它改会话态；
+   * 不传 = 当前不在规划态，两个工具会明确报错而不是假装成功。
+   */
+  planHost?: PlanHost;
   /** 取消信号（Ctrl+C）。 */
   signal?: AbortSignal;
   /** plan 模式（只读）：禁止一切写盘副作用，包括工具输出落盘。 */

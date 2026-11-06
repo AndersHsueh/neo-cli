@@ -6,6 +6,9 @@
  * 版式（字段顺序固定，与优先级解耦）：
  *   `v0.4.54 · model · tier · mode · ⎇ branch · ctx ▓▓░░░ 42% · 0:42 · 12k tok`
  *
+ * mode 段在交互规划态（`/plan`，issue #14）显示 `planning · 规划中`，
+ * 与只读闸门 `plan`（`/mode plan` / `--plan`）区分。
+ *
  * 宽度不足时按 priority **从低到高**丢字段（queue 30 → todos 35 → tokens 40 → branch 50 →
  * elapsed 60 → ctx 70 → mode 80 → tier 90 → version/model 100），但 `model` 与 `ctx` 是保底：
  * 两者仍超宽时用 `…` 截断 model（theme.truncate 按显示列切，CJK 也不会超宽）。
@@ -26,6 +29,14 @@ export interface StatusSnapshot {
   tier: string;
   /** 权限模式："ask" | "edit" | "yolo" | "plan"（缺省不显示）。 */
   mode?: string;
+  /**
+   * 交互规划态（issue #14）：true 时 mode 段显示 `planning · 规划中`。
+   *
+   * 与 `mode: "plan"` 区分开 —— 后者是 `/mode plan` / `--plan` 的只读闸门，
+   * 前者是 `/plan` 的交互规划工作流。两者生效的权限模式都是 plan，
+   * 但用户要能一眼看出「我现在是在出方案，还是在只读」。
+   */
+  planning?: boolean;
   /** git 分支；null / 空 / 纯空白 = 不显示。 */
   branch?: string | null;
   /** 上下文占用比 0..1（>1 允许，显示时 clamp 并显示 ">100%"）。 */
@@ -153,7 +164,10 @@ function build(s: StatusSnapshot): Built[] {
   add("version", `v${s.version}`, "muted", 100);
   add("model", s.model, "accent", 100);
   add("tier", s.tier, "tier", 90);
-  if (s.mode !== undefined && s.mode !== "") add("mode", s.mode, "text", 80);
+  if (s.planning === true) {
+    // 规划态优先于权限模式：生效模式恒为 plan，但用户要看的是「在出方案」。
+    add("mode", "planning · 规划中", "warn", 80);
+  } else if (s.mode !== undefined && s.mode !== "") add("mode", s.mode, "text", 80);
   if (s.branch !== undefined && s.branch !== null && s.branch.trim() !== "") {
     add("branch", `⎇ ${s.branch}`, "muted", 50);
   }

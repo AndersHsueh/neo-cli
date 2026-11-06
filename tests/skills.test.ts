@@ -31,7 +31,7 @@ import { join, relative, sep, isAbsolute, dirname } from "node:path";
 
 import { discoverSkills, parseFrontmatter, resolveSkill, buildSkillIndex } from "../src/skills.ts";
 import type { SkillMeta } from "../src/skills.ts";
-import { TOOLS, toolNames, dispatch } from "../src/tools/index.ts";
+import { TOOLS, toolNames, mainToolNames, dispatch } from "../src/tools/index.ts";
 import { buildSystemPrompt } from "../src/system-prompt.ts";
 import { parseSkillsExtraPaths } from "../src/config.ts";
 import type { Config } from "../src/config.ts";
@@ -486,13 +486,16 @@ describe("D. buildSkillIndex", () => {
 /* ------------------------------------------------------------------ */
 
 describe("E. use_skill 工具", () => {
-  test("E1 工具已注册，use_skill 在末尾两件之一", () => {
+  test("E1 工具已注册，use_skill / compact_ctx 在主体末尾", () => {
     const names = toolNames();
     expect(names).toContain("use_skill");
     expect(names.length).toBeGreaterThanOrEqual(10);
     expect(new Set(names).size).toBe(names.length);
-    expect(names[names.length - 2]).toBe("use_skill");
-    expect(names[names.length - 1]).toBe("compact_ctx");
+    // issue #14：注册表尾部追加了规划态控制工具（submit_plan / exit_plan_mode），
+    // 它们只在规划态进入工具清单，所以断言改用「主代理默认可见」的口径。
+    const main = mainToolNames();
+    expect(main[main.length - 2]).toBe("use_skill");
+    expect(main[main.length - 1]).toBe("compact_ctx");
   });
 
   test("E2 标记为非敏感", () => {
