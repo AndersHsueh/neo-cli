@@ -42,6 +42,7 @@ export const COMMANDS: CommandEntry[] = [
   { name: "ingest", description: "编译 raw → wiki" },
   { name: "mode", description: "权限模式（plan = 只读闸门，禁止一切写操作）" },
   { name: "plan", description: "交互规划工作流：先澄清确认方案再改码（不是 /mode plan）" },
+  { name: "review", description: "对照 git 改动做只读审查（/review [基线]；默认审未提交改动，不改文件）" },
   { name: "init", description: "生成 AGENTS.md" },
   { name: "memory", description: "记忆子命令族" },
   { name: "remember", description: "显式记忆" },

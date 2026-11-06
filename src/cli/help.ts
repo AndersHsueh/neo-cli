@@ -51,6 +51,8 @@ ${c.bold("交互命令")}
                    规划态期间生效模式恒为 plan（借用只读闸门），确认后切回进入前的模式
                    注意：/mode plan 与 --plan 是「只读闸门」（禁止一切写操作，没有确认后放开
                    这一步），与 /plan 不是一回事
+  /review [基线]   对照 git 改动做只读审查：默认审未提交改动（HEAD + 未跟踪名单），
+                   可写分支名/tag/commit 作基线（如 /review main）；默认不改文件
   /env [refresh]   环境快照（平台/shell/资源/工具链）；refresh 重采并写 wiki 页
   /peers [name]    跨会话状态：列出存活会话 / 查单个
   /inbox           查看 held 消息；/inbox release <id> 放行一条

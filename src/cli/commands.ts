@@ -50,6 +50,12 @@ import { mailboxRoot, type Envelope } from "../mailbox/types.ts";
 import type { Mailbox } from "../mailbox/store.ts";
 import { chooseSessionName } from "../sessionName.ts";
 import {
+  buildReviewPrompt,
+  collectReviewDiff,
+  REVIEW_DIFF_LIMIT,
+  summarizePatch,
+} from "../review.ts";
+import {
   applyRestored,
   listSessions,
   loadSession,
@@ -1006,6 +1012,50 @@ export async function handleCommand(line: string, ctx: CommandContext): Promise<
         ui.success(`已进入规划态（确认后切回 ${base}）。`);
       }
       await agent.send(arg);
+      break;
+    }
+
+    case "review": {
+      // 一等公民代码审查（issue #12）。与 /plan 的分工：
+      // /plan 是「先出方案再动手」的会话态；/review 是「对着已有 diff 只读挑毛病」。
+      // 采集在 CLI 侧用 git 完成 —— 「工作区干净」必须是确定性结论，不能交给模型判断。
+      const collected = collectReviewDiff(cfg.cwd, arg);
+      if (!collected.ok) {
+        ui.warn(collected.message);
+        break;
+      }
+      if (!collected.hasChanges) {
+        // 干净：只打结论，不发请求。省一次模型调用，也不会让模型凭空编出 findings。
+        ui.success(
+          arg ? `相对 ${arg} 无差异，工作区干净。` : "工作区干净（相对 HEAD 无差异，也没有未跟踪文件）。",
+        );
+        break;
+      }
+
+      const stat = summarizePatch(collected.patch);
+      ui.line(
+        `${c.accent("◆")} 审查范围：${c.bright(collected.label)}` +
+          ` ${c.dim(
+            `· ${stat.files} 个文件 +${stat.added} −${stat.removed}` +
+              (collected.untracked.length > 0 ? ` · ${collected.untracked.length} 个未跟踪文件` : ""),
+          )}`,
+      );
+      if (collected.truncated) {
+        ui.warn(
+          `diff 过大（${collected.patchLength} 字符），已截断到 ${REVIEW_DIFF_LIMIT} 字符；未覆盖部分不会被审查。`,
+        );
+      }
+
+      // 本轮禁写：临时借用只读闸门（decidePermission 的 plan 分支拒绝一切写操作），
+      // 结束后在 finally 里恢复原模式。刻意不走 enterPlan —— 那会把会话拖进
+      // #14 的交互规划态，状态栏变成「planning · 规划中」，用户只是想看个审查。
+      const prevMode = agent.mode;
+      agent.mode = "plan";
+      try {
+        await agent.send(buildReviewPrompt(collected));
+      } finally {
+        agent.mode = prevMode;
+      }
       break;
     }
 
