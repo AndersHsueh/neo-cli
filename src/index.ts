@@ -67,6 +67,7 @@ import { makeRememberTool } from "./tools/memory.ts";
 import { makeTodoWriteTool, todosSummary, type TodoItem } from "./tools/todo.ts";
 import { contentText, type Message } from "./llm.ts";
 import { toolNames, registerTool } from "./tools/index.ts";
+import { McpManager, type McpServerState } from "./mcp/index.ts";
 import { makeTaskTool, runSubagent } from "./tools/task.ts";
 import { makeAskUserTool } from "./tools/askUser.ts";
 import { registerWikiTools } from "./tools/wiki.ts";
@@ -841,6 +842,32 @@ async function main(): Promise<number> {
     registerTool(makeListPeersTool({ mailbox: mb }));
   }
 
+  // MCP 外部工具（issue #2）：连接已配置的 stdio server 并动态注册工具。
+  // 必须在系统提示刷新之前完成 —— `可用工具` 行由 toolNames() 现取，
+  // 连完再刷新，模型第一轮就能看见 mcp__* 工具。
+  // 单个 server 失败只记状态（/mcp 可查），不抛错、不阻塞启动。
+  const mcpManager = new McpManager(cfg.mcpServers ?? [], {
+    onStderr: (server, line) => {
+      // server 的 stderr 默认很吵（npx 进度、日志），只在失败时由 /mcp 展示尾巴。
+      void server;
+      void line;
+    },
+  });
+  if ((cfg.mcpServers ?? []).length > 0) {
+    const n = await mcpManager.connectAll();
+    const states = mcpManager.statuses();
+    if (n > 0) ui.info(`MCP：已接入 ${n} 个外部工具（/mcp 查看）`);
+    for (const s of states.filter((x) => x.status === "error")) {
+      ui.warn(s.error ?? `MCP server "${s.name}" 连接失败`);
+    }
+    // 注册失败的工具既不在模型工具清单里，也不该让用户以为可用 —— 启动时就说清楚。
+    for (const s of states) {
+      for (const r of s.rejected ?? []) {
+        ui.warn(`MCP 工具 ${r.name}（${s.name}/${r.remote}）注册失败，不可用：${r.reason}`);
+      }
+    }
+  }
+
   // 运行时工具注册完成后再刷新系统提示：`可用工具` 行由 toolNames() 现取，
   // 首次构造时运行时工具（task/wiki/remember/send_message/list_peers）尚未注册。
   {
@@ -919,6 +946,8 @@ async function main(): Promise<number> {
     const prompt = args.print || args.rest.join(" ");
     if (!prompt.trim()) {
       console.error(c.err("✖ -p 需要提供内容"));
+      // 此时 MCP server 可能已经连上（连接发生在 -p 分支之前），必须收掉。
+      try { mcpManager.closeAll(); } catch { /* 清理失败不掩盖用法错误 */ }
       return 2;
     }
     // json 模式把 SIGINT 转成 aborted 统计：Ctrl+C 后仍能输出一行 JSON（exit 130），
@@ -928,9 +957,19 @@ async function main(): Promise<number> {
     let stats: Awaited<ReturnType<typeof agent.send>>;
     try {
       stats = await agent.send(prompt);
+    } catch (e) {
+      // 异常退出路径：agent.send 抛错时不能把 MCP 子进程留在后面当孤儿。
+      // 收完再原样抛出，让外层（main 的 catch / 进程退出）按原语义处理。
+      try { mcpManager.closeAll(); } catch { /* 清理失败不掩盖原异常 */ }
+      throw e;
     } finally {
       if (jsonMode) process.off("SIGINT", onSigint);
     }
+    // 正常结束（含 hadError / aborted）：先收 MCP 子进程再落盘退出。
+    // -p 是「跑完就退」的一次性进程，子进程没有第二次机会被回收。
+    // 顺序执行而非 finally：json 输出分支与 return 都在其后，清理必须在
+    // persist 之前完成（persist 之后还有 await memory.flush，进程仍活着）。
+    try { mcpManager.closeAll(); } catch { /* 清理失败不阻止退出 */ }
     persist(agent.messages, sess.meta);
     // 单次模式：把记忆写队列在退出前冲刷掉（仅项目级；带超时，不阻塞关闭）
     await memory.flush();
@@ -981,7 +1020,12 @@ async function main(): Promise<number> {
 
   // 也允许 `neo 你的问题` 直接作为首轮输入（非交互）
   if (args.rest.length > 0 && !process.stdin.isTTY) {
-    await agent.send(args.rest.join(" "));
+    try {
+      await agent.send(args.rest.join(" "));
+    } finally {
+      // 与 -p 同一条一次性进程路径：MCP 子进程必须显式收掉，否则留下孤儿 node。
+      try { mcpManager.closeAll(); } catch { /* 清理失败不掩盖原异常 */ }
+    }
     persist(agent.messages, sess.meta);
     await memory.flush();
     return 0;
@@ -1066,6 +1110,12 @@ async function main(): Promise<number> {
     } catch {
       // 记忆失败不阻止退出
     }
+    // MCP 子进程必须显式收掉：否则 npx/node 会挂在父进程后面成为孤儿。
+    try {
+      mcpManager.closeAll();
+    } catch {
+      // 清理失败不阻止退出
+    }
     closeMailbox();
     persist(agent.messages, sess.meta);
     ui.blank();
@@ -1137,6 +1187,7 @@ async function main(): Promise<number> {
             },
             memoryMode,
             todos: () => sessionTodos,
+            mcp: () => mcpManager.statuses(),
           });
           continue;
         }
@@ -1397,11 +1448,14 @@ async function main(): Promise<number> {
     };
     const onCrash = (e: unknown): void => {
       try { composer?.stop(); } catch { /* 尽力还原 */ }
+      // MCP 子进程不能留在崩溃路径上：否则用户重开 neo 会看到一堆孤儿 node。
+      try { mcpManager.closeAll(); } catch { /* 清理失败不掩盖原异常 */ }
       console.error(c.err(`✖ 未捕获异常，终端已还原：${(e as Error)?.message ?? String(e)}`));
       process.exit(1);
     };
     const onTerm = (): void => {
       try { composer?.stop(); } catch { /* 尽力还原 */ }
+      try { mcpManager.closeAll(); } catch { /* 同上 */ }
       process.exit(143);
     };
     process.on("SIGINT", onSigintTui);
@@ -1811,6 +1865,8 @@ async function main(): Promise<number> {
     process.off("SIGINT", onSigint);
     if (process.stdout.isTTY) process.stdout.off("resize", onResize);
     ui.setPromptRestorer(null);
+    // MCP 子进程随输入源关闭一并收掉（readline 路径没有统一的 shutdown 出口）。
+    try { mcpManager.closeAll(); } catch { /* 清理失败不阻止退出 */ }
     closeMailbox();
     if (process.stdin.isTTY) process.stdout.write("\x1b[?2004l"); // 退出还原终端 bracketed paste 模式
   });
@@ -1823,6 +1879,12 @@ async function main(): Promise<number> {
   }
 
   closeMailbox();
+  // MCP 子进程：正常退出路径（readline close）已收，这里兜底再调一次（幂等）。
+  try {
+    mcpManager.closeAll();
+  } catch {
+    // 清理失败不阻止退出
+  }
   // 终端关闭（Ctrl+D 等）同样冲刷记忆写队列
   try {
     await memory.flush(2000);

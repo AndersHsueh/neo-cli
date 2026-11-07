@@ -99,8 +99,67 @@ shell 探测顺序：`settings.shell.path` → `NEO_SHELL` → `$SHELL` → 平�
 | `theme` | 配色主题 |
 | `shell` | 跨平台 shell 覆盖（`path` / `login` / `args`），见下 |
 | `env` | 环境探测与注入（`enabled` / `probe_ttl_hours` / `prompt` / `wiki_page`），见下 |
+| `mcpServers` | 外部 MCP server（stdio），工具动态注册为 `mcp__<server>__<tool>`，见下 |
 
-### shell / env —— 平台适配层（v0.4.0）
+### mcpServers —— 接入外部 MCP 工具（issue #2）
+
+neo 可以连接 [MCP](https://modelcontextprotocol.io) server，把它们的工具动态注册进工具清单。
+配置写在 `settings.json` **顶层**，形状对齐 Claude Desktop / Cursor，不用另学一套：
+
+```json
+"mcpServers": {
+  "fs": {
+    "command": "npx",
+    "args": ["-y", "@modelcontextprotocol/server-filesystem", "/home/me/notes"],
+    "env": {},
+    "cwd": null,
+    "enabled": true
+  }
+}
+```
+
+最小示例（filesystem MCP，只放开一个目录）：
+
+```json
+{
+  "mcpServers": {
+    "fs": { "command": "npx", "args": ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"] }
+  }
+}
+```
+
+字段：
+
+| 字段 | 必填 | 说明 |
+| --- | --- | --- |
+| `command` | 是 | 可执行文件（`npx` / `bunx` / `node` / 绝对路径） |
+| `args` | 否 | 参数数组 |
+| `env` | 否 | 追加/覆盖子进程环境变量（在 `process.env` 之上） |
+| `cwd` | 否 | 子进程工作目录，缺省 = neo 的 cwd |
+| `transport` | 否 | 目前只支持 `stdio`（缺省）；写 `http`/`sse` 会被跳过并给出 warning |
+| `enabled` | 否 | `false` = 保留配置但不启动（缺省 `true`） |
+
+也接受数组形态（与 `providers` 风格一致）：`"mcpServers": [{ "name": "fs", "command": "npx", ... }]`。
+
+行为约定：
+
+- **启动时连接**：对每个已启用的 server 执行 `initialize` + `tools/list`，工具以
+  `mcp__<server>__<tool>` 注册（如 `mcp__fs__read_file`），远端 `inputSchema` 原样透传给模型。
+- **单个 server 失败不拖垮启动**：失败只记一条可读错误（含 server 名、命令与 stderr 尾巴），
+  其余 server 照常连接，主循环不受影响。`/mcp` 可随时查看每个 server 的连接状态、工具数与错误。
+- **审批与内置工具同一条路径**：MCP 工具一律视为非只读（`sensitive`），走 `approve` /
+  `decidePermission`。具体口径：
+  - `ask`：逐个确认；
+  - `auto-edit`：**仍需确认**（与 `shell` 同口径）—— auto-edit 放行的只是「本仓库的写盘」，
+    而 MCP 工具的副作用我们完全不知道（可能写盘、可能发网络请求、可能删远端资源）；
+  - `auto-all`：放行，不弹确认；
+  - `/mode plan`、`--plan`、`/review`：工具**可见但调用被拒绝**；
+  - 交互式 `/plan` 规划态：工具**对模型不可见**（从工具清单里摘掉）。
+  非交互环境（`-p`）同样需要 `-y`。
+- **退出清理**：正常退出、Ctrl+C、崩溃路径都会收掉子进程，不留孤儿 `node`。
+- 只认本地 `settings.json`：`settings.example.json` 里的示例 server 不会在用户机器上被启动。
+
+
 
 ```json
 "shell": { "path": null, "login": true, "args": null },
@@ -203,6 +262,7 @@ provider 里的 `*_model_name` 表示「**这个 provider** 在各档位上用�
 /provider  切换 provider   /tier      切换档位（显示生效路由）
 /model     查看/切模型     /tools     工具列表
 /env [refresh] 环境快照（平台/shell/资源/工具链）；refresh 重采并写 wiki 页
+/mcp       MCP server 状态（连接/工具数/错误）
 /mode      权限模式        /init      生成 AGENTS.md
 /peers [name]  跨会话状态：列出存活会话 / 查单个
 /inbox     查看 held 消息；/inbox release <id> 放行一条
@@ -336,6 +396,16 @@ bun run verify  # 全量闸门：tsc → test → pty，证据落 docs/evidence/
 | `compact_ctx` | 否 | 模型主动请求压缩上下文（工具批次结束后执行） |
 | `send_message` | 否 | 给另一个存活会话投递纯文本消息（可选 `reply_to`=任务号）；子代理不可见 |
 | `list_peers` | 否 | 列出存活会话的状态机摘要；带 `target` 查单个；子代理不可见 |
+| `mcp__<server>__<tool>` | 是 | 外部 MCP server 提供的工具（动态注册，`inputSchema` 透传）；未配置 `mcpServers` 时不存在 |
+
+MCP 工具与内置工具走**同一条**审批路径。两种「plan」要分开看：
+
+- **交互式 `/plan` 规划态**：MCP 工具**从工具清单里摘掉**，模型看不见，也就不会去调。
+- **`/mode plan`、`--plan`、`/review`**：工具**仍在清单里可见**，但调用一律被拒绝
+  （`/review` 是临时借用只读闸门，结束后恢复原模式）。
+
+`auto-edit` 下 MCP 工具**仍需确认**（与 `shell` 同口径）；`auto-all` 放行。
+`/mcp` 查看已接入的 server、连接状态、工具数与失败原因。
 
 ## 权限模式
 
@@ -386,6 +456,8 @@ neo 支持多个**前台交互式**会话互相发纯文本消息，用于「一
 
 **审批走 readline。** 问句用 `rl.question()` 而非另开 raw-mode stdin 监听，否则两者同时消费输入会导致回显两遍。
 
+**MCP 工具按前缀统一治理。** 外部工具名一律 `mcp__<server>__<tool>`，权限、展示、规划态过滤都按前缀识别，不必维护白名单。所有 MCP 工具都标 `sensitive` —— 远端做什么我们不知道，宁可多问一次；`auto-edit` 下与 `shell` 同口径仍需确认，`auto-all` 才放行。注册名由整批工具集合纯函数算出（`computeMcpNames`），与连接顺序无关：同一 (server, tool) 永远得到同一个名字，合法化有信息损失时（非 ASCII、`a.b` vs `a_b`、`__` 分界、超长截断）追加 `__<8 位哈希>` 保证不同原名不落成同名。单个 server 连接失败只记状态（`/mcp` 可查）不抛错：一个写错的配置不该让整个 CLI 起不来。
+
 **记忆是双作用域 + 编译产物。** 项目级记忆跟仓库走（`.neo/wiki/`），用户级记忆跨项目共享（`~/.neo/wiki/`），两者同构复用 wiki 校验。一轮问答结束后由 fast 档提炼器归纳成「决策/踩坑/偏好」等页面；下一轮开始前**先查项目级、再查用户级**注入。原始对话只进 `~/.neo/memory/journal/`（运行日志），不进 wiki —— wiki 永远只是当前最优综述。推断出的用户画像必须带 `[推断]` 标记，召回时只作背景。
 
 **`-p` 单次模式只用项目级记忆。** 该模式多用于服务器脚本，混入操作员个人记忆会造成混乱；因此系统提示、召回、工具三处同时降级为 project-only。
@@ -425,6 +497,7 @@ neo/
     ├── hotkeys.ts          # 按键路由（ESC/Ctrl+C/粘贴边界）
     ├── memory/             # 记忆：双作用域布局/召回/提炼/合并/捕获/桥
     ├── mailbox/            # 跨会话消息：类型/状态机/身份/文件信箱/入站框架
+    ├── mcp/                # MCP 客户端：JSON-RPC stdio / 连接管理 / 工具适配
     ├── wiki/               # wiki 知识库：回填校验/lint/检索/ingest
     ├── classifier/         # 档位分类器
     │   ├── types.ts        # TierClassifier 接口

@@ -43,6 +43,7 @@ ${c.bold("交互命令")}
   /export [id]     导出会话 Markdown
   /provider        切换 provider   /model       查看/切模型
   /tools           工具列表        /mode        权限模式
+  /mcp             MCP 外部工具 server 状态（连接/工具数/错误；配置见 settings.json 的 mcpServers）
   /plan [子命令]   交互规划工作流：先澄清 → 出方案 → 用户确认 → 开始实施
                    /plan            进入规划态（默认不写盘，先澄清再出方案）
                    /plan approve    确认方案并开始实施（别名 /plan go）

@@ -31,6 +31,7 @@ export const COMMANDS: CommandEntry[] = [
   { name: "why", description: "上次分类判定与理由" },
   { name: "model", description: "查看 / 切换模型" },
   { name: "tools", description: "工具列表" },
+  { name: "mcp", description: "MCP 外部工具 server 状态（连接/工具数/错误）" },
   { name: "env", description: "环境快照（/env refresh 重采并写 wiki 页）" },
   { name: "peers", description: "跨会话状态" },
   { name: "inbox", description: "查看/放行 held 消息" },

@@ -279,6 +279,11 @@ export interface Config {
   memory: MemoryConfig;
   /** 跨平台 shell 覆盖（v0.4.0 平台适配层；不填=自动探测）。 */
   shell?: ShellConfig;
+  /**
+   * MCP 外部工具服务器（issue #2）。settings.json 顶层 `mcpServers` 段，
+   * 形状对齐 Claude Desktop / Cursor 的约定。缺省 = 不接任何外部工具。
+   */
+  mcpServers?: McpServerConfig[];
   /** 环境探测/注入配置（v0.4.0；不填=默认开启、TTL 12h、注入+写 wiki 页）。 */
   env?: EnvConfig;
 }
@@ -333,6 +338,30 @@ export interface MemoryConfig {
 }
 
 type Raw = Record<string, unknown>;
+
+/**
+ * 一个 MCP stdio server 的配置（issue #2）。
+ *
+ * 形状对齐 Claude Desktop / Cursor 的 `mcpServers` 写法，用户不必为 neo 另学一套：
+ *   "mcpServers": {
+ *     "fs": { "command": "npx", "args": ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"] }
+ *   }
+ * 对象形态（键即 server 名）与数组形态（每项带 name）都接受，见 parseMcpServers。
+ */
+export interface McpServerConfig {
+  /** server 名。工具名会拼成 `mcp__<name>__<tool>`，因此只允许 [A-Za-z0-9_-]。 */
+  name: string;
+  transport: "stdio";
+  /** 可执行文件（npx / bunx / node / 绝对路径）。 */
+  command: string;
+  args: string[];
+  /** 追加到子进程环境变量（在 process.env 之上覆盖）。 */
+  env: Record<string, string>;
+  /** 子进程工作目录；缺省 = neo 的 cwd。 */
+  cwd?: string;
+  /** false = 跳过连接（保留配置但不启动）。 */
+  enabled: boolean;
+}
 
 /**
  * 粘贴增强配置（PRD docs/paste-enhancement-prd[done].md §5.7）。
@@ -392,6 +421,88 @@ function resolveEnvConfig(raw: unknown): EnvConfig | undefined {
     out.modelsProbeTimeoutMs = Math.min(60_000, Math.max(250, Math.floor(r["models_probe_timeout_ms"])));
   }
   return Object.keys(out).length > 0 ? out : undefined;
+}
+
+/**
+ * 解析 settings.mcpServers（issue #2）。
+ *
+ * 两种写法都接受，因为用户手上多半已经有一份 Claude Desktop / Cursor 的配置：
+ *  1. 对象：{ "fs": { "command": "npx", "args": [...] } } —— 键即 server 名；
+ *  2. 数组：[{ "name": "fs", "command": "npx", ... }] —— 与 providers 一致的风格。
+ *
+ * 容错原则：**单个 server 写错只丢这一个，不让整个 CLI 起不来**。
+ * 缺 command / 名字非法 / 名字重复 → 跳过该条并记一条 warning（由调用方打印）。
+ * 这不是「静默忽略」：warnings 会经 /mcp 与启动提示暴露出来。
+ */
+export function parseMcpServers(raw: unknown): { servers: McpServerConfig[]; warnings: string[] } {
+  const servers: McpServerConfig[] = [];
+  const warnings: string[] = [];
+  const seen = new Set<string>();
+
+  const entries: Array<[string | null, unknown]> = [];
+  if (Array.isArray(raw)) {
+    for (const item of raw) entries.push([null, item]);
+  } else if (typeof raw === "object" && raw !== null) {
+    for (const [k, v] of Object.entries(raw as Raw)) entries.push([k, v]);
+  } else if (raw !== undefined && raw !== null) {
+    warnings.push("mcpServers 必须是对象或数组，已忽略该段。");
+    return { servers, warnings };
+  }
+
+  for (const [keyName, item] of entries) {
+    if (typeof item !== "object" || item === null || Array.isArray(item)) {
+      warnings.push(`mcpServers${keyName ? `.${keyName}` : ""} 不是对象，已跳过。`);
+      continue;
+    }
+    const r = item as Raw;
+    const name = str(r["name"], keyName ?? "").trim();
+    if (!name) {
+      warnings.push("mcpServers 有一条缺少 name，已跳过。");
+      continue;
+    }
+    if (!/^[A-Za-z0-9_-]+$/.test(name)) {
+      // 名字会进工具名（mcp__<server>__<tool>），带点/斜杠会让模型与日志都难认。
+      warnings.push(`mcpServers.${name} 名字非法（只允许字母/数字/_/-），已跳过。`);
+      continue;
+    }
+    if (seen.has(name)) {
+      warnings.push(`mcpServers.${name} 重名，已跳过后面那条。`);
+      continue;
+    }
+    const command = str(r["command"], "").trim();
+    if (!command) {
+      warnings.push(`mcpServers.${name} 缺少 command，已跳过。`);
+      continue;
+    }
+    const transport = str(r["transport"], "stdio").trim().toLowerCase();
+    if (transport !== "stdio") {
+      // 本片只做 stdio；写 http/sse 的用户需要一句明确的话，而不是「连不上」。
+      warnings.push(`mcpServers.${name} 的 transport="${transport}" 暂不支持（当前仅 stdio），已跳过。`);
+      continue;
+    }
+    const argsRaw = r["args"];
+    const args = Array.isArray(argsRaw) ? argsRaw.map((a) => String(a)) : [];
+    const envRaw = r["env"];
+    const env: Record<string, string> = {};
+    if (typeof envRaw === "object" && envRaw !== null && !Array.isArray(envRaw)) {
+      for (const [k, v] of Object.entries(envRaw as Raw)) {
+        if (v === null || v === undefined) continue;
+        env[k] = String(v);
+      }
+    }
+    const cwdRaw = str(r["cwd"], "").trim();
+    seen.add(name);
+    servers.push({
+      name,
+      transport: "stdio",
+      command,
+      args,
+      env,
+      cwd: cwdRaw === "" ? undefined : cwdRaw,
+      enabled: bool(r["enabled"], true),
+    });
+  }
+  return { servers, warnings };
 }
 
 function resolvePasteConfig(raw: Raw | undefined): PasteConfig {
@@ -771,6 +882,8 @@ export function loadConfig(overrides: Partial<Config> = {}): Config {
     skillsExtraPaths: parseSkillsExtraPaths(raw["skills_extra_paths"]),
     memory: resolveMemoryConfig(raw["memory"] as Raw | undefined),
     shell: resolveShellConfig(raw["shell"]),
+    // MCP 只认本地 settings.json：模板里的示例 server 不该在用户机器上被启动。
+    mcpServers: parseMcpServers(raw["mcpServers"]).servers,
     env: resolveEnvConfig(raw["env"]),
     paste: resolvePasteConfig(raw["paste"] as Raw | undefined),
     mailbox: resolveMailboxSettings(raw),

@@ -41,6 +41,7 @@ import { syncEnvPage } from "../env/wiki.ts";
 import { contentText } from "../llm.ts";
 import { listModels } from "../llm.ts";
 import type { MemoryBridge } from "../memory/bridge.ts";
+import type { McpServerState } from "../mcp/client.ts";
 import { ensureScopeLayout } from "../memory/layout.ts";
 import { initProjectLevel as initProjectLevelImpl } from "../memory/init.ts";
 import { sessionLiveness, renameSession, takenAliveNames } from "../mailbox/identity.ts";
@@ -129,6 +130,11 @@ export interface CommandContext {
    * 优先于 meta.todos 读 —— 工具刚写完还没落盘时 meta 是旧的。
    */
   todos?: () => TodoItem[];
+  /**
+   * MCP server 状态快照（issue #2）。`/mcp` 用它列出 server / 连接状态 / 工具数 / 错误。
+   * 不传 = 本进程没有接 MCP（单测裸 ctx），`/mcp` 会明确说明而不是显示空表。
+   */
+  mcp?: () => McpServerState[];
 }
 
 export async function handleCommand(line: string, ctx: CommandContext): Promise<void> {
@@ -540,6 +546,63 @@ export async function handleCommand(line: string, ctx: CommandContext): Promise<
         ui.line(c.dim("  当前在规划态：只读工具 + submit_plan / exit_plan_mode"));
       } else {
         ui.line(c.dim("  规划态（/plan）会额外出现 submit_plan / exit_plan_mode"));
+      }
+      ui.blank();
+      break;
+    }
+
+    case "mcp": {
+      // issue #2：一眼看清「接了哪些外部 server、连上没有、各贡献几个工具、错在哪」。
+      const states = ctx.mcp?.();
+      if (!states) {
+        ui.warn("当前进程没有接入 MCP（未配置 mcpServers，或不在主循环里）。");
+        ui.info("在 settings.json 顶层加 mcpServers 段后重启 neo；/help 里有示例。");
+        break;
+      }
+      if (states.length === 0) {
+        ui.info("没有配置 MCP server。在 settings.json 顶层加 mcpServers 段（stdio）后重启。");
+        break;
+      }
+      ui.blank();
+      const connected = states.filter((s) => s.status === "connected");
+      const tools = connected.reduce((n, s) => n + s.tools.length, 0);
+      const rejected = states.reduce((n, s) => n + (s.rejected?.length ?? 0), 0);
+      ui.kv(
+        "MCP server",
+        `${states.length} 个（已连接 ${connected.length}，工具 ${tools} 个` +
+          (rejected > 0 ? `，注册失败 ${rejected} 个）` : "）"),
+      );
+      for (const s of states) {
+        const tag =
+          s.status === "connected"
+            ? c.ok("已连接")
+            : s.status === "error"
+              ? c.err("失败")
+              : s.status === "disabled"
+                ? c.dim("已禁用")
+                : c.warn("未连接");
+        const meta = s.status === "connected" ? `${s.tools.length} 个工具` : "";
+        ui.line(`  ${c.tool("⚡")} ${c.text(s.name)}  ${tag}${meta ? c.dim(`  ${meta}`) : ""}`);
+        if (s.status === "connected") {
+          // 只列**注册成功**的工具：注册失败的既不在模型工具清单里，也不该在这里
+          // 显示成可用 —— 否则用户会以为能调，模型却根本看不见。
+          for (const t of s.tools) {
+            const remote = s.toolEntries?.find((e) => e.name === t)?.remote;
+            ui.line(`      ${c.dim(t)}${remote && remote !== t ? c.dim(`  ← ${remote}`) : ""}`);
+          }
+          for (const r of s.rejected ?? []) {
+            ui.line(
+              `      ${c.warn("✖")} ${c.warn(r.name)} ${c.dim(`← ${r.remote}`)}  ${c.warn("不可用")}` +
+                `  ${c.dim(r.reason)}`,
+            );
+          }
+        } else if (s.error) {
+          ui.line(`      ${c.warn(s.error)}`);
+        }
+      }
+      ui.line(c.dim("  MCP 工具名形如 mcp__<server>__<tool>，调用前需审批，plan 模式下不可执行。"));
+      if (rejected > 0) {
+        ui.line(c.dim("  标 ✖ 的工具注册失败（重名等），模型看不到也调不到；改名或停用冲突的 server 后重启。"));
       }
       ui.blank();
       break;
