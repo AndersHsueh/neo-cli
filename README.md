@@ -1,6 +1,6 @@
 # neo
 
-Matrix 风格的终端编程助手。用 Bun 写的 CLI harness，对接 OpenAI 兼容的 LLM 网关。
+Matrix 风格的终端编程助手。用 Bun 写的 CLI harness，对接 OpenAI 兼容与 Anthropic Messages 两种协议的 LLM 网关。
 
 ```
   ﾐﾋﾉﾘﾔｶﾍ  Ｎ Ｅ Ｏ    wake up, neo... the matrix has you.
@@ -53,7 +53,7 @@ shell 探测顺序：`settings.shell.path` → `NEO_SHELL` → `$SHELL` → 平�
   "providers": [
     {
       "provider_name": "ipsa",
-      "provider_type": "openai",
+      "api_type": "openai",
       "base_url": "https://ipsapro.isoftstone.com/thor/v1",
       "api_key": "sk-…",
 
@@ -428,7 +428,9 @@ provider 里的 `*_model_name` 表示「**这个 provider** 在各档位上用�
 - 鉴权失败（401/403）、参数错误（400）、限流、5xx **不回退** —— 换协议只会掩盖配置错误；
 - 设了 `NEO_BASE_URL` 覆盖地址时，只按 `provider` 的首选协议走单一协议。
 
-Anthropic 路径的差异处理：`system` 提到顶层字段，连续 `tool` 消息合并成同一条 user 的 `tool_result` 块，`parallel_tool_calls` 换成 `disable_parallel_tool_use`，`stop_reason` 映射回 `finish_reason`，`usage` 的输入 token 含缓存读写。注意 `max_tokens` 在 Anthropic 协议里是必填且不能超过模型上限（MiniMax 为 196608）。
+Anthropic 路径的差异处理：`system` 提到顶层字段，连续 `tool` 消息合并成同一条 user 的 `tool_result` 块，`parallel_tool_calls` 换成 `disable_parallel_tool_use`，`stop_reason` 映射回 `finish_reason`，`usage` 的输入 token 含缓存读写。多轮工具对话里的 `thinking` 块（含签名）会原样保存并回带，OpenAI 请求体里则剥掉该字段；会话落盘/恢复保留它。
+
+**`max_tokens` 与模型上限。** Anthropic 协议里 `max_tokens` 必填，且服务端不会静默夹紧。上限因模型而异（MiniMax 实测：M3 / M3.1-Flash 为 524,288，M2.7 系为 196,608），而 provider 级的 `max_tokens` 四个档位共用。neo 会在收到「超过该模型上限」的 400 后解析出上限，夹紧并同轮重发一次（按 `provider|base_url|model` 记在进程内，不改写你的配置，并给出提示）。但这只是兜底：**`max_tokens` 是输出预算，请按需要写（如 `32768`），不要写成接近 `context_window`** —— agent 的预压缩条件是「估算 + `max_tokens` > 窗口 × 0.98」，写得太大会让每一轮都先压缩一次。
 
 ### 覆盖优先级
 
@@ -727,7 +729,8 @@ neo/
     │   ├── shell.ts        # !cmd，与工具审批共用 policy.ts
     │   ├── sessions.ts
     │   └── version.ts      # 只读 package.json，不再手写第二份版本号
-    ├── llm.ts              # OpenAI 兼容客户端（SSE 流式 + tool_calls 拼接）
+    ├── llm.ts              # 客户端：协议选择/回退、OpenAI SSE 流式、max_tokens 上限学习
+    ├── anthropicWire.ts    # Anthropic Messages 转换层（消息/工具/SSE/usage/thinking 块）
     ├── config.ts           # provider 解析、档位路由、降级、旧格式迁移
     ├── system-prompt.ts    # 系统提示词与 /init 记忆文件
     ├── session.ts          # 会话持久化（~/.neo/sessions）

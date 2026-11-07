@@ -1,8 +1,14 @@
 node_modules/
 settings.json
+# settings 的备份/变体（含密钥，同 settings.json 一样不得入库）；模板 settings.example.json 不受影响
+settings.json.bak*
+settings.*.bak
+settings.local.json
 *.log
 .DS_Store
 .neo-session/
+# Claude Code 本地配置/会话
+.claude/
 
 # 技能：全局技能库在 home 目录下，本就不在任何 git 仓库里。
 # 这里只声明不提交全局库；项目 skills/<name> 软链由使用者自行 ignore
