@@ -380,7 +380,7 @@ export async function handleCommand(line: string, ctx: CommandContext): Promise<
           const tag = usable ? "" : c.warn(" [未接入]");
           ui.line(
             `${on ? c.accent("●") : c.dim("○")} ${on ? c.bright(x.name) : c.muted(x.name)} ` +
-              `${c.dim(x.type)} ${c.dim("→")} ${c.muted(x.baseUrl)}${tag}`,
+              `${c.dim((x.apiTypes ?? [x.type]).join("+"))} ${c.dim("→")} ${c.muted(x.baseUrl)}${tag}`,
           );
           if (on) {
             for (const tier of MODEL_TIERS) {

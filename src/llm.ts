@@ -1,13 +1,28 @@
 /**
- * OpenAI 兼容 LLM 客户端。
+ * LLM 客户端：OpenAI 兼容 /chat/completions 与 Anthropic Messages /v1/messages 两种协议。
+ * 内部消息模型保持 OpenAI 形态，Anthropic 的转换在 anthropicWire.ts。
  *
- * 针对本项目实测到的服务端特性做了三点适配：
+ * 以下三点是 OpenAI 路径针对本项目实测服务端特性做的适配：
+ *
  *  1. 推理模型会额外返回 reasoning_content，与 content 分开流式下发；
  *     两者都要累积，但只有 content 进对话历史，reasoning 只做展示。
  *  2. tool_calls 以增量形式下发（delta.tool_calls 带 index），需按 index 拼接。
  *  3. SSE 以空行分隔事件，末条为 data: [DONE]。
  */
-import { DEFAULT_PARALLEL_TOOL_CALLS, DEFAULT_RETRY_CONFIG, type Config, type RetryConfig } from "./config.ts";
+import {
+  DEFAULT_PARALLEL_TOOL_CALLS,
+  DEFAULT_RETRY_CONFIG,
+  providerBaseUrl,
+  type Config,
+  type ProviderType,
+  type RetryConfig,
+} from "./config.ts";
+import {
+  AnthropicStreamAccumulator,
+  buildAnthropicBody,
+  isRetryableAnthropicError,
+  parseAnthropicMessage,
+} from "./anthropicWire.ts";
 
 export type Role = "system" | "user" | "assistant" | "tool";
 
@@ -139,10 +154,105 @@ export function isParallelToolCallsRejection(err: unknown): boolean {
   return /(unknown|unsupported|not supported|unrecognized|invalid|not allowed|unexpected|不支持|未知)/.test(text);
 }
 
-function authHeaders(cfg: Config): Record<string, string> {
+/* ------------------------------------------------------------------ */
+/* 协议选择                                                            */
+/* ------------------------------------------------------------------ */
+
+export interface Endpoint {
+  proto: ProviderType;
+  baseUrl: string;
+}
+
+/**
+ * 本次请求的协议候选（已按优先级排序，首项最先尝试）。
+ *
+ * provider 声明了多个协议（api_type: ["anthropic","openai"]）时，anthropic 在前；
+ * 回退只发生在「该协议的端点不存在」（见 isEndpointAbsent），且结果会被记住。
+ *
+ * 只有 cfg.baseUrl 仍是 provider 的原始地址才展开多协议：NEO_BASE_URL 等覆盖把请求指向了
+ * 别处，原 provider 的协议/地址清单就不再适用，此时只按 cfg.providerType 走单一协议。
+ */
+export function endpointPlan(cfg: Config): Endpoint[] {
+  const single: Endpoint[] = [{ proto: cfg.providerType ?? "openai", baseUrl: cfg.baseUrl }];
+  const p = cfg.providers?.find((x) => x.name === cfg.providerName);
+  if (!p?.apiTypes || p.apiTypes.length === 0) return single;
+  if (providerBaseUrl(p, p.type) !== cfg.baseUrl) return single;
+  return p.apiTypes.map((proto) => ({ proto, baseUrl: providerBaseUrl(p, proto) }));
+}
+
+/** 已确认可用的协议（key = provider|baseUrl）。同一 provider 后续请求直接走它，不再反复试错。 */
+const workingProto = new Map<string, ProviderType>();
+
+function planKey(cfg: Config): string {
+  return `${cfg.providerName}|${cfg.baseUrl}`;
+}
+
+/** 测试用：清空协议回退记忆。 */
+export function resetEndpointMemo(): void {
+  workingProto.clear();
+}
+
+/** 把已记住的可用协议提到队首。 */
+function orderedPlan(cfg: Config): Endpoint[] {
+  const plan = endpointPlan(cfg);
+  const known = workingProto.get(planKey(cfg));
+  if (!known) return plan;
+  const hit = plan.find((e) => e.proto === known);
+  return hit ? [hit, ...plan.filter((e) => e !== hit)] : plan;
+}
+
+/**
+ * 服务端是否根本没有这个协议的端点（404/405/501）。
+ * 只有这类错误才触发协议回退；鉴权失败、参数错误、限流、5xx 换协议都没有意义。
+ */
+export function isEndpointAbsent(err: unknown): boolean {
+  if (!(err instanceof LLMError)) return false;
+  return err.status === 404 || err.status === 405 || err.status === 501;
+}
+
+/** 拼 Anthropic 端点：base 以 /v1 结尾时不再重复。 */
+function anthropicUrl(baseUrl: string, path: string): string {
+  const base = baseUrl.replace(/\/+$/, "");
+  return /\/v1$/.test(base) ? `${base}${path}` : `${base}/v1${path}`;
+}
+
+function endpointUrl(ep: Endpoint, kind: "chat" | "models"): string {
+  if (ep.proto === "anthropic") return anthropicUrl(ep.baseUrl, kind === "chat" ? "/messages" : "/models");
+  return `${ep.baseUrl}${kind === "chat" ? "/chat/completions" : "/models"}`;
+}
+
+function protoHeaders(cfg: Config, proto: ProviderType): Record<string, string> {
   const h: Record<string, string> = { "Content-Type": "application/json" };
-  if (cfg.apiKey) h.Authorization = `Bearer ${cfg.apiKey}`;
+  if (proto === "anthropic") {
+    h["anthropic-version"] = "2023-06-01";
+    // 官方端点认 x-api-key，部分 Anthropic 兼容网关只认 Bearer：两个都带，互不冲突。
+    if (cfg.apiKey) {
+      h["x-api-key"] = cfg.apiKey;
+      h.Authorization = `Bearer ${cfg.apiKey}`;
+    }
+  } else if (cfg.apiKey) {
+    h.Authorization = `Bearer ${cfg.apiKey}`;
+  }
   return h;
+}
+
+/** 单一协议的请求体。 */
+function bodyFor(proto: ProviderType, cfg: Config, messages: Message[], tools: ToolSpec[], stream: boolean) {
+  if (proto === "anthropic") {
+    return buildAnthropicBody(
+      {
+        model: cfg.model,
+        maxTokens: cfg.maxTokens,
+        temperature: cfg.temperature,
+        thinking: cfg.thinking,
+        parallel: (cfg.parallelToolCalls ?? DEFAULT_PARALLEL_TOOL_CALLS) !== "off",
+      },
+      messages,
+      tools,
+      stream,
+    );
+  }
+  return buildBody(cfg, messages, tools, stream);
 }
 
 async function describeError(res: Response): Promise<LLMError> {
@@ -168,12 +278,39 @@ export async function chat(
   messages: Message[],
   tools: ToolSpec[] = [],
 ): Promise<StreamResult> {
-  const res = await fetch(`${cfg.baseUrl}/chat/completions`, {
+  const plan = orderedPlan(cfg);
+  let lastErr: unknown;
+  for (let i = 0; i < plan.length; i++) {
+    const ep = plan[i]!;
+    try {
+      const r = await chatOnce(cfg, ep, messages, tools);
+      if (plan.length > 1) workingProto.set(planKey(cfg), ep.proto);
+      return r;
+    } catch (e) {
+      lastErr = e;
+      if (i < plan.length - 1 && isEndpointAbsent(e)) continue;
+      throw e;
+    }
+  }
+  throw lastErr;
+}
+
+async function chatOnce(
+  cfg: Config,
+  ep: Endpoint,
+  messages: Message[],
+  tools: ToolSpec[],
+): Promise<StreamResult> {
+  const res = await fetch(endpointUrl(ep, "chat"), {
     method: "POST",
-    headers: authHeaders(cfg),
-    body: JSON.stringify(buildBody(cfg, messages, tools, false)),
+    headers: protoHeaders(cfg, ep.proto),
+    body: JSON.stringify(bodyFor(ep.proto, cfg, messages, tools, false)),
   });
   if (!res.ok) throw await describeError(res);
+
+  if (ep.proto === "anthropic") {
+    return parseAnthropicMessage((await res.json()) as Record<string, unknown>);
+  }
 
   const json = (await res.json()) as {
     choices?: Array<{
@@ -253,16 +390,31 @@ export async function chatStream(
    * 网关能力是运行时事实，混在一起会让「为什么没并行」变得无法解释。
    */
   let downgraded = false;
+  /** 协议候选与当前下标：端点不存在时换下一个协议（不占重试预算）。 */
+  const plan = orderedPlan(cfg);
+  let planIdx = 0;
   for (;;) {
     attempt += 1;
+    const ep = plan[planIdx]!;
     try {
-      return await streamOnce(cfg, messages, tools, handlers, signal, policy, downgraded);
+      const r = await streamOnce(cfg, ep, messages, tools, handlers, signal, policy, downgraded);
+      if (plan.length > 1) workingProto.set(planKey(cfg), ep.proto);
+      return r;
     } catch (e) {
       if (signal?.aborted) throw abortError();
       const err = e instanceof LLMError ? e : new LLMError((e as Error)?.message ?? String(e));
+      if (planIdx < plan.length - 1 && isEndpointAbsent(err)) {
+        const next = plan[planIdx + 1]!;
+        handlers.onNotice?.(
+          `${ep.proto} 端点不可用（HTTP ${err.status}），改用 ${next.proto} 协议重发。`,
+        );
+        planIdx += 1;
+        attempt -= 1;
+        continue;
+      }
       // 网关不认 parallel_tool_calls：不占用重试预算，直接降级重发一次。
       // 必须放在 canRetry 判定之前 —— 4xx 本来不重试，否则这里会直接抛给主循环。
-      if (!downgraded && isParallelToolCallsRejection(err)) {
+      if (!downgraded && ep.proto === "openai" && isParallelToolCallsRejection(err)) {
         downgraded = true;
         handlers.onNotice?.("网关不支持 parallel_tool_calls，本次请求已降级为串行（false）重发。");
         continue;
@@ -345,6 +497,7 @@ function partialInterrupt(e: Error, emittedChars: number): LLMError {
  */
 async function streamOnce(
   cfg: Config,
+  ep: Endpoint,
   messages: Message[],
   tools: ToolSpec[],
   handlers: StreamHandlers,
@@ -374,11 +527,11 @@ async function streamOnce(
     }, policy.streamIdleTimeoutMs);
   };
   try {
-    const res = await fetch(`${cfg.baseUrl}/chat/completions`, {
+    const res = await fetch(endpointUrl(ep, "chat"), {
       method: "POST",
-      headers: authHeaders(cfg),
+      headers: protoHeaders(cfg, ep.proto),
       body: JSON.stringify(
-        buildBody(forceSerial ? { ...cfg, parallelToolCalls: "off" } : cfg, messages, tools, true),
+        bodyFor(ep.proto, forceSerial ? { ...cfg, parallelToolCalls: "off" } : cfg, messages, tools, true),
       ),
       signal: ctrl.signal,
     });
@@ -396,6 +549,44 @@ async function streamOnce(
     armIdle();
     const decoder = new TextDecoder();
     let buffer = "";
+
+    if (ep.proto === "anthropic") {
+      const acc = new AnthropicStreamAccumulator(handlers);
+      for (;;) {
+        const { done, value } = await streamReader.read();
+        if (done) break;
+        armIdle();
+        buffer += decoder.decode(value, { stream: true });
+        let sep = buffer.search(/\r?\n\r?\n/);
+        while (sep !== -1) {
+          const rawEvent = buffer.slice(0, sep);
+          buffer = buffer.slice(sep + (buffer[sep] === "\r" ? 4 : 2));
+          sep = buffer.search(/\r?\n\r?\n/);
+          for (const line of rawEvent.split(/\r?\n/)) {
+            const trimmed = line.trim();
+            if (!trimmed.startsWith("data:")) continue;
+            const data = trimmed.slice(5).trim();
+            if (!data) continue;
+            try {
+              acc.feed(JSON.parse(data) as Record<string, unknown>);
+            } catch {
+              // 忽略无法解析的 keep-alive 片段
+            }
+            emittedChars = acc.emitted;
+          }
+        }
+      }
+      if (acc.error) {
+        const err = new LLMError(acc.error.message);
+        err.retryable = isRetryableAnthropicError(acc.error.type);
+        throw err;
+      }
+      // message_stop 或 stop_reason 至少要有一个，否则是连接被中途掐断（与 OpenAI 路径同口径）。
+      if (!acc.sawStop && acc.finishReason === null) {
+        throw new LLMError("流式连接提前结束（未收到 message_stop 或 stop_reason）");
+      }
+      return acc.result();
+    }
 
     let content = "";
     let reasoning = "";
@@ -551,11 +742,35 @@ async function streamOnce(
 /* 辅助                                                                */
 /* ------------------------------------------------------------------ */
 
+/**
+ * `/models` 请求候选（按协议优先级）：url + 头。探测与 listModels 共用，
+ * 保证 Anthropic 端点用 /v1/models + x-api-key，而不是拿 Bearer 去撞 OpenAI 路径。
+ */
+export function modelsRequests(cfg: Config): Array<{ proto: ProviderType; url: string; headers: Record<string, string> }> {
+  return orderedPlan(cfg).map((ep) => ({
+    proto: ep.proto,
+    url: endpointUrl(ep, "models"),
+    headers: protoHeaders(cfg, ep.proto),
+  }));
+}
+
 export async function listModels(cfg: Config): Promise<string[]> {
-  const res = await fetch(`${cfg.baseUrl}/models`, { headers: authHeaders(cfg) });
-  if (!res.ok) throw await describeError(res);
-  const json = (await res.json()) as { data?: Array<{ id?: string }> };
-  return (json.data ?? []).map((m) => m.id ?? "").filter(Boolean);
+  const reqs = modelsRequests(cfg);
+  let lastErr: unknown;
+  for (let i = 0; i < reqs.length; i++) {
+    const r = reqs[i]!;
+    try {
+      const res = await fetch(r.url, { headers: r.headers });
+      if (!res.ok) throw await describeError(res);
+      const json = (await res.json()) as { data?: Array<{ id?: string }> };
+      return (json.data ?? []).map((m) => m.id ?? "").filter(Boolean);
+    } catch (e) {
+      lastErr = e;
+      if (i < reqs.length - 1 && isEndpointAbsent(e)) continue;
+      throw e;
+    }
+  }
+  throw lastErr;
 }
 
 /** 粗略 token 估算：ASCII 约 4 字符/token，CJK 约 1.5 字符/token。 */

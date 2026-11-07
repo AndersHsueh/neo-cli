@@ -13,6 +13,7 @@
 import { arch, homedir, hostname, platform } from "node:os";
 import { join } from "node:path";
 import type { Config } from "../config.ts";
+import { modelsRequests } from "../llm.ts";
 import type { CapabilityFlag, ModelContextInfo } from "./types.ts";
 import { resolveContextWindow, type ResolvedWindow } from "../contextWindow.ts";
 import {
@@ -254,24 +255,28 @@ export function modelsProbeTimeoutMs(cfg: Config): number {
 }
 
 async function fetchModelEntry(cfg: Config): Promise<Record<string, unknown> | null> {
-  const url = `${cfg.baseUrl.replace(/\/$/, "")}/models`;
-  try {
-    const headers: Record<string, string> = {};
-    if (cfg.apiKey) headers.Authorization = `Bearer ${cfg.apiKey}`;
-    const res = await fetch(url, { headers, signal: AbortSignal.timeout(modelsProbeTimeoutMs(cfg)) });
-    if (!res.ok) return null;
-    const json = (await res.json()) as { data?: unknown };
-    const list = Array.isArray(json.data) ? json.data : [];
-    for (const raw of list) {
-      if (typeof raw !== "object" || raw === null) continue;
-      const entry = raw as Record<string, unknown>;
-      if (entry["id"] !== cfg.model) continue;
-      return entry;
+  // 候选按协议优先级；端点不存在（404/405）才换下一个，其余失败直接放弃（探测不能拖累会话）。
+  for (const r of modelsRequests(cfg)) {
+    try {
+      const headers = { ...r.headers };
+      delete headers["Content-Type"];
+      const res = await fetch(r.url, { headers, signal: AbortSignal.timeout(modelsProbeTimeoutMs(cfg)) });
+      if (res.status === 404 || res.status === 405 || res.status === 501) continue;
+      if (!res.ok) return null;
+      const json = (await res.json()) as { data?: unknown };
+      const list = Array.isArray(json.data) ? json.data : [];
+      for (const raw of list) {
+        if (typeof raw !== "object" || raw === null) continue;
+        const entry = raw as Record<string, unknown>;
+        if (entry["id"] !== cfg.model) continue;
+        return entry;
+      }
+      return null;
+    } catch {
+      return null;
     }
-    return null;
-  } catch {
-    return null;
   }
+  return null;
 }
 
 /**
@@ -288,7 +293,7 @@ export async function detectModelCapabilitiesFromModelsApi(
     contextWindow: windowFromModelEntry(entry),
     maxOutputTokens: outputFromModelEntry(entry),
     ...capabilityFromModelEntry(entry),
-    evidence: `${cfg.baseUrl.replace(/\/$/, "")}/models`,
+    evidence: modelsRequests(cfg)[0]?.url ?? `${cfg.baseUrl.replace(/\/$/, "")}/models`,
   };
 }
 

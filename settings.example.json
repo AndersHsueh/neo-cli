@@ -8,7 +8,8 @@
   "providers": [
     {
       "provider_name": "example",
-      "provider_type": "openai",
+      "api_type": ["openai"],
+      "api_type_note": "api_type 可填 \"openai\"、\"anthropic\"，或两者的数组。两种协议都可用时优先 anthropic；只有「anthropic 端点不存在（404/405）」才回退 openai，鉴权/参数错误不回退。旧字段 provider_type 仍然识别。",
       "base_url": "https://your-gateway.example.com/v1",
       "api_key": "sk-REPLACE_ME",
 
@@ -26,6 +27,22 @@
       "vision": false,
       "tools": true,
       "reasoning": false
+    },
+    {
+      "provider_name": "example-dual",
+      "api_type": ["anthropic", "openai"],
+      "api_type_note": "同一网关同时提供两种协议的示例（MiniMax 即是）：anthropic_base_url / openai_base_url 各写各的端点，没写的回落到 base_url。两种都能通时优先 anthropic。anthropic 的 base_url 写到 /anthropic 即可，neo 自动补 /v1/messages。",
+      "anthropic_base_url": "https://your-gateway.example.com/anthropic",
+      "openai_base_url": "https://your-gateway.example.com/v1",
+      "api_key": "sk-REPLACE_ME",
+
+      "default_model_name": "your-model-id",
+      "deep_reasoning_model_name": "your-model-id",
+      "balanced_model_name": "your-model-id",
+      "fast_model_name": "your-model-id",
+
+      "max_tokens": 8192,
+      "context_window": 200000
     }
   ],
 

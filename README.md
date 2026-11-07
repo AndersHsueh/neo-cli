@@ -399,8 +399,9 @@ provider 里的 `*_model_name` 表示「**这个 provider** 在各档位上用�
 | 字段 | 说明 |
 | --- | --- |
 | `provider_name` | provider 标识，`default_provider` 引用它 |
-| `provider_type` | 协议类型。目前仅实现 `openai` |
-| `base_url` | OpenAI 兼容端点，形如 `https://host/v1` |
+| `api_type` | 协议：`"openai"`、`"anthropic"`，或两者的数组（见下）。旧字段 `provider_type` 仍识别 |
+| `base_url` | 端点。openai 形如 `https://host/v1`；anthropic 写到 `https://host/anthropic` 即可（自动补 `/v1/messages`） |
+| `anthropic_base_url` `openai_base_url` | 双协议时各自的端点，未写的回落到 `base_url` |
 | `api_key` | 密钥 |
 | `default_model_name` | 默认档位模型 |
 | `deep_reasoning_model_name` | 深度推理档位 |
@@ -410,11 +411,24 @@ provider 里的 `*_model_name` 表示「**这个 provider** 在各档位上用�
 
 四个模型档位只需填 `default_model_name`，其余三档会回落到它的值。
 
-### 关于 `provider_type`
+### 关于 `api_type`
 
-目前只实现了 `openai`。填 `anthropic` 不会让 neo 死 —— 该 provider 会显示为 `[未接入]`，切到它时明确报错且**不污染当前配置**，启动时若 `default_provider` 指向它则退出码 2。
+两种协议都已接入：`openai`（`/chat/completions`，Bearer 鉴权）与 `anthropic`（`/v1/messages`，`x-api-key` + `anthropic-version`；同时带 Bearer 以兼容只认它的网关）。内部消息模型仍是 OpenAI 形态，Anthropic 只在请求边界转换（`src/anthropicWire.ts`），所以会话历史、压缩、子代理在两种协议间通用。
 
-这样处理是因为两者的不兼容点有两处硬伤：鉴权头（`x-api-key` vs `Authorization: Bearer`）和响应结构（content 块数组 vs 字符串）。走错协议会得到极难排查的错误。已实测 MiniMax 的 Anthropic 端点可用且支持 `tool_use`，接入时需要处理 `usage` 字段名差异（`input_tokens` vs `prompt_tokens`）。
+同一网关两种协议都能用时，两个都填：
+
+```json
+{ "provider_name": "minimax", "api_type": ["anthropic", "openai"],
+  "anthropic_base_url": "https://api.minimaxi.com/anthropic",
+  "openai_base_url": "https://api.minimaxi.com/v1", "api_key": "…" }
+```
+
+- **优先 anthropic**，与数组里的书写顺序无关；
+- 只有「anthropic 端点不存在（HTTP 404/405/501）」才回退 openai，回退不占重试预算，并记住结果（本进程内后续请求直接走可用的那个）；
+- 鉴权失败（401/403）、参数错误（400）、限流、5xx **不回退** —— 换协议只会掩盖配置错误；
+- 设了 `NEO_BASE_URL` 覆盖地址时，只按 `provider` 的首选协议走单一协议。
+
+Anthropic 路径的差异处理：`system` 提到顶层字段，连续 `tool` 消息合并成同一条 user 的 `tool_result` 块，`parallel_tool_calls` 换成 `disable_parallel_tool_use`，`stop_reason` 映射回 `finish_reason`，`usage` 的输入 token 含缓存读写。注意 `max_tokens` 在 Anthropic 协议里是必填且不能超过模型上限（MiniMax 为 196608）。
 
 ### 覆盖优先级
 

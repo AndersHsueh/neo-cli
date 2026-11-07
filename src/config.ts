@@ -31,16 +31,19 @@ import {
 } from "./mailbox/types.ts";
 
 /**
- * 已实现的 provider 协议类型。
+ * provider 的 API 协议。
  *
- * anthropic 尚未接入请求层。配置里可以先写上（占位、规划用），
- * 但一旦真被选中就会明确报错 —— 不能静默按 openai 协议发请求，
- * 两者鉴权头与响应结构都不兼容。
+ * openai = OpenAI 兼容 /chat/completions；anthropic = Anthropic Messages /v1/messages。
+ * 两者鉴权头与响应结构都不兼容，必须按声明的协议发请求，不能静默互相替代
+ * （声明了多个协议时的回退见 llm.ts 的 endpointPlan）。
  */
 export type ProviderType = "openai" | "anthropic";
 
-/** 真正实现了请求层适配的类型。其余为「已声明但未接入」。 */
-export const IMPLEMENTED_PROVIDER_TYPES: readonly ProviderType[] = ["openai"];
+/** 真正实现了请求层适配的类型。其余为「已声明但未接入」（未来新增协议时用）。 */
+export const IMPLEMENTED_PROVIDER_TYPES: readonly ProviderType[] = ["openai", "anthropic"];
+
+/** 协议优先级：两种都能通时优先 anthropic。 */
+export const API_TYPE_PREFERENCE: readonly ProviderType[] = ["anthropic", "openai"];
 
 export function isImplemented(type: ProviderType): boolean {
   return IMPLEMENTED_PROVIDER_TYPES.includes(type);
@@ -113,8 +116,17 @@ export function tierChoiceLabel(tier: ModelTier | string): string {
 
 export interface ProviderConfig {
   name: string;
+  /** 首选协议（= apiTypes[0]）。 */
   type: ProviderType;
+  /**
+   * 声明的全部协议，已按 API_TYPE_PREFERENCE 排序（anthropic 在前）。
+   * 缺省 = [type]。多于一个时，请求层先用首选协议，遇到「该协议端点不存在」再回退下一个。
+   */
+  apiTypes?: ProviderType[];
+  /** 首选协议对应的 base_url。 */
   baseUrl: string;
+  /** 各协议各自的 base_url（未单独覆盖的回落到 base_url）。 */
+  baseUrls?: Partial<Record<ProviderType, string>>;
   apiKey: string;
   /** 四个档位各自对应的模型 ID。 */
   models: Record<ModelTier, string>;
@@ -666,6 +678,36 @@ export function normalizeBaseUrl(u: string): string {
 /* provider 解析                                                       */
 /* ------------------------------------------------------------------ */
 
+/**
+ * 解析 provider 声明的协议：`api_type`（字符串或数组）优先，缺省回落旧字段 `provider_type`。
+ * 结果去重并按 API_TYPE_PREFERENCE 排序 —— 声明了两种就是「两种都可用，优先 anthropic」，
+ * 与数组里写的先后无关。
+ */
+function parseApiTypes(apiType: unknown, providerType: unknown, where: string): ProviderType[] {
+  const rawList: unknown[] =
+    apiType === undefined || apiType === null ? [] : Array.isArray(apiType) ? apiType : [apiType];
+  if (rawList.length === 0) {
+    const legacy = str(providerType, "");
+    if (!legacy) throw new ConfigError(`${where} 缺少 api_type（可填 "anthropic"、"openai" 或两者的数组）。`);
+    rawList.push(legacy);
+  }
+  const seen = new Set<ProviderType>();
+  for (const v of rawList) {
+    if (v !== "openai" && v !== "anthropic") {
+      throw new ConfigError(
+        `${where} 的 api_type 含 ${JSON.stringify(v)}，不是已知协议。可用：openai、anthropic。`,
+      );
+    }
+    seen.add(v);
+  }
+  return API_TYPE_PREFERENCE.filter((t) => seen.has(t));
+}
+
+/** 某 provider 在指定协议下的 base_url。 */
+export function providerBaseUrl(p: ProviderConfig, type: ProviderType): string {
+  return p.baseUrls?.[type] ?? p.baseUrl;
+}
+
 /** 解析 providers 数组。字段缺失时抛出可定位的错误，而不是静默用空值。 */
 function parseProviders(raw: unknown): ProviderConfig[] {
   if (!Array.isArray(raw)) {
@@ -685,20 +727,22 @@ function parseProviders(raw: unknown): ProviderConfig[] {
     const name = str(p["provider_name"], "");
     if (!name) throw new ConfigError(`${where} 缺少 provider_name。`);
 
-    const typeRaw = str(p["provider_type"], "");
-    if (!typeRaw) throw new ConfigError(`${where}（${name}）缺少 provider_type。`);
-    const type = typeRaw as ProviderType;
-    if (type !== "openai" && type !== "anthropic") {
-      throw new ConfigError(
-        `${where}（${name}）的 provider_type = "${typeRaw}" 不是已知协议。` +
-          `可用：openai、anthropic。`,
-      );
-    }
+    const apiTypes = parseApiTypes(p["api_type"], p["provider_type"], `${where}（${name}）`);
+    const type = apiTypes[0]!;
 
-    const baseUrl = normalizeBaseUrl(str(p["base_url"], str(p["OpenAI"], "")));
-    if (!baseUrl) {
-      throw new ConfigError(`${where}（${name}）缺少 base_url。`);
+    const sharedUrl = normalizeBaseUrl(str(p["base_url"], str(p["OpenAI"], "")));
+    const baseUrls: Partial<Record<ProviderType, string>> = {};
+    for (const t of apiTypes) {
+      const own = normalizeBaseUrl(str(p[`${t}_base_url`], ""));
+      const url = own || sharedUrl;
+      if (!url) {
+        throw new ConfigError(
+          `${where}（${name}）缺少 base_url（或 ${t}_base_url）：api_type 含 ${t}，需要它的端点地址。`,
+        );
+      }
+      baseUrls[t] = url;
     }
+    const baseUrl = baseUrls[type]!;
 
     const apiKey = str(p["api_key"], str(p["api-key"], ""));
 
@@ -719,7 +763,9 @@ function parseProviders(raw: unknown): ProviderConfig[] {
     return {
       name,
       type,
+      apiTypes,
       baseUrl,
+      baseUrls,
       apiKey,
       models,
       maxTokens: numOrNull(p["max_tokens"]),

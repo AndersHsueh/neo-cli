@@ -241,11 +241,11 @@ describe("task 档位决策", () => {  test("主代理声明的档位优先", ()
 
   test("声明的档位不可用 → 沿用主代理档位，不报错", () => {
     const cfg = makeCfg("default");
-    // fast 路由指向未接入的协议（anthropic）→ tierAvailable 为 false
+    // fast 路由指向未接入的协议 → tierAvailable 为 false（anthropic 已接入，这里用一个假协议名）
     cfg.routes["fast"] = { provider: "ghost", model: null, fallbackAllowed: true };
     cfg.providers.push({
       name: "ghost",
-      type: "anthropic",
+      type: "future-proto" as never,
       baseUrl: "x",
       apiKey: "k",
       models: cfg.providers[0]!.models,
