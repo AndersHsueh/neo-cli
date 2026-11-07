@@ -15,6 +15,7 @@ ${c.bold("用法")}
   bun run src/index.ts -P <provider>   指定 provider
   bun run src/index.ts -t <tier>       指定模型档位
   bun run src/index.ts -C <dir>        指定工作目录
+  bun run src/index.ts -w <name>       在托管 worktree 里开会话（.neo/worktrees/<name>）
   bun run src/index.ts --resume        恢复上一次会话
   bun run src/index.ts --sessions      列出会话
 
@@ -25,6 +26,9 @@ ${c.bold("选项")}
   -P, --provider <name> 切换 provider
   -t, --tier <name>     模型档位：${MODEL_TIERS.join(" / ")}
   -C, --cwd <dir>       切换工作目录
+  -w, --worktree <name> 在托管 worktree 里开会话：<仓库>/.neo/worktrees/<name>，
+                        分支 neo/<name>（已存在则复用，不覆盖）。非 git 目录报错退出。
+                        隔离的是文件，不是权限；建议把 .neo/ 加入 .gitignore
   -y, --yes             自动批准所有操作（慎用）
       --edit            自动批准文件写入，shell 仍需批准
       --plan            只读闸门：禁止一切写操作（≠ 交互规划工作流，后者在会话里用 /plan）
@@ -54,6 +58,11 @@ ${c.bold("交互命令")}
                    这一步），与 /plan 不是一回事
   /review [基线]   对照 git 改动做只读审查：默认审未提交改动（HEAD + 未跟踪名单），
                    可写分支名/tag/commit 作基线（如 /review main）；默认不改文件
+  /worktree [子命令] 托管 git worktree（创建走命令行 --worktree <name>）
+                   /worktree list          列出 neo 托管的 worktree（名/分支/脏/当前）
+                   /worktree remove <name> 清理；有未提交改动或未跟踪文件时拒绝，
+                                           加 --force 需再确认一次；不能删当前所在
+                   只碰 .neo/worktrees/ 下由 neo 创建的，不动你自己的其它 worktree
   /env [refresh]   环境快照（平台/shell/资源/工具链）；refresh 重采并写 wiki 页
   /peers [name]    跨会话状态：列出存活会话 / 查单个
   /inbox           查看 held 消息；/inbox release <id> 放行一条

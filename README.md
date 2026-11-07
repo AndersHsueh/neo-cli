@@ -244,6 +244,7 @@ provider 里的 `*_model_name` 表示「**这个 provider** 在各档位上用�
 | `-t, --tier <name>` | 模型档位：`fast` / `balanced` / `default` / `deep_reasoning` |
 | `--auto <name>` | 分类器：`off` / `rule`（默认）/ `llm` |
 | `-C, --cwd <dir>` | 切换工作目录 |
+| `-w, --worktree <name>` | 在托管 worktree 里开会话：`<仓库>/.neo/worktrees/<name>`，分支 `neo/<name>`（已存在则复用） |
 | `-y, --yes` | 自动批准全部操作 |
 | `--edit` | 自动批准写文件，执行命令仍需批准 |
 | `--plan` | 只读，禁止一切写操作 |
@@ -265,6 +266,8 @@ provider 里的 `*_model_name` 表示「**这个 provider** 在各档位上用�
 /mcp       MCP server 状态（连接/工具数/错误）
 /mode      权限模式        /init      生成 AGENTS.md
 /peers [name]  跨会话状态：列出存活会话 / 查单个
+/worktree list          列出 neo 托管的 worktree（名/路径/分支/脏/当前）
+/worktree remove <name> 清理托管 worktree（脏则拒绝；--force 需再确认一次）
 /inbox     查看 held 消息；/inbox release <id> 放行一条
 /rename <name> 设置本会话名字（跨会话寻址；撞名自动加后缀）
 /history   历史统计        /save      导出会话
@@ -429,6 +432,34 @@ neo 支持多个**前台交互式**会话互相发纯文本消息，用于「一
 - **配置**（settings.json 顶层，snake_case）：`cross_session_inbound` / `cross_session_auto_turn_limit` / `cross_session_heartbeat_ms` / `cross_session_dead_after_ms` / `cross_session_progress_timeout_ms` / `cross_session_watchdog_interval_s`。
 - **边界**：不做 supervisor / 后台会话 / attach / agent view / 跨机（v0.3）；投递 at-most-once，进程崩溃可能丢一条消息（接受）；多跳环由每会话自动 turn 上限 20 + 限流 + 去重兜底。
 - **规格**：`docs/cross-session-messaging-prd[done].md`。
+
+## 托管 worktree：整会话进隔离检出
+
+`--worktree <name>` 把一个**完整会话**放进独立的 git 检出里跑，用于并行开发时互不踩工作区。
+
+```bash
+neo --worktree feat-a        # 在 .neo/worktrees/feat-a 里开会话（分支 neo/feat-a）
+neo -w fix-9 -p "跑一下测试"  # 与 -p / --resume / -C 等入口兼容
+```
+
+- **默认路径**：`<仓库根>/.neo/worktrees/<name>`；**分支**：`neo/<name>`。同名已存在则**复用**（不重建、不覆盖已有改动）；分支已存在但没登记则挂上去，不丢提交。
+- **建议加 `.gitignore`**：`.neo/worktrees/` 每个都是独立检出，绝不能进版本控制。本仓库已在 `.gitignore` 里加了这一条，你自己的项目也应加上 `.neo/`。
+- **失败即退出**：非 git 目录、名字非法（只允许 `[A-Za-z0-9._-]`，不以 `.`/`-` 开头）、路径被非托管目录占用、`git worktree add` 失败 → 可读错误 + 非 0 退出，且**不留半成品目录/分支**（失败会回滚）。
+- **清理**：`/worktree list` 列出 neo 托管的那几个（名/路径/分支/是否脏/是否当前）；`/worktree remove <name>` 删除并 `prune`。
+  - **有未提交改动或未跟踪文件时拒绝删除**；确认要丢弃才加 `--force`，且仍会弹一次确认。
+  - **不能删除当前会话所在的 worktree**（删掉自己脚下的目录，进程会立刻失去 cwd）；cwd 在该 worktree 的**任意深度子目录**里也算「当前」，`--force` 同样不放行。
+  - 被 `.gitignore` 忽略的文件不计入「脏」，干净删除时它们会随目录一起消失 —— 与 `git worktree remove` 语义一致。
+  - 只认 `.neo/worktrees/<name>` + 分支 `neo/<name>` 双条件 —— 你自己的其它 worktree 不列、不删。
+- **与 `/peers` 的推荐用法**：worktree 管**文件隔离**，`/peers` 管**会话协作**，两者正交、正好互补。
+  ```bash
+  # 终端 1：编排者，留在主仓库
+  neo --name lead
+  # 终端 2、3：各占一份检出并行干活
+  neo --name worker-a --worktree feat-a
+  neo --name worker-b --worktree feat-b
+  ```
+  在 `lead` 里 `send_message("worker-a", "改一下 X")`，两个 worker 各在自己的 worktree 里改文件，不会互相覆盖；`/peers` 看谁在忙、谁卡住了。收工后回主仓库 `/worktree list` 看哪份还脏，提交完再 `remove`。
+- **边界**：worktree 是**文件级隔离**，**不是**安全沙箱、不是权限边界 —— 权限仍由 `/mode` 与审批闸门负责。本片不含子代理自动 isolation、`.worktreeinclude`、allow/deny 设计。
 
 ## 设计要点
 

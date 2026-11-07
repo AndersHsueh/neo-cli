@@ -30,6 +30,7 @@ import { helpText } from "./cli/help.ts";
 import { persist, printSessions, replayTranscript, showStats } from "./cli/sessions.ts";
 import { runShell } from "./cli/shell.ts";
 import { VERSION } from "./cli/version.ts";
+import { detectRepo, ensureWorktree } from "./worktree.ts";
 import { HotkeyRouter, doubleStrike } from "./hotkeys.ts";
 import { PasteCollector, shouldFold, assemblePaste } from "./paste.ts";
 import { makeTextAttachment, makeImageAttachment, bindAttachments, resolveLine, type Attachment, type QueuedLine } from "./attachments.ts";
@@ -126,6 +127,8 @@ interface Args {
   version: boolean;
   /** -p 输出格式：text（默认）| json（P0-6，供 CI/编排器消费）。 */
   outputFormat: "text" | "json";
+  /** --worktree <name>：在托管 worktree 里开会话（issue #9）。 */
+  worktree: string | null;
   /** 参数值非法（如 --output-format bogus）：main 直接返回 2。 */
   badArgs: boolean;
   rest: string[];
@@ -148,6 +151,7 @@ function parseArgs(argv: string[]): Args {
     help: false,
     version: false,
     outputFormat: "text",
+    worktree: null,
     badArgs: false,
     rest: [],
   };
@@ -195,6 +199,11 @@ function parseArgs(argv: string[]): Args {
       case "-C":
       case "--cwd":
         a.cwd = argv[++i] ?? null;
+        break;
+      // issue #9：整会话进托管 worktree。-w 在 neo 里没有别的主人（-y/-c/-p/-m/-P/-t/-C 都占了）。
+      case "-w":
+      case "--worktree":
+        a.worktree = argv[++i] ?? "";
         break;
       case "-y":
       case "--yes":
@@ -258,6 +267,11 @@ async function main(): Promise<number> {
     console.error(c.err("✖ --name 需要一个名字（不能为空或以 - 开头）"));
     return 2;
   }
+  // --worktree 的取值校验放在这里：早于配置载入，也早于任何目录副作用。
+  if (args.worktree !== null && (args.worktree.trim() === "" || args.worktree.startsWith("-"))) {
+    console.error(c.err("✖ --worktree 需要一个名字（不能为空或以 - 开头）"));
+    return 2;
+  }
 
   // 参数合法性先于 --help/--version 校验。
   // 否则 `--auto bogus --version` 会打印版本后返回 0，
@@ -291,6 +305,42 @@ async function main(): Promise<number> {
   if (args.model) overrides.model = args.model;
   if (args.cwd) overrides.cwd = args.cwd;
   if (args.noReasoning) overrides.showReasoning = false;
+
+  // ---- issue #9：整会话进托管 worktree ----
+  // 必须在 loadConfig 之前把 cwd 换成 worktree 目录：配置、会话/记忆/信箱路径、
+  // 检查点、工具沙箱全部以 cfg.cwd 为根，晚一步就会有一半逻辑指着主仓库。
+  // 与 --resume 的兼容：会话仍按 id 恢复（会话文件在 ~/.neo 下，与 cwd 无关），
+  // 恢复后只提示「原目录 ≠ 本次目录」，不偷偷切回去（沿用既有裁决）。
+  let worktreeInfo: { name: string; path: string; branch: string; created: boolean; repoRoot: string } | null =
+    null;
+  if (args.worktree !== null) {
+    const name = args.worktree.trim();
+    const probeFrom = args.cwd ? resolve(process.cwd(), args.cwd) : process.cwd();
+    const repo = detectRepo(probeFrom);
+    if (!repo.ok) {
+      console.error(c.err(`✖ ${repo.message}`));
+      return 2;
+    }
+    const ensured = ensureWorktree(repo.mainRoot, name);
+    if (!ensured.ok) {
+      console.error(c.err(`✖ ${ensured.message}`));
+      return 2;
+    }
+    worktreeInfo = {
+      name,
+      path: ensured.path,
+      branch: ensured.branch,
+      created: ensured.created,
+      repoRoot: ensured.repoRoot,
+    };
+    // 显式 -C 与 --worktree 同时给：worktree 是更具体的意图，以它为准并说明。
+    if (args.cwd) {
+      console.error(
+        c.dim(`  --worktree 覆盖 -C：工作目录改为 ${ensured.path}`),
+      );
+    }
+    overrides.cwd = ensured.path;
+  }
 
   // provider 与档位要在配置载入后处理：它们决定 model 的解析方式
   let cfg: Config;
@@ -461,6 +511,20 @@ async function main(): Promise<number> {
   if (cfg.legacyFormat) {
     ui.warn("检测到旧版扁平配置（api-key / OpenAI / model_name），已自动折算为 provider \"legacy\"。");
     ui.line(c.dim("  新格式见 settings.example.json。"));
+  }
+
+  // issue #9：让用户一眼看出「这次会话在 worktree 里」，而不是在主仓库里改文件。
+  if (worktreeInfo) {
+    ui.info(
+      `${worktreeInfo.created ? "已创建" : "已复用"} worktree ${worktreeInfo.name} ` +
+        `→ ${worktreeInfo.path}（分支 ${worktreeInfo.branch}）`,
+    );
+    ui.line(
+      c.dim(
+        `  隔离的是文件，不是权限：/mode 与审批照旧。退出后可用 /worktree list 查看、` +
+          `/worktree remove ${worktreeInfo.name} 清理。`,
+      ),
+    );
   }
 
   if (args.listSessions) {

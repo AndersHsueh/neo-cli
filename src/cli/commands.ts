@@ -57,6 +57,14 @@ import {
   summarizePatch,
 } from "../review.ts";
 import {
+  detectRepo,
+  listManaged,
+  removeWorktree,
+  WORKTREE_BRANCH_PREFIX,
+  worktreeBranch,
+  worktreeRoot,
+} from "../worktree.ts";
+import {
   applyRestored,
   listSessions,
   loadSession,
@@ -1119,6 +1127,99 @@ export async function handleCommand(line: string, ctx: CommandContext): Promise<
       } finally {
         agent.mode = prevMode;
       }
+      break;
+    }
+
+    case "worktree": {
+      // issue #9：托管 worktree 的查看与清理。创建走命令行 `--worktree <name>`，
+      // 因为「会话 cwd」必须在启动时就定好 —— 中途切 cwd 会让记忆/检查点/工具沙箱
+      // 一半指着旧目录。
+      const [subRaw, ...subRest] = arg.split(/\s+/).filter(Boolean);
+      const sub = (subRaw ?? "list").toLowerCase();
+      const repo = detectRepo(cfg.cwd);
+      if (!repo.ok) {
+        ui.warn(repo.message);
+        break;
+      }
+      if (sub === "list" || sub === "ls") {
+        const items = listManaged(repo.mainRoot, {}, cfg.cwd);
+        ui.blank();
+        if (items.length === 0) {
+          ui.info(`没有 neo 托管的 worktree（目录 ${worktreeRoot(repo.mainRoot)}）。`);
+          ui.line(c.dim("  新建：neo --worktree <name>（整会话在隔离检出里跑）"));
+          break;
+        }
+        ui.line(
+          c.dim(`neo 托管的 worktree（${worktreeRoot(repo.mainRoot)}；分支前缀 ${WORKTREE_BRANCH_PREFIX}）`),
+        );
+        for (const w of items) {
+          const marks = [
+            w.current ? c.accent("← 当前") : "",
+            w.dirty ? c.warn("改动未提交") : c.dim("干净"),
+          ]
+            .filter(Boolean)
+            .join(" ");
+          ui.line(`  ${c.bright(w.name)} ${c.dim(w.branch ?? "(detached)")} ${marks}`);
+          ui.line(`    ${c.dim(w.path)}`);
+        }
+        ui.line(
+          c.dim(
+            "  只列 .neo/worktrees/ 下由 neo 创建的；你自己的其它 worktree 不在此列、也不会被这里删除。",
+          ),
+        );
+        break;
+      }
+      if (sub === "remove" || sub === "rm") {
+        const name = subRest[0] ?? "";
+        const force = subRest.slice(1).includes("--force");
+        if (!name) {
+          ui.warn("用法：/worktree remove <name> [--force]");
+          break;
+        }
+        // 关键：先按 force=false 探测，**不**把 --force 直接透传下去。
+        // 透传会让脏工作区在第一次调用就删掉，审批那一步被静默跳过 ——
+        // 而「丢弃未提交改动」恰恰是最需要人看一眼再点头的动作。
+        const probe = removeWorktree(repo.mainRoot, name, { force: false, cwd: cfg.cwd });
+        if (probe.ok) {
+          ui.success(
+            `已删除 worktree ${probe.name}（${probe.path}）${probe.pruned ? "，已 prune" : ""}`,
+          );
+          ui.line(c.dim(`  分支 ${worktreeBranch(probe.name)} 保留，方便复查或重新挂载。`));
+          break;
+        }
+        if (!probe.needsForce) {
+          // 名字不存在 / 是当前会话 / 不是托管 worktree：都不是 --force 能解决的。
+          ui.warn(probe.message);
+          break;
+        }
+        // 脏工作区。--force 只代表「用户已经表达了丢弃意图」，不代表免审批：
+        // 仍要把将被丢弃的改动摆到眼前，点一次头。
+        // 措辞分两套：无 --force 时说「拒绝删除 + 怎么强制」；有 --force 时
+        // 再说「拒绝删除」就是误导（用户已经要求删了），改成「将丢弃以下改动」。
+        if (!force) {
+          ui.warn(probe.message);
+          ui.line(c.dim(`  确认要丢弃这些改动就再执行一次：/worktree remove ${name} --force`));
+          break;
+        }
+        ui.warn(`"${name}" 有未提交改动或未跟踪文件，--force 将丢弃它们：`);
+        for (const line of probe.message.split("\n")) {
+          // 只取改动清单那几行（缩进两格的 status 行），跳过解释性文字。
+          if (/^ {2}\S/.test(line)) ui.line(c.dim(line));
+        }
+        const ok = await ui.confirm(`worktree_remove — 删除 ${name} 并丢弃其未提交改动 / 未跟踪文件`);
+        if (!ok) {
+          ui.info("已取消，未删除任何东西。");
+          break;
+        }
+        const forced = removeWorktree(repo.mainRoot, name, { force: true, cwd: cfg.cwd });
+        if (forced.ok) {
+          ui.success(`已强制删除 worktree ${forced.name}（未提交改动已丢弃）`);
+        } else {
+          ui.warn(forced.message);
+        }
+        break;
+      }
+      ui.warn(`未知子命令 /worktree ${sub}。可用：list | remove <name> [--force]`);
       break;
     }
 

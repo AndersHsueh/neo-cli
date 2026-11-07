@@ -28,6 +28,10 @@ neo-session.json
 # git worktree 工作区（每个都是独立检出，不应被追踪）
 .worktrees/
 
+# neo 托管的 git worktree（issue #9：neo --worktree <name> 默认落在这里）
+# 每个都是独立检出，绝不能进版本控制
+.neo/worktrees/
+
 # 构建产物
 dist/
 build/
