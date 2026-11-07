@@ -9,7 +9,7 @@
  *
  * 只 `import type`：llm.ts 反过来依赖本文件，运行时不能成环。
  */
-import type { Message, StreamResult, ToolCall, ToolSpec, Usage } from "./llm.ts";
+import type { Message, StreamResult, ThinkingBlock, ToolCall, ToolSpec, Usage } from "./llm.ts";
 
 type Block = Record<string, unknown>;
 
@@ -94,6 +94,8 @@ export function toAnthropicMessages(messages: Message[]): { system: string; mess
       push("user", userBlocks(m.content));
     } else if (m.role === "assistant") {
       const blocks: Block[] = [];
+      // 思考块必须排在 text / tool_use 之前，并保持原样（含签名）。
+      for (const tb of m.thinking_blocks ?? []) blocks.push({ ...tb });
       if (typeof m.content === "string" && m.content.length > 0) blocks.push({ type: "text", text: m.content });
       for (const tc of m.tool_calls ?? []) {
         blocks.push({
@@ -231,11 +233,18 @@ export function parseAnthropicMessage(json: Record<string, unknown>): StreamResu
   let content = "";
   let reasoning = "";
   const toolCalls: ToolCall[] = [];
+  const thinkingBlocks: ThinkingBlock[] = [];
   for (const b of blocks) {
     const type = b["type"];
     if (type === "text" && typeof b["text"] === "string") content += b["text"];
-    else if (type === "thinking" && typeof b["thinking"] === "string") reasoning += b["thinking"];
-    else if (type === "tool_use" && typeof b["name"] === "string") {
+    else if (type === "thinking" && typeof b["thinking"] === "string") {
+      reasoning += b["thinking"];
+      if (typeof b["signature"] === "string" && b["signature"]) {
+        thinkingBlocks.push({ type: "thinking", thinking: b["thinking"], signature: b["signature"] });
+      }
+    } else if (type === "redacted_thinking" && typeof b["data"] === "string") {
+      thinkingBlocks.push({ type: "redacted_thinking", data: b["data"] });
+    } else if (type === "tool_use" && typeof b["name"] === "string") {
       toolCalls.push({
         id: typeof b["id"] === "string" && b["id"] ? b["id"] : `call_${toolCalls.length}_${Date.now()}`,
         type: "function",
@@ -251,6 +260,7 @@ export function parseAnthropicMessage(json: Record<string, unknown>): StreamResu
     finishReason: mapStopReason(json["stop_reason"] as string | null | undefined),
     usage: typeof usage === "object" && usage !== null ? mapUsage(usage as RawUsage) : null,
     raw: json,
+    ...(thinkingBlocks.length > 0 ? { thinkingBlocks } : {}),
   };
 }
 
@@ -289,6 +299,8 @@ export class AnthropicStreamAccumulator {
   private usage: RawUsage | null = null;
   private tools = new Map<number, PartialTool>();
   private blockTypes = new Map<number, string>();
+  /** 按 content block 下标累积的思考块（流式里 thinking/signature 是分片到达的）。 */
+  private thinking = new Map<number, { thinking: string; signature: string; redacted?: string }>();
 
   constructor(private readonly h: AnthropicStreamHandlers) {}
 
@@ -325,6 +337,14 @@ export class AnthropicStreamAccumulator {
         const cb = (ev["content_block"] ?? {}) as Record<string, unknown>;
         const bt = typeof cb["type"] === "string" ? cb["type"] : "";
         this.blockTypes.set(idx, bt);
+        if (bt === "thinking") {
+          this.thinking.set(idx, {
+            thinking: typeof cb["thinking"] === "string" ? cb["thinking"] : "",
+            signature: typeof cb["signature"] === "string" ? cb["signature"] : "",
+          });
+        } else if (bt === "redacted_thinking") {
+          this.thinking.set(idx, { thinking: "", signature: "", redacted: typeof cb["data"] === "string" ? cb["data"] : "" });
+        }
         if (bt === "tool_use") {
           const input = cb["input"];
           const hasInput =
@@ -350,7 +370,12 @@ export class AnthropicStreamAccumulator {
         } else if (dt === "thinking_delta" && typeof d["thinking"] === "string" && d["thinking"].length > 0) {
           this.reasoning += d["thinking"];
           this.emitted += d["thinking"].length;
+          const tb = this.thinking.get(idx);
+          if (tb) tb.thinking += d["thinking"];
           this.h.onReasoning?.(d["thinking"]);
+        } else if (dt === "signature_delta" && typeof d["signature"] === "string") {
+          const tb = this.thinking.get(idx);
+          if (tb) tb.signature += d["signature"];
         } else if (dt === "input_json_delta" && typeof d["partial_json"] === "string") {
           const t = this.tools.get(idx);
           if (!t) return;
@@ -396,6 +421,13 @@ export class AnthropicStreamAccumulator {
         type: "function" as const,
         function: { name: t.name, arguments: t.args || "{}" },
       }));
+    const thinkingBlocks: ThinkingBlock[] = [...this.thinking.entries()]
+      .sort((a, b) => a[0] - b[0])
+      .flatMap(([, t]): ThinkingBlock[] => {
+        if (t.redacted !== undefined) return t.redacted ? [{ type: "redacted_thinking", data: t.redacted }] : [];
+        // 没有签名的思考块回带必被拒收，宁可不带。
+        return t.signature ? [{ type: "thinking", thinking: t.thinking, signature: t.signature }] : [];
+      });
     return {
       content: this.content,
       reasoning: this.reasoning,
@@ -403,6 +435,7 @@ export class AnthropicStreamAccumulator {
       finishReason: this.finishReason,
       usage: this.usage ? mapUsage(this.usage) : null,
       raw: this.lastRaw,
+      ...(thinkingBlocks.length > 0 ? { thinkingBlocks } : {}),
     };
   }
 }

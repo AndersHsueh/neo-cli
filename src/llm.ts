@@ -41,12 +41,24 @@ export interface ToolCall {
   function: { name: string; arguments: string };
 }
 
+/**
+ * Anthropic 的思考块（含签名），原样保存以便下一轮回带。
+ * 带工具调用的多轮对话里，服务端要求把完整的 assistant 内容（thinking / tool_use）原样回传，
+ * 否则思维链不连续（MiniMax 文档第 4 点明确要求）；缺了签名的 thinking 块不能自己造。
+ * 只在 Anthropic 协议路径下使用：OpenAI 路径、压缩、token 估算都忽略它。
+ */
+export type ThinkingBlock =
+  | { type: "thinking"; thinking: string; signature: string }
+  | { type: "redacted_thinking"; data: string };
+
 export interface Message {
   role: Role;
   content: string | ContentPart[] | null;
   name?: string;
   tool_call_id?: string;
   tool_calls?: ToolCall[];
+  /** assistant 专用：上一轮 Anthropic 响应里的思考块，回带时排在 text/tool_use 之前。 */
+  thinking_blocks?: ThinkingBlock[];
 }
 
 /**
@@ -87,6 +99,8 @@ export interface StreamResult {
   finishReason: string | null;
   usage: Usage | null;
   raw: unknown;
+  /** Anthropic 协议下的思考块（含签名）；agent 写进 assistant 消息以便回带。 */
+  thinkingBlocks?: ThinkingBlock[];
 }
 
 export class LLMError extends Error {
@@ -119,10 +133,20 @@ export class LLMTimeoutError extends LLMError {
 /* 非流式                                                              */
 /* ------------------------------------------------------------------ */
 
+/** OpenAI 协议不认 thinking_blocks（Anthropic 专用的签名思考块），发出前剥掉，避免严格网关 400。 */
+function stripThinkingBlocks(messages: Message[]): Message[] {
+  if (!messages.some((m) => m.thinking_blocks !== undefined)) return messages;
+  return messages.map((m) => {
+    if (m.thinking_blocks === undefined) return m;
+    const { thinking_blocks: _drop, ...rest } = m;
+    return rest;
+  });
+}
+
 function buildBody(cfg: Config, messages: Message[], tools: ToolSpec[], stream: boolean) {
   const body: Record<string, unknown> = {
     model: cfg.model,
-    messages,
+    messages: stripThinkingBlocks(messages),
     stream,
     max_tokens: cfg.maxTokens,
     temperature: cfg.temperature,
@@ -178,6 +202,63 @@ export function endpointPlan(cfg: Config): Endpoint[] {
   if (!p?.apiTypes || p.apiTypes.length === 0) return single;
   if (providerBaseUrl(p, p.type) !== cfg.baseUrl) return single;
   return p.apiTypes.map((proto) => ({ proto, baseUrl: providerBaseUrl(p, proto) }));
+}
+
+/* ------------------------------------------------------------------ */
+/* 输出上限（max_tokens）学习                                           */
+/* ------------------------------------------------------------------ */
+
+/**
+ * 服务端因 max_tokens 超过**该模型**的上限而拒绝时，从错误文案里取出上限。
+ *
+ * 为什么需要：上限因模型而异（MiniMax 实测：M3 系 524,288，M2.7 系 196,608），而 provider 级
+ * 的 `max_tokens` 对四个档位共用 —— 配成 M3 能接受的值，切到 fast 档的 M2.7 就必然 400。
+ * 不可能让用户逐模型手工调配置，所以按报错学习、夹紧、重发。
+ *
+ * 只在 400/422 且文案同时出现 max tokens 语义与「>/超过/exceed」时才认，并且要求
+ * 解析出的上限小于本次发送的值（否则夹紧没有意义，不能死循环）。
+ */
+export function parseMaxTokensLimit(err: unknown, sent: number): number | null {
+  if (!(err instanceof LLMError)) return null;
+  if (err.status !== 400 && err.status !== 422) return null;
+  const text = `${err.message}\n${err.body ?? ""}`;
+  // 上下文窗口类错误不是这里的事（由 agent 的 overflow 恢复处理）。
+  if (/context[\s_-]*(length|window)|prompt[\s_-]*(is\s+)?too\s+long/i.test(text)) return null;
+  // 形态 1（MiniMax）：max tokens > 196608
+  // 形态 2（Anthropic 官方）：max_tokens: 100000 > 64000, which is the maximum allowed …
+  // 形态 3（OpenAI 风格）：supports at most 4096 completion tokens / maximum is 4096
+  const patterns = [
+    /max(?:imum)?[\s_-]*(?:completion[\s_-]*|output[\s_-]*)?tokens?\s*(?:>|greater than|exceeds?|more than|above)\s*([\d,_]+)/i,
+    /max(?:imum)?[\s_-]*(?:completion[\s_-]*|output[\s_-]*)?tokens?\s*[:=]?\s*[\d,_]+\s*>\s*([\d,_]+)/i,
+    /(?:at most|up to|no more than|limited to|maximum (?:is|of|allowed)|不超过|上限为?)\s*([\d,_]+)\s*(?:completion |output )?tokens?/i,
+    /max(?:imum)?[\s_-]*(?:completion[\s_-]*|output[\s_-]*)?tokens?[^\n]{0,60}?(?:is|of|:|=|limit(?:ed)?(?: to)?|at most|up to|不超过|上限为?)\s*([\d,_]+)/i,
+  ];
+  if (!/max(?:imum)?[\s_-]*(?:completion[\s_-]*|output[\s_-]*)?tokens?|最大.{0,4}token/i.test(text)) return null;
+  for (const re of patterns) {
+    const m = re.exec(text);
+    if (!m) continue;
+    const n = Number((m[1] ?? "").replace(/[,_]/g, ""));
+    if (Number.isFinite(n) && n >= 256 && n < sent) return Math.floor(n);
+  }
+  return null;
+}
+
+/** 已学到的输出上限（key = provider|baseUrl|model）。 */
+const learnedMaxTokens = new Map<string, number>();
+
+function maxTokensKey(cfg: Config): string {
+  return `${cfg.providerName}|${cfg.baseUrl}|${cfg.model}`;
+}
+
+/** 本次请求实际使用的 max_tokens：已学到上限的，夹到上限以内。 */
+function effectiveMaxTokens(cfg: Config): number {
+  const learned = learnedMaxTokens.get(maxTokensKey(cfg));
+  return learned !== undefined ? Math.min(cfg.maxTokens, learned) : cfg.maxTokens;
+}
+
+/** 测试用：清空已学到的输出上限。 */
+export function resetLearnedMaxTokens(): void {
+  learnedMaxTokens.clear();
 }
 
 /** 已确认可用的协议（key = provider|baseUrl）。同一 provider 后续请求直接走它，不再反复试错。 */
@@ -237,7 +318,9 @@ function protoHeaders(cfg: Config, proto: ProviderType): Record<string, string> 
 }
 
 /** 单一协议的请求体。 */
-function bodyFor(proto: ProviderType, cfg: Config, messages: Message[], tools: ToolSpec[], stream: boolean) {
+function bodyFor(proto: ProviderType, cfg0: Config, messages: Message[], tools: ToolSpec[], stream: boolean) {
+  const maxTokens = effectiveMaxTokens(cfg0);
+  const cfg = maxTokens === cfg0.maxTokens ? cfg0 : { ...cfg0, maxTokens };
   if (proto === "anthropic") {
     return buildAnthropicBody(
       {
@@ -280,6 +363,7 @@ export async function chat(
 ): Promise<StreamResult> {
   const plan = orderedPlan(cfg);
   let lastErr: unknown;
+  let clamped = false;
   for (let i = 0; i < plan.length; i++) {
     const ep = plan[i]!;
     try {
@@ -288,6 +372,13 @@ export async function chat(
       return r;
     } catch (e) {
       lastErr = e;
+      const limit = clamped ? null : parseMaxTokensLimit(e, effectiveMaxTokens(cfg));
+      if (limit !== null) {
+        clamped = true;
+        learnedMaxTokens.set(maxTokensKey(cfg), limit);
+        i -= 1;
+        continue;
+      }
       if (i < plan.length - 1 && isEndpointAbsent(e)) continue;
       throw e;
     }
@@ -390,6 +481,8 @@ export async function chatStream(
    * 网关能力是运行时事实，混在一起会让「为什么没并行」变得无法解释。
    */
   let downgraded = false;
+  /** 输出上限夹紧只做一次：夹过还被拒说明是别的问题，交给调用方。 */
+  let clamped = false;
   /** 协议候选与当前下标：端点不存在时换下一个协议（不占重试预算）。 */
   const plan = orderedPlan(cfg);
   let planIdx = 0;
@@ -403,6 +496,19 @@ export async function chatStream(
     } catch (e) {
       if (signal?.aborted) throw abortError();
       const err = e instanceof LLMError ? e : new LLMError((e as Error)?.message ?? String(e));
+      // max_tokens 超过该模型上限：学到上限、夹紧后同轮重发一次（不占重试预算）。
+      if (!clamped) {
+        const limit = parseMaxTokensLimit(err, effectiveMaxTokens(cfg));
+        if (limit !== null) {
+          clamped = true;
+          learnedMaxTokens.set(maxTokensKey(cfg), limit);
+          handlers.onNotice?.(
+            `${cfg.model} 的输出上限是 ${limit.toLocaleString()} tokens（当前配置 ${cfg.maxTokens.toLocaleString()}），本次起自动夹紧并重发。`,
+          );
+          attempt -= 1;
+          continue;
+        }
+      }
       if (planIdx < plan.length - 1 && isEndpointAbsent(err)) {
         const next = plan[planIdx + 1]!;
         handlers.onNotice?.(

@@ -710,7 +710,11 @@ export class Agent {
           if (hasBody) {
             // 重试成功：摘掉重试提示，别让它作为噪音留在后续轮次的历史里
             if (nudgeMsg) this.dropTransientMessage(nudgeMsg);
-            this.messages.push({ role: "assistant", content: res.content });
+            this.messages.push({
+              role: "assistant",
+              content: res.content,
+              ...(res.thinkingBlocks ? { thinking_blocks: res.thinkingBlocks } : {}),
+            });
             answered = true;
             retryMaxTokens = null;
             break;
@@ -770,6 +774,7 @@ export class Agent {
           role: "assistant",
           content: res.content,
           tool_calls: res.toolCalls,
+          ...(res.thinkingBlocks ? { thinking_blocks: res.thinkingBlocks } : {}),
         });
 
         const ctx = this.makeCtx(signal);

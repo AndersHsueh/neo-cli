@@ -14,7 +14,18 @@ import {
 } from "../src/anthropicWire.ts";
 import { loadConfig, type Config, type ProviderConfig } from "../src/config.ts";
 import { detectModelCapabilitiesFromModelsApi } from "../src/env/modelWindows.ts";
-import { chat, chatStream, endpointPlan, listModels, resetEndpointMemo, type Message, type ToolSpec } from "../src/llm.ts";
+import {
+  chat,
+  chatStream,
+  endpointPlan,
+  listModels,
+  LLMError,
+  parseMaxTokensLimit,
+  resetEndpointMemo,
+  resetLearnedMaxTokens,
+  type Message,
+  type ToolSpec,
+} from "../src/llm.ts";
 
 const tools: ToolSpec[] = [
   { type: "function", function: { name: "calc", description: "d", parameters: { type: "object", properties: { e: { type: "string" } } } } },
@@ -195,7 +206,10 @@ const servers: Array<{ stop: (f?: boolean) => void }> = [];
 afterAll(() => {
   for (const s of servers) s.stop(true);
 });
-beforeEach(() => resetEndpointMemo());
+beforeEach(() => {
+  resetEndpointMemo();
+  resetLearnedMaxTokens();
+});
 
 interface Hit {
   path: string;
@@ -418,5 +432,149 @@ describe("配置：api_type 解析", () => {
     expect(() => load({ api_type: ["grpc"], base_url: "http://a" })).toThrow(/不是已知协议/);
     expect(() => load({ base_url: "http://a" })).toThrow(/缺少 api_type/);
     expect(() => load({ api_type: ["anthropic", "openai"], openai_base_url: "http://a/v1" })).toThrow(/anthropic/);
+  });
+});
+
+/* ------------------------------------------------------------------ */
+/* thinking 块回带                                                      */
+/* ------------------------------------------------------------------ */
+
+describe("thinking 块：保存、回带、不泄漏到 OpenAI", () => {
+  test("流式：thinking + signature 分片累积成带签名的块；无签名的块不保留", () => {
+    const a = new AnthropicStreamAccumulator({});
+    const ev = (o: unknown) => a.feed(o as Record<string, unknown>);
+    ev({ type: "content_block_start", index: 0, content_block: { type: "thinking", thinking: "" } });
+    ev({ type: "content_block_delta", index: 0, delta: { type: "thinking_delta", thinking: "想" } });
+    ev({ type: "content_block_delta", index: 0, delta: { type: "thinking_delta", thinking: "好了" } });
+    ev({ type: "content_block_delta", index: 0, delta: { type: "signature_delta", signature: "SIG" } });
+    ev({ type: "content_block_start", index: 1, content_block: { type: "thinking", thinking: "" } });
+    ev({ type: "content_block_delta", index: 1, delta: { type: "thinking_delta", thinking: "没签名" } });
+    ev({ type: "content_block_start", index: 2, content_block: { type: "redacted_thinking", data: "ENC" } });
+    expect(a.result().thinkingBlocks).toEqual([
+      { type: "thinking", thinking: "想好了", signature: "SIG" },
+      { type: "redacted_thinking", data: "ENC" },
+    ]);
+  });
+
+  test("非流式响应同样保留带签名的 thinking 块", () => {
+    const r = parseAnthropicMessage({
+      content: [{ type: "thinking", thinking: "t", signature: "S" }, { type: "text", text: "x" }],
+      stop_reason: "end_turn",
+    });
+    expect(r.thinkingBlocks).toEqual([{ type: "thinking", thinking: "t", signature: "S" }]);
+    expect(parseAnthropicMessage({ content: [{ type: "text", text: "x" }] }).thinkingBlocks).toBeUndefined();
+  });
+
+  test("回带：thinking 块原样排在 text / tool_use 之前", () => {
+    const msgs: Message[] = [
+      { role: "user", content: "go" },
+      {
+        role: "assistant",
+        content: "好",
+        thinking_blocks: [{ type: "thinking", thinking: "想", signature: "S" }],
+        tool_calls: [{ id: "a", type: "function", function: { name: "calc", arguments: "{}" } }],
+      },
+      { role: "tool", tool_call_id: "a", content: "1" },
+    ];
+    const asst = toAnthropicMessages(msgs).messages[1]!.content;
+    expect(asst.map((b) => b["type"])).toEqual(["thinking", "text", "tool_use"]);
+    expect(asst[0]).toEqual({ type: "thinking", thinking: "想", signature: "S" });
+  });
+
+  test("OpenAI 请求体里不出现 thinking_blocks", async () => {
+    const g = gateway();
+    const msgs: Message[] = [
+      { role: "user", content: "a" },
+      { role: "assistant", content: "b", thinking_blocks: [{ type: "thinking", thinking: "t", signature: "S" }] },
+      { role: "user", content: "c" },
+    ];
+    await chat(cfgFor(g.url, ["openai"]), msgs);
+    expect(JSON.stringify(g.hits[0]!.body)).not.toContain("thinking_blocks");
+    // 原消息对象没被改写（会话里仍保留，切回 anthropic 还能回带）
+    expect(msgs[1]!.thinking_blocks).toBeDefined();
+  });
+});
+
+/* ------------------------------------------------------------------ */
+/* max_tokens 上限学习                                                  */
+/* ------------------------------------------------------------------ */
+
+describe("parseMaxTokensLimit", () => {
+  const e = (m: string, st = 400) => new LLMError(m, st);
+  test("三种真实文案", () => {
+    expect(parseMaxTokensLimit(e("invalid params, model[X] does not support max tokens > 196608 (2013)"), 512000)).toBe(196608);
+    expect(parseMaxTokensLimit(e("max_tokens: 100000 > 64000, which is the maximum allowed number of output tokens"), 100000)).toBe(64000);
+    expect(parseMaxTokensLimit(e("max_tokens is too large: 100000. This model supports at most 4096 completion tokens"), 100000)).toBe(4096);
+  });
+  test("不误判：上下文超限 / 鉴权 / 非 4xx / 上限不小于已发送值", () => {
+    expect(parseMaxTokensLimit(e("This model's maximum context length is 128000 tokens"), 512000)).toBeNull();
+    expect(parseMaxTokensLimit(e("prompt is too long: 250000 tokens > 200000 maximum"), 512000)).toBeNull();
+    expect(parseMaxTokensLimit(e("bad api key", 401), 512000)).toBeNull();
+    expect(parseMaxTokensLimit(e("does not support max tokens > 196608", 500), 512000)).toBeNull();
+    expect(parseMaxTokensLimit(e("does not support max tokens > 196608"), 100000)).toBeNull();
+    expect(parseMaxTokensLimit(new Error("x"), 1)).toBeNull();
+  });
+});
+
+describe("max_tokens 超限：学习、夹紧、重发", () => {
+  function limitedGateway(limit: number): { url: string; sent: number[] } {
+    const sent: number[] = [];
+    const server = Bun.serve({
+      port: 0,
+      async fetch(req) {
+        const body = (await req.json()) as Record<string, unknown>;
+        const mt = body["max_tokens"] as number;
+        sent.push(mt);
+        if (mt > limit) {
+          return Response.json(
+            { type: "error", error: { type: "invalid_request_error", message: `invalid params, model[m] does not support max tokens > ${limit} (2013)` } },
+            { status: 400 },
+          );
+        }
+        return body["stream"] ? sseAnthropic("ok") : Response.json({ content: [{ type: "text", text: "ok" }], stop_reason: "end_turn" });
+      },
+    });
+    servers.push(server);
+    return { url: `http://127.0.0.1:${server.port}`, sent };
+  }
+  const withMax = (url: string, n: number): Config => ({ ...cfgFor(url, ["anthropic"]), maxTokens: n, baseUrl: url, providers: [] }) as Config;
+
+  test("流式：首次 400 → 夹紧重发成功；之后同模型直接用学到的上限", async () => {
+    const g = limitedGateway(196608);
+    const notices: string[] = [];
+    const cfg = withMax(g.url, 512000);
+    const r = await chatStream(cfg, U, [], { onNotice: (m) => notices.push(m) });
+    expect(r.content).toBe("ok");
+    expect(g.sent).toEqual([512000, 196608]);
+    expect(notices.some((n) => n.includes("196,608"))).toBe(true);
+    expect(cfg.maxTokens).toBe(512000); // 不改写用户配置，只记运行时事实
+    await chatStream(cfg, U, []);
+    expect(g.sent).toEqual([512000, 196608, 196608]);
+  });
+
+  test("非流式 chat 同样学习并重发", async () => {
+    const g = limitedGateway(1000);
+    const r = await chat(withMax(g.url, 5000), U);
+    expect(r.content).toBe("ok");
+    expect(g.sent).toEqual([5000, 1000]);
+  });
+
+  test("按模型区分：学到的上限不会套到别的模型上", async () => {
+    const g = limitedGateway(1000);
+    const a = withMax(g.url, 5000);
+    await chatStream(a, U, []);
+    const b = { ...a, model: "other" } as Config;
+    await chatStream(b, U, []);
+    // other 没学过：第一次仍按配置发（被拒后再学），而不是继承 a 的上限
+    expect(g.sent).toEqual([5000, 1000, 5000, 1000]);
+  });
+
+  test("只夹紧一次：夹紧后仍被拒就把错误交出去，不循环", async () => {
+    const server = Bun.serve({
+      port: 0,
+      fetch: () => Response.json({ error: { message: "does not support max tokens > 100 (2013)" } }, { status: 400 }),
+    });
+    servers.push(server);
+    await expect(chatStream(withMax(`http://127.0.0.1:${server.port}`, 5000), U, [])).rejects.toMatchObject({ status: 400 });
   });
 });
