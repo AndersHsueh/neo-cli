@@ -110,6 +110,7 @@ import {
   formatGapLogLine,
   formatOverBudgetNotice,
   formatProbeIntent,
+  makeOverBudgetReporter,
   formatWindowNotice,
   formatWritebackNotice,
   logBootDiagnostic,
@@ -737,25 +738,15 @@ async function main(): Promise<number> {
   // 归类：不是 #18 所指的「网关缺字段」那类无当下动作的诊断，而是当前配置的直接
   // 后果（提示词塞不进预算 → 模型可用上下文被吃掉一大块），用户当下就能补救。
   // 去重按 provider|model|窗口：同一状态只说一次，窗口变了算新事实。
-  const announcedOverBudget = new Set<string>();
-  let pendingOverBudgetNotice: string | null = null;
   let bootBlockPrinted = false;
-  const onPromptSelection = (sel: PromptSelection): void => {
-    if (sel.fits) return;
-    const key = `${cfg.providerName}|${cfg.model}|${sel.window ?? "unknown"}`;
-    if (announcedOverBudget.has(key)) return;
-    announcedOverBudget.add(key);
-    const msg = formatOverBudgetNotice(sel);
-    logBootDiagnostic({ kind: "prompt-budget", message: msg });
-    // -p / 管道模式不写 stdout（--output-format json 时 stdout 只留一行 JSON）。
-    if (!interactiveTTY) return;
-    // banner 之前不打印：启动输出顺序由 bootLines 统一排（issue #18）。
-    if (!bootBlockPrinted) {
-      pendingOverBudgetNotice = msg;
-      return;
-    }
-    ui.warn(msg);
-  };
+  const overBudget = makeOverBudgetReporter({
+    interactive: interactiveTTY,
+    current: () => ({ provider: cfg.providerName, model: cfg.model }),
+    log: (message) => logBootDiagnostic({ kind: "prompt-budget", message }),
+    warn: (message) => ui.warn(message),
+    bootBlockPrinted: () => bootBlockPrinted,
+  });
+  const onPromptSelection = (sel: PromptSelection): void => overBudget.report(sel);
   const promptManager = new PromptManager({
     mailbox: mailboxEnabled,
     askUser: interactiveTTY,
@@ -1167,13 +1158,14 @@ async function main(): Promise<number> {
     ui.line(banner(cfg.model, cfg.baseUrl, cfg.providerName, tierDisplayName(cfg.modelTier), toolNames().join(" ")));
     // v0.4.0 平台适配层：一眼可见实际使用的 shell，解析告警不静默。
     const bootShell = getShell(cfg);
+    const overBudgetNotice = overBudget.takePending();
     for (const row of bootLines({
       shell: c.dim(`  shell ${describeShell(bootShell)}`),
       memory: memoryFile ? `已加载项目记忆 ${memoryFile}` : null,
       // issue #20 收尾：超预算提示排在启动块里（banner 之后），别插到 banner 前面。
       warnings: [
         ...bootShell.warnings,
-        ...(pendingOverBudgetNotice ? [pendingOverBudgetNotice] : []),
+        ...(overBudgetNotice ? [overBudgetNotice] : []),
       ],
     })) {
       if (row.kind === "shell") ui.line(row.text);

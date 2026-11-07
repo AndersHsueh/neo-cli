@@ -27,6 +27,8 @@ import {
   formatWindowNotice,
   formatWritebackNotice,
   logBootDiagnostic,
+  makeOverBudgetGate,
+  makeOverBudgetReporter,
 } from "../src/bootDiagnostics.ts";
 import { formatCapabilityGapHint } from "../src/env/modelWindows.ts";
 import { undeclaredCapabilityFields } from "../src/env/modelCaps.ts";
@@ -421,5 +423,103 @@ describe("issue #20 收尾：超预算提示文案", () => {
     const entry = JSON.parse(readFileSync(file!, "utf8").trim()) as { kind: string; message: string };
     expect(entry.kind).toBe("prompt-budget");
     expect(entry.message).toContain("放不下预算");
+  });
+});
+
+describe("issue #20 收尾：超预算提示只说一次", () => {
+  test("同 provider|model|窗口只放行一次；窗口/模型/provider 任一变了算新事实", () => {
+    const gate = makeOverBudgetGate();
+    expect(gate({ provider: "p", model: "m", window: 8192 })).toBe(true);
+    expect(gate({ provider: "p", model: "m", window: 8192 })).toBe(false);
+    expect(gate({ provider: "p", model: "m", window: 8192 })).toBe(false);
+    expect(gate({ provider: "p", model: "m", window: 16384 })).toBe(true); // 窗口变了
+    expect(gate({ provider: "p", model: "m2", window: 8192 })).toBe(true); // 模型变了
+    expect(gate({ provider: "p2", model: "m", window: 8192 })).toBe(true); // provider 变了
+    expect(gate({ provider: "p", model: "m", window: 16384 })).toBe(false); // 回到旧状态仍已说过
+  });
+
+  test("窗口未知(null)与具体数值是不同的 key；null 也只说一次", () => {
+    const gate = makeOverBudgetGate();
+    expect(gate({ provider: "p", model: "m", window: null })).toBe(true);
+    expect(gate({ provider: "p", model: "m", window: null })).toBe(false);
+    expect(gate({ provider: "p", model: "m", window: 8192 })).toBe(true);
+  });
+
+  test("两个闸门实例互不影响（每次会话各自一份）", () => {
+    const a = makeOverBudgetGate();
+    const b = makeOverBudgetGate();
+    expect(a({ provider: "p", model: "m", window: 1 })).toBe(true);
+    expect(b({ provider: "p", model: "m", window: 1 })).toBe(true);
+  });
+});
+
+describe("issue #20 收尾：超预算提示的决策（index.ts 接线）", () => {
+  const over = { fits: false, window: 8192, source: "config", estimatedSystemTokens: 7918, budget: 1024 };
+
+  function make(over2: { interactive?: boolean; printed?: boolean } = {}) {
+    const logs: string[] = [];
+    const warns: string[] = [];
+    let printed = over2.printed ?? false;
+    let model = "m";
+    const r = makeOverBudgetReporter({
+      interactive: over2.interactive ?? true,
+      current: () => ({ provider: "p", model }),
+      log: (m) => logs.push(m),
+      warn: (m) => warns.push(m),
+      bootBlockPrinted: () => printed,
+    });
+    return { r, logs, warns, setPrinted: (v: boolean) => (printed = v), setModel: (m: string) => (model = m) };
+  }
+
+  test("fits=true 一句不说，也不写日志", () => {
+    const { r, logs, warns } = make({ printed: true });
+    r.report({ ...over, fits: true });
+    expect(logs).toEqual([]);
+    expect(warns).toEqual([]);
+  });
+
+  test("同一状态反复回调（rename/切档/追加记忆都会重算）只说一次", () => {
+    const { r, logs, warns } = make({ printed: true });
+    for (let i = 0; i < 4; i++) r.report(over);
+    expect(logs.length).toBe(1);
+    expect(warns.length).toBe(1);
+  });
+
+  test("切到别的模型算新事实；窗口变了也算", () => {
+    const { r, logs, setModel } = make({ printed: true });
+    r.report(over);
+    setModel("m2");
+    r.report(over);
+    r.report({ ...over, window: 16384 });
+    expect(logs.length).toBe(3);
+  });
+
+  test("非交互：写日志，但绝不写 TUI（-p / --output-format json 的 stdout 不能被污染）", () => {
+    const { r, logs, warns } = make({ interactive: false, printed: true });
+    r.report(over);
+    expect(logs.length).toBe(1);
+    expect(warns).toEqual([]);
+    expect(r.takePending()).toBeNull();
+  });
+
+  test("启动块尚未输出：先排队不直接打；取走后清空；之后的直接给 TUI", () => {
+    const { r, logs, warns, setPrinted } = make({ printed: false });
+    r.report(over);
+    expect(warns).toEqual([]); // 不插到 banner 前面
+    expect(logs.length).toBe(1); // 日志不等
+    const pending = r.takePending();
+    expect(pending).toContain("系统提示词放不下预算");
+    expect(r.takePending()).toBeNull(); // 取走即清空
+    setPrinted(true);
+    r.report({ ...over, window: 4096 }); // 新事实,启动块已输出 → 直接给 TUI
+    expect(warns.length).toBe(1);
+  });
+
+  test("闸门已放行过的状态,在启动块排队阶段也不会重复排队", () => {
+    const { r } = make({ printed: false });
+    r.report(over);
+    r.takePending();
+    r.report(over); // 同状态
+    expect(r.takePending()).toBeNull();
   });
 });

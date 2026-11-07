@@ -118,6 +118,80 @@ export function formatOverBudgetNotice(sel: {
   );
 }
 
+/**
+ * 「放不下预算」提示的一次性闸门：同一 provider|model|窗口只放行一次，窗口变了算新事实。
+ *
+ * 为什么必须有：PromptManager 在 rename、切档、追加项目记忆、工具注册后重建等场景下都会
+ * 重新渲染并回调，没有闸门会把同一件事反复说好几遍。
+ */
+export function makeOverBudgetGate(): (key: {
+  provider: string;
+  model: string;
+  window: number | null;
+}) => boolean {
+  const seen = new Set<string>();
+  return ({ provider, model, window }) => {
+    const k = `${provider}|${model}|${window ?? "unknown"}`;
+    if (seen.has(k)) return false;
+    seen.add(k);
+    return true;
+  };
+}
+
+/**
+ * 把「放不下预算」选档结果变成一次性提示的决策函数（index.ts 的接线只剩传 sink）。
+ *
+ * 规则：
+ *  - fits=true 一句不说；
+ *  - 同 provider|model|窗口只说一次（闸门）；
+ *  - 说的时候一定写日志；
+ *  - 非交互（-p / 管道）不写 TUI，避免污染 stdout（--output-format json 时 stdout 只留一行 JSON）；
+ *  - 启动块尚未输出时先排队，由启动块统一排序（issue #18），之后的直接给 TUI。
+ */
+export function makeOverBudgetReporter(deps: {
+  interactive: boolean;
+  /** 取当前 provider/model（模型会在会话中切换，不能在构造时固定）。 */
+  current: () => { provider: string; model: string };
+  log: (message: string) => void;
+  /** 启动块已输出后，直接给用户看的通道。 */
+  warn: (message: string) => void;
+  /** 启动块是否已输出。 */
+  bootBlockPrinted: () => boolean;
+}): {
+  report: (sel: {
+    fits: boolean;
+    window: number | null;
+    source: string | undefined;
+    estimatedSystemTokens: number | null;
+    budget: number;
+  }) => void;
+  /** 启动块排序时取走排队中的提示（取走即清空）。 */
+  takePending: () => string | null;
+} {
+  const gate = makeOverBudgetGate();
+  let pending: string | null = null;
+  return {
+    report(sel) {
+      if (sel.fits) return;
+      const { provider, model } = deps.current();
+      if (!gate({ provider, model, window: sel.window })) return;
+      const msg = formatOverBudgetNotice(sel);
+      deps.log(msg);
+      if (!deps.interactive) return;
+      if (!deps.bootBlockPrinted()) {
+        pending = msg;
+        return;
+      }
+      deps.warn(msg);
+    },
+    takePending() {
+      const m = pending;
+      pending = null;
+      return m;
+    },
+  };
+}
+
 /* ------------------------------------------------------------------ */
 /* 启动输出顺序（issue #18）                                            */
 /* ------------------------------------------------------------------ */
