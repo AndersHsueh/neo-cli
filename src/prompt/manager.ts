@@ -9,7 +9,7 @@
  * 超限校正后都会变，缓存的档位会过期。
  */
 import type { Config } from "../config.ts";
-import { toolNames, toolSpecs } from "../tools/index.ts";
+import { mainToolNames, toolNames, toolSpecs } from "../tools/index.ts";
 import { buildSystemPrompt } from "../system-prompt.ts";
 import { renderCore } from "./render.ts";
 import {
@@ -20,12 +20,24 @@ import {
 } from "./select.ts";
 import { countSystemTokens } from "./tokens.ts";
 import type { PromptTier } from "./tiers.ts";
+import {
+  knownToolNames,
+  measureVisibilityCost,
+  visibleToolNames,
+  visibilityPriority,
+  type ToolVisibility,
+} from "./visibility.ts";
 
 export interface PromptManagerOptions {
   mailbox: boolean;
   askUser: boolean;
   /** 会话名（信箱代号）；null/空回退 neo。 */
   sessionName?: string | null;
+  /**
+   * 选档诊断回调（issue #20 收尾）：每次**真正重算**档位时调用一次（缓存命中不调用）。
+   * 宿主用它提示「系统提示词放不下预算」（见 bootDiagnostics.ts 的 prompt-budget）。
+   */
+  onSelection?: (selection: PromptSelection) => void;
 }
 
 export interface ProjectMemory {
@@ -81,6 +93,39 @@ export class PromptManager {
   }
 
   /**
+   * 当前 cfg 下的**工具可见集方案**（issue #20 收尾，dry-run）。
+   *
+   * 只算不生效：结果供 `/context` 展示，运行时暴露的工具集不变（收窄在后续版本落地）。
+   * 开销按**现算**得出（系统提示词 + 该集 schema，与选档同一套计数口径），
+   * 不写死阈值表 —— 技能数、目录大小、MCP 工具数都会改变结论。
+   */
+  currentVisibility(cfg: Config): ToolVisibility {
+    const rendered = this.render(cfg);
+    // 候选集 = 正常模式下模型实际能看到的工具（mainToolNames 去掉 plan-only）：
+    // 与「## 工具」节里列出的说明行一一对应，成本模型才对得上。
+    const all = mainToolNames();
+    const measure = (names: readonly string[], trimDynamic: boolean): number => {
+      const want = new Set(names);
+      // schema 按注册表顺序（与请求里发出的一致）。
+      const specs = toolSpecs().filter((s) => want.has(s.function.name));
+      return measureVisibilityCost({
+        systemText: rendered.text,
+        specs,
+        visible: new Set(specs.map((s) => s.function.name)),
+        // 归属判定要认识「提示词里可能出现的全部工具名」：那节说明是硬编码的，
+        // 没注册的工具也照样有说明行（见 knownToolNames 的注释）。
+        allToolNames: knownToolNames(toolNames()),
+        trimDynamic,
+      });
+    };
+    return visibleToolNames({
+      priority: visibilityPriority(all),
+      budget: rendered.selection.budget,
+      measure,
+    });
+  }
+
+  /**
    * 渲染完整系统提示词：选定档的核心 + 动态块 + 项目记忆。
    * 用同一份动态内容为三档分别计开销，再选最大放得下的一档。
    */
@@ -125,6 +170,19 @@ export class PromptManager {
     this.last = selection;
     const rendered = { text: compose(selection.tier), selection };
     this.cache = { key, rendered };
+    this.notifySelection(selection);
     return rendered;
+  }
+
+  /**
+   * 通知宿主选档结果。宿主的诊断回调抛错不能影响提示词渲染 ——
+   * 诊断是增强项,渲染是主线。
+   */
+  private notifySelection(selection: PromptSelection): void {
+    try {
+      this.opts.onSelection?.(selection);
+    } catch {
+      /* 诊断回调失败不影响提示词渲染 */
+    }
   }
 }

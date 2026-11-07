@@ -17,6 +17,7 @@ import { Agent } from "../src/agent.ts";
 import { handleCommand, type CommandContext } from "../src/cli/commands.ts";
 import type { Config, ProviderConfig } from "../src/config.ts";
 import type { PromptSelection } from "../src/prompt/select.ts";
+import type { ToolVisibility } from "../src/prompt/visibility.ts";
 import { captureConsole } from "./helpers.ts";
 
 /** 去掉 ANSI 转义：TTY 与否都会带上色，断言不能依赖终端环境。 */
@@ -153,6 +154,99 @@ describe("/context 档位行", () => {
 
       const text = plain(out());
       expect(lineWith(text, "prompt")).toBe("");
+      expect(lineWith(text, "window")).toContain("200,000");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+/**
+ * /context 的「可见工具」dry-run 行（issue #20 收尾，第 1 步）。
+ *
+ * 这一行只展示「按当前预算最多能暴露几个工具」，**不改变运行时行为** ——
+ * 运行时暴露的工具集仍然由注册表决定。
+ */
+describe("/context 可见工具 dry-run 行", () => {
+  function visibility(over: Partial<ToolVisibility> = {}): ToolVisibility {
+    return {
+      names: ["read_file", "edit_file", "shell"],
+      hidden: ["list_dir", "glob"],
+      total: 16,
+      trimmed: true,
+      fits: true,
+      cost: 1_839,
+      budget: 2_048,
+      ...over,
+    };
+  }
+
+  test("展示可收窄到几个工具、估计开销与「未启用」标记", async () => {
+    const { cfg, dir } = makeCfg();
+    try {
+      const { ui, out } = captureConsole({ stdoutIsTTY: false });
+      const agent = new Agent({ cfg, console: ui, mode: "auto", systemPrompt: "s" } as never);
+      await handleCommand("/context", {
+        agent,
+        ui,
+        cfg,
+        toolVisibility: () => visibility(),
+      } as unknown as CommandContext);
+
+      const text = plain(out());
+      const line = lineWith(text, "可见工具");
+      expect(line).toContain("3/16");
+      expect(line).toContain("未启用");
+      // 与 prompt 行同一口径：数字不带千分位
+      expect(line).toContain("1839/2048");
+      expect(line).toContain("tokens 估计");
+      // 说明行：为什么裁、当前仍是全量
+      expect(text).toContain("需同时裁技能/wiki/目录树索引");
+      expect(text).toContain("当前仍暴露全部 16 个");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("预算连 0 个工具都放不下：如实说放不下，不报错", async () => {
+    const { cfg, dir } = makeCfg();
+    try {
+      const { ui, out } = captureConsole({ stdoutIsTTY: false });
+      const agent = new Agent({ cfg, console: ui, mode: "auto", systemPrompt: "s" } as never);
+      await handleCommand("/context", {
+        agent,
+        ui,
+        cfg,
+        toolVisibility: () =>
+          visibility({ names: [], hidden: ["read_file"], fits: false, cost: -1 }),
+      } as unknown as CommandContext);
+
+      const text = plain(out());
+      expect(lineWith(text, "可见工具")).toContain("放不下");
+      expect(text).toContain("连 0 个工具都容不下");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("可见集回调抛错：/context 不崩，省略这两行", async () => {
+    const { cfg, dir } = makeCfg();
+    try {
+      const { ui, out } = captureConsole({ stdoutIsTTY: false });
+      const agent = new Agent({ cfg, console: ui, mode: "auto", systemPrompt: "s" } as never);
+      await handleCommand("/context", {
+        agent,
+        ui,
+        cfg,
+        toolVisibility: () => {
+          throw new Error("可见集算崩了");
+        },
+      } as unknown as CommandContext);
+
+      const text = plain(out());
+      expect(lineWith(text, "可见工具")).toBe("");
+      expect(text).not.toContain("可见集算崩了");
+      // 其余各行照常
       expect(lineWith(text, "window")).toContain("200,000");
     } finally {
       rmSync(dir, { recursive: true, force: true });

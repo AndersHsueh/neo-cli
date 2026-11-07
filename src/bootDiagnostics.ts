@@ -21,7 +21,12 @@ import { turnLogRoot } from "./turnDiagnostics.ts";
 /** 一条启动诊断。`kind` 是稳定枚举，日志消费方按它过滤。 */
 export interface BootDiagnostic {
   /** 前置探测提示（「首次使用 … 将探测模型能力…」/「仍有未声明能力…」）。 */
-  kind: "probe-intent" | "capability-gap" | "probe-writeback" | "model-window";
+  kind:
+    | "probe-intent"
+    | "capability-gap"
+    | "probe-writeback"
+    | "model-window"
+    | "prompt-budget";
   /** 纯文本（不含 ANSI）：日志要能 grep，不能带颜色转义。 */
   message: string;
 }
@@ -83,6 +88,34 @@ export function formatWindowNotice(tokens: number, source: string): string {
 /** 「未探测到」诊断的日志前缀：日志里要能一眼看出这是 gap 而不是写回。 */
 export function formatGapLogLine(hint: string): string {
   return `能力缺口：${hint}`;
+}
+
+/**
+ * 「系统提示词放不下预算」的文案（issue #20 收尾）。
+ *
+ * **归类：TUI 保留 + 写日志**，与本模块其余诊断不同 —— 它不是「网关缺了什么字段」
+ * 这类无当下动作的诊断，而是**当前配置的直接后果**：系统提示词塞不进预算，
+ * 模型的可用上下文被提示词吃掉一大块。用户当下就能补救（换窗口更大的模型 /
+ * 在 settings 手写 context_window），不提示的话他只会觉得「这模型好笨」。
+ *
+ * 纯函数（便于单测）；不含 ANSI。
+ */
+export function formatOverBudgetNotice(sel: {
+  window: number | null;
+  source: string | undefined;
+  estimatedSystemTokens: number | null;
+  budget: number;
+}): string {
+  const win =
+    sel.window !== null
+      ? `${sel.window.toLocaleString()} tokens（${sel.source ?? "来源未知"}）`
+      : "窗口未知";
+  const cost =
+    sel.estimatedSystemTokens !== null ? sel.estimatedSystemTokens.toLocaleString() : "?";
+  return (
+    `系统提示词放不下预算：上下文窗口 ${win}，系统提示词估计 ${cost} > 预算 ${sel.budget.toLocaleString()}。` +
+    `可换用窗口更大的模型，或在 settings 手写 context_window。`
+  );
 }
 
 /* ------------------------------------------------------------------ */

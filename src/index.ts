@@ -108,11 +108,13 @@ import { formatResumeWarning, outcomeOf, type LastTurnMeta } from "./turnDiagnos
 import {
   bootLines,
   formatGapLogLine,
+  formatOverBudgetNotice,
   formatProbeIntent,
   formatWindowNotice,
   formatWritebackNotice,
   logBootDiagnostic,
 } from "./bootDiagnostics.ts";
+import type { PromptSelection } from "./prompt/select.ts";
 
 /* ------------------------------------------------------------------ */
 /* 参数解析                                                            */
@@ -730,10 +732,35 @@ async function main(): Promise<number> {
 
   // 系统提示词唯一渲染入口（issue #20）：档位选择、会话名、项目记忆都由它持有，
   // 探针完成/切模型/rename/超限校正只需让 agent 在下一个请求边界重渲染。
+  //
+  // issue #20 收尾：系统提示词放不下预算时给**一次性**提示。
+  // 归类：不是 #18 所指的「网关缺字段」那类无当下动作的诊断，而是当前配置的直接
+  // 后果（提示词塞不进预算 → 模型可用上下文被吃掉一大块），用户当下就能补救。
+  // 去重按 provider|model|窗口：同一状态只说一次，窗口变了算新事实。
+  const announcedOverBudget = new Set<string>();
+  let pendingOverBudgetNotice: string | null = null;
+  let bootBlockPrinted = false;
+  const onPromptSelection = (sel: PromptSelection): void => {
+    if (sel.fits) return;
+    const key = `${cfg.providerName}|${cfg.model}|${sel.window ?? "unknown"}`;
+    if (announcedOverBudget.has(key)) return;
+    announcedOverBudget.add(key);
+    const msg = formatOverBudgetNotice(sel);
+    logBootDiagnostic({ kind: "prompt-budget", message: msg });
+    // -p / 管道模式不写 stdout（--output-format json 时 stdout 只留一行 JSON）。
+    if (!interactiveTTY) return;
+    // banner 之前不打印：启动输出顺序由 bootLines 统一排（issue #18）。
+    if (!bootBlockPrinted) {
+      pendingOverBudgetNotice = msg;
+      return;
+    }
+    ui.warn(msg);
+  };
   const promptManager = new PromptManager({
     mailbox: mailboxEnabled,
     askUser: interactiveTTY,
     sessionName: sessionLabel,
+    onSelection: onPromptSelection,
   });
   const agent = new Agent({
     cfg,
@@ -1143,12 +1170,17 @@ async function main(): Promise<number> {
     for (const row of bootLines({
       shell: c.dim(`  shell ${describeShell(bootShell)}`),
       memory: memoryFile ? `已加载项目记忆 ${memoryFile}` : null,
-      warnings: bootShell.warnings,
+      // issue #20 收尾：超预算提示排在启动块里（banner 之后），别插到 banner 前面。
+      warnings: [
+        ...bootShell.warnings,
+        ...(pendingOverBudgetNotice ? [pendingOverBudgetNotice] : []),
+      ],
     })) {
       if (row.kind === "shell") ui.line(row.text);
       else if (row.kind === "memory") ui.info(row.text);
       else ui.warn(row.text);
     }
+    bootBlockPrinted = true;
     // v0.2.3 D4：--resume 之后屏幕不能是空的 —— 回放最近几轮，人和上下文对齐
     if (restored && restored.length > 0) replayTranscript(ui, agent.messages);
   }
@@ -1290,6 +1322,8 @@ async function main(): Promise<number> {
             // lastSelection 还是探针前的旧档，会和同一命令里的 window 行（读 cfg，已是新值）
             // 自相矛盾。currentSelection 只算不写 —— 不碰 messages[0]，提示词何时生效不受影响。
             promptSelection: () => promptManager.currentSelection(cfg),
+            // issue #20 收尾：工具可见集 dry-run（只算不生效，运行时工具集不变）。
+            toolVisibility: () => promptManager.currentVisibility(cfg),
             onNameChange: (name) => {
               sessionLabel = name;
               titleAnimator?.setName(name);

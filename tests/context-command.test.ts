@@ -348,3 +348,23 @@ describe("档位行与窗口行自洽", () => {
     }
   });
 });
+
+/**
+ * 「可见工具」dry-run 行（issue #20 收尾，第 1 步）。
+ *
+ * 走真实 CLI：组合根 → PromptManager.currentVisibility → /context。
+ * 断言只到「形状」为止 —— 具体的数字随环境（技能数、目录大小、注册的 MCP 工具）变，
+ * 这正是「按实测开销现算、不写死阈值表」的意义。
+ */
+describe("可见工具 dry-run 行（真实 CLI）", () => {
+  test("/context 多一行「可见工具」，标明未启用、当前仍是全量", () => {
+    const out = runCommands(makeProject(), ["/context"]);
+    const line = out.split("\n").find((l) => l.trimStart().startsWith("可见工具")) ?? "";
+    expect(line).toMatch(/\d+\/\d+ 个/);
+    expect(line).toContain("未启用");
+    expect(out).toContain("收窄尚未启用");
+    // 运行时行为不变由「请求体逐字节对比」保证（见 v0.4.72 的验收记录），
+    // 这里只断言 /context 多出来的那一行是 dry-run。
+    expect(out).toContain("dry-run");
+  });
+});

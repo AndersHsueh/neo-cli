@@ -43,6 +43,7 @@ import { listModels } from "../llm.ts";
 import type { MemoryBridge } from "../memory/bridge.ts";
 import type { McpServerState } from "../mcp/client.ts";
 import type { PromptSelection } from "../prompt/select.ts";
+import type { ToolVisibility } from "../prompt/visibility.ts";
 import { ensureScopeLayout } from "../memory/layout.ts";
 import { initProjectLevel as initProjectLevelImpl } from "../memory/init.ts";
 import { sessionLiveness, renameSession, takenAliveNames } from "../mailbox/identity.ts";
@@ -132,6 +133,12 @@ export interface CommandContext {
    * 实现方只算不写：不得改写 messages[0]（提示词何时生效由请求边界决定）。
    */
   promptSelection?: () => PromptSelection | null;
+  /**
+   * 小窗口下的工具可见集方案（issue #20 收尾，**dry-run**：只算不生效）。
+   *
+   * /context 展示「按当前预算最多能暴露几个工具」；运行时暴露的工具集不变。
+   */
+  toolVisibility?: () => ToolVisibility | null;
   memoryMode?: "interactive" | "oneshot";
   /**
    * 把合成的用户消息排进主循环队列，作为下一轮发给模型（issue #13）。
@@ -156,7 +163,7 @@ export interface CommandContext {
 export async function handleCommand(line: string, ctx: CommandContext): Promise<void> {
   const {
     agent, ui, cfg, memory, classifier, meta, shutdown, selectDeps, mailbox, checkpoints,
-    injectMailbox, onMailboxRekey, onNameChange, promptSelection,
+    injectMailbox, onMailboxRekey, onNameChange, promptSelection, toolVisibility,
   } = ctx;
   const memoryMode = ctx.memoryMode ?? "interactive";
   const [cmdRaw, ...rest] = line.slice(1).split(/\s+/);
@@ -263,6 +270,30 @@ export async function handleCommand(line: string, ctx: CommandContext): Promise<
           `${psel.tier} ${c.dim(`(${psel.fits ? "预算内" : "超预算"} · ${psel.estimatedSystemTokens ?? "?"}/${psel.budget} tokens 估计)`)}`,
         );
         ui.line(c.dim(`  ${psel.reason}`));
+      }
+      // issue #20 收尾：小窗口下的工具可见集方案（**dry-run：只算不生效**）。
+      // 算档要读目录树/技能/wiki 索引并按候选集反复计数，可能抛错 —— 失败就省略这两行。
+      let vis: ToolVisibility | null = null;
+      try {
+        vis = toolVisibility?.() ?? null;
+      } catch {
+        vis = null;
+      }
+      if (vis) {
+        ui.kv(
+          "可见工具",
+          vis.fits
+            ? `${vis.names.length}/${vis.total} 个 ${c.dim(`(预算内 · ${vis.cost}/${vis.budget} tokens 估计，dry-run 未启用)`)}`
+            : `预算内放不下 ${c.dim("(dry-run 未启用)")}`,
+        );
+        ui.line(
+          c.dim(
+            vis.fits
+              ? `  按当前预算最多可暴露 ${vis.names.length} 个工具${vis.trimmed ? "（需同时裁技能/wiki/目录树索引）" : ""}；` +
+                  `收窄尚未启用，当前仍暴露全部 ${vis.total} 个。`
+              : `  当前预算连 0 个工具都容不下；收窄尚未启用，当前仍暴露全部 ${vis.total} 个工具。`,
+          ),
+        );
       }
       ui.kv("threshold", `${(cfg.compactThreshold * 100).toFixed(0)}% · ${Math.round(
         cfg.compactThreshold * cfg.contextWindow,

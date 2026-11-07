@@ -2246,6 +2246,67 @@ function bootShellLineIndex(screen: Screen): number {
 }
 
 /**
+ * S22c：**系统提示词放不下预算**时的一次性提示（issue #20 收尾第 0 步）。
+ *
+ * 窗口配成 8K（预算 1,024）而系统提示词 + 工具 schema 远超它。要求：
+ *  1. 提示在启动段里可见；
+ *  2. 排在「项目记忆提示」之后 —— 不许打断 issue #18 的紧邻关系；
+ *  3. 同时落进启动诊断日志（kind=prompt-budget）—— TUI 与日志两个通道都有。
+ */
+async function scenarioS22c(tmpRoot: string): Promise<void> {
+  const dirs = await makeDirs(tmpRoot, "s22c-over-budget");
+  const fake = await startFake("tool-then-answer");
+  const run = await startNeo({
+    fake,
+    dirs,
+    name: "s22c",
+    args: BASE_ARGS,
+    cols: DEFAULT_COLS,
+    rows: DEFAULT_ROWS,
+    settings: {
+      ...PTY_SETTINGS,
+      // 8K 窗口：预算 1,024，装不下系统提示词 + 工具 schema。
+      providers: [
+        { ...(PTY_SETTINGS.providers[0] as Record<string, unknown>), context_window: 8_192 },
+      ],
+    },
+    agentsMd: "# S22c 项目记忆\n\n- 这条记忆只用于启动顺序断言。\n",
+  });
+  try {
+    await waitPrompt(run);
+    await Bun.sleep(1500);
+    const text = run.screen.text();
+    const lines = run.screen.lines();
+    check(text.includes("系统提示词放不下预算"), "小窗口下应提示系统提示词放不下预算", run.screen);
+    // 一次性：同一状态只说一次（同一 provider|model|窗口）。
+    check(
+      lines.filter((l) => l.includes("系统提示词放不下预算")).length === 1,
+      "超预算提示只应出现一次",
+      run.screen,
+    );
+    const memIdx = lines.findLastIndex((l) => l.includes("已加载项目记忆"));
+    const budgetIdx = lines.findIndex((l) => l.includes("系统提示词放不下预算"));
+    check(memIdx >= 0, "启动段应有项目记忆提示", run.screen);
+    check(budgetIdx > memIdx, "超预算提示必须排在记忆提示之后（不得打断紧邻）", run.screen);
+    // TUI 与日志两个通道都有：诊断不丢。
+    const bootLog = readBootLog(dirs);
+    check(
+      bootLog.some((e) => e.kind === "prompt-budget"),
+      `启动诊断日志应有 prompt-budget（实际：${bootLog.map((e) => e.kind).join(",")}）`,
+      run.screen,
+    );
+    maybeDumpScreen(run.screen);
+    await run.type("/exit");
+    await run.waitExit();
+  } catch (e) {
+    throw attachScreen(e, run.screen, run.stderr);
+  } finally {
+    await run.close();
+    await fake.stop();
+  }
+}
+
+/**
  * S22 共用断言：真实 shell 状态行 → 项目记忆提示**紧邻**（下一非空行）→ 告警（若有）在记忆之后。
  * `expectWarning` 决定是否要求启动段里出现 shell 解析告警（有/无告警两种启动都要过）。
  */
@@ -2565,6 +2626,12 @@ const SCENARIOS: Scenario[] = [
     title: "S22b 有 shell 配置告警：告警可见但不打断「shell 行 → 项目记忆提示」紧邻",
     fn: scenarioS22b,
     focus: ["M.A.T.R.I.X", "已加载项目记忆", "指定的 shell 不可执行"],
+  },
+  {
+    id: "s22c",
+    title: "S22c 小窗口：系统提示词放不下预算时给一次性提示（排在记忆提示之后，日志里也有）",
+    fn: scenarioS22c,
+    focus: ["M.A.T.R.I.X", "已加载项目记忆", "系统提示词放不下预算"],
   },
 ];
 

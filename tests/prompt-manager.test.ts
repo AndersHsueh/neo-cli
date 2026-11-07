@@ -527,3 +527,64 @@ describe("小窗口下 mini 仍放不下", () => {
     rmSync(cfg.cwd, { recursive: true, force: true });
   });
 });
+
+/**
+ * 选档诊断回调（issue #20 收尾，第 0 步）。
+ *
+ * 宿主用它提示「系统提示词放不下预算」。回调必须满足三条：
+ *  1. 只在**真正重算**档位时触发（缓存命中不触发，避免每轮都喊一遍）；
+ *  2. 抛错不能影响提示词渲染（诊断是增强项，渲染是主线）；
+ *  3. 传出去的 selection 就是选档结果本身（宿主自己判 fits）。
+ */
+describe("选档诊断回调", () => {
+  test("重算时回调一次；输入没变（缓存命中）不再回调", () => {
+    const cfg = makeCfg();
+    const seen: string[] = [];
+    const m = new PromptManager({
+      mailbox: false,
+      askUser: false,
+      sessionName: "a",
+      onSelection: (sel) => seen.push(sel.tier),
+    });
+    m.render(cfg);
+    expect(seen.length).toBe(1);
+    m.render(cfg); // 指纹没变 → 命中缓存 → 不回调
+    expect(seen.length).toBe(1);
+    cfg.model = "m2"; // 指纹变了 → 重算 → 再回调
+    m.render(cfg);
+    expect(seen.length).toBe(2);
+    rmSync(cfg.cwd, { recursive: true, force: true });
+  });
+
+  test("回调抛错不影响渲染：提示词照常产出", () => {
+    const cfg = makeCfg();
+    const m = new PromptManager({
+      mailbox: false,
+      askUser: false,
+      sessionName: "a",
+      onSelection: () => {
+        throw new Error("宿主回调炸了");
+      },
+    });
+    const out = m.render(cfg);
+    expect(out.text.length).toBeGreaterThan(0);
+    expect(out.selection.tier).toBeTruthy();
+    rmSync(cfg.cwd, { recursive: true, force: true });
+  });
+
+  test("回调拿到的 selection 带 fits=false 时如实反映（宿主据此提示）", () => {
+    const cfg = makeCfg({ contextWindow: 4_096, contextWindowSource: "config" });
+    const seen: boolean[] = [];
+    const m = new PromptManager({
+      mailbox: false,
+      askUser: false,
+      sessionName: "a",
+      onSelection: (sel) => {
+        seen.push(sel.fits);
+      },
+    });
+    m.render(cfg);
+    expect(seen).toEqual([false]);
+    rmSync(cfg.cwd, { recursive: true, force: true });
+  });
+});
