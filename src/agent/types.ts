@@ -72,6 +72,8 @@ export interface AgentOptions {
    * 都经由它整体重建 messages[0]（含档位重选与项目记忆）；不提供（子代理、测试）则沿用旧行为。
    */
   renderSystemPrompt?: () => string;
+  /** 当前会话名（信箱代号）；子代理身份句「你是 X 派出的子代理」用它。缺省/null 回退 neo。 */
+  getSessionName?: () => string | null;
   onEvent?: (e: AgentEvent) => void;
   /** 分类器。为 undefined 时不做自动分类。 */
   classifier?: Classifier;

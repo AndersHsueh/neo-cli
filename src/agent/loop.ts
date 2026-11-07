@@ -264,6 +264,11 @@ export class Agent {
     }
   }
 
+  /** 当前会话名，供子代理身份句使用；宿主未提供时为 null（回退 neo）。 */
+  get sessionName(): string | null {
+    return this.opt.getSessionName?.() ?? null;
+  }
+
   /**
    * 按当前配置整体重建系统提示词（档位、会话名、模型行、项目记忆一并刷新）。
    * 宿主未提供 renderSystemPrompt（子代理/测试）时无事可做。

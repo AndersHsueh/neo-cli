@@ -190,7 +190,7 @@ function fakeStream(
 }
 
 const isSub = (msgs: Message[]): boolean =>
-  (contentText(msgs[0]?.content ?? "") ?? "").startsWith("你是主代理派生的子代理");
+  (contentText(msgs[0]?.content ?? "") ?? "").includes("派出的子代理");
 
 const taskCtx = { cfg: makeCfg(), approve: async () => true };
 

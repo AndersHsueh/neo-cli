@@ -741,6 +741,7 @@ async function main(): Promise<number> {
     mode: args.mode,
     systemPrompt: promptManager.render(cfg).text,
     renderSystemPrompt: () => promptManager.render(cfg).text,
+    getSessionName: () => sessionLabel,
     classifier,
     memory,
     checkpoint: checkpoints,
@@ -868,7 +869,7 @@ async function main(): Promise<number> {
   // task 工具：派生子代理。必须在首次 send 前注册 —— toolSpecs() 每轮现取，注册后即刻生效。
   registerTool(
     makeTaskTool({
-      run: (prompt, tier, ctx) => runSubagent(agent, prompt, tier, ctx),
+      run: (prompt, tier, ctx, promptTier) => runSubagent(agent, prompt, tier, ctx, promptTier),
     }),
   );
 

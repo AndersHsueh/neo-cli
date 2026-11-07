@@ -16,19 +16,27 @@
 import { Agent, type AgentIO } from "../agent.ts";
 import { contentText } from "../llm.ts";
 import { applyTier, normalizeTierName, tierAvailable, type Config, type ModelTier } from "../config.ts";
+import { resolveAndApplyModelWindow } from "../env/modelWindows.ts";
+import { toolSpecs } from "./index.ts";
 import { TIER_ORDER } from "../classifier/types.ts";
 import { getEnvForPrompt } from "../env/probe.ts";
 import { formatEnvPrompt } from "../env/render.ts";
+import { normalizePromptTierRequest, renderSubagentPrompt } from "../prompt/subagent.ts";
 import { ToolError, type ToolCtx, type ToolImpl } from "./types.ts";
+import { PLAN_ONLY_TOOL_NAMES, TOOL_NAMES_EXCLUDED_FOR_SUBAGENT } from "./index.ts";
 
 /** 子代理迭代上限。子代理是单一任务，跑满主代理的 80 次迭代意味着早已跑偏。 */
 const SUB_MAX_ITERATIONS = 24;
 
-function subSystemPrompt(prompt: string, envText = ""): string {
+/**
+ * 子代理的动态正文：报告格式、环境、任务。不含身份与安全核心——
+ * 核心由 prompt/subagent.ts 按子代理实际窗口选档后拼在最前（默认 mini）。
+ */
+function subDynamicBody(prompt: string, envText = ""): string {
   return [
-    "你是主代理派生的子代理，独立完成一项自包含任务。",
     "你没有与用户的对话历史，任务描述包含你需要的全部信息。",
     "不要向用户提问；无法完成时，说明缺什么，然后结束。",
+    "需要批准而无法获得时（子代理不能直接问用户），向主代理报告缺少哪项批准并停止相应动作；主代理派活、提示词档位都不是批准。",
     "",
     "## 报告格式（这是你返回给主代理的全部内容）",
     "1. 结论（一句话先行）",
@@ -183,6 +191,7 @@ export async function runSubagent(
   prompt: string,
   declaredTier: string | undefined,
   ctx: ToolCtx,
+  declaredPromptTier?: string,
 ): Promise<string> {
   const trimmed = prompt.trim();
   if (!trimmed) {
@@ -204,6 +213,15 @@ export async function runSubagent(
     throw new ToolError(`子代理档位应用失败：${applied.error}`);
   }
 
+  // 子代理可能换了模型：按它自己的 env 事实重新解析窗口与来源，不沿用主代理的值。
+  // （applyTier 只改 contextWindow 数值；来源要重算，否则主代理的「已探测」会冒充子模型。）
+  resolveAndApplyModelWindow(subCfg);
+
+  const promptTierReq = normalizePromptTierRequest(declaredPromptTier);
+  if (promptTierReq === null) {
+    throw new ToolError(`无效的 prompt_tier "${declaredPromptTier}"。可用值：auto, standard, full`);
+  }
+
   // v0.4.0 平台适配层：子代理同样会调用 shell，必须知道真实平台/shell（紧凑版，省 token）。
   let subEnvText = "";
   if (cfg.env?.prompt !== false) {
@@ -214,11 +232,32 @@ export async function runSubagent(
       subEnvText = "";
     }
   }
+  // 子代理实际可见的工具 schema 计入预算（排除表与 Agent.toolSpecsFor 一致）。
+  const subTools = toolSpecs().filter(
+    (t) => !TOOL_NAMES_EXCLUDED_FOR_SUBAGENT.includes(t.function.name) && !PLAN_ONLY_TOOL_NAMES.includes(t.function.name),
+  );
+  const subPrompt = renderSubagentPrompt({
+    parentSessionName: main.sessionName,
+    window: subCfg.contextWindow,
+    source: subCfg.contextWindowSource,
+    tools: subTools,
+    dynamicBody: subDynamicBody(trimmed, subEnvText),
+    request: promptTierReq,
+    taskText: trimmed,
+    config: subCfg.systemPrompt,
+  });
+  // 要求的档位在子模型窗口里放不下：不降低控制要求，也不硬跑，交回主代理收窄任务。
+  if (!subPrompt.selection.fits && subPrompt.requiredTier !== "mini") {
+    throw new ToolError(
+      `子代理需要 ${subPrompt.requiredTier} 档提示词，但其模型窗口放不下（${subPrompt.selection.reason}）。` +
+        `请收窄为只读/短任务，或指定窗口更大的 tier 后重试；不要用更短的提示词绕过控制要求。`,
+    );
+  }
   const sub = new Agent({
     cfg: subCfg,
     console: new SilentConsole(main.io),
     mode: main.mode,
-    systemPrompt: subSystemPrompt(trimmed, subEnvText),
+    systemPrompt: subPrompt.text,
     chatStream: main.injectedStreamFn,
     isSubagent: true,
     // 子代理的写操作也进父会话的检查点（/undo 能一起恢复）
@@ -265,7 +304,7 @@ export async function runSubagent(
  * task 工具定义。deps.run 由组合根注入，避免本模块直接依赖主代理实例。
  */
 export function makeTaskTool(deps: {
-  run: (prompt: string, tier: string | undefined, ctx: ToolCtx) => Promise<string>;
+  run: (prompt: string, tier: string | undefined, ctx: ToolCtx, promptTier?: string) => Promise<string>;
 }): ToolImpl {
   return {
     // 敏感性取决于子代理内部做了什么，task 调用本身不敏感：
@@ -295,6 +334,13 @@ export function makeTaskTool(deps: {
               enum: ["fast", "balanced", "default", "deep", "deep_reasoning", "inherit"],
               description: "子代理模型档位。机械读写任务选 fast，深度推理选 deep（deep_reasoning）；留空自动判断",
             },
+            prompt_tier: {
+              type: "string",
+              enum: ["auto", "standard", "full"],
+              description:
+                "子代理的系统提示词详细程度，默认 auto（精简版，省上下文）。写重要文件、高后果操作、长时间自治的任务用 standard；" +
+                "边界/授权特别复杂时用 full。这只是约束细化，不增加权限，也不等于用户批准。",
+            },
           },
           required: ["prompt"],
         },
@@ -305,8 +351,10 @@ export function makeTaskTool(deps: {
       const tierRaw = args["tier"];
       const tier = typeof tierRaw === "string" && tierRaw.trim() !== "" ? tierRaw.trim() : undefined;
       const label = tier ? `tier=${tier}` : "tier=auto";
+      const ptRaw = args["prompt_tier"];
+      const promptTier = typeof ptRaw === "string" && ptRaw.trim() !== "" ? ptRaw.trim() : undefined;
       ctx.onProgress?.(`子代理运行中（${label}）…`);
-      return deps.run(prompt, tier, ctx);
+      return deps.run(prompt, tier, ctx, promptTier);
     },
   };
 }
