@@ -497,6 +497,10 @@ interface NeoOptions {
   autoName?: boolean;
   /** 启动 1.5s 后把 PTY 改窄（测 resize 下帧/输入框不串行）。 */
   resizeToCols?: number;
+  /** 启动前在临时 cwd 里写 settings.json（默认用 PTY_SETTINGS）。 */
+  settings?: Record<string, unknown>;
+  /** 启动前在临时 cwd 里写项目记忆文件（AGENTS.md 内容）。 */
+  agentsMd?: string;
 }
 
 /**
@@ -532,7 +536,15 @@ async function startNeo(opts: NeoOptions): Promise<NeoRun> {
   const cat = Bun.which("cat") ?? "/bin/cat";
 
   // 确定性配置写到临时 cwd：config.loadConfig 的第一优先级就是 <cwd>/settings.json。
-  await writeFile(join(dirs.work, "settings.json"), JSON.stringify(PTY_SETTINGS, null, 2), "utf8");
+  await writeFile(
+    join(dirs.work, "settings.json"),
+    JSON.stringify(opts.settings ?? PTY_SETTINGS, null, 2),
+    "utf8",
+  );
+  // issue #18 S22：项目记忆文件必须早于 neo 启动落盘，否则启动时找不到。
+  if (opts.agentsMd !== undefined) {
+    await writeFile(join(dirs.work, "AGENTS.md"), opts.agentsMd, "utf8");
+  }
 
   try {
     await rm(fifo, { force: true });
@@ -577,6 +589,9 @@ async function startNeo(opts: NeoOptions): Promise<NeoRun> {
     NEO_MEMORY_DISABLE: "1",
     NEO_SESSIONS_DIR: dirs.sessions,
     NEO_MAILBOX_DIR: dirs.mailbox,
+    // issue #18：启动诊断日志落到本次运行的临时 HOME 下，S22 才能断言
+    // 「诊断确实进了日志通道」而不是进了 TUI（不设会写到真实 ~/.neo/logs）。
+    NEO_LOG_DIR: join(dirs.home, ".neo", "logs"),
     COLUMNS: String(cols),
     LINES: String(rows),
     TERM: "xterm-256color",
@@ -1126,6 +1141,32 @@ async function scenarioS4(tmpRoot: string): Promise<void> {
 /* ------------------------------------------------------------------ */
 /* v0.2.4 输入层场景：Tab 补全 / @ 引用 / Ctrl+J 多行                   */
 /* ------------------------------------------------------------------ */
+
+/**
+ * 读本次运行的启动诊断日志（issue #18：诊断只写 `<NEO_LOG_DIR>/boot/<day>.jsonl`）。
+ * 返回解析后的条目；目录/文件不存在返回空数组（启动没写诊断也是合法状态）。
+ */
+function readBootLog(dirs: RunDirs): Array<{ kind: string; message: string }> {
+  const dir = join(dirs.home, ".neo", "logs", "boot");
+  let names: string[];
+  try {
+    names = readdirSync(dir).filter((f) => f.endsWith(".jsonl"));
+  } catch {
+    return [];
+  }
+  const out: Array<{ kind: string; message: string }> = [];
+  for (const name of names) {
+    for (const line of readFileSync(join(dir, name), "utf8").split("\n")) {
+      if (!line.trim()) continue;
+      try {
+        out.push(JSON.parse(line) as { kind: string; message: string });
+      } catch {
+        /* 半行（进程被杀时）忽略 */
+      }
+    }
+  }
+  return out;
+}
 
 /** 会话目录里最新的 .json（S7 用它断言落盘的 user 消息）。 */
 function latestSessionFile(dir: string): string | null {
@@ -2062,6 +2103,187 @@ interface Scenario {
   fn: (tmpRoot: string) => Promise<void>;
   /** 失败快照的锚点文本。 */
   focus: string[];
+  /** 启动前在临时 cwd 里写 settings.json（默认用 PTY_SETTINGS）。 */
+  settings?: Record<string, unknown>;
+  /** 启动前在临时 cwd 里写项目记忆文件（AGENTS.md 内容）。 */
+  agentsMd?: string;
+}
+
+/** S22：启动降噪 + 输出顺序（issue #18）。 */
+async function scenarioS22(tmpRoot: string): Promise<void> {
+  const dirs = await makeDirs(tmpRoot, "s22-boot-noise");
+  const fake = await startFake("tool-then-answer");
+  const run = await startNeo({
+    fake,
+    dirs,
+    name: "s22",
+    args: BASE_ARGS,
+    cols: DEFAULT_COLS,
+    rows: DEFAULT_ROWS,
+    // 五项能力全空 → 会走「首次使用 … 将探测模型能力」分支（这正是要静音的那句）。
+    settings: {
+      ...PTY_SETTINGS,
+      providers: [{ ...(PTY_SETTINGS.providers[0] as Record<string, unknown>) }],
+    },
+    agentsMd: "# S22 项目记忆\n\n- 这条记忆只用于启动顺序断言。\n",
+  });
+  try {
+    await waitPrompt(run);
+    // 探测是异步的：等它落定（写日志/写回都在这之后），再看屏幕。
+    await Bun.sleep(1500);
+    const text = run.screen.text();
+    check(!text.includes("首次使用"), "启动 TUI 不应出现「首次使用 … 将探测模型能力」", run.screen);
+    check(!text.includes("将探测"), "启动 TUI 不应出现前置探测提示", run.screen);
+    check(!text.includes("未探测到"), "启动 TUI 不应出现「未探测到」能力诊断", run.screen);
+    // 无 shell 警告时：记忆提示紧邻、且启动段里不该出现警告行。
+    checkBootOrder(run.screen, { expectWarning: false });
+
+    // 诊断没消失，只是换了通道：日志里必须能看到前置探测提示与「未探测到」缺口。
+    const bootLog = readBootLog(dirs);
+    const kinds = bootLog.map((e) => e.kind);
+    check(kinds.includes("probe-intent"), `启动诊断日志应有 probe-intent（实际：${kinds.join(",")}）`, run.screen);
+    check(
+      bootLog.some((e) => e.kind === "probe-intent" && e.message.includes("将探测")),
+      "日志里的前置探测提示应保留「将探测」原文",
+      run.screen,
+    );
+    check(
+      bootLog.some((e) => e.kind === "capability-gap" && e.message.includes("未探测到")),
+      "日志里应保留「未探测到」能力缺口诊断",
+      run.screen,
+    );
+    // 日志是纯文本通道：不能带颜色转义（否则 grep 不干净）。
+    check(!bootLog.some((e) => e.message.includes("\x1b")), "启动诊断日志不应含 ANSI 转义", run.screen);
+
+    maybeDumpScreen(run.screen);
+    await run.type("/exit");
+    await run.waitExit();
+  } catch (e) {
+    throw attachScreen(e, run.screen, run.stderr);
+  } finally {
+    await run.close();
+    await fake.stop();
+  }
+}
+
+/**
+ * S22b：**有 shell 解析告警**时的启动顺序（issue #18 独立验收 MUST FIX 1）。
+ *
+ * settings.shell.path 指向不存在的路径 → shell.ts 回退到其它候选并产出 warnings。
+ * 要求：警告仍然可见，但**不能**插在「真实 shell 状态行」与「项目记忆提示」之间。
+ *
+ * 隔离：settings 写在本次运行的临时 cwd（config 第一优先级），HOME 也是临时目录，
+ * 不读也不写宿主机的 settings/密钥/模型配置。
+ */
+async function scenarioS22b(tmpRoot: string): Promise<void> {
+  const dirs = await makeDirs(tmpRoot, "s22b-shell-warning");
+  const fake = await startFake("tool-then-answer");
+  const run = await startNeo({
+    fake,
+    dirs,
+    name: "s22b",
+    args: BASE_ARGS,
+    cols: DEFAULT_COLS,
+    rows: DEFAULT_ROWS,
+    settings: {
+      ...PTY_SETTINGS,
+      // 不存在的路径：必然触发「指定的 shell 不可执行 … 已回退到其它候选」
+      shell: { path: "/nonexistent/issue18-shell" },
+      providers: [{ ...(PTY_SETTINGS.providers[0] as Record<string, unknown>) }],
+    },
+    agentsMd: "# S22b 项目记忆\n\n- 有 shell 告警时的启动顺序断言。\n",
+  });
+  try {
+    await waitPrompt(run);
+    await Bun.sleep(1500);
+    const text = run.screen.text();
+    check(!text.includes("首次使用"), "启动 TUI 不应出现「首次使用 … 将探测模型能力」", run.screen);
+    check(!text.includes("未探测到"), "启动 TUI 不应出现「未探测到」能力诊断", run.screen);
+    // 关键断言：警告可见 + 记忆提示紧邻真实 shell 行。
+    checkBootOrder(run.screen, { expectWarning: true });
+
+    maybeDumpScreen(run.screen);
+    await run.type("/exit");
+    await run.waitExit();
+  } catch (e) {
+    throw attachScreen(e, run.screen, run.stderr);
+  } finally {
+    await run.close();
+    await fake.stop();
+  }
+}
+
+/**
+ * S22 系列：**严格**定位真实启动 shell 状态行（issue #18 独立验收 MUST FIX 2）。
+ *
+ * 不能用 `includes("shell ")`：shell 解析告警（「指定的 shell 不可执行…」）、
+ * `/help` 输出、banner 的 tools 行（含 `shell` 工具名）都会命中，造成假阳性。
+ * 真实状态行由 index.ts 输出为 `  shell <path>（<kind>…）`，所以按行首格式匹配：
+ * 行首两个空格 + `shell ` + 绝对路径 + 全角括号。只取**启动段**（第一条分隔线之前）
+ * 里的第一条，后续命令输出一律不算启动锚点。
+ */
+const BOOT_SHELL_LINE = /^ {2}shell \/[^（]*（/;
+
+/**
+ * 启动段的行：banner 首行（M.A.T.R.I.X）之后，到含 `Agent:` 的输入框顶部分隔线之前。
+ * banner 自身就带一条分隔线，所以不能用「第一条分隔线」当边界（那样启动段只剩 banner）。
+ * 屏幕是滚动缓冲：banner 已滚出时退回整屏。
+ */
+function bootSegmentRange(screen: Screen): { from: number; to: number; lines: string[] } {
+  const lines = screen.lines();
+  const start = lines.findIndex((l) => l.includes("M.A.T.R.I.X"));
+  const from = start >= 0 ? start : 0;
+  const end = lines.findIndex((l, i) => i > from && l.includes("Agent:"));
+  const to = end >= 0 ? end : lines.length;
+  return { from, to, lines: lines.slice(from, to) };
+}
+
+/** 启动段里第一条真实 shell 状态行的下标（相对整屏）；没有返回 -1。 */
+function bootShellLineIndex(screen: Screen): number {
+  const { from, lines } = bootSegmentRange(screen);
+  const rel = lines.findIndex((l) => BOOT_SHELL_LINE.test(l));
+  return rel < 0 ? -1 : from + rel;
+}
+
+/**
+ * S22 共用断言：真实 shell 状态行 → 项目记忆提示**紧邻**（下一非空行）→ 告警（若有）在记忆之后。
+ * `expectWarning` 决定是否要求启动段里出现 shell 解析告警（有/无告警两种启动都要过）。
+ */
+function checkBootOrder(screen: Screen, opts: { expectWarning: boolean }): void {
+  const lines = screen.lines();
+  const seg = bootSegmentRange(screen).lines;
+  const shellIdx = bootShellLineIndex(screen);
+  check(shellIdx >= 0, "启动段应有真实 shell 状态行（行首 `  shell /…（`）", screen);
+
+  const memIdx = lines.findLastIndex((l) => l.includes("已加载项目记忆"));
+  check(memIdx > shellIdx, "记忆提示必须在真实 shell 状态行之后", screen);
+  const nextNonEmpty = lines.slice(shellIdx + 1).find((l) => l.trim() !== "") ?? "";
+  check(
+    nextNonEmpty.includes("已加载项目记忆"),
+    `记忆提示必须紧接真实 shell 状态行下方（实际下一非空行：${nextNonEmpty}）`,
+    screen,
+  );
+  check(lines.filter((l) => l.includes("已加载项目记忆")).length === 1, "记忆提示只能出现一次", screen);
+
+  // 启动段里必须恰好一条 shell 状态行：多出来的多半是误匹配（告警/工具名）。
+  const shellLines = seg.filter((l) => BOOT_SHELL_LINE.test(l));
+  check(shellLines.length === 1, `启动段应只有一条 shell 状态行（实际 ${shellLines.length} 条）`, screen);
+
+  const warnIdx = seg.findIndex((l) => l.includes("指定的 shell 不可执行"));
+  if (opts.expectWarning) {
+    check(warnIdx >= 0, "有 shell 配置告警时，告警行必须仍然可见", screen);
+    const segShell = seg.findIndex((l) => BOOT_SHELL_LINE.test(l));
+    const segMem = seg.findIndex((l) => l.includes("已加载项目记忆"));
+    check(segMem > segShell, "启动段内记忆提示必须在 shell 状态行之后", screen);
+    check(warnIdx > segMem, "shell 告警必须排在记忆提示之后（不得打断紧邻）", screen);
+    check(
+      !seg.some((l) => l.includes("指定的 shell 不可执行") && BOOT_SHELL_LINE.test(l)),
+      "告警行不得被当成 shell 状态行",
+      screen,
+    );
+  } else {
+    check(warnIdx < 0, "无 shell 配置告警时，启动段不应出现 shell 告警行", screen);
+  }
 }
 
 /** S20：ask_user 提问模态（v0.4.1 B2）——问题/选项可见，↓+Enter 回答并回给模型。 */
@@ -2331,6 +2553,18 @@ const SCENARIOS: Scenario[] = [
     title: "S21 /goal 目标锚：设置/查看/清除，且设目标时带工具 turn 正常",
     fn: scenarioS21,
     focus: ["目标锚已设置", "找出这篇博客的作者", "读完了：内容是 hello。"],
+  },
+  {
+    id: "s22",
+    title: "S22 启动降噪：无探测诊断；banner → shell → 项目记忆提示（紧邻且一次）",
+    fn: scenarioS22,
+    focus: ["M.A.T.R.I.X", "shell ", "已加载项目记忆"],
+  },
+  {
+    id: "s22b",
+    title: "S22b 有 shell 配置告警：告警可见但不打断「shell 行 → 项目记忆提示」紧邻",
+    fn: scenarioS22b,
+    focus: ["M.A.T.R.I.X", "已加载项目记忆", "指定的 shell 不可执行"],
   },
 ];
 

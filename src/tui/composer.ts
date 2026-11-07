@@ -534,20 +534,23 @@ export class Composer {
     const prefix = kind === "ask" ? c.warn("? ") : c.accent("❯ ");
     const cont = "  ";
     const placeholder = kind === "ask" ? "y / N（Enter 确认，Esc 取消）" : "输入消息 · @ 文件 · / 命令 · Ctrl+J 换行";
+    // issue #18：占位用 c.placeholder（grey + SGR 2），比正文暗一档且仍可读；
+    // 正文/光标走 paintInputLine 的 c.text + c.inverse，不受这里影响。
+    const paintPlaceholder = (s: string): string => c.placeholder(truncate(s, Math.max(0, contentW - 1)));
     const empty = buf.text === "";
     for (let v = scroll; v < Math.min(scroll + viewH, total); v++) {
       const line = layout.lines[v] as VisualLine;
       const isCursorLine = v === layout.cursorRow;
       const head = v === 0 ? prefix : cont;
       if (empty && v === 0) {
-        rows.push(`${head}${c.inverse(" ")}${c.dim(truncate(placeholder, Math.max(0, contentW - 1)))}`);
+        rows.push(`${head}${c.inverse(" ")}${paintPlaceholder(placeholder)}`);
         continue;
       }
       rows.push(head + this.paintInputLine(line, isCursorLine ? layout.cursorIndex - line.start : null, contentW));
     }
     // 空文本时也要有一行
     if (rows.length === 1) {
-      rows.push(`${prefix}${c.inverse(" ")}${c.dim(truncate(placeholder, Math.max(0, contentW - 1)))}`);
+      rows.push(`${prefix}${c.inverse(" ")}${paintPlaceholder(placeholder)}`);
     }
     rows.push(c.dim("─".repeat(width)));
     const cursorLine = Math.max(0, layout.cursorRow - scroll);

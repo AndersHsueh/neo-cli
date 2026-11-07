@@ -90,6 +90,16 @@ export const c = {
 
   bold: (s: string): string => (colorEnabled() ? `${esc}1m${s}${RESET}` : s),
   dimAttr: (s: string): string => (colorEnabled() ? `${esc}2m${s}${RESET}` : s),
+  /**
+   * issue #18：输入框占位文案的语义色 —— 比正文暗、但仍可读。
+   *
+   * 为什么不是单纯 `dim`（dimGreen #008F11）：那档在深色终端上跟正文（白色）比
+   * 已经够暗，但用户仍觉得「占位像内容」。这里再叠一层 SGR 2（faint），
+   * 让占位明确退到背景层；grey 保证叠 faint 之后仍有对比度（不是纯黑）。
+   * 只影响占位，正文/光标走 c.text + c.inverse，不受影响。
+   */
+  placeholder: (s: string): string =>
+    colorEnabled() ? `${fg(...palette.grey)}${esc}2m${s}${RESET}` : s,
   italic: (s: string): string => (colorEnabled() ? `${esc}3m${s}${RESET}` : s),
   inverse: (s: string): string => (colorEnabled() ? `${esc}7m${s}${RESET}` : s),
   onAccent: (s: string): string =>

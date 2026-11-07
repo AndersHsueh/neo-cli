@@ -105,6 +105,14 @@ import { mailboxRoot, type Envelope } from "./mailbox/types.ts";
 import { cleanupRuntime } from "./maintenance.ts";
 import { CheckpointStore } from "./checkpoint.ts";
 import { formatResumeWarning, outcomeOf, type LastTurnMeta } from "./turnDiagnostics.ts";
+import {
+  bootLines,
+  formatGapLogLine,
+  formatProbeIntent,
+  formatWindowNotice,
+  formatWritebackNotice,
+  logBootDiagnostic,
+} from "./bootDiagnostics.ts";
 
 /* ------------------------------------------------------------------ */
 /* 参数解析                                                            */
@@ -431,6 +439,7 @@ async function main(): Promise<number> {
   // 探测成功会写入 env 事实文件，后续启动/切模型直接命中。
   // 同一 provider|model 的「网关没给能力」提示只说一次，避免每轮撞墙都刷屏；
   // /context 与 /env 仍每次都展示。
+  // issue #18：能力诊断只写日志，不进 TUI。TUI 只留「改了什么」（写回字段、生效窗口）。
   const announcedCapabilityGap = new Set<string>();
   const announceCapabilityGap = (): void => {
     const key = `${cfg.providerName}|${cfg.model}`;
@@ -438,29 +447,34 @@ async function main(): Promise<number> {
     const hint = formatCapabilityGapHint(cfg);
     if (!hint) return;
     announcedCapabilityGap.add(key);
-    ui.info(hint);
+    logBootDiagnostic({ kind: "capability-gap", message: formatGapLogLine(hint) });
   };
   if (interactiveTTY) {
     // #6：按字段补空缺。五项全空才说「首次使用」；只填了窗口时也要探测其余项。
     // 判定必须在探测之前做 —— 探测会写 env 事实，但手写值（含 false）不会被改掉。
     const missingCaps = undeclaredCapabilityFields(cfg);
     if (missingCaps.length > 0) {
-      ui.info(
-        missingCaps.length === 5
-          ? `首次使用 ${cfg.providerName}/${cfg.model}：为保障效果，将探测模型能力（上下文窗口 / 输出上限 / 视觉 / 工具 / 推理）并补进 settings.json 的空字段。`
-          : `${cfg.providerName}/${cfg.model} 仍有未声明能力（${missingCaps.join("、")}），将探测并只补空字段（已手写的值，含 false，不会被覆盖）。`,
-      );
+      logBootDiagnostic({
+        kind: "probe-intent",
+        message: formatProbeIntent(cfg.providerName, cfg.model, missingCaps),
+      });
       void probeCapabilitiesOnFirstUse(cfg)
         .then((r) => {
           if (r.written.length > 0) {
-            ui.info(`已补进 settings.json：${r.written.join("、")}（手写值不会被覆盖）`);
+            ui.info(formatWritebackNotice(r.written));
+            logBootDiagnostic({ kind: "probe-writeback", message: formatWritebackNotice(r.written) });
           }
           // 瘦网关补不出上限时说清楚，避免「探测跑过了」被当成已经学会。
+          // issue #18：这句是诊断，只进日志（异步回调里也绝不回流 TUI）。
           announceCapabilityGap();
           if (r.contextWindow) {
             const applied = resolveAndApplyModelWindow(cfg);
             if (applied.source !== "config") {
-              ui.info(`模型上下文窗口：${applied.tokens.toLocaleString()} tokens（${applied.source}）`);
+              ui.info(formatWindowNotice(applied.tokens, applied.source));
+              logBootDiagnostic({
+                kind: "model-window",
+                message: formatWindowNotice(applied.tokens, applied.source),
+              });
             }
           }
         })
@@ -473,7 +487,7 @@ async function main(): Promise<number> {
           if (!info?.contextWindow) return;
           const r = resolveAndApplyModelWindow(cfg);
           if (r.source !== "config") {
-            ui.info(`模型上下文窗口：${r.tokens.toLocaleString()} tokens（${r.source}）`);
+            ui.info(formatWindowNotice(r.tokens, r.source));
           }
         })
         .catch(() => {
@@ -973,6 +987,8 @@ async function main(): Promise<number> {
   }
 
   // 覆盖系统提示：注入项目记忆文件（若存在）
+  // issue #18：注入仍在这里（系统提示必须早于首轮），但**提示行**延后到
+  // banner + shell 行之后输出（见下方「启动输出顺序」），避免记忆提示跑到 banner 前面。
   const memoryFile = ["AGENTS.md", "NEO.md", ".neo.md"]
     .map((f) => join(cfg.cwd, f))
     .find((p) => existsSync(p));
@@ -980,7 +996,6 @@ async function main(): Promise<number> {
     const extra = readFileSync(memoryFile, "utf8");
     const sysMsg = agent.messages[0];
     if (sysMsg) sysMsg.content = `${sysMsg.content}\n\n## 项目记忆（来自 ${memoryFile}）\n\n${extra}`;
-    ui.info(`已加载项目记忆 ${memoryFile}`);
   }
 
   // v0.2 记忆激活 §7.7.1 R0：用户画像摘要注入 messages[1]（不追加到 messages[0]）。
@@ -1111,11 +1126,23 @@ async function main(): Promise<number> {
 
   // ---- 交互模式 ----
   if (process.stdin.isTTY) {
+    // 启动输出顺序（issue #18）：banner → shell 行 → 项目记忆提示 → shell 解析告警 → --resume 回放。
+    // 记忆提示必须**紧邻**真实 shell 状态行的下一行（用户先看到「在哪跑、用什么 shell」，
+    // 再看到「带了哪份项目记忆」），所以注入留在上面、提示行挪到这里，且只打一次。
+    // shell 解析告警（如 settings shell.path 不可执行而回退）仍然可见，但排在记忆提示之后：
+    // 它插在中间会打断「shell 行 → 记忆提示」的紧邻关系（#18 独立验收 MUST FIX 1）。
     ui.line(banner(cfg.model, cfg.baseUrl, cfg.providerName, tierDisplayName(cfg.modelTier), toolNames().join(" ")));
     // v0.4.0 平台适配层：一眼可见实际使用的 shell，解析告警不静默。
     const bootShell = getShell(cfg);
-    ui.line(c.dim(`  shell ${describeShell(bootShell)}`));
-    for (const w of bootShell.warnings) ui.warn(w);
+    for (const row of bootLines({
+      shell: c.dim(`  shell ${describeShell(bootShell)}`),
+      memory: memoryFile ? `已加载项目记忆 ${memoryFile}` : null,
+      warnings: bootShell.warnings,
+    })) {
+      if (row.kind === "shell") ui.line(row.text);
+      else if (row.kind === "memory") ui.info(row.text);
+      else ui.warn(row.text);
+    }
     // v0.2.3 D4：--resume 之后屏幕不能是空的 —— 回放最近几轮，人和上下文对齐
     if (restored && restored.length > 0) replayTranscript(ui, agent.messages);
   }
