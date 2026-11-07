@@ -225,10 +225,11 @@ export interface Config {
   configuredContextWindow?: number;
   /**
    * contextWindow 的来源（v0.4.1 A2）：
-   *  - config = settings 值；models_api/overflow_error = 自动探测；known = 兜底表。
+   *  - config = settings 值；models_api/overflow_error = 自动探测；known = 兜底表；
+   *    default = 无任何依据的 200,000 兜底（不是事实）。
    *  只用于 /context 展示与排障，不参与序列化。
    */
-  contextWindowSource?: "config" | "models_api" | "overflow_error" | "known";
+  contextWindowSource?: "config" | "models_api" | "overflow_error" | "known" | "default";
   /** 顶层全局默认。provider 未覆盖某项时用它，切换 provider 时据此回滚。 */
   globalDefaults: { maxTokens: number; temperature: number; contextWindow: number };
   compactThreshold: number;

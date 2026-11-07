@@ -18,6 +18,7 @@ import { dispatch, toolSpecs, toolKindOf, isParallelizable, TOOL_NAMES_EXCLUDED_
 import { ToolError, type ToolCtx } from "../tools/types.ts";
 import { appendTurnLog } from "../turnDiagnostics.ts";
 import { isContextOverflowError, parseContextLimitFromError } from "../contextWindow.ts";
+import { formatModelLine } from "../prompt/modelLine.ts";
 import { applyCompaction, planCompaction } from "./compact.ts";
 import { decidePermission } from "./policy.ts";
 import {
@@ -273,9 +274,7 @@ export class Agent {
     if (!sys || sys.role !== "system") return;
     // system 消息恒为 string（结构性约束）；类型扩宽后此处显式收窄
     const current = typeof sys.content === "string" ? sys.content : "";
-    const line =
-      `- 模型：${cfg.model}（provider ${cfg.providerName}，档位 ${cfg.modelTier}；` +
-      `这是推理模型，你的思维链会先于正文输出，这是正常的）`;
+    const line = formatModelLine(cfg);
     if (/- 模型：[^\n]*/.test(current)) {
       sys.content = current.replace(/- 模型：[^\n]*/, line);
     } else {

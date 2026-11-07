@@ -9,7 +9,8 @@
  */
 import type { ModelContextInfo } from "./env/types.ts";
 
-export type WindowSource = "config" | "models_api" | "overflow_error" | "known";
+/** `default` = 没有任何依据时的 200,000 兜底；它不是探测事实，选提示词档位时不可当作已证实窗口。 */
+export type WindowSource = "config" | "models_api" | "overflow_error" | "known" | "default";
 
 export interface ResolvedWindow {
   tokens: number;
@@ -50,7 +51,7 @@ export function resolveContextWindow(
   }
   const known = knownWindow(model);
   if (known) return { tokens: known, source: "known" };
-  return { tokens: 200_000, source: "known" };
+  return { tokens: 200_000, source: "default" };
 }
 
 const OVERFLOW_RE =

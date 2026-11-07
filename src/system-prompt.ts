@@ -10,6 +10,7 @@ import { buildSkillIndex, discoverSkills, isRealDir } from "./skills.ts";
 import { resolveUserWikiLayout, resolveWikiLayout } from "./wiki/paths.ts";
 import { getEnvForPrompt } from "./env/probe.ts";
 import { formatEnvPrompt } from "./env/render.ts";
+import { formatModelLine } from "./prompt/modelLine.ts";
 
 const IGNORE_DIRS = new Set([
   "node_modules",
@@ -109,7 +110,7 @@ ${askUserRule}
 ## 风险与交付
 
 - 删除、覆盖交付物（outputs/、docs/、release-notes 等）之前先说明后果；默认保留旧版本（改名/备份），不为了整洁主动删旧版。
-- 不可逆操作（rm -rf、git reset --hard、覆盖文件）先确认；能向用户提问时优先问，否则明确写出将发生什么再执行。
+- 不可逆操作（rm -rf、git reset --hard、覆盖文件）须用户对具体对象和效果的明确批准；能向用户提问时先问。不能交互（如 -p 非交互模式）时只做可逆准备，列出待批准项并停止——告知不等于批准。
 
 ## 工具
 
@@ -145,7 +146,7 @@ ${opts.mailbox ? "- send_message：给另一个存活的 neo 会话投递纯文�
 ## 环境
 
 - 工作目录：${cfg.cwd}
-- 模型：${cfg.model}（provider ${cfg.providerName}，档位 ${cfg.modelTier}；这是推理模型，你的思维链会先于正文输出，这是正常的）
+${formatModelLine(cfg)}
 ${envText ? `${envText}\n` : ""}${treeText}
 `;
 }
