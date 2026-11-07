@@ -223,6 +223,12 @@ export async function runSubagent(
     isSubagent: true,
     // 子代理的写操作也进父会话的检查点（/undo 能一起恢复）
     checkpoint: ctx.checkpoint,
+    // 生命周期 hooks（issue #3）：子代理的工具调用同样触发 Pre/PostToolUse ——
+    // 子代理是「同一次用户请求里的工具执行」，绕过 hook 等于给 hook 留了一条
+    // 结构性旁路（危险命令派给子代理跑就躲过了拦截）。
+    // TurnEnd 则在 Agent.emitTurnEndHooks 里按 isSubagent 跳过：
+    // 子代理的回合不是用户眼里的回合，一次请求触发 N+1 次没有意义。
+    hooks: main.hooksConfig,
     // 不传 classifier：子代理任务短，内部切档收益趋近于零，
     // 且分类器依赖连续失败计数等主循环状态，子代理里没有意义。
   });

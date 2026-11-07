@@ -33,6 +33,7 @@ import {
 import { previewArgs } from "./render.ts";
 import { budgetMessage as buildBudgetMessage, readGoalSafe } from "./steer.ts";
 import type { AgentIO, AgentOptions, PermissionMode, TurnStats } from "./types.ts";
+import { dispatchHooks, describeOutcome, hasAnyHook, type HookPayload } from "../hooks/index.ts";
 
 export type { AgentEvent, AgentIO, AgentOptions, PermissionMode, TurnStats } from "./types.ts";
 export { renderFinal } from "./render.ts";
@@ -753,7 +754,7 @@ export class Agent {
             const r = await dispatch(headName, head.function.arguments, ctx);
             this.opt.console.toolResult(r.output, 2, r.ok);
             this.opt.onEvent?.({ type: "tool_end", data: { name: headName, ok: r.ok, truncated: r.truncated } });
-            this.settleToolOutcome(headName, r.ok);
+            this.settleToolOutcome(headName, r.ok, r.executed !== false);
             this.messages.push({ role: "tool", tool_call_id: head.id, name: headName, content: r.output });
             ci++;
             continue;
@@ -785,7 +786,7 @@ export class Agent {
               type: "tool_end",
               data: { name: call.function.name, ok: r.ok, truncated: r.truncated },
             });
-            this.settleToolOutcome(call.function.name, r.ok);
+            this.settleToolOutcome(call.function.name, r.ok, r.executed !== false);
             this.messages.push({
               role: "tool",
               tool_call_id: call.id,
@@ -939,6 +940,18 @@ export class Agent {
     this.opt.onEvent?.({ type: "turn_end", data: this.lastStats });
     this.emitMemoryCapture(turnStart, "turn");
     this.writeTurnLog(this.lastStats);
+    // TurnEnd hooks（issue #3）：主代理回合结束（含 -p 单次模式）。
+    // 放在统计落定之后 —— hook 拿到的 turn_stats 与 UI/日志看到的是同一份。
+    // 返回值非 null = 有 onFailure=block 的 TurnEnd hook 失败：把原因并进
+    // errorMessage 并标 hadError，-p 因此以非 0 退出码结束（见 index.ts 的退出码约定）。
+    const turnEndFailure = await this.emitTurnEndHooks(this.lastStats);
+    if (turnEndFailure !== null) {
+      this.lastStats.hadError = true;
+      this.lastStats.errorMessage =
+        this.lastStats.errorMessage === null
+          ? turnEndFailure
+          : `${this.lastStats.errorMessage}；${turnEndFailure}`;
+    }
     return this.lastStats;
   }
 
@@ -1058,12 +1071,29 @@ export class Agent {
    *  - 手段/目标分层计数（2026-10-26）：evidence 产出即清零，capability 累加，
    *    neither 不影响（交付/管理动作不算漂移）。
    * 并行段内按 tool_calls 原序逐条调用，结果与串行实现逐条等价。
+   *
+   * ## 「没执行」保持中性（2026-11-07，issue #3）
+   *
+   * 用户拒绝 / plan 拒绝 / PreToolUse 阻断（含 MCP）的调用 ok 是 false，但工具
+   * 一行都没跑 —— 这不是「模型的手段失败了」，而是「这次尝试没被允许」。
+   * 旧口径把它算进连续失败，实测「拒绝 3 次 shell → streak=3」，
+   * 分类器据此降档，等于用用户的拒绝去惩罚模型。
+   *
+   * 所以 executed === false 时**既不累加也不清零**：中性。
+   *  - 不清零：拒绝不该抹掉此前真实的失败信号（失败 + 拒绝 → 仍是 1）；
+   *  - 不累加：拒绝本身也不是失败证据。
+   * 真失败（工具跑过但失败）仍累加，成功仍清零 —— 只有「没执行」这一种情况例外。
+   *
+   * capabilityStreak 不受影响：它数的是「连续扩展手段」，与这次调用是否被允许无关，
+   * 保持改前口径（拒绝的 shell 照样算一次 capability）。
    */
-  private settleToolOutcome(name: string, ok: boolean): void {
-    if (ok) {
-      this.consecutiveFailures = 0;
-    } else {
-      this.consecutiveFailures++;
+  private settleToolOutcome(name: string, ok: boolean, executed = true): void {
+    if (executed) {
+      if (ok) {
+        this.consecutiveFailures = 0;
+      } else {
+        this.consecutiveFailures++;
+      }
     }
     const kind = toolKindOf(name);
     if (kind === "evidence") {
@@ -1097,6 +1127,32 @@ export class Agent {
       askUser: this.opt.askUser,
       cancelAskUser: this.opt.cancelAskUser,
       readOnly: mode === "plan",
+      // 生命周期 hooks（issue #3）：PreToolUse 由工具层在**审批通过之后**调用
+      // （gateTool，见 tools/types.ts）。顺序是硬约束 —— 先权限后 hook，
+      // hook 才不可能把调用升级成免审批；plan 模式的拒绝发生在 decidePermission
+      // 里，hook 连被调用的机会都没有。
+      preToolUse: async (tool, args) => {
+        const r = await this.runHooks("PreToolUse", tool, { tool_input: args }, signal);
+        if (!r.blocked) return null;
+        return r.reason;
+      },
+      postToolUse: async (tool, args, result) => {
+        const r = await this.runHooks(
+          "PostToolUse",
+          tool,
+          {
+            tool_input: args,
+            ok: result.ok,
+            result: result.output.slice(0, 2000),
+            truncated: result.truncated,
+          },
+          signal,
+        );
+        // onFailure=block：工具已执行、无法撤销，所以「阻断」= 把原因交给模型。
+        // dispatch 会把它追加到 tool 结果并标记 ok:false（见 applyPostHook）。
+        if (!r.blocked) return null;
+        return `[hook PostToolUse failed: ${r.reason}]`;
+      },
       planHost: this.planning
         ? {
             planning: true,
@@ -1105,6 +1161,96 @@ export class Agent {
           }
         : undefined,
     };
+  }
+
+  /* ---------------- 生命周期 hooks（issue #3） ---------------- */
+
+  /** hooks 配置（组合根注入；不传 = 无 hooks）。 */
+  get hooksConfig(): import("../hooks/types.ts").HooksConfig | undefined {
+    return this.opt.hooks;
+  }
+
+  /** 是否配了任何 hook（/hooks 与启动提示用）。 */
+  get hooksActive(): boolean {
+    const h = this.opt.hooks;
+    return h !== undefined && hasAnyHook(h);
+  }
+
+  /**
+   * 执行一个 hook 事件。
+   *
+   * 三条硬约束都落在这里：
+   *  1. **plan 只读**：生效模式为 plan 时一律不执行 —— hook 是用户脚本，
+   *     我们无法保证它不写盘，而 plan 是对用户的只读承诺。宁可少跑一次 hook，
+   *     也不能让「只读审查」留下副作用。被拒绝的工具调用因此也不会触发 PostToolUse。
+   *  2. **永不抛错**：hook 失败/超时只进诊断，不拖垮主循环。
+   *  3. **可读诊断**：阻断原因、失败、超时都经 console.warn 让人看见（verbose 可关）。
+   */
+  private async runHooks(
+    event: "PreToolUse" | "PostToolUse" | "TurnEnd",
+    tool: string | null,
+    extra: Record<string, unknown>,
+    signal?: AbortSignal,
+  ): Promise<{ blocked: boolean; reason: string }> {
+    const cfg = this.opt.hooks;
+    if (!cfg || !hasAnyHook(cfg)) return { blocked: false, reason: "" };
+    if (this.effectiveMode === "plan") return { blocked: false, reason: "" };
+
+    const base = {
+      session_id: this.opt.sessionId ?? "unknown",
+      cwd: this.opt.cfg.cwd,
+      mode: this.effectiveMode,
+      subagent: this.opt.isSubagent === true,
+      turn: this.turnCounter,
+    };
+    const payload = { event, ...base, ...extra } as unknown as HookPayload;
+
+    let r;
+    try {
+      r = await dispatchHooks(cfg, event, payload, tool, this.opt.cfg, signal ? { signal } : {});
+    } catch (e) {
+      // dispatchHooks 内部已收敛，这里只是最后一道保险。
+      this.opt.console.warn(`${event} hook 分发异常（已忽略）：${(e as Error).message}`);
+      return { blocked: false, reason: "" };
+    }
+
+    if (cfg.verbose) {
+      for (const o of r.outcomes) {
+        if (o.kind === "ok") continue;
+        this.opt.console.warn(describeOutcome(o));
+      }
+    }
+    if (r.blocked && tool !== null) {
+      this.opt.console.warn(`${event} hook 阻断了 ${tool}：${r.reason}`);
+    }
+    return { blocked: r.blocked, reason: r.reason };
+  }
+
+  /**
+   * 轮末 TurnEnd（issue #3）。
+   *
+   * 只在**主代理**的回合结束时触发：子代理的 send() 也会走到这里，
+   * 但子代理的「回合」不是用户眼里的回合 —— 让 TurnEnd 在子代理里也跑，
+   * 一次用户请求会触发 N+1 次，且子代理的统计会污染用户的 hook 逻辑。
+   * Pre/PostToolUse 则相反：子代理的工具调用同样触发（见 makeCtx）。
+   *
+   * 返回非 null = 有 onFailure=block 的 TurnEnd hook 失败，字符串是给用户/模型的
+   * 诊断（调用方会把它并进 errorMessage 并标 hadError）。
+   */
+  private async emitTurnEndHooks(stats: TurnStats): Promise<string | null> {
+    if (this.opt.isSubagent) return null;
+    const r = await this.runHooks("TurnEnd", null, {
+      turn_stats: {
+        finish_reason: stats.finishReason,
+        tool_calls: stats.toolCalls,
+        iterations: stats.iterations,
+        aborted: stats.aborted,
+        had_error: stats.hadError,
+        error_message: stats.errorMessage,
+      },
+    });
+    if (!r.blocked) return null;
+    return `[hook TurnEnd failed: ${r.reason}]`;
   }
 
   /**

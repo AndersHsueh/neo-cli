@@ -84,6 +84,87 @@ export interface ToolCtx {
   askUser?: (req: AskUserRequest) => Promise<AskUserAnswer>;
   /** 强制关闭当前提问模态（宿主 abort 时用）。 */
   cancelAskUser?: () => void;
+  /**
+   * 生命周期 hooks（issue #3）：PreToolUse 检查。
+   *
+   * 返回 null = 放行；返回字符串 = 阻断，字符串是回给模型的原因。
+   *
+   * **不要直接调用它** —— 用 `ctx.gate()`。gate 保证「审批在前、hook 在后」：
+   * hook 只能拦，不能放行，顺序颠倒就等于让 hook 成了权限旁路。
+   */
+  preToolUse?: (tool: string, args: Record<string, unknown>) => Promise<string | null>;
+  /**
+   * 生命周期 hooks：PostToolUse 通知（工具执行完成后，含成功/失败）。
+   *
+   * 返回值 = 需要追加到工具结果末尾的诊断（onFailure=block 时非空）：
+   * 工具已经跑完、无法撤销，所以「阻断」在这里的定义是**把失败原因交给模型**，
+   * 由 dispatch 追加到 tool 结果并标记 ok:false。
+   */
+  postToolUse?: (
+    tool: string,
+    args: Record<string, unknown>,
+    result: { ok: boolean; output: string; truncated: boolean },
+  ) => Promise<string | null>;
+}
+
+/**
+ * 审批 + PreToolUse 的唯一入口（issue #3）。
+ *
+ * 为什么要有它：审批散落在各工具实现里（write_file / edit_file / shell / MCP 工具
+ * 各自算 detail 再 ctx.approve），而 hook 必须在审批**之后**、真正执行**之前**跑。
+ * 如果让 dispatch 层统一调 preToolUse，它必然早于工具内部的审批 ——
+ * 用户拒绝时 hook 已经执行过（副作用不可撤回），顺序就错了。
+ *
+ * 所以把顺序固化成一个函数：先 approve，通过了才跑 hook。
+ *  - 无审批的工具（read_file 等）直接调 gate(tool, args)，detail 传空串；
+ *  - 有审批的工具把原来的 ctx.approve(...) 换成 gate(...)，语义不变。
+ *
+ * 返回 null = 放行；返回字符串 = 不执行，字符串是回给模型的原因
+ * （用户拒绝 / plan 拒绝 / hook 阻断三种情况，文案各自可读）。
+ */
+export async function gateTool(
+  ctx: ToolCtx,
+  tool: string,
+  args: Record<string, unknown>,
+  detail?: string,
+): Promise<string | null> {
+  if (detail !== undefined) {
+    const ok = await ctx.approve(tool, detail);
+    if (!ok) return `用户拒绝了该操作，未执行（${tool}）。`;
+  }
+  if (ctx.preToolUse) {
+    const blocked = await ctx.preToolUse(tool, args);
+    if (blocked !== null) return `已被 PreToolUse hook 阻断：${blocked}`;
+  }
+  return null;
+}
+
+/**
+ * 工具实现里「没执行」的唯一出口（issue #3 收口）。
+ *
+ * 为什么不能直接 `return gateTool(...)` 的结果：dispatch 把所有正常返回都当成
+ * 「工具执行完成」，随后无条件跑 PostToolUse。而 gateTool 的非 null 返回值恰好
+ * 表示**根本没执行**（用户拒绝 / plan 拒绝 / Pre 阻断）—— 直接返回字符串会让
+ * 被拒绝、被阻断的调用照样触发 PostToolUse，Post 的载荷还会谎称 ok:true。
+ *
+ * 所以「没执行」必须走异常通道（ToolError），由 dispatch 的 catch 分支原样回填
+ * 原因、且**不跑 Post**。用 ToolError 而不是裸 Error：dispatch 对它的处理是
+ * 「错误: <原因>」原样交给模型，与旧行为一致，ok 也仍是 false。
+ *
+ * 标记用不可枚举 Symbol：dispatch 靠它区分「工具跑过但失败」与「压根没跑」，
+ * 不靠文案匹配（文案会随语言/措辞变化）。不导出 Symbol 本身，只导出判定函数。
+ */
+const NOT_EXECUTED = Symbol("neo.notExecuted");
+
+export function notExecuted(reason: string): never {
+  const err = new ToolError(reason);
+  Object.defineProperty(err, NOT_EXECUTED, { value: true, enumerable: false });
+  throw err;
+}
+
+/** 这个 ToolError 是否表示「工具根本没执行」（用户拒绝 / plan 拒绝 / Pre 阻断）。 */
+export function isNotExecuted(e: unknown): boolean {
+  return typeof e === "object" && e !== null && (e as Record<symbol, unknown>)[NOT_EXECUTED] === true;
 }
 
 /**
@@ -133,4 +214,18 @@ export interface DispatchResult {
   ok: boolean;
   output: string;
   truncated: boolean;
+  /**
+   * 工具是否**真的被执行过**（issue #3，2026-11-07）。
+   *
+   * 缺省（undefined）= 执行过 —— 绝大多数结果都是「跑完了，成功或失败」。
+   * 只有「没执行」的路径显式置 false：用户拒绝 / plan 拒绝 / PreToolUse 阻断
+   * （含 MCP 工具），以及参数非法、未知工具这类**连工具都没进**的调用。
+   *
+   * 为什么需要它：ok:false 把两种完全不同的情况混在一起 ——
+   *  - 工具跑了但失败（edit_file 找不到 old_string）：说明模型的手段有问题，该记失败；
+   *  - 根本没跑（用户拒绝）：模型什么都没试过，把这次算成「失败」会让
+   *    连续失败计数虚高，进而误触发降档。
+   * 主循环据此让连续失败计数对「没执行」保持中性（见 Agent.settleToolOutcome）。
+   */
+  executed?: boolean;
 }

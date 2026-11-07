@@ -12,7 +12,7 @@ import type { ToolSpec } from "../llm.ts";
 import type { Config } from "../config.ts";
 import { describeSource, insideGlobalSkills, isRealDir, listSkillFiles, resolveSkill } from "../skills.ts";
 import { insideRawDir } from "../wiki/paths.ts";
-import { ToolError, type ToolCtx, type ToolImpl, type ToolKind, type DispatchResult } from "./types.ts";
+import { ToolError, gateTool, isNotExecuted, notExecuted, type ToolCtx, type ToolImpl, type ToolKind, type DispatchResult } from "./types.ts";
 import { webSearchTool } from "./webSearch.ts";
 import { submitPlanTool, exitPlanModeTool } from "./plan.ts";
 import { decodeHtmlEntities } from "./entities.ts";
@@ -23,7 +23,7 @@ import { getShell, prepareShellInvocation, shellErrorHint } from "../shell.ts";
 
 // 基础类型与注册表在 ./types.ts（叶子模块，解开 task → agent → tools 循环依赖）。
 // 这里 re-export 保持既有导入路径不变。
-export { ToolError } from "./types.ts";
+export { ToolError, gateTool, isNotExecuted, notExecuted } from "./types.ts";
 export type { ToolCtx, ToolImpl, ToolKind, DispatchResult } from "./types.ts";
 
 /* ------------------------------------------------------------------ */
@@ -174,8 +174,11 @@ const writeFileTool: ToolImpl = {
     const content = String(args["content"] ?? "");
     const isNew = !existsSync(path);
     const detail = isNew ? `新建文件 ${path}` : `覆盖已有文件 ${path}（${content.length} 字符）`;
-    const ok = await ctx.approve("write_file", detail);
-    if (!ok) return "用户拒绝了该操作，未写入文件。";
+    // 审批 + PreToolUse（issue #3）：顺序由 gateTool 固化 —— 先审批，通过了才跑 hook。
+    // hook 只能拦不能放行，所以被用户拒绝的调用根本走不到 hook。
+    // 没执行必须走 notExecuted（异常通道），否则 dispatch 会误跑 PostToolUse。
+    const denied = await gateTool(ctx, "write_file", args, detail);
+    if (denied !== null) notExecuted(denied);
 
     // 审批通过、写盘之前留检查点（P0-4）。失败不阻塞写入。
     try {
@@ -234,11 +237,13 @@ const editFile: ToolImpl = {
       );
     }
 
-    const ok = await ctx.approve(
+    const denied = await gateTool(
+      ctx,
       "edit_file",
+      args,
       `修改 ${path}：${count > 1 ? `替换全部 ${count} 处` : "替换 1 处"}`,
     );
-    if (!ok) return "用户拒绝了该操作，文件未修改。";
+    if (denied !== null) notExecuted(denied);
 
     // 审批通过、写盘之前留检查点（P0-4）。失败不阻塞写入。
     try {
@@ -650,11 +655,13 @@ const shell: ToolImpl = {
       }
     }
 
-    const ok = await ctx.approve(
+    const denied = await gateTool(
+      ctx,
       "shell",
+      args,
       workdir === ctx.cfg.cwd ? `执行: ${command}` : `执行（cwd=${workdir}）: ${command}`,
     );
-    if (!ok) return "用户拒绝了该命令，未执行。";
+    if (denied !== null) notExecuted(denied);
 
     // v0.4.0 平台适配层：shell 由 resolveShell 探测（配置/环境变量/$SHELL/平台默认），
     // 登录 shell 会注入 PATH 保真前缀，避免「neo 能跑的 bun 在工具里 not found」。
@@ -1088,6 +1095,7 @@ export async function dispatch(
       ok: false,
       output: `未知工具: ${name}。可用工具: ${toolNames().join(", ")}`,
       truncated: false,
+      executed: false,
     };
   }
 
@@ -1103,19 +1111,73 @@ export async function dispatch(
       ok: false,
       output: `工具 ${name} 的参数不是合法 JSON 对象: ${(e as Error).message}`,
       truncated: false,
+      executed: false,
     };
   }
 
   try {
     ctx.signal?.throwIfAborted();
+    // PreToolUse（issue #3）的调用点分两类，顺序都必须是「审批在前、hook 在后」：
+    //  - 无审批的工具（read_file / glob / MCP 之外的只读工具）：在这里统一 gate，
+    //    detail 省略 = 不审批，只跑 hook；
+    //  - 带审批的工具（write_file / edit_file / shell / MCP 工具）：它们自己算 detail，
+    //    在实现里调 gateTool(ctx, name, args, detail)，所以这里跳过。
+    // 判据用 registry 上的 sensitive 标记：它正是「该工具要不要审批」的声明。
+    if (!impl.sensitive) {
+      const blocked = await gateTool(ctx, name, args);
+      // 没执行 → 直接返回，不跑 PostToolUse（Post 的语义是「执行完了」）。
+      // executed:false 让主循环的连续失败计数对这次调用保持中性。
+      if (blocked !== null) return { ok: false, output: blocked, truncated: false, executed: false };
+    }
     const out = await impl.execute(args, ctx);
-    return limitOutput(out, ctx.cfg.toolOutputLimit, ctx);
+    const limited = limitOutput(out, ctx.cfg.toolOutputLimit, ctx);
+    // PostToolUse：工具已执行完成（成功）。hook 不能改结果，只能追加诊断
+    // （onFailure=block 时返回原因 → 追加并把结果标记为出错，让模型看见）。
+    return await applyPostHook(ctx, name, args, limited);
   } catch (e) {
-    if (e instanceof ToolError) return { ok: false, output: `错误: ${e.message}`, truncated: false };
+    if (e instanceof ToolError) {
+      // ToolError 有两种来源，PostToolUse 的待遇必须分开（issue #3 收口）：
+      //  - **工具执行中失败**（远端报错、old_string 找不到…）：工具确实跑过，
+      //    Post 照旧触发，载荷 ok:false；
+      //  - **没执行**（用户拒绝 / plan 拒绝 / Pre 阻断，经 notExecuted 抛出）：
+      //    工具一行都没跑，Post 绝不能触发 —— 否则 hook 会收到一次「从未发生的
+      //    调用」，还会被当成 ok:true 的成功执行。
+      // 判据是 notExecuted 打的标记，而不是文案匹配。
+      if (isNotExecuted(e)) {
+        // executed:false —— 工具一行都没跑，主循环的连续失败计数对它保持中性。
+        return { ok: false, output: `错误: ${e.message}`, truncated: false, executed: false };
+      }
+      return await applyPostHook(ctx, name, args, { ok: false, output: `错误: ${e.message}`, truncated: false });
+    }
     const err = e as Error;
     if (err.name === "AbortError") throw err;
-    return { ok: false, output: `工具执行失败: ${err.message}`, truncated: false };
+    return await applyPostHook(ctx, name, args, { ok: false, output: `工具执行失败: ${err.message}`, truncated: false });
   }
+}
+
+/**
+ * 跑 PostToolUse 并把它的诊断并进工具结果（issue #3）。
+ *
+ * onFailure=block 的语义（工具已执行、无法撤销）：hook 失败原因以
+ * `[hook PostToolUse failed: ...]` 追加到 tool 结果末尾，并把结果标记为 ok:false，
+ * 让模型看到并据此处理；continue 只给用户诊断（由宿主打日志），结果原样返回。
+ */
+async function applyPostHook(
+  ctx: ToolCtx,
+  name: string,
+  args: Record<string, unknown>,
+  result: DispatchResult,
+): Promise<DispatchResult> {
+  if (!ctx.postToolUse) return result;
+  let diag: string | null = null;
+  try {
+    diag = await ctx.postToolUse(name, args, result);
+  } catch (e) {
+    // hook 层已收敛异常，这里只是最后一道保险：绝不让 hook 拖垮工具结果。
+    diag = `[hook PostToolUse failed: ${(e as Error).message}]`;
+  }
+  if (diag === null || diag === "") return result;
+  return { ok: false, output: `${result.output}\n\n${diag}`, truncated: result.truncated, executed: result.executed };
 }
 
 /** 超长输出落盘目录：~/.neo/tmp（0600；NEO_TMP_DIR 可覆盖，不放用户仓库）。 */

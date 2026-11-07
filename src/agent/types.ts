@@ -10,6 +10,7 @@ import type { Classifier } from "../classifier/index.ts";
 import type { AskUserAnswer, AskUserRequest } from "../ui/askUser.ts";
 import type { MemoryPort } from "../memory/port.ts";
 import type { CheckpointSink } from "../tools/types.ts";
+import type { HooksConfig } from "../hooks/types.ts";
 
 export type PermissionMode = "ask" | "auto-edit" | "auto-all" | "plan";
 
@@ -151,6 +152,15 @@ export interface AgentOptions {
    * 返回 null = 未设目标，此时提示退化为纯预算（与旧行为一致）。
    */
   readGoal?: () => string | null;
+  /**
+   * 生命周期 hooks（issue #3）。会话启动时由组合根从 settings.hooks 解析一次。
+   *
+   * 不传 = 无 hooks（子代理默认继承主代理的配置，见 task.ts）。
+   * 语义硬约束：hooks 只能**阻断**或放行到既有审批流程，永远不能放宽权限 ——
+   * 所以 PreToolUse 在 decidePermission 之后、真正执行之前调用：
+   * plan 模式下的拒绝发生在 hook 之前，hook 连被调用的机会都没有。
+   */
+  hooks?: HooksConfig;
 }
 
 export interface TurnStats {

@@ -39,7 +39,7 @@
  * 调用 `tools/call` 时始终用**远端原始工具名**（`info.name`），注册名只活在本地。
  */
 import type { ToolSpec } from "../llm.ts";
-import { ToolError, type ToolImpl } from "../tools/types.ts";
+import { ToolError, gateTool, notExecuted, type ToolImpl } from "../tools/types.ts";
 import type { McpToolInfo } from "./client.ts";
 
 /** 工具名前缀。权限、展示、/mcp 都按它识别外部工具。 */
@@ -306,8 +306,11 @@ export function makeMcpTool(deps: McpToolDeps): ToolImpl {
     async execute(args, ctx) {
       // 审批先于任何网络/进程交互：用户拒绝时连请求都不该发出去。
       const detail = `调用 MCP 工具 ${server}/${info.name}（${shortJson(args)}）`;
-      const ok = await ctx.approve(name, detail);
-      if (!ok) return `用户拒绝了该 MCP 工具调用，未执行。`;
+      // 审批 + PreToolUse 统一走 gateTool（issue #3）：顺序是硬约束 ——
+      // MCP 工具在 auto-edit 下也要问，hook 若跑在审批前就等于让用户白点一次。
+      // 没执行必须走 notExecuted（异常通道），否则 dispatch 会误跑 PostToolUse。
+      const denied = await gateTool(ctx, name, args, detail);
+      if (denied !== null) notExecuted(denied);
       try {
         // 始终用远端原始工具名调 tools/call —— 注册名只是本地合法化后的别名。
         return await deps.call(info.name, args);

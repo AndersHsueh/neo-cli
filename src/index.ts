@@ -723,6 +723,9 @@ async function main(): Promise<number> {
     memory,
     checkpoint: checkpoints,
     sessionId: sess.meta.id,
+    // 生命周期 hooks（issue #3）：会话启动时已由 loadConfig 解析一次，
+    // 这里直接挂上 —— 改 settings.hooks 需重启（与 mcpServers 同口径）。
+    hooks: cfg.hooks,
     // 目标锚（2026-10-26）：每轮现取，/goal 中途改写能立刻生效。
     // 读失败按「无目标」降级 —— 目标锚是增强项，不得阻塞主流程。
     readGoal: () => {
@@ -931,6 +934,17 @@ async function main(): Promise<number> {
       }
     }
   }
+
+  // 生命周期 hooks（issue #3）：启动时把加载结果与配置告警摆出来。
+  // 写错的条目已在解析期丢弃 —— 这里必须说清楚，不能让用户以为 hook 生效了。
+  if (cfg.hooks.enabled) {
+    const n =
+      cfg.hooks.hooks.PreToolUse.length +
+      cfg.hooks.hooks.PostToolUse.length +
+      cfg.hooks.hooks.TurnEnd.length;
+    if (n > 0) ui.info(`hooks：已加载 ${n} 条生命周期 hook（/hooks 查看）`);
+  }
+  for (const w of cfg.hooks.warnings) ui.warn(`hooks 配置：${w}`);
 
   // 运行时工具注册完成后再刷新系统提示：`可用工具` 行由 toolNames() 现取，
   // 首次构造时运行时工具（task/wiki/remember/send_message/list_peers）尚未注册。

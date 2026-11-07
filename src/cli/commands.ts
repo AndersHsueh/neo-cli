@@ -50,6 +50,7 @@ import * as mailboxState from "../mailbox/state.ts";
 import { mailboxRoot, type Envelope } from "../mailbox/types.ts";
 import type { Mailbox } from "../mailbox/store.ts";
 import { chooseSessionName } from "../sessionName.ts";
+import { HOOK_EVENTS } from "../hooks/index.ts";
 import {
   buildReviewPrompt,
   collectReviewDiff,
@@ -555,6 +556,49 @@ export async function handleCommand(line: string, ctx: CommandContext): Promise<
       } else {
         ui.line(c.dim("  规划态（/plan）会额外出现 submit_plan / exit_plan_mode"));
       }
+      ui.blank();
+      break;
+    }
+
+    case "hooks": {
+      // issue #3：一眼看清「配了哪些生命周期 hook、哪条写错了被丢弃」。
+      // hooks 不是权限系统 —— 这里刻意不展示任何「放行/拒绝」策略，
+      // 免得用户误以为它是 #4 那种 allow/deny 规则表。
+      const h = cfg.hooks;
+      const total = h.hooks.PreToolUse.length + h.hooks.PostToolUse.length + h.hooks.TurnEnd.length;
+      ui.blank();
+      ui.kv("hooks", h.enabled ? c.ok("已启用") : c.dim("未启用"));
+      ui.kv("来源", "settings.json 顶层 hooks 段（会话启动时加载，改配置需重启）");
+      if (total === 0) {
+        ui.info("没有配置任何 hook。");
+      } else {
+        for (const ev of HOOK_EVENTS) {
+          const list = h.hooks[ev];
+          if (list.length === 0) continue;
+          ui.line(`  ${c.accent(ev)} ${c.dim(`${list.length} 条`)}`);
+          for (const hook of list) {
+            ui.line(`    ${c.dim("·")} ${hook.command}`);
+            ui.line(
+              `      ${c.dim(
+                `matcher=${hook.matcher ?? "*"} · timeout=${hook.timeout}s` +
+                  (ev === "PreToolUse" ? "" : ` · onFailure=${hook.onFailure}`),
+              )}`,
+            );
+          }
+        }
+      }
+      if (h.warnings.length > 0) {
+        ui.blank();
+        ui.warn(`配置告警 ${h.warnings.length} 条（写错的条目已丢弃，不影响启动）：`);
+        for (const w of h.warnings) ui.line(`  ${c.dim("·")} ${w}`);
+      }
+      ui.blank();
+      ui.line(
+        c.dim(
+          "  plan 模式下 hook 一律不执行（只读承诺优先）；子代理的工具调用同样触发 Pre/PostToolUse，" +
+            "TurnEnd 只在主代理回合结束触发。",
+        ),
+      );
       ui.blank();
       break;
     }

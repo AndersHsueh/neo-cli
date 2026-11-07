@@ -20,6 +20,7 @@ import { fileURLToPath } from "node:url";
 
 import type { EnvConfig } from "./env/types.ts";
 import type { ShellConfig } from "./shell.ts";
+import { parseHooksConfig, type HooksConfig } from "./hooks/types.ts";
 
 import {
   DEFAULT_MAILBOX_CONFIG,
@@ -284,6 +285,14 @@ export interface Config {
    * 形状对齐 Claude Desktop / Cursor 的约定。缺省 = 不接任何外部工具。
    */
   mcpServers?: McpServerConfig[];
+  /**
+   * 生命周期 hooks（issue #3）。settings.json 顶层 `hooks` 段。
+   *
+   * 定位：用户自配的生命周期脚本，**不是权限系统**。它只能阻断或放行到既有
+   * 审批流程，不能把调用升级为免审批，也不能绕过 plan 拒绝。
+   * 会话启动时加载一次 —— 改配置需重启（与 mcpServers 同口径）。
+   */
+  hooks: HooksConfig;
   /** 环境探测/注入配置（v0.4.0；不填=默认开启、TTL 12h、注入+写 wiki 页）。 */
   env?: EnvConfig;
 }
@@ -884,6 +893,8 @@ export function loadConfig(overrides: Partial<Config> = {}): Config {
     shell: resolveShellConfig(raw["shell"]),
     // MCP 只认本地 settings.json：模板里的示例 server 不该在用户机器上被启动。
     mcpServers: parseMcpServers(raw["mcpServers"]).servers,
+    // hooks 同理只认本地：模板里的示例 hook 不该在用户机器上被执行。
+    hooks: parseHooksConfig(raw["hooks"]),
     env: resolveEnvConfig(raw["env"]),
     paste: resolvePasteConfig(raw["paste"] as Raw | undefined),
     mailbox: resolveMailboxSettings(raw),

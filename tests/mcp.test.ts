@@ -278,7 +278,9 @@ describe("d. 与内置工具同一审批路径", () => {
     await m.connectAll();
     const seen: Array<{ tool: string; detail: string }> = [];
     const r = await dispatch("mcp__fake__echo", JSON.stringify({ text: "x" }), makeCtx(false, seen));
-    expect(r.ok).toBe(true);
+    // 没执行 → ok:false（issue #3 收口：被拒绝的调用不能伪装成成功执行，
+    // 否则 PostToolUse 会收到一次「从未发生的调用」）。
+    expect(r.ok).toBe(false);
     expect(r.output).toContain("用户拒绝");
     // 审批框里要能看清调了什么
     expect(seen).toHaveLength(1);
@@ -313,7 +315,7 @@ describe("d. 与内置工具同一审批路径", () => {
       approve: async (tool) => decidePermission("plan", tool).allow,
     };
     const r = await dispatch("mcp__fake__echo", JSON.stringify({ text: "x" }), ctx);
-    expect(r.ok).toBe(true);
+    expect(r.ok).toBe(false);
     expect(r.output).toContain("用户拒绝");
   });
 });

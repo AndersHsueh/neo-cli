@@ -104,5 +104,31 @@
       "flush_timeout_ms": 3000
     },
     "quiet": false
+  },
+  "hooks": {
+    "enabled": false,
+    "verbose": true,
+    "PreToolUse": [
+      {
+        "command": "test -f .neo/hooks/guard-shell.sh && sh .neo/hooks/guard-shell.sh || exit 0",
+        "matcher": "shell",
+        "timeout": 10
+      }
+    ],
+    "PostToolUse": [
+      {
+        "command": "sh .neo/hooks/format.sh",
+        "matcher": "/^(write_file|edit_file)$/",
+        "timeout": 30,
+        "onFailure": "continue"
+      }
+    ],
+    "TurnEnd": [
+      {
+        "command": "sh .neo/hooks/turn-end.sh",
+        "timeout": 10,
+        "onFailure": "continue"
+      }
+    ]
   }
 }

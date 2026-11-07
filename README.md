@@ -100,6 +100,198 @@ shell 探测顺序：`settings.shell.path` → `NEO_SHELL` → `$SHELL` → 平�
 | `shell` | 跨平台 shell 覆盖（`path` / `login` / `args`），见下 |
 | `env` | 环境探测与注入（`enabled` / `probe_ttl_hours` / `prompt` / `wiki_page`），见下 |
 | `mcpServers` | 外部 MCP server（stdio），工具动态注册为 `mcp__<server>__<tool>`，见下 |
+| `hooks` | 生命周期 hooks（PreToolUse / PostToolUse / TurnEnd），见下 |
+
+### hooks —— 生命周期脚本（issue #3）
+
+**先说定位：hooks 不是权限系统。** 它不定义 allow/deny 规则、不做命令策略表、不提供沙箱。
+它只是「在三个固定时机，跑你自己写的脚本」。权限判定（`ask` / `auto-edit` / `auto-all` / `plan`）
+完全不变：hook **只能阻断**（或放行到既有审批流程），**永远不能把调用升级为免审批**，
+也不能绕过 plan 拒绝。
+
+配置写在 `settings.json` **顶层**的 `hooks` 段（与 `mcpServers` 同级）：
+
+```json
+"hooks": {
+  "enabled": true,
+  "verbose": true,
+  "PreToolUse":  [ { "command": "sh .neo/hooks/guard.sh",  "matcher": "shell", "timeout": 10 } ],
+  "PostToolUse": [ { "command": "sh .neo/hooks/format.sh", "matcher": "/^(write_file|edit_file)$/",
+                     "timeout": 30, "onFailure": "continue" } ],
+  "TurnEnd":     [ { "command": "sh .neo/hooks/turn-end.sh", "timeout": 10, "onFailure": "continue" } ]
+}
+```
+
+| 字段 | 必填 | 说明 |
+| --- | --- | --- |
+| `enabled` | 否 | 缺省 `false` —— 不配就是零开销，也不会有人被意外阻断 |
+| `verbose` | 否 | 缺省 `true`：阻断/失败/超时都打到 UI；`false` 只保留阻断提示 |
+| `PreToolUse` / `PostToolUse` / `TurnEnd` | — | 每个事件一个数组，按配置顺序执行 |
+| `command` | 是 | shell 命令，经与 `shell` 工具同一套平台解析执行（`shell` 段配置同样生效） |
+| `matcher` | 否 | 工具名匹配，见下。缺省 = 全部工具（`TurnEnd` 无工具名，恒匹配） |
+| `timeout` | 否 | 秒，缺省 30，上限 600（超上限截断并 warning） |
+| `onFailure` | 否 | `continue`（缺省）/ `block`，仅 PostToolUse / TurnEnd 有意义 |
+
+`matcher` 三种写法：精确名（`shell`、`write_file`）、末尾通配（`mcp__*`、`mcp__fs__*`）、
+正则（`/^mcp__/`）。注意**不支持** `write_file|edit_file` 这种竖线写法 —— 那是正则语法的一部分，
+要写就写成 `/^(write_file|edit_file)$/`。
+
+**配置写错不会让 CLI 起不来**：单条写错（缺 `command`、`timeout` 非正数、`matcher` 正则非法、
+事件名拼错）只丢弃该条并给一条可读 warning，其余照常加载。启动时打印告警，`/hooks` 可随时复查。
+
+#### 事件与时机
+
+| 事件 | 时机 | 能否阻断 |
+| --- | --- | --- |
+| `PreToolUse` | 工具执行前，**审批通过之后** | 能（退出码 2） |
+| `PostToolUse` | 工具执行完成后（成功与失败都触发） | 不能撤销，只能把失败原因交给模型 |
+| `TurnEnd` | 一轮 agent 回合结束（模型给出最终答复，含 `-p` 单次模式） | 能让该轮以出错结束 |
+
+**为什么 PreToolUse 在审批之后**：如果 hook 跑在审批之前，用户点「拒绝」时 hook 已经执行过
+（副作用不可撤回），而且 hook 的「放行」会变成权限旁路。所以顺序被固化成
+`审批 → PreToolUse → 执行`：被用户拒绝、被 plan 拒绝的调用**根本走不到 hook**。
+hook 说放行，也只是「回到原本该有的审批流程」，不会让 `ask` 模式下的写操作免确认。
+
+#### 输入输出协议
+
+hook 从 **stdin** 收一行 JSON，字段：
+
+```json
+{
+  "event": "PreToolUse",
+  "session_id": "20261107-151309-fwu920",
+  "cwd": "/home/me/proj",
+  "mode": "ask",
+  "subagent": false,
+  "turn": 3,
+  "tool_name": "shell",
+  "tool_input": { "command": "rm -rf build" }
+}
+```
+
+- `PostToolUse` 额外带 `ok`（bool）、`result`（结果摘要，截断到 2000 字符）、`truncated`；
+- `TurnEnd` 带 `turn_stats`：`finish_reason` / `tool_calls` / `iterations` / `aborted` /
+  `had_error` / `error_message`；
+- `mode` 是当前生效权限模式（`ask` / `auto-edit` / `auto-all` / `plan`）；
+- `subagent` 标明这次调用是否来自 `task` 子代理。
+
+环境变量（可选，便于脚本直接取）：`NEO_HOOK_EVENT`、`NEO_HOOK_SESSION`、`NEO_HOOK_MODE`、
+`NEO_HOOK_TOOL`（TurnEnd 无）。cwd 是 neo 的工作目录。
+
+**退出码约定**：
+
+| 退出码 | 含义 |
+| --- | --- |
+| `0` | 放行 / 通过 |
+| `2` | 阻断。原因取 stdout（纯文本，或 `{"reason":"..."}` / `{"message":"..."}` JSON），取不到则用 stderr |
+| 其它非 0 | hook 自身出错（崩溃、脚本 bug、命令不存在），按 `onFailure` 处理 |
+
+阻断原因会以 `已被 PreToolUse hook 阻断：<reason>` 的形式回给模型，模型能看到并改策略。
+
+#### 失败处理：continue vs block
+
+PostToolUse / TurnEnd 的 hook 失败（超时、崩溃、非 0 非 2）默认**不静默**：
+
+- `onFailure: "continue"`（缺省）：给用户一条可读诊断（`PostToolUse hook（settings.hooks.PostToolUse[0]）失败：…`），
+  工具结果原样保留，本轮不算出错；
+- `onFailure: "block"`：**工具已经执行完、无法撤销**，所以「阻断」的定义是——
+  - PostToolUse：把 `[hook PostToolUse failed: <原因>]` 追加到回给模型的工具结果末尾，
+    并把该工具结果标记为出错，让模型看到并据此处理；
+  - TurnEnd：把 `[hook TurnEnd failed: <原因>]` 并进本轮 `errorMessage` 并标记该轮出错，
+    `-p` 模式因此以非 0 退出码结束（`1`）。
+
+另外，退出码 `2` 在 PostToolUse / TurnEnd 上同样视为「明确要求阻断」，与 `onFailure` 无关。
+
+#### 超时与失败隔离
+
+每条 hook 独立起进程，超时用 `SIGKILL` 打**整个进程组**（`detached` 起的 shell 是组长），
+`sleep 100 &` 这类子进程不会变成孤儿。超时、崩溃、命令不存在都转成可读诊断，
+**不拖垮主循环、不挂死会话**。Ctrl+C 会连正在跑的 hook 一起杀掉。
+
+#### plan / 只读语义
+
+**plan 生效时（`/mode plan`、`--plan`、交互 `/plan` 规划态、`/review` 的临时只读），hook 一律不执行。**
+
+理由：hook 是用户脚本，neo 无法保证它不写盘，而 plan 是对用户的只读承诺。
+宁可少跑一次 hook，也不能让「只读审查」留下副作用。连带效果：
+
+- plan 下被拒绝的工具调用不会触发 `PostToolUse`（它压根没执行）；
+- `TurnEnd` 在 plan 下也不跑，因此也不会因为 hook 失败把一轮只读问答标成出错。
+
+#### 子代理语义
+
+`task` 子代理的工具调用**同样触发** `PreToolUse` / `PostToolUse`（载荷里 `subagent: true`）——
+子代理是「同一次用户请求里的工具执行」，绕过 hook 等于给 hook 留了一条结构性旁路
+（危险命令派给子代理跑就躲过了拦截）。
+
+`TurnEnd` **只在主代理回合结束触发**：子代理的回合不是用户眼里的回合，一次请求触发 N+1 次没有意义。
+
+#### 生效时机
+
+hooks 配置在**会话启动时加载一次**（与 `mcpServers` 同口径）。改了 `settings.json` 的 `hooks` 段
+需要重启 neo 才生效。`/hooks` 列出当前已加载的条目与配置告警。
+
+只认本地 `settings.json`：`settings.example.json` 里的示例 hook 不会在用户机器上被执行。
+
+#### 示例一：拦截危险 shell 命令
+
+`.neo/hooks/guard.sh`：
+
+```sh
+#!/bin/sh
+# PreToolUse：从 stdin 读事件 JSON，命中危险模式就以退出码 2 阻断。
+payload=$(cat)
+cmd=$(printf '%s' "$payload" | sed -n 's/.*"command":"\([^"]*\)".*/\1/p')
+
+case "$cmd" in
+  *"rm -rf /"*|*"rm -rf ~"*|*"git push --force"*|*"git reset --hard"*)
+    echo "危险命令被拦截：$cmd。请改用更保守的做法，或先向用户确认。" >&2
+    exit 2
+    ;;
+esac
+exit 0
+```
+
+```json
+"hooks": {
+  "enabled": true,
+  "PreToolUse": [{ "command": "sh .neo/hooks/guard.sh", "matcher": "shell", "timeout": 10 }]
+}
+```
+
+被拦时模型收到的工具结果是 `已被 PreToolUse hook 阻断：危险命令被拦截：rm -rf / …`，
+它会换个做法继续，而不是卡住。
+
+#### 示例二：编辑后自动 format
+
+`.neo/hooks/format.sh`：
+
+```sh
+#!/bin/sh
+# PostToolUse：工具写盘后跑格式化。只处理 .ts/.tsx，其它文件直接通过。
+payload=$(cat)
+path=$(printf '%s' "$payload" | sed -n 's/.*"path":"\([^"]*\)".*/\1/p')
+
+case "$path" in
+  *.ts|*.tsx) bunx prettier --write "$path" >/dev/null 2>&1 || exit 0 ;;
+esac
+exit 0
+```
+
+```json
+"hooks": {
+  "enabled": true,
+  "PostToolUse": [{
+    "command": "sh .neo/hooks/format.sh",
+    "matcher": "/^(write_file|edit_file)$/",
+    "timeout": 60,
+    "onFailure": "continue"
+  }]
+}
+```
+
+格式化失败（没装 prettier、语法错）只给一条诊断，不会让工具结果变成错误 ——
+`onFailure: "continue"` 就是为这种「锦上添花」的 hook 准备的。
 
 ### mcpServers —— 接入外部 MCP 工具（issue #2）
 
@@ -264,6 +456,7 @@ provider 里的 `*_model_name` 表示「**这个 provider** 在各档位上用�
 /model     查看/切模型     /tools     工具列表
 /env [refresh] 环境快照（平台/shell/资源/工具链）；refresh 重采并写 wiki 页
 /mcp       MCP server 状态（连接/工具数/错误）
+/hooks     生命周期 hooks 列表与配置告警（不是权限系统）
 /mode      权限模式        /init      生成 AGENTS.md
 /peers [name]  跨会话状态：列出存活会话 / 查单个
 /worktree list          列出 neo 托管的 worktree（名/路径/分支/脏/当前）
@@ -418,6 +611,9 @@ MCP 工具与内置工具走**同一条**审批路径。两种「plan」要分�
 - `plan`：只读，一切写操作被拒绝
 
 非交互环境（管道、CI、`-p` 重定向）下无法征求批准，一律拒绝并提示改用 `-y`。
+
+生命周期 hooks（`settings.json` 的 `hooks` 段）不改变上面任何一条：它只能**阻断**，
+不能把调用升级为免审批，plan 下也一律不执行。详见 [hooks 章节](#hooks--生命周期脚本issue-3)。
 
 ## 跨会话消息
 
