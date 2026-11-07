@@ -42,6 +42,7 @@ import { contentText } from "../llm.ts";
 import { listModels } from "../llm.ts";
 import type { MemoryBridge } from "../memory/bridge.ts";
 import type { McpServerState } from "../mcp/client.ts";
+import type { PromptSelection } from "../prompt/select.ts";
 import { ensureScopeLayout } from "../memory/layout.ts";
 import { initProjectLevel as initProjectLevelImpl } from "../memory/init.ts";
 import { sessionLiveness, renameSession, takenAliveNames } from "../mailbox/identity.ts";
@@ -125,8 +126,12 @@ export interface CommandContext {
   injectMailbox?: (env: Envelope) => void;
   onMailboxRekey?: () => void;
   onNameChange?: (name: string) => void;
-  /** 最近一次系统提示词选档诊断（issue #20）；/context 展示用，未渲染过为 null。 */
-  promptSelection?: () => import("./../prompt/select.ts").PromptSelection | null;
+  /**
+   * 当前 cfg 下的系统提示词选档诊断（issue #20）；/context 展示用，取不到时为 null。
+   *
+   * 实现方只算不写：不得改写 messages[0]（提示词何时生效由请求边界决定）。
+   */
+  promptSelection?: () => PromptSelection | null;
   memoryMode?: "interactive" | "oneshot";
   /**
    * 把合成的用户消息排进主循环队列，作为下一轮发给模型（issue #13）。
@@ -244,7 +249,14 @@ export async function handleCommand(line: string, ctx: CommandContext): Promise<
       const gap = formatCapabilityGapHint(cfg);
       if (gap) ui.info(gap);
       // issue #20：系统提示词选了哪一档、为什么。只展示数字与原因，不打印提示词或记忆原文。
-      const psel = promptSelection?.();
+      // 取档要读目录树/技能/wiki 索引，可能抛错（cwd 权限、技能目录竞态）：
+      // 失败就省略这一行，不让整条命令崩 —— 诊断是增强项，不是命令的依赖项。
+      let psel: PromptSelection | null = null;
+      try {
+        psel = promptSelection?.() ?? null;
+      } catch {
+        psel = null;
+      }
       if (psel) {
         ui.kv(
           "prompt",

@@ -61,9 +61,23 @@ export class PromptManager {
     this.cache = null;
   }
 
-  /** 最近一次渲染的选档诊断（供 /context 展示）；尚未渲染返回 null。 */
+  /** 最近一次渲染的选档诊断；尚未渲染返回 null。 */
   get lastSelection(): PromptSelection | null {
     return this.last;
+  }
+
+  /**
+   * 当前 cfg 下的选档诊断（issue #20）。
+   *
+   * 与「提示词生效」**解耦**：只算不写 —— 不碰 messages[0]（那是
+   * Agent.refreshSystemPrompt 的事，且只能在请求边界做）。
+   *
+   * /context 用它展示**下一次请求会用哪一档**：探针回写窗口后到下一轮边界之间，
+   * lastSelection 还是探针前的旧档，会和同一条命令里的 window 行（读 cfg，已经是
+   * 新值）自相矛盾 —— 一行说 131,072、另一行还说「窗口未证实」。
+   */
+  currentSelection(cfg: Config): PromptSelection {
+    return this.render(cfg).selection;
   }
 
   /**

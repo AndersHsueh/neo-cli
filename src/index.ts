@@ -1286,7 +1286,10 @@ async function main(): Promise<number> {
               queue.push({ text: formatIncomingFrame(env), attachments: [], origin: "mailbox", from: env.from.session });
             },
             onMailboxRekey: () => inboundRefs.clear(),
-            promptSelection: () => promptManager.lastSelection,
+            // /context 要展示「当前 cfg 下会选哪一档」：探针回写窗口后到下一轮边界之间，
+            // lastSelection 还是探针前的旧档，会和同一命令里的 window 行（读 cfg，已是新值）
+            // 自相矛盾。currentSelection 只算不写 —— 不碰 messages[0]，提示词何时生效不受影响。
+            promptSelection: () => promptManager.currentSelection(cfg),
             onNameChange: (name) => {
               sessionLabel = name;
               titleAnimator?.setName(name);

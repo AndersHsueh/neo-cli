@@ -18,7 +18,7 @@
  * 快照里只放 models 字段 —— 旧快照兼容也顺带被覆盖（缺字段不炸）。
  */
 import { afterAll, describe, expect, test } from "bun:test";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { arch, hostname, platform, tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -37,9 +37,16 @@ const MODEL = "m-caps";
  * 建沙箱：settings.json 里 provider 手写 vision=false / reasoning=true（tools 留空），
  * env 快照里同一模型探测到 vision=true / tools=true / reasoning=false + 输出上限。
  * 于是「手写优先」与「探测补空缺」两条路径都能在同一份输出里验到。
+ *
+ * handwritten="no-window"：不写 context_window —— 启动时窗口是「未证实的兜底
+ * 200K」（来源 default），档位只能 mini；等 /env refresh 探测到真实窗口后才升档。
  */
 function makeProject(
-  opts: { snapshot?: "full" | "legacy" | "none" | "thin"; handwritten?: "default" | "window-only" } = {},
+  opts: {
+    snapshot?: "full" | "legacy" | "none" | "thin";
+    handwritten?: "default" | "window-only" | "no-window";
+    baseUrl?: string;
+  } = {},
 ): string {
   const cwd = realpathSync(mkdtempSync(join(tmpdir(), "neo-ctx-cmd-")));
   const home = join(cwd, "fakehome");
@@ -48,12 +55,14 @@ function makeProject(
   const provider: Record<string, unknown> = {
     provider_name: PROVIDER,
     provider_type: "openai",
-    base_url: "http://127.0.0.1:9/v1",
+    base_url: opts.baseUrl ?? "http://127.0.0.1:9/v1",
     api_key: "sk-test",
     default_model_name: MODEL,
     max_tokens: 8_192,
-    context_window: 100_000,
   };
+  if (opts.handwritten !== "no-window") {
+    provider["context_window"] = 100_000;
+  }
   if (opts.handwritten !== "window-only") {
     provider["vision"] = false;
     provider["reasoning"] = true;
@@ -153,9 +162,79 @@ function runCommands(cwd: string, cmds: string[]): string {
   });
 }
 
+/**
+ * 分片喂命令：写一条 → 等它的输出落地 → 再写下一条。
+ *
+ * 为什么不能一次写完：execFileSync 把输入写完就关 stdin，子进程读到 EOF 会
+ * 立刻关停 —— 正在 await 的命令（比如 /env refresh 的探测）会被腰斩，输出只剩半截。
+ * 分片后 stdin 一直开着，命令按队列顺序一个个跑完。
+ */
+async function runCommandsSeq(
+  cwd: string,
+  steps: { cmd: string; until: string[] }[],
+): Promise<string> {
+  const child = spawn(process.execPath, [ENTRY], {
+    cwd,
+    env: {
+      ...process.env,
+      NO_COLOR: "1",
+      HOME: join(cwd, "fakehome"),
+      USERPROFILE: join(cwd, "fakehome"),
+      NEO_ENV_HOME: join(cwd, "fakehome"),
+    },
+    stdio: ["pipe", "pipe", "pipe"],
+  });
+  let out = "";
+  child.stdout.setEncoding("utf8");
+  child.stdout.on("data", (d: string) => { out += d; });
+  child.stderr.setEncoding("utf8");
+  child.stderr.on("data", (d: string) => { out += d; });
+  const exited = new Promise<void>((res) => child.on("close", () => res()));
+
+  for (const step of steps) {
+    child.stdin.write(`${step.cmd}\n`);
+    await waitUntil(
+      () => step.until.some((m) => out.includes(m)),
+      30_000,
+      `等待命令「${step.cmd}」的输出超时`,
+    );
+  }
+  child.stdin.write("/exit\n");
+  await exited;
+  return out;
+}
+
+async function waitUntil(pred: () => boolean, timeoutMs: number, msg: string): Promise<void> {
+  const start = Date.now();
+  while (!pred()) {
+    if (Date.now() - start > timeoutMs) throw new Error(msg);
+    await new Promise((r) => setTimeout(r, 20));
+  }
+}
+
 /** 取含某标签的行（kv 输出形如 `context    131,072 tokens`）。 */
 function lineWith(out: string, label: string): string {
   return out.split("\n").find((l) => l.trimStart().startsWith(label)) ?? "";
+}
+
+/** 取最后一个含某标签的行：/context 是最后一条命令，避免撞上前面命令的输出。 */
+function lastLineWith(out: string, label: string): string {
+  const hits = out.split("\n").filter((l) => l.trimStart().startsWith(`${label} `));
+  return hits[hits.length - 1] ?? "";
+}
+
+/** 起一个只回 /models 的假网关（窗口元数据从这里来）。 */
+function serveModels(entry: Record<string, unknown>): { port: number; stop: () => void } {
+  const server = Bun.serve({
+    port: 0,
+    fetch(req) {
+      if (new URL(req.url).pathname.endsWith("/models")) {
+        return Response.json({ object: "list", data: [entry] });
+      }
+      return new Response("nope", { status: 404 });
+    },
+  });
+  return { port: Number(server.port), stop: () => server.stop(true) };
 }
 
 afterAll(() => {
@@ -226,5 +305,46 @@ describe("P2 /env 模型能力行", () => {
     expect(line).toContain("vision 否");
     expect(line).toContain("tools 是");
     expect(line).toContain("reasoning 是");
+  });
+});
+
+/**
+ * 档位行与窗口行必须自洽（issue #20 收尾）。
+ *
+ * 窗口变了（探测到手写值之外的真实窗口），档位行必须跟着变 —— 否则一行说
+ * 「131,072 tokens」、另一行还说「窗口未证实 → mini / 超预算」，用户看到的是
+ * 自相矛盾的两行。
+ *
+ * /env refresh 会探测 /models 并把窗口事实写回 env 快照，随即 resolveAndApplyModelWindow
+ * 更新 cfg —— 但**不**重渲染系统提示词（提示词何时生效由请求边界决定）。
+ * 于是这里正是「cfg 已变、lastSelection 还是旧值」的窗口。
+ */
+describe("档位行与窗口行自洽", () => {
+  test("/env refresh 探测到窗口后，档位行不再报「未证实 → mini / 超预算」", async () => {
+    const s = serveModels({ id: MODEL, context_length: 131_072, max_output_tokens: 32_768 });
+    try {
+      const cwd = makeProject({
+        snapshot: "none",
+        handwritten: "no-window",
+        baseUrl: `http://127.0.0.1:${s.port}/v1`,
+      });
+      const out = await runCommandsSeq(cwd, [
+        { cmd: "/env refresh", until: ["已探测", "未能从 /models"] },
+        // threshold 行在 prompt 行之后：等它出现即说明档位行已经打印
+        { cmd: "/context", until: ["threshold"] },
+      ]);
+
+      // 窗口行读的是 cfg：探测后已是新值（这一行一直是对的）
+      expect(lineWith(out, "window")).toContain("131,072");
+      expect(lineWith(out, "window")).toContain("models_api");
+
+      // 档位行必须与它自洽：不再是「窗口未证实 → mini / 超预算」
+      const promptLine = lastLineWith(out, "prompt");
+      expect(promptLine).not.toContain("mini");
+      expect(promptLine).not.toContain("超预算");
+      expect(promptLine).toContain("预算内");
+    } finally {
+      s.stop();
+    }
   });
 });
