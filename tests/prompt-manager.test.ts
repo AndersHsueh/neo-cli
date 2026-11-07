@@ -2,13 +2,17 @@
  * PromptManager：统一重渲染（issue #19 / #20）。
  * 用伪造的最小 Config，不触网、不碰真实 settings。
  */
-import { describe, expect, test } from "bun:test";
+import { afterAll, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { arch, hostname, platform, tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { Agent, type AgentIO } from "../src/agent.ts";
 import type { Config } from "../src/config.ts";
+import { resolveAndApplyModelWindow } from "../src/env/modelWindows.ts";
+import { machineKeyOf, snapshotFile, writeSnapshot } from "../src/env/probe.ts";
+import type { EnvStatic } from "../src/env/types.ts";
+import type { Message, StreamResult } from "../src/llm.ts";
 import { PromptManager } from "../src/prompt/manager.ts";
 
 function makeCfg(over: Partial<Config> = {}): Config {
@@ -202,6 +206,20 @@ describe("Agent.refreshSystemPrompt", () => {
   });
 });
 
+/**
+ * 异步探针：窗口更新在下一个请求边界生效（issue #20 收尾）。
+ *
+ * 探针回调的契约：**回调只做 resolveAndApplyModelWindow(cfg)** —— 改 cfg，
+ * 不碰 messages[0]。档位因此在下一次请求边界才重选：PromptManager.render 的
+ * 指纹含 cfg.contextWindow / cfg.contextWindowSource（src/prompt/manager.ts），
+ * cfg 一变指纹就变，下一次 render 必然重算并升档。
+ *
+ * 这一组把「请求真的在进行中」做出来（注入 chatStream 挂住第一次请求），
+ * 钉住三条：
+ *  1. 探针回写窗口后，messages[0] 不变 —— 提示词不在流式期间改写；
+ *  2. 同一轮内的多次请求带同一份系统提示词（messages 是活引用，会被再次发出）；
+ *  3. 下一轮请求才升档。
+ */
 describe("异步探针：窗口更新在下一个请求边界生效", () => {
   function io2(): AgentIO {
     const noop = () => {};
@@ -214,27 +232,185 @@ describe("异步探针：窗口更新在下一个请求边界生效", () => {
     } as unknown as AgentIO;
   }
 
-  test("首轮未探测 → mini；探针回写窗口后下一次 refresh 升档，不必手动触发", () => {
-    const cfg = makeCfg({ contextWindow: 200_000, contextWindowSource: "default" });
-    const m = mgr("a");
-    const agent = new Agent({
+  /** 每个用例一个沙箱：env 快照写在里面，绝不碰真实的 ~/.neo。 */
+  const sandboxes: string[] = [];
+  afterAll(() => {
+    for (const d of sandboxes) rmSync(d, { recursive: true, force: true });
+  });
+
+  /** 探针还没回写时的配置：窗口来源 default → 不可信 → 只能 mini。 */
+  function makeProbeCfg(): Config {
+    const sandbox = mkdtempSync(join(tmpdir(), "neo-pm-probe-"));
+    sandboxes.push(sandbox);
+    const cwd = mkdtempSync(join(tmpdir(), "neo-pm-cwd-"));
+    sandboxes.push(cwd);
+    return {
+      cwd,
+      providerName: "p1",
+      providerType: "openai",
+      baseUrl: "http://127.0.0.1:1/v1",
+      apiKey: "k",
+      model: "m1",
+      modelTier: "balanced",
+      maxTokens: 4_096,
+      temperature: 0.6,
+      compactThreshold: 0.75,
+      maxToolIterations: 10,
+      toolOutputLimit: 30_000,
+      parallelToolCalls: "readonly",
+      contextWindow: 8_192,
+      contextWindowSource: "default",
+      configuredContextWindow: 8_192,
+      configuredContextWindowExplicit: false,
+      env: { prompt: false, dir: sandbox },
+      providers: [],
+    } as unknown as Config;
+  }
+
+  /**
+   * 探针完成：把窗口事实写进 env 快照，再让 cfg 重新解析。
+   * 这就是 src/index.ts 里探针回调真正做的事（resolveAndApplyModelWindow）。
+   */
+  function probeCompletes(cfg: Config, tokens = 200_000): void {
+    const key = machineKeyOf(hostname(), platform(), arch());
+    const dir = cfg.env?.dir;
+    if (!dir) throw new Error("测试配置缺 env.dir：env 快照会落到真实的 ~/.neo");
+    writeSnapshot(snapshotFile(dir, key, cfg.env), {
+      version: 1,
+      collectedAt: new Date().toISOString(),
+      machineKey: key,
+      shell: { path: "/bin/bash", kind: "bash", login: false, source: "env", version: null },
+      models: {
+        [`${cfg.providerName}|${cfg.model}`]: {
+          contextWindow: tokens,
+          source: "models_api",
+          updatedAt: new Date().toISOString(),
+        },
+      },
+    } as unknown as EnvStatic);
+    const applied = resolveAndApplyModelWindow(cfg);
+    expect(applied.tokens).toBe(tokens);
+    expect(cfg.contextWindow).toBe(tokens);
+    expect(cfg.contextWindowSource).toBe("models_api");
+  }
+
+  interface Probe {
+    /** 每次请求发出那一刻的系统提示词快照（真实现是 fetch 前同步 JSON.stringify）。 */
+    sent: string[];
+    /** live 的 system 消息对象：能看出它后来有没有被改写。 */
+    live: (Message | undefined)[];
+  }
+
+  /**
+   * 造一个 Agent：第一次请求挂住（gate），返回一次工具调用 ——
+   * 工具循环会再发一次请求，而 messages 是同一份活引用。
+   */
+  function makeProbeAgent(
+    cfg: Config,
+    m: PromptManager,
+    probe: Probe,
+    hooks: { gate?: Promise<void>; onFirstCall?: () => void } = {},
+  ): Agent {
+    return new Agent({
       cfg,
       console: io2(),
-      mode: "auto",
+      mode: "auto-all",
       systemPrompt: m.render(cfg).text,
       renderSystemPrompt: () => m.render(cfg).text,
+      chatStream: async (_c: Config, msgs: Message[]) => {
+        probe.sent.push(String(msgs[0]?.content));
+        probe.live.push(msgs[0]);
+        if (probe.sent.length === 1) hooks.onFirstCall?.();
+        if (hooks.gate) await hooks.gate;
+        if (probe.sent.length === 1) {
+          return {
+            content: "",
+            reasoning: "",
+            toolCalls: [
+              { id: "c1", type: "function", function: { name: "not_a_real_tool", arguments: "{}" } },
+            ],
+            finishReason: "stop",
+            usage: null,
+            raw: null,
+          } as StreamResult;
+        }
+        return {
+          content: "答",
+          reasoning: "",
+          toolCalls: [],
+          finishReason: "stop",
+          usage: null,
+          raw: null,
+        } as StreamResult;
+      },
     } as never);
-    const before = String(agent.messages[0]?.content).length;
+  }
+
+  test("请求进行中探针完成：messages[0] 与本轮后续请求都不变，下一轮才升档", async () => {
+    const cfg = makeProbeCfg();
+    const m = mgr("a");
+    const probe: Probe = { sent: [], live: [] };
+
+    let release = (): void => {};
+    const gate = new Promise<void>((res) => { release = res; });
+    let firstSent = (): void => {};
+    const firstRequest = new Promise<void>((res) => { firstSent = res; });
+
+    const agent = makeProbeAgent(cfg, m, probe, { gate, onFirstCall: firstSent });
+
+    // 探针还没回写：窗口未证实 → 只能 mini
     expect(m.lastSelection?.tier).toBe("mini");
 
-    // 探针回调只做这一件事：改 cfg 的窗口与来源（见 index.ts 的 resolveAndApplyModelWindow）。
-    cfg.contextWindow = 200_000;
-    cfg.contextWindowSource = "models_api";
-    expect(String(agent.messages[0]?.content).length).toBe(before); // 流式期间不改写
-    agent.refreshSystemPrompt(); // send() 在请求边界调用
-    expect(String(agent.messages[0]?.content).length).toBeGreaterThan(before);
+    const turn = agent.send("hi"); // 不 await：让它挂在请求里
+    await firstRequest; // 等请求确实发出去了
+    const mini = probe.sent[0]!;
+
+    // 探针完成：回调只改 cfg
+    probeCompletes(cfg);
+
+    // 请求在途：即便此刻调用 refreshSystemPrompt（探针回调若改成主动刷新就是这条路），
+    // messages[0] 也不许被改写。
+    agent.refreshSystemPrompt();
+    expect(String(agent.messages[0]?.content)).toBe(mini);
+    expect(String(probe.live[0]?.content)).toBe(mini);
+    expect(m.lastSelection?.tier).toBe("mini"); // 还没重渲染，仍是 mini
+
+    release();
+    await turn;
+
+    // 本轮内的第二个请求（工具轮）带同一份系统提示词
+    expect(probe.sent.length).toBe(2);
+    expect(probe.sent[1]).toBe(mini);
+
+    // 下一轮：请求边界重渲染 → 升档
+    await agent.send("再问");
+    expect(probe.sent.length).toBe(3);
+    expect(probe.sent[2]!).not.toBe(mini);
     expect(m.lastSelection?.tier).not.toBe("mini");
-    rmSync(cfg.cwd, { recursive: true, force: true });
+    expect(String(agent.messages[0]?.content)).toBe(probe.sent[2]!);
+  });
+
+  test("空闲时探针完成：messages[0] 仍不立即变，下一轮请求带升档后的提示词", async () => {
+    const cfg = makeProbeCfg();
+    const m = mgr("a");
+    const probe: Probe = { sent: [], live: [] };
+    const agent = makeProbeAgent(cfg, m, probe);
+
+    const mini = String(agent.messages[0]?.content);
+    expect(m.lastSelection?.tier).toBe("mini");
+
+    // 探针完成（空闲）：只改 cfg，提示词不动
+    probeCompletes(cfg);
+    expect(String(agent.messages[0]?.content)).toBe(mini);
+    expect(m.lastSelection?.tier).toBe("mini");
+
+    // 下一轮：请求边界才升档，且发出去的就是升档后的那份
+    await agent.send("hi");
+    expect(probe.sent.length).toBe(2); // 本轮有工具调用 → 两个请求
+    expect(probe.sent[0]!).not.toBe(mini);
+    expect(probe.sent[1]).toBe(probe.sent[0]!); // 本轮内始终同一份提示词
+    expect(m.lastSelection?.tier).not.toBe("mini");
+    expect(String(agent.messages[0]?.content)).toBe(probe.sent[0]!);
   });
 });
 

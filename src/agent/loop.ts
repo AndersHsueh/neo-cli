@@ -77,6 +77,19 @@ export class Agent {
    * 与 `mode` 分开存：`mode` 是只读闸门，这里是「先设计再动手」的会话态。
    */
   private planSession: PlanSession | null = null;
+  /**
+   * 是否有请求在途（issue #20 收尾）。
+   *
+   * 在途时禁止改写 messages[0]：messages 是**活引用**，工具循环的每次迭代
+   * （streamFn 直接收 this.messages）、以及失败重试/降级重发，都会把同一份
+   * 数组再发一次 —— 中途改写会让**同一轮里**前面的请求带旧提示词、后面的
+   * 请求带新提示词。
+   *
+   * 窗口 / 模型 / 会话名的变化统一在下一个请求边界生效
+   * （send() 开头的 refreshSystemPrompt）。探针回调、切模型、溢出校正
+   * 都只改状态，不在流式期间动提示词。
+   */
+  private requestInFlight = false;
 
   constructor(private readonly opt: AgentOptions) {
     this.mode = opt.mode;
@@ -273,8 +286,14 @@ export class Agent {
    * 按当前配置整体重建系统提示词（档位、会话名、模型行、项目记忆一并刷新）。
    * 宿主未提供 renderSystemPrompt（子代理/测试）时无事可做。
    * 只替换 messages[0]：必须在请求边界调用，不要在流式响应进行中改写。
+   *
+   * 在途请求期间调用是**安全无副作用**的：直接返回，不改写 messages[0]
+   * （见 requestInFlight）。落下的更新不会丢 —— 下一次请求边界必然按当前
+   * cfg 重渲染（PromptManager 的指纹含窗口/来源，cfg 一变指纹就变）。
    */
   refreshSystemPrompt(): void {
+    // 请求在途：改写 messages[0] 会让同一轮里的请求带不同的系统提示词。
+    if (this.requestInFlight) return;
     const render = this.opt.renderSystemPrompt;
     if (!render) return;
     const sys = this.messages[0];
@@ -589,6 +608,8 @@ export class Agent {
         // 空正文重试（尤其 finishReason=length）时临时放大输出预算。
         const reqCfg =
           retryMaxTokens !== null ? { ...this.opt.cfg, maxTokens: retryMaxTokens } : this.opt.cfg;
+        // 在途标记：请求发出到返回之间，messages[0] 不许被改写。
+        this.requestInFlight = true;
         const res = await this.streamFn(
           reqCfg,
           this.messages,
@@ -633,6 +654,7 @@ export class Agent {
           },
           signal,
         );
+        this.requestInFlight = false;
 
         // 预算提示只服务于这一次请求，立刻摘掉，避免污染对话历史
         this.dropTransientMessage(budgetMsg);
@@ -825,6 +847,8 @@ export class Agent {
         // 否则下一轮请求会因消息序列不完整被服务端拒绝。
         await this.runCompactIfRequested();
       } catch (e) {
+        // 请求失败/中断：在途标记必须清掉，否则之后的请求边界不再刷新提示词。
+        this.requestInFlight = false;
         this.opt.console.stopSpinner();
         // 请求失败时同样要摘掉预算提示，否则它会作为一条孤立消息留在历史里
         this.dropTransientMessage(budgetMsg);
