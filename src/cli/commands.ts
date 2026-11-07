@@ -125,6 +125,8 @@ export interface CommandContext {
   injectMailbox?: (env: Envelope) => void;
   onMailboxRekey?: () => void;
   onNameChange?: (name: string) => void;
+  /** 最近一次系统提示词选档诊断（issue #20）；/context 展示用，未渲染过为 null。 */
+  promptSelection?: () => import("./../prompt/select.ts").PromptSelection | null;
   memoryMode?: "interactive" | "oneshot";
   /**
    * 把合成的用户消息排进主循环队列，作为下一轮发给模型（issue #13）。
@@ -149,7 +151,7 @@ export interface CommandContext {
 export async function handleCommand(line: string, ctx: CommandContext): Promise<void> {
   const {
     agent, ui, cfg, memory, classifier, meta, shutdown, selectDeps, mailbox, checkpoints,
-    injectMailbox, onMailboxRekey, onNameChange,
+    injectMailbox, onMailboxRekey, onNameChange, promptSelection,
   } = ctx;
   const memoryMode = ctx.memoryMode ?? "interactive";
   const [cmdRaw, ...rest] = line.slice(1).split(/\s+/);
@@ -241,6 +243,15 @@ export async function handleCommand(line: string, ctx: CommandContext): Promise<
       ui.kv("reasoning", caps.reasoning);
       const gap = formatCapabilityGapHint(cfg);
       if (gap) ui.info(gap);
+      // issue #20：系统提示词选了哪一档、为什么。只展示数字与原因，不打印提示词或记忆原文。
+      const psel = promptSelection?.();
+      if (psel) {
+        ui.kv(
+          "prompt",
+          `${psel.tier} ${c.dim(`(${psel.fits ? "预算内" : "超预算"} · ${psel.estimatedSystemTokens ?? "?"}/${psel.budget} tokens 估计)`)}`,
+        );
+        ui.line(c.dim(`  ${psel.reason}`));
+      }
       ui.kv("threshold", `${(cfg.compactThreshold * 100).toFixed(0)}% · ${Math.round(
         cfg.compactThreshold * cfg.contextWindow,
       ).toLocaleString()} tokens`);

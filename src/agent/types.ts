@@ -67,6 +67,11 @@ export interface AgentOptions {
   console: AgentIO;
   mode: PermissionMode;
   systemPrompt: string;
+  /**
+   * 重渲染完整系统提示词（issue #20）。提供时，模型切换/rename/探针完成/超限校正
+   * 都经由它整体重建 messages[0]（含档位重选与项目记忆）；不提供（子代理、测试）则沿用旧行为。
+   */
+  renderSystemPrompt?: () => string;
   onEvent?: (e: AgentEvent) => void;
   /** 分类器。为 undefined 时不做自动分类。 */
   classifier?: Classifier;
@@ -204,6 +209,7 @@ export interface AgentHost {
   cancel(): void;
   requestCompact(): void;
   noteModelChange(cfg: Config): void;
+  refreshSystemPrompt(): void;
   reset(keepSystem?: boolean): void;
   compactNow(): Promise<{ beforeTokens: number; afterTokens: number }>;
   compact(): Promise<boolean>;

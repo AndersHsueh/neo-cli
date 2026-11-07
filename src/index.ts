@@ -62,7 +62,7 @@ import {
   stripContinuationMarker,
   type Continuation,
 } from "./input/multiline.ts";
-import { buildSystemPrompt } from "./system-prompt.ts";
+import { PromptManager } from "./prompt/manager.ts";
 import { createMemoryBridge, type MemoryBridge } from "./memory/bridge.ts";
 import { makeRememberTool } from "./tools/memory.ts";
 import { makeTodoWriteTool, todosSummary, type TodoItem } from "./tools/todo.ts";
@@ -728,11 +728,19 @@ async function main(): Promise<number> {
     return envs;
   }
 
+  // 系统提示词唯一渲染入口（issue #20）：档位选择、会话名、项目记忆都由它持有，
+  // 探针完成/切模型/rename/超限校正只需让 agent 在下一个请求边界重渲染。
+  const promptManager = new PromptManager({
+    mailbox: mailboxEnabled,
+    askUser: interactiveTTY,
+    sessionName: sessionLabel,
+  });
   const agent = new Agent({
     cfg,
     console: ui,
     mode: args.mode,
-    systemPrompt: buildSystemPrompt(cfg, { mailbox: mailboxEnabled, askUser: interactiveTTY }),
+    systemPrompt: promptManager.render(cfg).text,
+    renderSystemPrompt: () => promptManager.render(cfg).text,
     classifier,
     memory,
     checkpoint: checkpoints,
@@ -962,10 +970,8 @@ async function main(): Promise<number> {
 
   // 运行时工具注册完成后再刷新系统提示：`可用工具` 行由 toolNames() 现取，
   // 首次构造时运行时工具（task/wiki/remember/send_message/list_peers）尚未注册。
-  {
-    const sys0 = agent.messages[0];
-    if (sys0) sys0.content = buildSystemPrompt(cfg, { mailbox: mailboxEnabled, askUser: interactiveTTY });
-  }
+  promptManager.invalidate();
+  agent.refreshSystemPrompt();
 
   if (restored && restored.length > 0) {
     agent.messages = applyRestored(agent.messages[0], restored);
@@ -993,9 +999,8 @@ async function main(): Promise<number> {
     .map((f) => join(cfg.cwd, f))
     .find((p) => existsSync(p));
   if (memoryFile) {
-    const extra = readFileSync(memoryFile, "utf8");
-    const sysMsg = agent.messages[0];
-    if (sysMsg) sysMsg.content = `${sysMsg.content}\n\n## 项目记忆（来自 ${memoryFile}）\n\n${extra}`;
+    promptManager.setProjectMemory({ path: memoryFile, text: readFileSync(memoryFile, "utf8") });
+    agent.refreshSystemPrompt();
   }
 
   // v0.2 记忆激活 §7.7.1 R0：用户画像摘要注入 messages[1]（不追加到 messages[0]）。
@@ -1280,9 +1285,13 @@ async function main(): Promise<number> {
               queue.push({ text: formatIncomingFrame(env), attachments: [], origin: "mailbox", from: env.from.session });
             },
             onMailboxRekey: () => inboundRefs.clear(),
+            promptSelection: () => promptManager.lastSelection,
             onNameChange: (name) => {
               sessionLabel = name;
               titleAnimator?.setName(name);
+              // issue #19：名字进了系统提示词身份句，rename 后必须重建，否则模型仍自称旧名。
+              promptManager.setSessionName(name);
+              agent.refreshSystemPrompt();
             },
             // issue #13：/技能名 把合成消息排进队列，由 drain 的 while 在下一轮取出。
             // 不在这里直接 agent.send —— drain 正在跑，重入会打乱 draining 状态机。

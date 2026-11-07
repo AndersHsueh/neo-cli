@@ -64,7 +64,9 @@ export function resolveAndApplyModelWindow(cfg: Config): ResolvedWindow {
   // 用「配置原值」而非当前值做 fallback：cfg.contextWindow 可能已被上一个模型的
   // env 事实覆盖，不能拿它冒充新模型的配置窗口（/model 切换场景）。
   const fallback = cfg.configuredContextWindow ?? cfg.contextWindow;
-  const resolved = resolveContextWindow(fallback, cfg.model, info);
+  // 配置值是否显式：config.ts 在加载/切换 provider 时记下；已被探测覆盖过的会话里它仍保持这次配置的来源。
+  const explicit = cfg.configuredContextWindowExplicit ?? true;
+  const resolved = resolveContextWindow(fallback, cfg.model, info, explicit);
   cfg.contextWindow = resolved.tokens;
   cfg.contextWindowSource = resolved.source;
   return resolved;

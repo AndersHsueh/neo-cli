@@ -42,12 +42,14 @@ export function resolveContextWindow(
   configured: number,
   model: string,
   env?: ModelContextInfo | null,
+  /** configured 是否用户显式写过；false 表示它只是模板/内置兜底，来源记为 default。省略视为显式。 */
+  configuredExplicit = true,
 ): ResolvedWindow {
   if (env?.contextWindow && Number.isFinite(env.contextWindow) && env.contextWindow > 0) {
     return { tokens: Math.floor(env.contextWindow), source: env.source, env };
   }
   if (Number.isFinite(configured) && configured > 0) {
-    return { tokens: Math.floor(configured), source: "config" };
+    return { tokens: Math.floor(configured), source: configuredExplicit ? "config" : "default" };
   }
   const known = knownWindow(model);
   if (known) return { tokens: known, source: "known" };

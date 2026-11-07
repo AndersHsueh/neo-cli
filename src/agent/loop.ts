@@ -265,11 +265,27 @@ export class Agent {
   }
 
   /**
-   * 模型 / provider 切换后同步系统提示词里的「模型」那一行。
-   * 不更新的话，模型看到的仍是启动时的旧模型名 —— 那会直接影响它的行为判断
-   * （例如是否该期待思维链先于正文出现）。
+   * 按当前配置整体重建系统提示词（档位、会话名、模型行、项目记忆一并刷新）。
+   * 宿主未提供 renderSystemPrompt（子代理/测试）时无事可做。
+   * 只替换 messages[0]：必须在请求边界调用，不要在流式响应进行中改写。
+   */
+  refreshSystemPrompt(): void {
+    const render = this.opt.renderSystemPrompt;
+    if (!render) return;
+    const sys = this.messages[0];
+    if (!sys || sys.role !== "system") return;
+    sys.content = render();
+  }
+
+  /**
+   * 模型 / provider 切换后同步系统提示词。
+   * 有宿主渲染器就整体重建（窗口变了档位也要重选）；否则只改写「模型」那一行。
    */
   noteModelChange(cfg: Config): void {
+    if (this.opt.renderSystemPrompt) {
+      this.refreshSystemPrompt();
+      return;
+    }
     const sys = this.messages[0];
     if (!sys || sys.role !== "system") return;
     // system 消息恒为 string（结构性约束）；类型扩宽后此处显式收窄
@@ -424,6 +440,9 @@ export class Agent {
     const tierSwitch = await this.classifyTurn(text);
     // 分类可能切 provider/model（v0.4.1 A2）：切完再解析当前模型的窗口事实。
     this.opt.refreshContextWindow?.();
+    // 请求边界：窗口/来源/会话名/模型任何一项在上一轮之后变了，档位与正文都要重选。
+    // 探针完成、overflow 校正、rename 都只改状态，统一在这里生效，不在流式响应中途改写。
+    this.refreshSystemPrompt();
 
     // v0.2 记忆激活 §7.7.2：本轮开始前自动召回（临时 system 消息，轮末摘除）。
     // 放在 user 消息之前：既是协议上最稳的位置，也让模型先看到历史再读问题。

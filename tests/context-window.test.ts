@@ -276,3 +276,34 @@ describe("env 模型窗口事实", () => {
     }
   });
 });
+
+describe("窗口来源：显式配置 vs 兜底（issue #20）", () => {
+  test("兜底 200,000 标 default，不再冒充 known", () => {
+    const r = resolveContextWindow(Number.NaN, "no-such-model-xyz", null);
+    expect(r.tokens).toBe(200_000);
+    expect(r.source).toBe("default");
+  });
+
+  test("已知模型表命中仍标 known", () => {
+    expect(resolveContextWindow(Number.NaN, "deepseek-chat", null).source).toBe("known");
+  });
+
+  test("configured 显式（默认）→ config；非显式 → default，数值不变", () => {
+    expect(resolveContextWindow(512_000, "x", null).source).toBe("config");
+    expect(resolveContextWindow(512_000, "x", null, true).source).toBe("config");
+    const d = resolveContextWindow(200_000, "x", null, false);
+    expect(d.source).toBe("default");
+    expect(d.tokens).toBe(200_000);
+  });
+
+  test("探测值始终优先于配置，不受 explicit 影响", () => {
+    const env = {
+      contextWindow: 32_768,
+      source: "models_api",
+      updatedAt: "2026-11-07T00:00:00.000Z",
+    } as const;
+    const r = resolveContextWindow(200_000, "x", env, false);
+    expect(r.tokens).toBe(32_768);
+    expect(r.source).toBe("models_api");
+  });
+});

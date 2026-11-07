@@ -21,6 +21,7 @@ import { fileURLToPath } from "node:url";
 import type { EnvConfig } from "./env/types.ts";
 import type { ShellConfig } from "./shell.ts";
 import { parseHooksConfig, type HooksConfig } from "./hooks/types.ts";
+import { DEFAULT_SELECTION_CONFIG, TIER_ORDER, type PromptSelectionConfig } from "./prompt/select.ts";
 
 import {
   DEFAULT_MAILBOX_CONFIG,
@@ -230,6 +231,10 @@ export interface Config {
    *  只用于 /context 展示与排障，不参与序列化。
    */
   contextWindowSource?: "config" | "models_api" | "overflow_error" | "known" | "default";
+  /** configuredContextWindow 是否为用户显式配置（false = 模板/内置兜底，来源应记为 default）。 */
+  configuredContextWindowExplicit?: boolean;
+  /** settings 顶层是否显式写了 context_window（决定回落到全局默认时算 config 还是 default）。 */
+  globalWindowExplicit?: boolean;
   /** 顶层全局默认。provider 未覆盖某项时用它，切换 provider 时据此回滚。 */
   globalDefaults: { maxTokens: number; temperature: number; contextWindow: number };
   compactThreshold: number;
@@ -296,6 +301,8 @@ export interface Config {
   hooks: HooksConfig;
   /** 环境探测/注入配置（v0.4.0；不填=默认开启、TTL 12h、注入+写 wiki 页）。 */
   env?: EnvConfig;
+  /** 系统提示词三档选择（issue #20）。settings.json 顶层 `system_prompt` 段；缺省按 DEFAULT_SELECTION_CONFIG。 */
+  systemPrompt: PromptSelectionConfig;
 }
 
 /**
@@ -406,6 +413,32 @@ function resolveShellConfig(raw: unknown): ShellConfig | undefined {
     if (clean.length > 0) out.args = clean;
   }
   return Object.keys(out).length > 0 ? out : undefined;
+}
+
+/**
+ * 解析 settings.system_prompt（issue #20）。非法值一律回落默认，不报错：
+ * 这是优化项，配置写错不能拖垮启动。比例夹在 0.05–0.3，避免 0 或 1 让预算失去意义。
+ */
+function resolveSystemPromptConfig(raw: unknown): PromptSelectionConfig {
+  const out: PromptSelectionConfig = { ...DEFAULT_SELECTION_CONFIG };
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return out;
+  const r = raw as Raw;
+  const mode = r["selection_mode"];
+  if (mode === "budget-first" || mode === "context-gated") out.selectionMode = mode;
+  const ratio = r["system_budget_ratio"];
+  if (typeof ratio === "number" && Number.isFinite(ratio)) {
+    out.systemBudgetRatio = Math.min(0.3, Math.max(0.05, ratio));
+  }
+  const maxTier = r["max_tier"];
+  if (typeof maxTier === "string" && (TIER_ORDER as readonly string[]).includes(maxTier)) {
+    out.maxTier = maxTier as PromptSelectionConfig["maxTier"];
+  }
+  const unknown = r["unknown_window_budget"];
+  if (typeof unknown === "number" && Number.isFinite(unknown) && unknown > 0) {
+    out.unknownWindowBudget = Math.floor(unknown);
+  }
+  if (typeof r["trust_known_window"] === "boolean") out.trustKnownWindow = r["trust_known_window"];
+  return out;
 }
 
 /**
@@ -602,6 +635,12 @@ function readJson(path: string): Raw | null {
   }
 }
 
+/** provider 显式写了窗口 = config；回落到全局默认时只有顶层显式配置才算 config，否则是兜底 default。 */
+function windowSourceFor(cfg: Config, providerWindow: number | null | undefined): "config" | "default" {
+  if (providerWindow != null) return "config";
+  return cfg.globalWindowExplicit ? "config" : "default";
+}
+
 function num(v: unknown, d: number): number {
   return typeof v === "number" && Number.isFinite(v) ? v : d;
 }
@@ -792,6 +831,9 @@ export function loadConfig(overrides: Partial<Config> = {}): Config {
   const gMax = num(raw["max_tokens"], num(dflt["max_tokens"], 8192));
   const gTemp = num(raw["temperature"], num(dflt["temperature"], 0.6));
   const gCtx = num(raw["context_window"], num(dflt["context_window"], 200_000));
+  // 窗口值是否由用户显式写过：provider 级或 settings 顶层。都没写时 gCtx 来自模板/内置 200,000，
+  // 只是兜底，不是事实——选系统提示词档位时不能当成已证实窗口（issue #20）。
+  const ctxExplicit = picked.contextWindow != null || typeof raw["context_window"] === "number";
 
   // ---- 档位路由 ----
   // 未显式配置时，每个档位都指向当前 provider 的对应模型（即旧的单provider 行为）。
@@ -872,7 +914,9 @@ export function loadConfig(overrides: Partial<Config> = {}): Config {
     temperature: picked.temperature ?? gTemp,
     contextWindow: picked.contextWindow ?? gCtx,
     configuredContextWindow: picked.contextWindow ?? gCtx,
-    contextWindowSource: "config",
+    contextWindowSource: ctxExplicit ? "config" : "default",
+    configuredContextWindowExplicit: ctxExplicit,
+    globalWindowExplicit: typeof raw["context_window"] === "number",
     globalDefaults: { maxTokens: gMax, temperature: gTemp, contextWindow: gCtx },
     compactThreshold: num(raw["compact_threshold"], num(dflt["compact_threshold"], 0.75)),
     maxToolIterations: num(raw["max_tool_iterations"], num(dflt["max_tool_iterations"], 80)),
@@ -897,6 +941,7 @@ export function loadConfig(overrides: Partial<Config> = {}): Config {
     // hooks 同理只认本地：模板里的示例 hook 不该在用户机器上被执行。
     hooks: parseHooksConfig(raw["hooks"]),
     env: resolveEnvConfig(raw["env"]),
+    systemPrompt: resolveSystemPromptConfig(raw["system_prompt"]),
     paste: resolvePasteConfig(raw["paste"] as Raw | undefined),
     mailbox: resolveMailboxSettings(raw),
     crossSessionInbound: resolveInboundPolicy(raw["cross_session_inbound"]),
@@ -1034,6 +1079,8 @@ export function applyTier(
     cfg.temperature = defProv.temperature ?? cfg.globalDefaults.temperature;
     cfg.contextWindow = defProv.contextWindow ?? cfg.globalDefaults.contextWindow;
     cfg.configuredContextWindow = cfg.contextWindow;
+    cfg.contextWindowSource = windowSourceFor(cfg, defProv.contextWindow);
+    cfg.configuredContextWindowExplicit = cfg.contextWindowSource === "config";
     return {
       ok: true,
       degraded: true,
@@ -1051,6 +1098,8 @@ export function applyTier(
   cfg.temperature = target.temperature ?? cfg.globalDefaults.temperature;
   cfg.contextWindow = target.contextWindow ?? cfg.globalDefaults.contextWindow;
   cfg.configuredContextWindow = cfg.contextWindow;
+  cfg.contextWindowSource = windowSourceFor(cfg, target.contextWindow);
+  cfg.configuredContextWindowExplicit = cfg.contextWindowSource === "config";
   return { ok: true, degraded: false };
 }
 
@@ -1108,6 +1157,8 @@ export function switchProvider(cfg: Config, name: string): { ok: true } | { ok: 
   cfg.temperature = target.temperature ?? g.temperature;
   cfg.contextWindow = target.contextWindow ?? g.contextWindow;
   cfg.configuredContextWindow = cfg.contextWindow;
+  cfg.contextWindowSource = windowSourceFor(cfg, target.contextWindow);
+  cfg.configuredContextWindowExplicit = cfg.contextWindowSource === "config";
 
   return { ok: true };
 }
