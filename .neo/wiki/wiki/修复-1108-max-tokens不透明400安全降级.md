@@ -45,3 +45,11 @@ issue #21（2026-11-07）报：settings.json 里某 provider 把 max_tokens 配�
 
 - [[修复-1108-worktree路径realpath不对称]] —— 同一轮核查中发现的另一处既有失败
 - [[跨会话消息-v0.2.0]] —— 派活通道
+
+## 推理与依据
+
+- 2026-11-08（session 20261108-182604-smf6ln）：v0.4.79 已补齐 issue #21 的三类防护：①启动时由 `auditMaxTokens` 逐 provider 检查 `max_tokens` 是否达到或超过 context window、或超过 max output tokens；仅在双方上限明确时判定，避免对缺少元数据的网关误报。②不可解析上限的 opaque 400 在排除上下文超长、鉴权和 parallel 拒绝后，将 `max_tokens` 降为 8192 并仅重试一次；恒定 400 时总请求数恰为 2，降级值只影响本次请求，不写入 `learnedMaxTokens`。③400/422 错误保留原文并追加 max_tokens 提示，配置示例补充 `max_tokens_note` 与“max_output_tokens 不是上下文窗口”的说明。
+
+交付位于分支 `fix/issue21-max-tokens-safety`，基点 `d9d1117`，代码提交 `9b06f98`（8 文件，+741/-8），尚未 push、尚未合入 main；合并方应只 cherry-pick 此代码提交。主工作树中的 wiki 提交 `6c3064f` 已同时位于 main，不要 rebase/reset，也不要重复合入。
+
+验证结果：TypeScript 检查 0 错误；`bun test` 1704 pass / 0 fail（93 文件，新增 28 用例）；`scripts/verify.sh` ALL GREEN，PTY 24/24；证据位于 `docs/evidence/v0.4.79-{tsc,tests,pty}.txt`。PRD 已按约定改名并加 `[done]`，发布说明为 `docs/release-notes/v0.4.79.md`，版本号仅修改 `package.json` 为 0.4.79。

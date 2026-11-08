@@ -332,3 +332,6 @@ grep -E -A3 "^## \[[0-9-]+\] todo \|" wiki/log.md
 ## [2026-11-08] query | 记录 #26 修复合入（v0.4.78，全量 1676 pass / 0 fail）与「remember 自动落页覆盖同名手写页」的机制风险
 ## [2026-11-08] wiki | 自动记忆：project/测试闸门-豁免盲区审计.md（create）
 ## [2026-11-08] query | 测试盲区审计：盲区在豁免层（2 处 skip + 1 处静默 return + verify.sh 无 skip 守卫），断言层干净
+## [2026-11-08] wiki | 自动记忆：project/待办-Issue与发布说明收尾.md（append）
+## [2026-11-08] wiki | 自动记忆：project/测试闸门-豁免盲区审计.md（append）
+## [2026-11-08] wiki | 自动记忆：project/修复-1108-max-tokens不透明400安全降级.md（append）
