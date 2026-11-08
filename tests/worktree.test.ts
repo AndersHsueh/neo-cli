@@ -26,10 +26,12 @@ import { helpText } from "../src/cli/help.ts";
 import type { Config } from "../src/config.ts";
 import { COMMANDS } from "../src/input/commands.ts";
 import {
+  canonicalize,
   detectRepo,
   ensureWorktree,
   isValidWorktreeName,
   listManaged,
+  orphanDirs,
   parseWorktreeList,
   removeWorktree,
   WORKTREE_DIR,
@@ -38,6 +40,7 @@ import {
   worktreeRoot,
 } from "../src/worktree.ts";
 import { captureConsole } from "./helpers.ts";
+
 
 const ROOT = join(tmpdir(), `neo-worktree-test-${Date.now()}`);
 mkdirSync(ROOT, { recursive: true });
@@ -260,11 +263,16 @@ describe("b. 创建与复用", () => {
     const repoFromWt = detectRepo(a.path);
     expect(repoFromWt.ok).toBe(true);
     if (!repoFromWt.ok) return;
-    expect(repoFromWt.mainRoot).toBe(repo);
+    // issue #26：mainRoot 是 canonical 口径（软链展开后的真实路径），
+    // 与 makeRepo 得到的原始路径可能不同写法（macOS 上 /var → /private/var）。
+    // 两边都按 canonical 比较，「不套娃」这个语义不变：仍是主仓库，不是 worktree 内部。
+    expect(repoFromWt.mainRoot).toBe(canonicalize(repo));
+    // 关键语义：新建的 b 挂在**主仓库**的 .neo/worktrees 下，不在 a 里面套娃。
     const b = ensureWorktree(repoFromWt.mainRoot, "b");
     expect(b.ok).toBe(true);
     if (!b.ok) return;
-    expect(b.path).toBe(worktreePath(repo, "b"));
+    expect(canonicalize(b.path)).toBe(canonicalize(worktreePath(repo, "b")));
+    expect(b.path.startsWith(join(a.path, WORKTREE_DIR))).toBe(false);
   });
 });
 
@@ -696,10 +704,6 @@ describe("f. /worktree 命令", () => {
   });
 });
 
-/* ------------------------------------------------------------------ */
-/* g. 声明                                                             */
-/* ------------------------------------------------------------------ */
-
 describe("g. 声明与帮助", () => {
   test("COMMANDS 含 worktree，说明写的是托管与清理", () => {
     const entry = COMMANDS.find((c) => c.name === "worktree");
@@ -716,5 +720,156 @@ describe("g. 声明与帮助", () => {
     expect(text).toContain("/worktree list");
     expect(text).toContain("/worktree remove");
     expect(text).toContain("不是权限");
+  });
+});
+
+/* ------------------------------------------------------------------ */
+/* h. 软链路径（issue #26）                                            */
+/* ------------------------------------------------------------------ */
+
+/**
+ * issue #26：调用方传入的**原始路径**与 git 报的 **realpath** 比对，
+ * 软链路径下两者不等 → 托管清单恒空、复用失败、孤儿误判。
+ *
+ * macOS 上 /var → /private/var、/tmp → /private/tmp；
+ * Linux 上 /tmp 非软链 → 这类用例在 CI 上是绿的，只有 macOS 会红。
+ * 所以这里**显式造软链**，不依赖开发机 /tmp 的形态，
+ * 让两个平台都能验证同一条不变量。
+ */
+describe("h. 软链路径下的托管清单", () => {
+  /** 建仓库 → 用软链别名指向它 → 返回 { real, alias }。 */
+  function makeLinkedRepo(name: string): { real: string; alias: string } {
+    const real = makeRepo(name);
+    const alias = join(ROOT, `${name}-alias`);
+    symlinkSync(real, alias);
+    return { real, alias };
+  }
+
+  test("listManaged：软链路径下也能列出托管 worktree", () => {
+    const { real, alias } = makeLinkedRepo("link-list");
+    const r = ensureWorktree(alias, "feat");
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+
+    // 用别名调用（调用方视角：原始路径）
+    const viaAlias = listManaged(alias);
+    expect(viaAlias.map((w) => w.name)).toEqual(["feat"]);
+    expect(viaAlias[0]!.branch).toBe("neo/feat");
+
+    // 用真实路径调用（git 视角：realpath）—— 两种写法结果一致
+    const viaReal = listManaged(real);
+    expect(viaReal.map((w) => w.name)).toEqual(["feat"]);
+
+    // 两侧清单的 path 归一到同一口径
+    expect(canonicalize(viaAlias[0]!.path)).toBe(canonicalize(viaReal[0]!.path));
+  });
+
+  test("ensureWorktree：软链路径下第二次是复用，不是「不是 neo 托管的」", () => {
+    const { alias } = makeLinkedRepo("link-reuse");
+    const first = ensureWorktree(alias, "feat");
+    expect(first.ok).toBe(true);
+    if (!first.ok) return;
+
+    const second = ensureWorktree(alias, "feat");
+    expect(second.ok).toBe(true);
+    if (!second.ok) return;
+    expect(second.created).toBe(false);
+    expect(canonicalize(second.path)).toBe(canonicalize(first.path));
+  });
+
+  test("ensureWorktree：路径用软链写法、分支用真实路径写法，也能复用同一个", () => {
+    const { real, alias } = makeLinkedRepo("link-mixed");
+    const first = ensureWorktree(real, "feat");
+    expect(first.ok).toBe(true);
+    if (!first.ok) return;
+
+    // 换一种路径写法再来：仍应命中同一个托管 worktree
+    const second = ensureWorktree(alias, "feat");
+    expect(second.ok).toBe(true);
+    if (!second.ok) return;
+    expect(second.created).toBe(false);
+    expect(canonicalize(second.path)).toBe(canonicalize(first.path));
+  });
+
+  test("removeWorktree：软链路径下能正常删除托管 worktree", () => {
+    const { alias } = makeLinkedRepo("link-remove");
+    const r = ensureWorktree(alias, "gone");
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+
+    const rm = removeWorktree(alias, "gone", { cwd: alias });
+    expect(rm.ok).toBe(true);
+    if (!rm.ok) return;
+    expect(existsSync(r.path)).toBe(false);
+    expect(listManaged(alias)).toEqual([]);
+  });
+
+  test("orphanDirs：软链路径下不把真实托管目录误判成孤儿", () => {
+    const { alias } = makeLinkedRepo("link-orphan");
+    const r = ensureWorktree(alias, "feat");
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+
+    // 托管目录里有真实托管的 feat → 不是孤儿
+    expect(orphanDirs(alias)).toEqual([]);
+
+    // 塞一个 git 不认的目录 → 仍然是孤儿
+    mkdirSync(join(worktreeRoot(alias), "leftover"), { recursive: true });
+    const orphans = orphanDirs(alias);
+    expect(orphans.length).toBe(1);
+    expect(orphans[0]!.endsWith("leftover")).toBe(true);
+  });
+
+  test("detectRepo：mainRoot 在软链路径下是 canonical 口径", () => {
+    const { real, alias } = makeLinkedRepo("link-detect");
+    const fromAlias = detectRepo(alias);
+    const fromReal = detectRepo(real);
+    expect(fromAlias.ok && fromReal.ok).toBe(true);
+    if (!fromAlias.ok || !fromReal.ok) return;
+    expect(fromAlias.mainRoot).toBe(canonicalize(real));
+    expect(fromAlias.mainRoot).toBe(fromReal.mainRoot);
+  });
+
+  /* 安全断言不得因归一而削弱（issue #26 验收标准 3）。 */
+
+  test("安全断言：非托管目录即使路径归一后指向托管位置，也绝不覆盖", () => {
+    const { real, alias } = makeLinkedRepo("link-safety");
+    // 手工占位：真实路径下的托管目录存在，但不是 neo 建的（git 不认）
+    const p = worktreePath(real, "taken");
+    mkdirSync(p, { recursive: true });
+    writeFileSync(join(p, "keep.txt"), "user data\n");
+
+    const r = ensureWorktree(alias, "taken");
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    expect(r.message).toContain("不是 neo 托管的 worktree");
+    expect(existsSync(join(p, "keep.txt"))).toBe(true);
+  });
+
+  test("安全断言：软链路径下当前 worktree 仍不可删", () => {
+    const { alias } = makeLinkedRepo("link-safety-current");
+    const r = ensureWorktree(alias, "here");
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+
+    const rm = removeWorktree(alias, "here", { cwd: r.path, force: true });
+    expect(rm.ok).toBe(false);
+    if (rm.ok) return;
+    expect(rm.message).toContain("当前会话所在");
+    expect(existsSync(r.path)).toBe(true);
+  });
+
+  test("安全断言：软链路径下脏工作区仍拒绝删除", () => {
+    const { alias } = makeLinkedRepo("link-safety-dirty");
+    const r = ensureWorktree(alias, "dirty");
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    writeFileSync(join(r.path, "wip.txt"), "x\n");
+
+    const rm = removeWorktree(alias, "dirty", { cwd: alias });
+    expect(rm.ok).toBe(false);
+    if (rm.ok) return;
+    expect(rm.needsForce).toBe(true);
+    expect(existsSync(join(r.path, "wip.txt"))).toBe(true);
   });
 });

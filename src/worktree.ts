@@ -16,7 +16,7 @@
  * 所有 git 调用走注入的 exec（默认 spawnSync），单测用真临时仓库，不 mock。
  */
 import { existsSync, mkdirSync, readdirSync, realpathSync, rmSync, statSync } from "node:fs";
-import { isAbsolute, join, relative, resolve, sep } from "node:path";
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 
 /** 托管目录（相对主仓库根）。 */
 export const WORKTREE_DIR = ".neo/worktrees";
@@ -125,7 +125,11 @@ export function detectRepo(cwd: string, deps: WorktreeDeps = {}): RepoInfo | Rep
   const commonRaw = common.code === 0 ? common.stdout.trim() : "";
   const commonDir = commonRaw === "" ? join(root, ".git") : resolve(root, commonRaw);
   const base = commonDir.split(sep).pop() ?? "";
-  const mainRoot = base === ".git" ? commonDir.slice(0, -(base.length + 1)) || sep : root;
+  const rawMainRoot = base === ".git" ? commonDir.slice(0, -(base.length + 1)) || sep : root;
+  // issue #26：mainRoot 走 canonical 口径。git 报的是 realpath（macOS 上
+  // /var/... → /private/var/...），而调用方手上的 repo 常是原始路径；
+  // 源侧返回 canonical，测试侧按 canonical 比较，两边才同时成立。
+  const mainRoot = canonicalize(rawMainRoot);
   return { ok: true, root, commonDir, mainRoot };
 }
 
@@ -189,8 +193,12 @@ export function ensureWorktree(
   const branch = worktreeBranch(name);
 
   // 已登记：路径与分支都对上才算复用；分支不对说明有人手工占了同名目录，报错。
+  // issue #26：路径比对走 canonical 口径 —— 调用方给的可能是原始路径
+  // （macOS 上 /var/...），git 登记的是 realpath（/private/var/...），
+  // 直接字符串相等会误判成「没登记」并报「不是 neo 托管的 worktree」。
   const listed = listManaged(repoRoot, deps);
-  const existing = listed.find((w) => w.path === path);
+  const target = canonicalize(path);
+  const existing = listed.find((w) => canonicalize(w.path) === target);
   if (existing) {
     if (existing.branch !== branch) {
       return {
@@ -306,12 +314,45 @@ export function parseWorktreeList(out: string): Array<{ path: string; branch: st
 }
 
 /** 路径归一：软链（/tmp → /private/tmp、/var → /private/var）下比较要一致。 */
-function realish(p: string): string {
+export function realish(p: string): string {
   try {
     return realpathSync(p);
   } catch {
     return resolve(p);
   }
+}
+
+/**
+ * 祖先归一：把路径里**已存在的最长祖先**做 realpath，再拼回剩余段。
+ *
+ * 为什么不能直接 realpathSync 整条路径：托管叶子（.neo/worktrees/<name>）
+ * 在 ensureWorktree 首次创建前并不存在，realpathSync 会抛 ENOENT；
+ * 而要比较的恰恰是「尚未创建的托管路径」与「git 报的已存在路径」。
+ *
+ * 口径（issue #26）：
+ *  - 存在的部分 → 软链展开（macOS /var → /private/var、/tmp → /private/tmp）；
+ *  - 不存在的尾部 → 逐段原样拼回，不做任何假设（不写死 /private）。
+ * 这样「调用方传入的原始路径」与「git 报的 realpath」在同一口径下可比。
+ */
+export function canonicalize(p: string): string {
+  const abs = resolve(p);
+  // 从深到浅找第一个已存在的祖先。
+  const segments: string[] = [];
+  let cur = abs;
+  for (;;) {
+    if (existsSync(cur)) break;
+    const parent = dirname(cur);
+    if (parent === cur) return abs; // 到根都不存在（罕见）：退回绝对路径
+    segments.unshift(basename(cur));
+    cur = parent;
+  }
+  let head: string;
+  try {
+    head = realpathSync(cur);
+  } catch {
+    head = cur;
+  }
+  return segments.length === 0 ? head : join(head, ...segments);
 }
 
 /**
@@ -352,10 +393,14 @@ export function listManaged(
 ): ManagedWorktree[] {
   const r = git(deps, ["worktree", "list", "--porcelain"], repoRoot);
   if (r.code !== 0) return [];
-  const rootDir = worktreeRoot(repoRoot);
+  // issue #26：rootDir 与 item.path 两侧都归一到 canonical 再取 relative。
+  // 托管目录（.neo/worktrees）可能尚不存在，canonicalize 只对已存在的祖先展开软链、
+  // 原样拼回不存在的尾部，所以叶子缺失也不会抛。
+  const rootDir = canonicalize(worktreeRoot(repoRoot));
   const out: ManagedWorktree[] = [];
   for (const item of parseWorktreeList(r.stdout)) {
-    const rel = relative(rootDir, item.path);
+    const itemPath = canonicalize(item.path);
+    const rel = relative(rootDir, itemPath);
     // 必须落在托管目录的下一层：rel 为空 = 托管目录本身，含 .. = 跑出去了。
     if (rel === "" || rel.startsWith("..") || isAbsolute(rel)) continue;
     if (rel.includes(sep)) continue;
@@ -376,12 +421,14 @@ export function listManaged(
 export function orphanDirs(repoRoot: string, deps: WorktreeDeps = {}): string[] {
   const rootDir = worktreeRoot(repoRoot);
   if (!existsSync(rootDir)) return [];
-  const known = new Set(listManaged(repoRoot, deps).map((w) => w.path));
+  // issue #26：known 集合按 canonical 口径存，与下面的 join(rootDir, name) 对齐，
+  // 否则软链路径下每个真实托管目录都会被误判成孤儿。
+  const known = new Set(listManaged(repoRoot, deps).map((w) => canonicalize(w.path)));
   const out: string[] = [];
   for (const ent of readdirSync(rootDir, { withFileTypes: true })) {
     if (!ent.isDirectory()) continue;
     const p = join(rootDir, ent.name);
-    if (!known.has(p)) out.push(p);
+    if (!known.has(canonicalize(p))) out.push(p);
   }
   return out;
 }
