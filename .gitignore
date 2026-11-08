@@ -4,11 +4,19 @@ settings.json
 settings.json.bak*
 settings.*.bak
 settings.local.json
+# 常见的密钥载体（env 文件）：本仓用 settings.json，但 .env 同样可能带密钥，不得入库
+.env
+.env.*
 *.log
 .DS_Store
 .neo-session/
 # Claude Code 本地配置/会话
 .claude/
+
+# 提示词源文件（bot-comments）：仓库外的兄弟目录，内容不进版本控制
+# （维护者决定：临时文件，暂不纳入版本控制；tests/prompt-tiers.test.ts 用
+#  NEO_BOT_COMMENTS_DIR 指向它，找不到时该组用例显式 skip 而非失败）
+bot-comments/
 
 # 技能：全局技能库在 home 目录下，本就不在任何 git 仓库里。
 # 这里只声明不提交全局库；项目 skills/<name> 软链由使用者自行 ignore

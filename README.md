@@ -19,7 +19,7 @@ bun run src/index.ts -p "用 glob 找出所有 .ts 文件"   # 单次模式
 
 | 平台 | shell | 状态 |
 | --- | --- | --- |
-| macOS | `$SHELL`（默认 zsh） | ✅ 实测（tsc / 1039 测试 / PTY 20/20） |
+| macOS | `$SHELL`（默认 zsh） | ✅ 实测（tsc / 1704 测试 / PTY 24/24） |
 | Ubuntu / Debian | `$SHELL`（默认 bash） | ✅ 实测（sp7, Ubuntu 24.04.4 LTS） |
 | 其它 POSIX（dash/ksh/fish） | 自动探测 | ✅ 解析器支持；fish 不吃登录 PATH preamble |
 | Windows 11 | `pwsh` → `powershell` → `cmd` | 🟡 **实验性，未实机验证**（见 PD-1） |
@@ -34,6 +34,9 @@ Windows 启动用 `neo.cmd`（需要 Bun 在 PATH）；Linux/macOS 用 `neo.sh` 
 - `web_search`（Bing RSS，无需 key）、`shell.cwd`、超长输出落盘 `~/.neo/tmp/`、`/export [id]`。
 - `remember` 同步回执；技能支持 `skills_extra_paths` / `NEO_SKILLS_PATHS`。
 - **v0.4.2**：tier 视觉语义（深思亮红 / 平衡绿 / 快速亮蓝 / 默认冰绿），状态条、spinner `⚡`、工具行、回答 `●` 随档位着色；分类切档在首次 LLM 请求前即时提示；`/tier deep|balanced|fast` 支持简写（内部仍规范名）。
+- **v0.4.77**：写入 wiki 时校验正文里的 `[[链接]]` 目标 —— 本层没有会提示「缺失」，只在用户级/项目级另一层有会提示「在哪一层」（不阻断写入）。
+- **v0.4.78**：托管 worktree 的路径比对统一走 canonical 口径 —— 仓库路径含软链时（macOS 的 `/var`、`/tmp`）清单不再恒空。
+- **v0.4.79**：`max_tokens` 安全防护 —— 启动时体检并告警不合理配置；网关回**不透明 400** 时自动降级到安全值重发一次（只降不升、每次请求一次、不改你的配置）。
 
 shell 探测顺序：`settings.shell.path` → `NEO_SHELL` → `$SHELL` → 平台默认 → `which` → `/bin/sh`；
 启动横幅后会显示实际使用的 shell。环境探测（`/env`）不需要模型，纯脚本采集，约 10ms。
@@ -430,7 +433,9 @@ provider 里的 `*_model_name` 表示「**这个 provider** 在各档位上用�
 
 Anthropic 路径的差异处理：`system` 提到顶层字段，连续 `tool` 消息合并成同一条 user 的 `tool_result` 块，`parallel_tool_calls` 换成 `disable_parallel_tool_use`，`stop_reason` 映射回 `finish_reason`，`usage` 的输入 token 含缓存读写。多轮工具对话里的 `thinking` 块（含签名）会原样保存并回带，OpenAI 请求体里则剥掉该字段；会话落盘/恢复保留它。
 
-**`max_tokens` 与模型上限。** Anthropic 协议里 `max_tokens` 必填，且服务端不会静默夹紧。上限因模型而异（MiniMax 实测：M3 / M3.1-Flash 为 524,288，M2.7 系为 196,608），而 provider 级的 `max_tokens` 四个档位共用。neo 会在收到「超过该模型上限」的 400 后解析出上限，夹紧并同轮重发一次（按 `provider|base_url|model` 记在进程内，不改写你的配置，并给出提示）。但这只是兜底：**`max_tokens` 是输出预算，请按需要写（如 `32768`），不要写成接近 `context_window`** —— agent 的预压缩条件是「估算 + `max_tokens` > 窗口 × 0.98」，写得太大会让每一轮都先压缩一次。
+**`max_tokens` 与模型上限。** Anthropic 协议里 `max_tokens` 必填，且服务端不会静默夹紧。上限因模型而异（MiniMax 实测：M3 / M3.1-Flash 为 524,288，M2.7 系为 196,608），而 provider 级的 `max_tokens` 四个档位共用。neo 会在收到「超过该模型上限」的 400 后解析出上限，夹紧并同轮重发一次（按 `provider|base_url|model` 记在进程内，不改写你的配置，并给出提示）。
+
+**但有些网关不告诉你上限**，只回一句不透明的 400（如 `request was rejected by an internal MaaS component`）。这种情况解析不出数字，neo 会在**本次请求内**把 `max_tokens` 夹到 8192 重发一次（只降不升、每请求一次、不写进记忆、不改你的配置），并给出提示；降级后仍失败则透传原始报错。所以「配大了 → 会话整个发不出请求」这个坑现在有兜底了。但兜底不是许可：**`max_tokens` 是输出预算，请按需要写（如 `32768`），不要写成接近 `context_window`** —— agent 的预压缩条件是「估算 + `max_tokens` > 窗口 × 0.98」，写得太大会让每一轮都先压缩一次。启动时 neo 也会体检：`max_tokens ≥ context_window` 或超过已声明的 `max_output_tokens` 时直接告警（只告警，不替你改配置）。
 
 ### 覆盖优先级
 
@@ -547,6 +552,8 @@ bun run verify  # 全量闸门：tsc → test → pty，证据落 docs/evidence/
 > 终端渲染类改动（动画行、宽度、覆盖语义）**只有真 PTY 能验证**。
 > 可复用脚本见 `scripts/`：`fake-llm.ts`（无状态假 SSE）、`pty-e2e.ts`（屏幕断言）、
 > `verify.sh`（闸门）。约定见 `tests/README.md` §1。
+>
+> **闸门对 skip 是敏感的**：`bun test` 有 skip 时退出码仍是 0，光看退出码会误判成「全绿」。`verify.sh` 因此会解析 skip 数并告警（列出跳过的文件）；要强制零跳过，用 `NEO_STRICT_SKIPS=1` 让它直接失败。**静默跳过会随版本悄悄累积**，所以豁免要么是显式 `skipIf`（报告里看得见），要么在注释里写清为什么跳过、什么条件下恢复。
 
 ## 分类器
 
