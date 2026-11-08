@@ -53,3 +53,19 @@ issue #21（2026-11-07）报：settings.json 里某 provider 把 max_tokens 配�
 交付位于分支 `fix/issue21-max-tokens-safety`，基点 `d9d1117`，代码提交 `9b06f98`（8 文件，+741/-8），尚未 push、尚未合入 main；合并方应只 cherry-pick 此代码提交。主工作树中的 wiki 提交 `6c3064f` 已同时位于 main，不要 rebase/reset，也不要重复合入。
 
 验证结果：TypeScript 检查 0 错误；`bun test` 1704 pass / 0 fail（93 文件，新增 28 用例）；`scripts/verify.sh` ALL GREEN，PTY 24/24；证据位于 `docs/evidence/v0.4.79-{tsc,tests,pty}.txt`。PRD 已按约定改名并加 `[done]`，发布说明为 `docs/release-notes/v0.4.79.md`，版本号仅修改 `package.json` 为 0.4.79。
+
+## 推理与依据
+
+- 2026-11-08（session 20261108-180540-w6ssty）：**#21 已修复并合入 main（v0.4.79，提交 9b06f98）**。本页开头的结论（v0.4.75 只修好「网关明说上限」那一类、原症状仍在）**在 v0.4.79 后不再成立**，现补记落地结果：
+  - **A 启动告警**：`src/config.ts` 新增导出纯函数 `auditMaxTokens(providers)`，加载配置时逐 provider 判定两条判据 —— `max_tokens ≥ context_window`（issue #21 原始事故 512000/512000 即此形态）、`max_tokens > max_output_tokens`（已声明的模型单次输出上限）。**双方非 null 才判**（瘦网关没声明就不猜）；**只告警不改配置**（用户配的是意图，neo 不替用户改文件）；启动块逐条 `ui.warn` 摆出。模板默认 8192/200000 两条都不命中，正常配置不误报。
+  - **B 不透明 400 安全降级**：`src/llm.ts` 新增 `OPAQUE_400_DOWNGRADE_FLOOR = 8192` 与导出纯函数 `shouldDowngradeForOpaque400(err, sent)`。触发条件**全部满足才降级**：status===400（401/403/404/5xx 各走各路）、`parseMaxTokensLimit` 返回 null（能解析的走 v0.4.75 学习机制）、非上下文超长文案、非鉴权文案、非 `parallel_tool_calls` 拒绝（那是 issue #11 的降级路径，不能被抢）、当前值 > 8192（**只降不升**）。降级后夹到 8192 **重发一次**（不循环、不占协议回退预算），chat 与 chatStream 双路径同口径。**降级值仅本次请求内生效，刻意不写 `learnedMaxTokens`** —— 网关明说的上限是稳定陈述可记忆，不透明 400 只是单次观察（可能是限流、抖动、请求体其它字段），固化会永久污染该 provider+model。
+  - **取值理由**：8192 = settings.example.json 的默认 max_tokens（本项目既有保守默认，不引入第三个魔数）；**刻意不用 contextWindow 比例** —— 探测兜底的 200,000 不是事实，拿猜测当基数只会放大猜测。
+  - **C 文案与模板**：400/422 报错追加一行指向 max_tokens 的提示（**不改写原始文案**，鉴权类与 parallel 拒绝不加）；`settings.example.json` 新增 `max_tokens_note` 写明「输出预算 ≠ 上下文窗口」，`capability_note` 补「max_output_tokens 也不是上下文窗口」。
+  - 验收：新增 `tests/max-tokens-safety.test.ts` 28 用例；tsc 零错误；**全量 1704 pass / 0 fail（93 文件）**；verify.sh ALL GREEN（PTY 24/24）。
+
+- 2026-11-08（session 20261108-180540-w6ssty）：**同日连带的另一条修复 —— 测试闸门加 skip 守卫**（issue #26 审计连带项，提交 65d2a11，已合入）。`scripts/verify.sh` 新增 `check_test_skips`：bun test 有 skip 时退出码仍是 0，`run_stage` 只看退出码 ⇒ **ALL GREEN 不代表覆盖完整**。现 skip>0 时告警并逐条列出所在文件，`NEO_STRICT_SKIPS=1` 可令其直接 fail；skip=0 静默（主仓默认路径不受影响）。配套：`tests/file-index.test.ts:149` 的 `if (!git) return;` 改 `test.skipIf(!git)`（原写法是**静默通过**，与本仓「环境坏了必须 fail」纪律冲突）；`tests/prompt-tiers.test.ts` 的 `SOURCE_DIR` 支持 `NEO_BOT_COMMENTS_DIR` 注入（显式指定却找不到文件直接 throw fail —— 配置错误必须被看见）；`tests/README.md` 基线与清单补真。
+  - **一个仍然存在的盲区**（未修，记录在案）：「提示词与源文件逐字一致」这 3 条在**任何 worktree 布局下都会 skip**（SOURCE_DIR 指向仓库父目录的 bot-comments）。契约的验证义务落在有源文件的机器上，靠 `NEO_BOT_COMMENTS_DIR` 注入 + `NEO_STRICT_SKIPS=1` 强制零跳过。**「bot-comments 是否纳入版本控制」仍待人工拍板** —— 它是仓库外的兄弟目录，而这恰是最重要的契约被最常跳过的那条。
+
+- 2026-11-08（session 20261108-180540-w6ssty）：**issue #20 完成度审计结论（Oracle 只读审计，建议可关闭）**。8 个注意项逐条核实全部完成：非交互审批措辞（tiers.ts 三档正文「缺批准就先询问；不能交互则只做可逆准备并停止」）、模型行无推理断言（`src/prompt/modelLine.ts:5-6`）、子代理独立构建且默认 mini（`src/tools/task.ts:233-253`，requiredTier 放不下时抛 ToolError 交回主代理收窄任务，不降控制要求）、启动探针只改 cfg 不改 messages[0]（v0.4.70 设计，统一在 send() 请求边界重渲染）、`resolveContextWindow` 兜底保留 source（`contextWindow.ts:13/52/56`，`select.ts:69-78` 对 source=default 永不信 → 按 unknownWindowBudget=8192 保守 mini）、PromptManager 指纹统一重渲染（manager.ts:135-148 含 sessionName/memory/model/provider/tier/contextWindow/source/systemPrompt/toolNames）、rename 后 sessionName 同步 + 子代理身份句、资料来源标注与 schema 计入动态开销（tokens.ts:37-46 保守估算 + 20% 余量）。验收矩阵各项有测试映射，相关测试 121 pass / 0 fail。
+  - 审计发现的**唯一真实薄弱点**：提示词正文（审批措辞等关键句）**没有内容断言测试** —— 若有人误改 tiers.ts 的审批/边界措辞，本机与 CI 都不会拦（v0.4.66 该提交 0 个测试文件，遗留至今）。建议拆小 issue：把三档源文件纳入仓库，或加内容快照断言。**未发现「闸门停跑期间漏拦、现在仍在」的功能性缺陷**。
+  - 附带两个非阻塞建议：turn 级临时消息（recall/budgetMessage/planMode）不计入选档预算（属对话历史管理范畴，是取舍不是缺陷）；wiki 索引节可补「资料」标注（只含主题名清单，风险低）。

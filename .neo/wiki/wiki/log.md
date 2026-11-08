@@ -335,3 +335,4 @@ grep -E -A3 "^## \[[0-9-]+\] todo \|" wiki/log.md
 ## [2026-11-08] wiki | 自动记忆：project/待办-Issue与发布说明收尾.md（append）
 ## [2026-11-08] wiki | 自动记忆：project/测试闸门-豁免盲区审计.md（append）
 ## [2026-11-08] wiki | 自动记忆：project/修复-1108-max-tokens不透明400安全降级.md（append）
+## [2026-11-08] query | 登记 #21 修复合入（v0.4.79）、闸门 skip 守卫、#20 完成度审计结论与剩余薄弱点
