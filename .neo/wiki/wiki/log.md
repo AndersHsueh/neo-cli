@@ -297,3 +297,32 @@ grep -E -A3 "^## \[[0-9-]+\] todo \|" wiki/log.md
 ## [2026-11-05] wiki | 自动记忆：project/neo-开发踩坑-续1.md（create）
 ## [2026-11-05] deliverable | 双端推送完成：main + 81 tags 同步到 GitHub(neo-cli)与 Gitee(neo-agent)，两端 main 同为 8c563e3；remote 规范化 origin=GitHub、gitee=Gitee；neo-agent-app/ 写入 .gitignore
 ## [2026-11-05] wiki | 清理冗余分支：本地 3 个 + Gitee 侧 3 个 feature/*，删除前核对独占提交均为 0；两端分支集统一为 main + cursor/thin-gateway-output-limit-e755
+## [2026-11-08] wiki | 自动记忆：project/neo-v0.4.2-tier视觉.md（append）
+## [2026-11-08] wiki | 自动记忆：project/跨会话消息-v0.2.0.md（append）
+## [2026-11-08] wiki | 跨会话记忆实验：被提问+写 wiki 主题页，弱模型检索命中可靠
+## [2026-11-08] wiki | 自动记忆：project/跨会话记忆实验-1108.md（append）
+## [2026-11-08] wiki | 自动记忆：project/跨会话消息-v0.2.0.md（append）
+## [2026-11-08] wiki | 修正-1108-跨会话记忆实验页断链：环境-技能与工具路径改记忆激活-v0.1.11
+## [2026-11-08] wiki | 自动记忆：project/跨会话记忆实验-1108.md（append）
+## [2026-11-08] todo | issue 落页：wiki_write 写入时应校验 [[ ]] 链接目标并提示跨层（待实现，隔天巡检修复）
+## [2026-11-08] wiki | 自动记忆：project/wiki_write链接目标校验.md（append）
+## [2026-11-08] todo | issue #22 已建到 GitHub（Anders 指正落点），wiki 页转为项目内镜像
+## [2026-11-08] wiki | 自动记忆：project/wiki_write链接目标校验.md（append）
+## [2026-11-08] wiki | 自动记忆：project/跨会话记忆实验-1108.md（append）
+## [2026-11-08] wiki | 自动记忆：project/跨会话消息-v0.2.0.md（append）
+## [2026-11-08] wiki | 自动记忆：project/跨会话记忆实验-1108.md（append）
+## [2026-11-08] wiki | 自动记忆：project/wiki_write链接目标校验.md（append）
+## [2026-11-08] wiki | 自动记忆：project/wiki_write链接目标校验.md（append）
+## [2026-11-08] wiki | 自动记忆：project/待办-Issue与发布说明收尾.md（create）
+## [2026-11-08] wiki | 自动记忆：project/跨会话消息-v0.2.0.md（append）
+## [2026-11-08] wiki | 自动记忆：project/待办-Issue与发布说明收尾.md（append）
+## [2026-11-08] wiki | 自动记忆：project/待办-Issue与发布说明收尾.md（append）
+## [2026-11-08] wiki | 自动记忆：project/待办-Issue与发布说明收尾.md（append）
+## [2026-11-08] wiki | 自动记忆：project/待办-Issue与发布说明收尾.md（append）
+## [2026-11-08] wiki | 自动记忆：project/待办-Issue与发布说明收尾.md（append）
+## [2026-11-08] wiki | 自动记忆：project/wiki_write链接目标校验.md（append）
+## [2026-11-08] wiki | 自动记忆：project/待办-Issue与发布说明收尾.md（append）
+## [2026-11-08] query | issue #21 核查结论：v0.4.75 只修好「网关明说上限」一类，不透明 400 原症状仍在，#21 不能关
+## [2026-11-08] query | 定位 worktree 16 个既有失败的根因：git 报 realpath 而代码用原始路径比对，四处同源
+## [2026-11-08] query | 补精确 #26 页面「闸门自 v0.4.5 起失效」的依据链：区分「仓库里没有」与「本地没有」
+## [2026-11-08] wiki | 自动记忆：project/wiki_write链接目标校验.md（append）
