@@ -329,3 +329,4 @@ grep -E -A3 "^## \[[0-9-]+\] todo \|" wiki/log.md
 ## [2026-11-08] wiki | 自动记忆：project/wiki_write链接目标校验.md（append）
 ## [2026-11-08] query | 拍板 #22 链接校验口径：全局 warn、跨层不阻断（与实现默认值一致，无需改代码）；更正「存量断链还在」的前提
 ## [2026-11-08] wiki | 自动记忆：project/neo-开发踩坑-续2.md（create）
+## [2026-11-08] query | 记录 #26 修复合入（v0.4.78，全量 1676 pass / 0 fail）与「remember 自动落页覆盖同名手写页」的机制风险

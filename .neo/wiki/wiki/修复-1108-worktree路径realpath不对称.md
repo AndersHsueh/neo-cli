@@ -51,6 +51,17 @@ listManaged 结果: []
 
 ## 推理与依据
 
+- 2026-11-08（session 20261108-182609-4bw21l，Cypher 自动归纳）：**issue #26 已修复并合入 main（v0.4.78）** —— 统一 canonical 路径口径，验收全绿。修法：新增 `canonicalize(p)`，做**祖先归一 + 拼回尾部**（从深到浅找第一个已存在的祖先 → `realpathSync` 展开软链 → 原样拼回不存在的尾部）；只归一已存在的祖先，是因为托管叶子 `.neo/worktrees/<name>` 在首次 `ensureWorktree` 前并不存在，整条路径直接 `realpathSync` 会抛 ENOENT，而要比对的恰恰包含「尚未创建的托管路径」。四处落点：`listManaged`（两侧归一后取 relative）、`ensureWorktree`（`canonicalize(w.path) === canonicalize(path)`）、`orphanDirs`（known 集合按 canonical 存）、`detectRepo`（`mainRoot` 返回 canonical，源侧口径）。新增 h 组 9 例，**显式用 `symlinkSync` 造软链**而非依赖开发机 `/tmp` 形态，使两个平台验证同一条不变量。验收：`tests/worktree.test.ts` 49 pass / 0 fail（原 24 pass / 16 fail）；全量 1676 pass / 0 fail；tsc 零错误；verify.sh ALL GREEN。
+
+- 2026-11-08（session 20261108-180540-w6ssty）：**记一个机制风险 —— `remember` 自动落页会覆盖同名手写页**。本次 Cypher 的自动记忆把本页（66 行详细版）整页替换成了 12 行摘要，detached worktree 里那次 rebase 中止即因此报错（`untracked working tree files would be overwritten by reset`）。两点后果与对策：
+  1. **内容损失**：手写页被摘要页覆盖后，原文只在 git 历史里（若已提交）——本次靠 `git show` 取回，才没丢内容；
+  2. **rebase/reset 被挡**：未跟踪的同名文件会阻断 `git rebase --abort` / `git reset`。
+  对策：并行会话在同一仓库工作时，若 wiki 页由手写维护，**不要让其他会话用 `remember` 自动落同名页**；落页前先确认同名页是否存在。派活时应明确「wiki 登记由某一方统一处理」，避免两方都写。本页已用 `wiki_write` 的 append 模式把 Cypher 的结论并回（而非覆盖），保留两侧信息。
+
+- 2026-11-08（session 20261108-180540-w6ssty）：**v0.4.5 以来的闸门欠账已结清**。本次把 v0.4.78 cherry-pick 到 main 后，全量 `bun test` = **1676 pass / 0 fail**（92 文件）、`tsc` 零错误 —— 这是自 v0.4.5 起第一次全量全绿。16 个 worktree 失败消失后，闸门才真正恢复作用力；后续版本应每版跑 `scripts/verify.sh`，证据落本地 `docs/evidence/`。
+
+## 推理与依据
+
 - 2026-11-08（session 20261108-180540-w6ssty）：补精确「闸门失效」这条推论的依据链，避免后续会话误用。
   - `docs/evidence/` 在 `.gitignore:49`（"全量闸门证据：verify.sh 每次运行覆盖写入，不进版本控制"），因此**「仓库里没有 v0.4.5+ 证据文件」是设计如此，不能直接当作闸门没跑的证据**。
   - 但本地目录是另一回事：`scripts/verify.sh:24` 从 package.json 的 version 推出 `EVIDENCE_PREFIX`，每次运行都写 `docs/evidence/${EVIDENCE_PREFIX}-{tsc,tests,pty}.txt` 到**本地**。实测本地目录最新证据为 `v0.4.4-*.txt`（mtime 2026-10-31 17:43），而 v0.4.5 提交于 2026-11-04、v0.4.63 提交于 2026-11-07 —— 即自 v0.4.5 起至 v0.4.76（32 个版本）**本机未再跑过 verify.sh**。若当时跑过 v0.4.63 版本的闸门，本地会留下 `v0.4.63-*.txt`（验证失败也会写盘，脚本在失败分支同样落盘）。
