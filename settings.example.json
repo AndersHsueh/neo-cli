@@ -19,10 +19,11 @@
       "fast_model_name": "your-fast-model-id",
 
       "max_tokens": 8192,
+      "max_tokens_note": "max_tokens 是本次请求的输出预算（要多少输出），不是上下文窗口；超过网关/模型上限会被拒。不要把它配成 context_window 同量级的值。",
       "temperature": 0.6,
       "context_window": 200000,
       "max_output_tokens": null,
-      "capability_note": "瘦网关（/models 只有 id/object/created/owned_by/supported_endpoint_types，例如 ipsa-thor）不会返回 max_output_tokens、vision、tools、reasoning。留空表示未声明：neo 只补网关明确给出的值，补不到就保持「未探测到」，需要在这里手写。max_output_tokens 是模型能力上限，不是上面的请求预算 max_tokens。手写 false 也算已声明，不会被覆盖。",
+      "capability_note": "瘦网关（/models 只有 id/object/created/owned_by/supported_endpoint_types，例如 ipsa-thor）不会返回 max_output_tokens、vision、tools、reasoning。留空表示未声明：neo 只补网关明确给出的值，补不到就保持「未探测到」，需要在这里手写。max_output_tokens 是模型能力上限，不是上面的请求预算 max_tokens，也不是上下文窗口。手写 false 也算已声明，不会被覆盖。",
 
       "vision": false,
       "tools": true,

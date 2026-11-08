@@ -530,6 +530,10 @@ async function main(): Promise<number> {
     ui.line(c.dim("  新格式见 settings.example.json。"));
   }
 
+  // issue #21 A：max_tokens 配置体检。加载时已逐 provider 判定，这里逐条摆出来 ——
+  // 输出预算 ≥ 上下文窗口这类配置几乎必然 400，启动时说清楚，别让用户对着不透明报错猜。
+  for (const w of cfg.maxTokensWarnings) ui.warn(w);
+
   // issue #9：让用户一眼看出「这次会话在 worktree 里」，而不是在主仓库里改文件。
   if (worktreeInfo) {
     ui.info(

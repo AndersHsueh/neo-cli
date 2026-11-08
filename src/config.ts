@@ -230,6 +230,12 @@ export interface Config {
   classifierProvider: string;
   /** 本次启动是否使用了旧版扁平配置。 */
   legacyFormat: boolean;
+  /**
+   * max_tokens 配置体检结果（issue #21 A）。加载时逐 provider 判定：
+   * 输出预算 ≥ 上下文窗口 / 超过已声明的单次输出上限。空数组 = 无告警。
+   * 只告警不改配置；由启动块逐条打印（交互与 -p 共用）。
+   */
+  maxTokensWarnings: string[];
 
   maxTokens: number;
   temperature: number;
@@ -955,6 +961,8 @@ export function loadConfig(overrides: Partial<Config> = {}): Config {
     classifierModel,
     classifierProvider,
     legacyFormat,
+    /** max_tokens 配置体检结果（issue #21 A）；启动块逐条 ui.warn，空数组 = 无告警。 */
+    maxTokensWarnings: auditMaxTokens(providers),
 
     maxTokens: picked.maxTokens ?? gMax,
     temperature: picked.temperature ?? gTemp,
@@ -1058,6 +1066,43 @@ function resolveMemoryConfig(raw: Raw | undefined): MemoryConfig {
     autoCapture,
     quiet: bool(r["quiet"], false),
   };
+}
+
+/* ------------------------------------------------------------------ */
+/* max_tokens 配置体检（issue #21 A）                                    */
+/* ------------------------------------------------------------------ */
+
+/**
+ * 逐 provider 体检 max_tokens 是否明显不合理，返回人类可读的告警文案。
+ *
+ * 两条判据（都要求比较双方非 null —— 瘦网关没声明就不猜）：
+ *  1. max_tokens ≥ context_window：输出预算 ≥ 上下文窗口，网关/模型几乎必然拒绝
+ *     （issue #21 的原始事故：512000/512000）；
+ *  2. max_tokens > max_output_tokens：超过已声明的模型单次输出上限。
+ *
+ * 只告警不改配置：用户配的是意图，neo 不替用户改文件；网关的真实上限是运行时事实，
+ * 由 llm.ts 的上限学习（v0.4.75）与不透明 400 降级（本版 B）兜底。
+ * 正常配置不误报：模板默认 8192 / 200000 两条都不命中。
+ */
+export function auditMaxTokens(providers: ProviderConfig[]): string[] {
+  const out: string[] = [];
+  for (const p of providers) {
+    if (p.maxTokens == null) continue;
+    if (p.contextWindow != null && p.maxTokens >= p.contextWindow) {
+      out.push(
+        `max_tokens 配置告警：provider "${p.name}" 的 max_tokens=${p.maxTokens.toLocaleString()} ≥ context_window=${p.contextWindow.toLocaleString()}。` +
+          `max_tokens 是本次请求的输出预算，不是上下文窗口；这个值几乎必然被网关/模型拒绝，建议改小（如 8192）。`,
+      );
+      continue; // 同一 provider 只报最直接的一条，第二条是重复信号
+    }
+    if (p.maxOutputTokens != null && p.maxTokens > p.maxOutputTokens) {
+      out.push(
+        `max_tokens 配置告警：provider "${p.name}" 的 max_tokens=${p.maxTokens.toLocaleString()} > max_output_tokens=${p.maxOutputTokens.toLocaleString()}（已声明的模型单次输出上限）。` +
+          `这个值会被网关/模型拒绝，建议改到上限以内。`,
+      );
+    }
+  }
+  return out;
 }
 
 /** 解析某档位在路由表下的实际模型名。route.model 为空则取该 provider 的同名档位。 */

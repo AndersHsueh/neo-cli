@@ -218,12 +218,32 @@ export function endpointPlan(cfg: Config): Endpoint[] {
  * 只在 400/422 且文案同时出现 max tokens 语义与「>/超过/exceed」时才认，并且要求
  * 解析出的上限小于本次发送的值（否则夹紧没有意义，不能死循环）。
  */
+/**
+ * 上下文窗口类错误文案（context length / prompt too long）。
+ * 由 agent 的 overflow 恢复处理，max_tokens 的学习与降级都不碰。
+ */
+export function isContextLengthErrorText(text: string): boolean {
+  return /context[\s_-]*(length|window)|prompt[\s_-]*(is\s+)?too\s+long/i.test(text);
+}
+
+/** 文案是否提及 max tokens（语义层面，无论能否解析出具体数字）。 */
+export function isMaxTokensErrorText(text: string): boolean {
+  return /max(?:imum)?[\s_-]*(?:completion[\s_-]*|output[\s_-]*)?tokens?|最大.{0,4}token/i.test(text);
+}
+
+/** 鉴权类错误文案（401/403，及少数网关用 400 表达的 key 错误）。 */
+export function isAuthErrorText(text: string): boolean {
+  return /unauthorized|forbidden|authentication|invalid[\s_-]*api[\s_-]*key|api[\s_-]*key|missing[\s_-]*key/i.test(
+    text,
+  );
+}
+
 export function parseMaxTokensLimit(err: unknown, sent: number): number | null {
   if (!(err instanceof LLMError)) return null;
   if (err.status !== 400 && err.status !== 422) return null;
   const text = `${err.message}\n${err.body ?? ""}`;
   // 上下文窗口类错误不是这里的事（由 agent 的 overflow 恢复处理）。
-  if (/context[\s_-]*(length|window)|prompt[\s_-]*(is\s+)?too\s+long/i.test(text)) return null;
+  if (isContextLengthErrorText(text)) return null;
   // 形态 1（MiniMax）：max tokens > 196608
   // 形态 2（Anthropic 官方）：max_tokens: 100000 > 64000, which is the maximum allowed …
   // 形态 3（OpenAI 风格）：supports at most 4096 completion tokens / maximum is 4096
@@ -233,7 +253,7 @@ export function parseMaxTokensLimit(err: unknown, sent: number): number | null {
     /(?:at most|up to|no more than|limited to|maximum (?:is|of|allowed)|不超过|上限为?)\s*([\d,_]+)\s*(?:completion |output )?tokens?/i,
     /max(?:imum)?[\s_-]*(?:completion[\s_-]*|output[\s_-]*)?tokens?[^\n]{0,60}?(?:is|of|:|=|limit(?:ed)?(?: to)?|at most|up to|不超过|上限为?)\s*([\d,_]+)/i,
   ];
-  if (!/max(?:imum)?[\s_-]*(?:completion[\s_-]*|output[\s_-]*)?tokens?|最大.{0,4}token/i.test(text)) return null;
+  if (!isMaxTokensErrorText(text)) return null;
   for (const re of patterns) {
     const m = re.exec(text);
     if (!m) continue;
@@ -245,6 +265,58 @@ export function parseMaxTokensLimit(err: unknown, sent: number): number | null {
 
 /** 已学到的输出上限（key = provider|baseUrl|model）。 */
 const learnedMaxTokens = new Map<string, number>();
+
+/**
+ * 不透明 400 的安全降级地板（issue #21）。
+ *
+ * 取 8192 = settings.example.json 的默认 max_tokens：本项目对「保守但可用的输出预算」
+ * 的既有默认，不引入第三个魔数。issue 实测网关对 16384 都返回 200，8192 远低于典型上限。
+ * 刻意不用 contextWindow 的比例 —— 探测兜底的 200,000 不是事实，拿猜测当基数只会放大猜测。
+ */
+export const OPAQUE_400_DOWNGRADE_FLOOR = 8192;
+
+/**
+ * 不透明 400 的安全降级判定（issue #21）。
+ *
+ * 背景：v0.4.75 的 parseMaxTokensLimit 只认「网关明说上限」的文案；有些网关对过大的
+ * max_tokens 回完全不透明 400（如 "request was rejected by an internal MaaS component"），
+ * 文案里既没有 max tokens 语义也没有数字，400 又不在重试列表里 → 整个会话发不出请求。
+ *
+ * 触发条件（全部满足才降级）：
+ *  1. status === 400（401/403/404/5xx 各走各的路径，不掺和）；
+ *  2. parseMaxTokensLimit 返回 null（文案解析不出上限 —— 能解析的走 v0.4.75 学习机制）；
+ *  3. 不是上下文超长文案（那是 agent 的 overflow 恢复管的）；
+ *  4. 不是鉴权类文案（少数网关用 400 表达 key 错误，降级重发没有意义）；
+ *  5. 当前生效值 > OPAQUE_400_DOWNGRADE_FLOOR（只降不升：≤8192 时降级没有意义）。
+ *
+ * 作用域由调用方决定：**仅本次请求内降级一次，不记忆**。learnedMaxTokens 记的是网关
+ * 明说的上限（稳定陈述，可记忆）；不透明 400 学到的「8192 能通」只是单次观察 ——
+ * 可能是限流、网关抖动或请求体其它字段的问题，固化会永久污染该 provider+model。
+ */
+export function shouldDowngradeForOpaque400(err: unknown, sent: number): boolean {
+  if (!(err instanceof LLMError)) return false;
+  if (err.status !== 400) return false;
+  // parallel_tool_calls 被拒是另一条降级路径（issue #11），不能被这里抢走。
+  if (isParallelToolCallsRejection(err)) return false;
+  const text = `${err.message}\n${err.body ?? ""}`;
+  if (isContextLengthErrorText(text)) return false;
+  if (isAuthErrorText(text)) return false;
+  if (parseMaxTokensLimit(err, sent) !== null) return false;
+  return sent > OPAQUE_400_DOWNGRADE_FLOOR;
+}
+
+/**
+ * 400/422 报错文案的 max_tokens 提示行（issue #21 C）。
+ * 不改写原始文案，只追加一行；鉴权类错误不加（与 max_tokens 无关，加了误导）。
+ */
+export function appendMaxTokensHint(err: LLMError): void {
+  if (err.status !== 400 && err.status !== 422) return;
+  if (isParallelToolCallsRejection(err)) return;
+  const text = `${err.message}\n${err.body ?? ""}`;
+  if (isAuthErrorText(text)) return;
+  if (isMaxTokensErrorText(text)) return;
+  err.message = `${err.message}\n（提示：部分网关对过大的 max_tokens 会回不透明的 400；若持续失败请检查 settings.json 里该 provider 的 max_tokens 配置。）`;
+}
 
 function maxTokensKey(cfg: Config): string {
   return `${cfg.providerName}|${cfg.baseUrl}|${cfg.model}`;
@@ -364,25 +436,40 @@ export async function chat(
   const plan = orderedPlan(cfg);
   let lastErr: unknown;
   let clamped = false;
+  /**
+   * 不透明 400 降级只做一次（issue #21）。降级值通过 activeCfg 覆盖 —— 刻意不写
+   * learnedMaxTokens：单次观察不该固化成该 provider+model 的永久上限。
+   */
+  let opaqueDowngraded = false;
+  let activeCfg = cfg;
   for (let i = 0; i < plan.length; i++) {
     const ep = plan[i]!;
     try {
-      const r = await chatOnce(cfg, ep, messages, tools);
+      const r = await chatOnce(activeCfg, ep, messages, tools);
       if (plan.length > 1) workingProto.set(planKey(cfg), ep.proto);
       return r;
     } catch (e) {
       lastErr = e;
-      const limit = clamped ? null : parseMaxTokensLimit(e, effectiveMaxTokens(cfg));
+      const limit = clamped ? null : parseMaxTokensLimit(e, effectiveMaxTokens(activeCfg));
       if (limit !== null) {
         clamped = true;
         learnedMaxTokens.set(maxTokensKey(cfg), limit);
         i -= 1;
         continue;
       }
+      // 不透明 400：夹到安全值重发一次（不记忆、不占协议回退）。与 chatStream 同口径。
+      if (!opaqueDowngraded && shouldDowngradeForOpaque400(e, effectiveMaxTokens(activeCfg))) {
+        opaqueDowngraded = true;
+        activeCfg = { ...activeCfg, maxTokens: OPAQUE_400_DOWNGRADE_FLOOR };
+        i -= 1;
+        continue;
+      }
       if (i < plan.length - 1 && isEndpointAbsent(e)) continue;
+      if (e instanceof LLMError) appendMaxTokensHint(e);
       throw e;
     }
   }
+  if (lastErr instanceof LLMError) appendMaxTokensHint(lastErr);
   throw lastErr;
 }
 
@@ -483,6 +570,13 @@ export async function chatStream(
   let downgraded = false;
   /** 输出上限夹紧只做一次：夹过还被拒说明是别的问题，交给调用方。 */
   let clamped = false;
+  /**
+   * 不透明 400 的安全降级（issue #21）：文案解析不出上限时夹到 OPAQUE_400_DOWNGRADE_FLOOR
+   * 重发一次。只降不升（当前值 ≤8192 不动）；降级值通过 activeCfg 覆盖 —— 刻意不写
+   * learnedMaxTokens：单次观察不该固化成该 provider+model 的永久上限。
+   */
+  let opaqueDowngraded = false;
+  let activeCfg = cfg;
   /** 协议候选与当前下标：端点不存在时换下一个协议（不占重试预算）。 */
   const plan = orderedPlan(cfg);
   let planIdx = 0;
@@ -490,7 +584,7 @@ export async function chatStream(
     attempt += 1;
     const ep = plan[planIdx]!;
     try {
-      const r = await streamOnce(cfg, ep, messages, tools, handlers, signal, policy, downgraded);
+      const r = await streamOnce(activeCfg, ep, messages, tools, handlers, signal, policy, downgraded);
       if (plan.length > 1) workingProto.set(planKey(cfg), ep.proto);
       return r;
     } catch (e) {
@@ -498,7 +592,7 @@ export async function chatStream(
       const err = e instanceof LLMError ? e : new LLMError((e as Error)?.message ?? String(e));
       // max_tokens 超过该模型上限：学到上限、夹紧后同轮重发一次（不占重试预算）。
       if (!clamped) {
-        const limit = parseMaxTokensLimit(err, effectiveMaxTokens(cfg));
+        const limit = parseMaxTokensLimit(err, effectiveMaxTokens(activeCfg));
         if (limit !== null) {
           clamped = true;
           learnedMaxTokens.set(maxTokensKey(cfg), limit);
@@ -525,9 +619,22 @@ export async function chatStream(
         handlers.onNotice?.("网关不支持 parallel_tool_calls，本次请求已降级为串行（false）重发。");
         continue;
       }
+      // 不透明 400（issue #21）：文案解析不出上限、非上下文超长/鉴权/parallel 拒绝时，
+      // 夹到保守值重发一次。放在 parallel 降级之后 —— 那是更具体的信号，优先认领。
+      if (!opaqueDowngraded && shouldDowngradeForOpaque400(err, effectiveMaxTokens(activeCfg))) {
+        opaqueDowngraded = true;
+        const original = effectiveMaxTokens(activeCfg);
+        activeCfg = { ...activeCfg, maxTokens: OPAQUE_400_DOWNGRADE_FLOOR };
+        handlers.onNotice?.(
+          `网关拒绝了原 max_tokens=${original.toLocaleString()}（错误文案里解析不出上限），已降级到 ${OPAQUE_400_DOWNGRADE_FLOOR.toLocaleString()} 重发（仅本次请求；若持续失败请检查 settings.json 的 max_tokens 配置）。`,
+        );
+        attempt -= 1;
+        continue;
+      }
       const canRetry = err.retryable && isRetryableStatus(err.status);
       if (!canRetry || attempt >= policy.maxAttempts) {
         if (attempt > 1) err.message = `${err.message}（已尝试 ${attempt} 次）`;
+        appendMaxTokensHint(err);
         throw err;
       }
       const delay = backoffMs(attempt, policy, err.retryAfterMs);
