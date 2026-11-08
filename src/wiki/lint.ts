@@ -21,6 +21,15 @@
  */
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import { extractLinks, normalizeLinkTarget, type RawLink } from "./links.ts";
+
+/*
+ * 链接提取与归一化已抽到 ./links.ts（issue #22）：写入路径（src/wiki/write.ts）
+ * 需要同一套口径做链接目标存在性校验，不能与 lint 各写一份。
+ * 这里 re-export 保持既有 import 方（tests/wiki-lint.test.ts 等）不受影响。
+ */
+export { extractLinks, normalizeLinkTarget };
+export type { RawLink };
 
 /* ------------------------------------------------------------------ */
 /* 类型                                                                */
@@ -101,48 +110,7 @@ export function resolveWikiDir(cwd: string): string | null {
 /* 链接提取                                                            */
 /* ------------------------------------------------------------------ */
 
-export interface RawLink {
-  /** 来源页 basename（含 .md）。 */
-  src: string;
-  /** 目标页名（已剥离别名/锚点/.md，未校验存在性）。 */
-  target: string;
-}
-
-/**
- * 从 markdown 文本提取 [[链接]]。
- * 代码块（``` 围栏翻转状态）与行内反引号内的内容跳过。
- */
-export function extractLinks(fileName: string, text: string): RawLink[] {
-  const links: RawLink[] = [];
-  let inCode = false;
-  for (const line of text.split("\n")) {
-    if (/^\s*```/.test(line)) {
-      inCode = !inCode;
-      continue;
-    }
-    if (inCode) continue;
-    // 先剔除行内反引号片段，避免 [[...]] 出现在代码里被误计
-    const cleaned = line.replace(/`[^`]*`/g, " ");
-    const re = /\[\[([^\]]+)\]\]/g;
-    let m: RegExpExecArray | null;
-    while ((m = re.exec(cleaned)) !== null) {
-      const raw = m[1] ?? "";
-      const target = normalizeTarget(raw);
-      if (target !== "") links.push({ src: fileName, target });
-    }
-  }
-  return links;
-}
-
-/** [[目标|别名]] / [[目标#锚点]] / [[目标.md]] → 纯页名，trim。含 `/` 的路径式目标返回空串（与 sh 版一致：不是页名）。 */
-function normalizeTarget(raw: string): string {
-  let t = raw.split("|")[0] ?? "";
-  t = t.split("#")[0] ?? "";
-  t = t.trim();
-  t = t.replace(/\.md$/, "");
-  if (t.includes("/")) return ""; // [[../AGENTS]] 这类路径式链接不是 wiki 页引用
-  return t;
-}
+/* extractLinks / normalizeLinkTarget / RawLink 见 ./links.ts（唯一真源）。 */
 
 /* ------------------------------------------------------------------ */
 /* 主检查                                                              */

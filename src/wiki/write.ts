@@ -13,9 +13,10 @@
  *  - 页面必备：`## 摘要`（或 Summary）+ 日期戳 `> 最后更新:YYYY-MM-DD`（或 Last updated）；
  *  - 主题页可以改写（当前最优综述），只有 raw 不可改、log 只追加。
  */
-import { existsSync, mkdirSync, readFileSync, writeFileSync, appendFileSync, renameSync, unlinkSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync, appendFileSync, renameSync, unlinkSync } from "node:fs";
 import { dirname, join } from "node:path";
 import type { WikiLayout } from "./paths.ts";
+import { extractLinkTargets } from "./links.ts";
 
 /* ------------------------------------------------------------------ */
 /* 常量                                                                */
@@ -70,6 +71,132 @@ export function validatePageContent(content: string): string[] {
   if (!SUMMARY_RE.test(content)) missing.push("## 摘要（或 ## Summary）");
   if (!DATE_STAMP_RE.test(content)) missing.push("日期戳（> 最后更新:YYYY-MM-DD 或 > Last updated:）");
   return missing;
+}
+
+/* ------------------------------------------------------------------ */
+/* 链接目标校验（issue #22）                                            */
+/* ------------------------------------------------------------------ */
+
+/**
+ * 固定页名（与 lint.ts 的 ALWAYS_ALLOWED 一致）：这些名字不算断链，
+ * 但它们不是主题页，所以不参与「本层存在」的判定。
+ */
+const LINK_ALLOWED_NAMES = new Set(["INDEX", "index", "log", "AGENTS"]);
+
+/** 缺失目标的两种情形。 */
+export type LinkIssueKind = "missing" | "cross-layer";
+
+export interface LinkIssue {
+  kind: LinkIssueKind;
+  /** 缺失的目标页名（归一化后，不含 .md）。 */
+  target: string;
+  /**
+   * 目标所在的另一层（kind=cross-layer 时有值）："user" 或 "project"。
+   */
+  otherScope?: "user" | "project";
+  /** 人类可读的说明文案（含层名，指名缺失目标）。 */
+  message: string;
+}
+
+export interface LinkCheckResult {
+  issues: LinkIssue[];
+  /** 本层存在的目标（已归一化）。 */
+  resolved: string[];
+}
+
+/** 本层作用域的展示名。 */
+function scopeLabel(scope: "project" | "user"): string {
+  return scope === "user" ? "用户级 wiki" : "项目级 wiki";
+}
+
+/**
+ * 列出某层 pagesDir 下的主题页名（归一化后、不含 .md）。
+ * 目录不存在返回空集（该层视为不存在）。
+ */
+export function listPageNames(pagesDir: string | null | undefined): Set<string> {
+  const names = new Set<string>();
+  if (!pagesDir || !existsSync(pagesDir)) return names;
+  let files: string[] = [];
+  try {
+    files = readdirSync(pagesDir);
+  } catch {
+    return names;
+  }
+  for (const f of files) {
+    if (!f.endsWith(".md")) continue;
+    names.add(f.replace(/\.md$/, ""));
+  }
+  return names;
+}
+
+/**
+ * 校验正文里的 [[链接]] 目标是否存在于本层。
+ *
+ * 口径与 src/wiki/lint.ts 一致（同一套 normalizeLinkTarget，见 ./links.ts）：
+ *  - `[[目标|别名]]` / `[[目标#锚点]]` / `[[目标.md]]` 归一后按纯页名比对；
+ *  - 归一后为空串的路径式目标（`[[../AGENTS]]`）按 lint 口径跳过；
+ *  - 代码块与行内反引号内的链接不计。
+ *
+ * 本层不存在但另一层存在时，报 kind=cross-layer 并指名层名
+ * （issue #22 的核心：断链的根因多是「用户级/项目级串层」，只报断链会误导）。
+ */
+export function checkLinkTargets(
+  content: string,
+  opts: {
+    /** 本层布局（决定本层 pagesDir 与作用域名）。 */
+    layout: WikiLayout;
+    /** 本次要写入的页名（不含 .md）。自身链接不算断链。 */
+    selfPage?: string;
+    /** 另一层布局；不存在（用户级未创建）时按「两层都无」处理。 */
+    otherLayout?: WikiLayout | null;
+  },
+): LinkCheckResult {
+  const ownScope = opts.layout.scope === "user" || opts.layout.kind === "user" ? "user" : "project";
+  const own = listPageNames(opts.layout.pagesDir);
+  const ownLabel = scopeLabel(ownScope);
+
+  const other = opts.otherLayout ?? null;
+  const otherScope: "user" | "project" = ownScope === "user" ? "project" : "user";
+  const otherLabel = scopeLabel(otherScope);
+  const otherNames = other ? listPageNames(other.pagesDir) : new Set<string>();
+
+  const issues: LinkIssue[] = [];
+  const resolved: string[] = [];
+
+  for (const target of extractLinkTargets(content)) {
+    // 固定页名（INDEX/index/log/AGENTS）不算断链
+    if (LINK_ALLOWED_NAMES.has(target)) continue;
+    // 自身链接（自链）在本层成立
+    if (opts.selfPage && target === opts.selfPage) {
+      resolved.push(target);
+      continue;
+    }
+    if (own.has(target)) {
+      resolved.push(target);
+      continue;
+    }
+    if (otherNames.has(target)) {
+      issues.push({
+        kind: "cross-layer",
+        target,
+        otherScope,
+        message: `${target} 在${otherLabel}，${ownLabel}没有 —— 请改链到本层，或把该页复制到本层`,
+      });
+      continue;
+    }
+    issues.push({
+      kind: "missing",
+      target,
+      message: `${target} 在${ownLabel}不存在（另一层也没有）—— 写入后会成断链`,
+    });
+  }
+
+  return { issues, resolved };
+}
+
+/** 把校验结果渲染成给模型看的中文提示行。 */
+export function formatLinkIssues(issues: LinkIssue[]): string {
+  return issues.map((i) => `⚠️ 链接目标缺失：${i.message}`).join("\n");
 }
 
 /* ------------------------------------------------------------------ */
@@ -234,7 +361,21 @@ export interface WriteBackResult {
   page: string;
   indexSynced: boolean;
   logged: boolean;
+  /** 链接目标校验发现的问题（issue #22）。默认不阻断写入，仅提示。 */
+  linkIssues: LinkIssue[];
 }
+
+/**
+ * 链接目标校验的开关（issue #22）。
+ *
+ * 默认「警告不阻断」：append 场景多为追加审计行，硬报错会挡死整次回填；
+ * 跨层链接有时正是作者有意引用另一层。create 场景是否走严格模式，
+ * 由维护者拍板（见 docs/wiki-write-link-check-prd.md）。
+ */
+export type LinkCheckMode = "off" | "warn" | "strict";
+
+/** 默认口径：警告不阻断。 */
+export const DEFAULT_LINK_CHECK_MODE: LinkCheckMode = "warn";
 
 /**
  * 回填：新建页或追加段落。这是「写回 wiki」的唯一合法路径。
@@ -242,7 +383,8 @@ export interface WriteBackResult {
  * - create：内容必须自带摘要与日期戳（缺了直接拒绝，不代劳——代劳会让模型
  *   养成「反正工具会补」的依赖，校验的意义就没了）；
  * - append：往已有页追加 `## 推理与依据` 段并更新日期戳；页内已有该段则续写；
- * - 两者都自动同步 INDEX（create）与 log（必登）。
+ * - 两者都自动同步 INDEX（create）与 log（必登）；
+ * - 链接目标校验（issue #22）：落盘前检查正文里的 [[X]]，缺失或跨层时提示。
  */
 export function writeBack(
   layout: WikiLayout,
@@ -252,6 +394,10 @@ export function writeBack(
     content: string;
     logType?: LogType;
     logTitle: string;
+    /** 另一层布局（用于跨层判定）；缺省则不查另一层。 */
+    otherLayout?: WikiLayout | null;
+    /** 链接校验口径，默认 warn（警告不阻断）。strict 时缺失/跨层直接抛错。 */
+    linkCheck?: LinkCheckMode;
   },
 ): WriteBackResult {
   const name = opts.page.trim();
@@ -260,6 +406,24 @@ export function writeBack(
 
   const target = join(layout.pagesDir, name);
   const exists = existsSync(target);
+
+  // 链接目标校验：落盘前做（issue #22）。strict 抛错阻断，warn 只记录。
+  const mode = opts.linkCheck ?? DEFAULT_LINK_CHECK_MODE;
+  const linkIssues: LinkIssue[] = [];
+  if (mode !== "off") {
+    const checked = checkLinkTargets(opts.content, {
+      layout,
+      selfPage: name.replace(/\.md$/, ""),
+      otherLayout: opts.otherLayout ?? null,
+    });
+    linkIssues.push(...checked.issues);
+    if (mode === "strict" && linkIssues.length > 0) {
+      throw new WikiWriteError(
+        `链接目标校验未通过：\n${formatLinkIssues(linkIssues)}\n` +
+          `（严格模式下不写入；改链接或用其它 action 重试）`,
+      );
+    }
+  }
 
   if (opts.action === "create") {
     if (exists) {
@@ -274,7 +438,7 @@ export function writeBack(
     writeAtomic(target, opts.content.endsWith("\n") ? opts.content : opts.content + "\n");
     syncIndex(layout, name.replace(/\.md$/, ""), extractFirstSummary(opts.content));
     appendLog(layout, opts.logType ?? "query", opts.logTitle);
-    return { action: "create", page: name, indexSynced: true, logged: true };
+    return { action: "create", page: name, indexSynced: true, logged: true, linkIssues };
   }
 
   // append
@@ -311,7 +475,7 @@ export function writeBack(
   // 在 INDEX 里永远停着创建时的旧摘要，召回与人都看到过时信息。
   syncIndex(layout, name.replace(/\.md$/, ""), extractFirstSummary(out));
   appendLog(layout, opts.logType ?? "query", opts.logTitle);
-  return { action: "append", page: name, indexSynced: true, logged: true };
+  return { action: "append", page: name, indexSynced: true, logged: true, linkIssues };
 }
 
 /** 从页面内容提取摘要段的第一行非空文本，供 INDEX 一句话摘要用。 */

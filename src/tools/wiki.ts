@@ -13,7 +13,7 @@
 import { join } from "node:path";
 import type { WikiLayout } from "../wiki/paths.ts";
 import { resolveUserWikiLayout, resolveWikiLayout } from "../wiki/paths.ts";
-import { writeBack, WikiWriteError, type LogType, LOG_TYPES } from "../wiki/write.ts";
+import { writeBack, WikiWriteError, type LogType, LOG_TYPES, formatLinkIssues } from "../wiki/write.ts";
 import { searchWiki, formatSearchResults, wikiIsEmpty } from "../wiki/search.ts";
 import { ensureScopeLayout } from "../memory/layout.ts";
 import { ToolError, type ToolImpl } from "./types.ts";
@@ -145,6 +145,7 @@ export const wikiWriteTool: ToolImpl = {
       name: "wiki_write",
       description:
         "向记忆 wiki 回填内容的唯一合法路径。自动强制：命名前缀校验、页面必备结构（## 摘要 + 日期戳）、" +
+        "链接目标校验（[[X]] 目标不存在或只在另一层时会给出提示，指名缺失目标与所在层）、" +
         "INDEX.md 同步、log.md 登记。action=create 新建页（内容必须自带摘要与日期戳）；" +
         "action=append 往已有页追加「## 推理与依据」段并更新其日期戳。" +
         "scope=project（默认）写项目记忆；scope=user 写跨项目用户记忆（需显式指定）。" +
@@ -202,6 +203,10 @@ export const wikiWriteTool: ToolImpl = {
     }
 
     const layout = scope === "user" ? ensureUserLayout(ctx.cfg) : requireProjectLayout(ctx.cfg);
+    // 跨层判定用的另一层布局（issue #22）：写项目级时查用户级，反之亦然。
+    // 另一层未创建 → null → 按「两层都无」处理。
+    const otherLayout =
+      scope === "user" ? resolveWikiLayout(ctx.cfg.cwd) : optionalUserLayout(ctx.cfg);
     try {
       const r = writeBack(layout, {
         action,
@@ -209,12 +214,17 @@ export const wikiWriteTool: ToolImpl = {
         content: String(args["content"] ?? ""),
         logType,
         logTitle: String(args["log_title"] ?? ""),
+        otherLayout,
       });
       const where = scope === "user" ? "用户记忆" : "项目记忆";
       const parts = [`已${r.action === "create" ? "新建" : "追加"} ${where}页 ${r.page}`];
       parts.push(r.indexSynced ? "INDEX.md 已同步" : "INDEX.md 无需变更");
       parts.push("log.md 已登记");
-      return parts.join("；");
+      if (r.linkIssues.length > 0) {
+        // 警告不阻断写入（issue #22）：把缺失/跨层目标明确告诉模型，让它自己改链。
+        parts.push(formatLinkIssues(r.linkIssues));
+      }
+      return parts.join("；\n");
     } catch (e) {
       if (e instanceof WikiWriteError) throw new ToolError(e.message);
       throw e;

@@ -310,6 +310,8 @@ export function applyOps(ops: DistillOp[], ctx: MergeContext): MergeResult {
           content,
           logType: "wiki",
           logTitle: `自动记忆：${op.scope}/${split ? target.split("/").pop() : op.page}（create）`,
+          // 跨层判定用另一层布局（issue #22）：自动沉淀的正文也可能带 [[引用]]。
+          otherLayout: op.scope === "user" ? ctx.project : ctx.user,
         });
         applied.push({
           index,
@@ -337,6 +339,8 @@ export function applyOps(ops: DistillOp[], ctx: MergeContext): MergeResult {
             content: `${correction}- ${ctx.date}（session ${ctx.sessionId}）：${op.body}`,
             logType: "wiki",
             logTitle: `自动记忆：project/${op.page}（append）`,
+            // 跨层判定用另一层布局（issue #22）
+            otherLayout: ctx.user,
           });
         }
         applied.push({ index, scope: op.scope, action: "append", page: op.page, status: "appended" });

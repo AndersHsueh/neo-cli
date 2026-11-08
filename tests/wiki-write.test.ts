@@ -8,7 +8,7 @@ import { existsSync, mkdirSync, rmSync, writeFileSync, readFileSync } from "node
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
-import { resolveWikiLayout, insideRawDir } from "../src/wiki/paths.ts";
+import { resolveWikiLayout, resolveUserWikiLayout, insideRawDir } from "../src/wiki/paths.ts";
 import {
   validatePageName,
   validatePageContent,
@@ -16,6 +16,7 @@ import {
   lastIngestDate,
   syncIndex,
   writeBack,
+  checkLinkTargets,
   WikiWriteError,
   todayStamp,
 } from "../src/wiki/write.ts";
@@ -377,5 +378,200 @@ describe("wiki 工具壳与 raw 拦截", () => {
       ctx,
     );
     expect(r.ok).toBe(true);
+  });
+});
+
+/* ------------------------------------------------------------------ */
+/* 链接目标校验（issue #22）                                            */
+/* ------------------------------------------------------------------ */
+
+describe("链接目标校验（issue #22）", () => {
+  /** 独立的项目级/用户级双层沙箱，互不干扰，避免依赖开发机状态。 */
+  const LROOT = join(tmpdir(), `neo-wiki-link-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+  const PROJ = join(LROOT, "proj");
+  const USER = join(LROOT, "user");
+  const PROJ_PAGES = join(PROJ, ".neo", "wiki", "wiki");
+  const USER_PAGES = join(USER, "wiki");
+  mkdirSync(PROJ_PAGES, { recursive: true });
+  mkdirSync(USER_PAGES, { recursive: true });
+
+  const projLayout = resolveWikiLayout(PROJ)!;
+  const userLayout = resolveUserWikiLayout(USER)!;
+
+  afterAll(() => {
+    rmSync(LROOT, { recursive: true, force: true });
+  });
+
+  function projPage(name: string): void {
+    writeFileSync(join(PROJ_PAGES, name), "# x\n\n## 摘要\n\ns\n\n> 最后更新:2026-10-18\n", "utf8");
+  }
+  function userPage(name: string): void {
+    writeFileSync(join(USER_PAGES, name), "# x\n\n## 摘要\n\ns\n\n> 最后更新:2026-10-18\n", "utf8");
+  }
+
+  test("验收 1：目标在本层不存在 → 警告指名缺失目标", () => {
+    const r = checkLinkTargets("正文提到 [[幽灵页]]。", {
+      layout: projLayout,
+      otherLayout: userLayout,
+    });
+    expect(r.issues).toHaveLength(1);
+    expect(r.issues[0]!.kind).toBe("missing");
+    expect(r.issues[0]!.target).toBe("幽灵页");
+    expect(r.issues[0]!.message).toContain("幽灵页");
+    expect(r.issues[0]!.message).toContain("项目级 wiki");
+  });
+
+  test("验收 2：目标只在用户级 → 跨层提示指名「在用户级 wiki」", () => {
+    userPage("用户独有页.md");
+    const r = checkLinkTargets("见 [[用户独有页]]。", {
+      layout: projLayout,
+      otherLayout: userLayout,
+    });
+    expect(r.issues).toHaveLength(1);
+    expect(r.issues[0]!.kind).toBe("cross-layer");
+    expect(r.issues[0]!.otherScope).toBe("user");
+    expect(r.issues[0]!.message).toContain("用户独有页");
+    expect(r.issues[0]!.message).toContain("用户级 wiki");
+    expect(r.issues[0]!.message).toContain("项目级");
+  });
+
+  test("验收 2 反向：目标只在项目级 → 写用户级时提示「在项目级 wiki」", () => {
+    projPage("项目独有页.md");
+    const r = checkLinkTargets("见 [[项目独有页]]。", {
+      layout: userLayout,
+      otherLayout: projLayout,
+    });
+    expect(r.issues).toHaveLength(1);
+    expect(r.issues[0]!.kind).toBe("cross-layer");
+    expect(r.issues[0]!.otherScope).toBe("project");
+    expect(r.issues[0]!.message).toContain("项目级 wiki");
+    expect(r.issues[0]!.message).toContain("用户级");
+  });
+
+  test("验收 2：用户级库未创建 → 按「两层都无」处理", () => {
+    const r = checkLinkTargets("见 [[哪都没有]]。", {
+      layout: projLayout,
+      otherLayout: null,
+    });
+    expect(r.issues).toHaveLength(1);
+    expect(r.issues[0]!.kind).toBe("missing");
+    expect(r.issues[0]!.message).not.toContain("用户级 wiki");
+  });
+
+  test("验收 3：目标在本层存在 → 零告警", () => {
+    projPage("本层存在页.md");
+    const r = checkLinkTargets("见 [[本层存在页]]。", {
+      layout: projLayout,
+      otherLayout: userLayout,
+    });
+    expect(r.issues).toHaveLength(0);
+    expect(r.resolved).toContain("本层存在页");
+  });
+
+  test("验收 4：三种语法归一后都能正确校验", () => {
+    projPage("语法页.md");
+    // 三种写法都指向同一个存在的页 → 零告警
+    const ok = checkLinkTargets("[[语法页|别名]] [[语法页#锚点]] [[语法页.md]]", {
+      layout: projLayout,
+      otherLayout: userLayout,
+    });
+    expect(ok.issues).toHaveLength(0);
+
+    // 不存在的目标：三种写法都被归一后指名
+    for (const raw of ["[[缺失页|别名]]", "[[缺失页#锚点]]", "[[缺失页.md]]"]) {
+      const r = checkLinkTargets(raw, { layout: projLayout, otherLayout: userLayout });
+      expect(r.issues).toHaveLength(1);
+      expect(r.issues[0]!.target).toBe("缺失页");
+    }
+  });
+
+  test("验收 4：路径式目标（归一后为空）按 lint 口径跳过", () => {
+    const r = checkLinkTargets("见 [[../AGENTS]] 与 [[sub/page]]。", {
+      layout: projLayout,
+      otherLayout: userLayout,
+    });
+    expect(r.issues).toHaveLength(0);
+  });
+
+  test("口径与 lint 一致：代码块与行内反引号里的链接不计", () => {
+    const r = checkLinkTargets("```\n[[幽灵]]\n```\n行内 `[[幽灵2]]` 结束。", {
+      layout: projLayout,
+      otherLayout: userLayout,
+    });
+    expect(r.issues).toHaveLength(0);
+  });
+
+  test("writeBack：默认 warn 不阻断 —— 写入成功但结果带 linkIssues", () => {
+    const r = writeBack(projLayout, {
+      action: "create",
+      page: "带断链的页.md",
+      content: "# 带断链的页\n\n## 摘要\n\n摘要。\n\n> 最后更新:2026-10-18\n\n见 [[幽灵页]]。\n",
+      logTitle: "写带断链的页",
+      otherLayout: userLayout,
+    });
+    expect(r.linkIssues).toHaveLength(1);
+    expect(r.linkIssues[0]!.target).toBe("幽灵页");
+    // 仍然落盘了（警告不阻断）
+    expect(existsSync(join(PROJ_PAGES, "带断链的页.md"))).toBe(true);
+  });
+
+  test("writeBack：strict 模式阻断写入且不落盘", () => {
+    expect(() =>
+      writeBack(projLayout, {
+        action: "create",
+        page: "严格模式页.md",
+        content: "# 严格模式页\n\n## 摘要\n\n摘要。\n\n> 最后更新:2026-10-18\n\n见 [[幽灵页2]]。\n",
+        logTitle: "严格模式",
+        otherLayout: userLayout,
+        linkCheck: "strict",
+      }),
+    ).toThrow(/链接目标校验未通过/);
+    expect(existsSync(join(PROJ_PAGES, "严格模式页.md"))).toBe(false);
+  });
+
+  test("writeBack：off 模式完全跳过校验", () => {
+    const r = writeBack(projLayout, {
+      action: "create",
+      page: "跳过校验页.md",
+      content: "# 跳过校验页\n\n## 摘要\n\n摘要。\n\n> 最后更新:2026-10-18\n\n见 [[幽灵页3]]。\n",
+      logTitle: "跳过校验",
+      otherLayout: userLayout,
+      linkCheck: "off",
+    });
+    expect(r.linkIssues).toHaveLength(0);
+  });
+
+  test("自链不算断链", () => {
+    const r = checkLinkTargets("见 [[自链页]]。", {
+      layout: projLayout,
+      selfPage: "自链页",
+      otherLayout: userLayout,
+    });
+    expect(r.issues).toHaveLength(0);
+  });
+
+  test("工具层：wiki_write 输出里带跨层提示（project scope）", async () => {
+    const toolCtx = {
+      cfg: {
+        cwd: PROJ,
+        toolOutputLimit: 30_000,
+        memory: { userWikiDir: USER, scopeMode: "both" },
+      } as unknown as Config,
+      approve: async () => true,
+    };
+    const r = await dispatch(
+      "wiki_write",
+      JSON.stringify({
+        action: "create",
+        page: "工具跨层页.md",
+        content:
+          "# 工具跨层页\n\n## 摘要\n\n摘要。\n\n> 最后更新:2026-10-18\n\n见 [[用户独有页]]。\n",
+        log_title: "工具跨层",
+      }),
+      toolCtx,
+    );
+    expect(r.ok).toBe(true);
+    expect(r.output).toContain("用户独有页");
+    expect(r.output).toContain("用户级 wiki");
   });
 });
