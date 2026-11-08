@@ -71,6 +71,11 @@ describe("D1 超长输出落盘", () => {
   });
 });
 
+// Windows 跳过原因（PD-1 Windows 实机验收前的已知豁免）：下面两个用例跑 `pwd`
+// 并断言输出含 POSIX 风格相对路径 "shell/sub"（正斜杠）；Windows 侧 shell 工具
+// 走 cmd/PowerShell，`pwd` 要么不存在（cmd）要么输出反斜杠绝对路径（PowerShell），
+// 断言必然失败。恢复条件：PD-1 落地 Windows shell 约定后，把断言改成平台中立
+// （归一化路径分隔符或按平台选命令），届时移除本 skipIf。
 describe.skipIf(process.platform === "win32")("D2 shell cwd", () => {
   test("cwd 参数只影响本次调用（pwd 落在子目录）", async () => {
     const cwd = join(ROOT, "shell");

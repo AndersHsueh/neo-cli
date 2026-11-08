@@ -144,9 +144,13 @@ describe("C1f FS 回退遍历", () => {
 });
 
 describe("C1g 真实 git 仓库集成", () => {
-  const git = Bun.which("git");
-  test("有 .gitignore 时忽略被 ignore 的文件（排除 node_modules）", async () => {
-    if (!git) return; // 环境无 git：跳过（不失败）
+  // Bun.which 返回 string | null；skipIf(!git) 保证 null 情况下用例被显式跳过
+  // （报告可见），?? "" 只是满足 spawnSync 的参数类型，空串分支实际不可达。
+  const git = Bun.which("git") ?? "";
+  // 环境无 git 时用 skipIf 显式跳过（报告里可见 skip 标记），不用 if-return 静默通过
+  // —— 静默通过会让「缺 git 的环境」在报告里显示 pass，与 gitignore-rules.test.ts
+  // 「环境的坏必须被看见」的纪律冲突。git 存在但损坏时仍走真实路径 fail。
+  test.skipIf(!git)("有 .gitignore 时忽略被 ignore 的文件（排除 node_modules）", async () => {
     const root = join(SANDBOX, "repo");
     mkdirSync(join(root, "src"), { recursive: true });
     mkdirSync(join(root, "ignored"), { recursive: true });

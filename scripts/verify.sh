@@ -57,6 +57,7 @@ run_stage() {
     "$@"
   } 2>&1 | tee "$out"; then
     echo "  ✔ ${stage} 通过（证据：docs/evidence/${EVIDENCE_PREFIX}-${stage}.txt）"
+    check_test_skips "$stage" "$out"
     echo
   else
     local code="${PIPESTATUS[0]}"
@@ -64,6 +65,44 @@ run_stage() {
     echo "FAILED: ${stage}" >&2
     exit 1
   fi
+}
+
+# check_test_skips <stage> <evidence-file>
+#
+# 背景（issue #26 审计连带项，2026-11-08）：bun test 有 skip 时退出码仍是 0，
+# run_stage 只看退出码 ⇒ ALL GREEN 不代表覆盖完整，静默跳过会随版本悄悄累积。
+# 这里解析 bun test 输出里的 skip 数：
+#   - skip > 0：默认只告警（列出条数与所在文件，闸门继续走）；
+#     NEO_STRICT_SKIPS=1 时直接 fail（退出 1），用于要求零跳过的严格验收。
+#   - skip = 0：不产生任何输出（默认路径下主仓 0 skip，仍 ALL GREEN）。
+#   - 输出里没有 skip 汇总行（如 tsc/pty 阶段）：静默返回，不告警。
+#   - 解析口径：bun test 的汇总行是行首两个空格 + 「N skip」；skip 明细行
+#     以「(skip)」开头，其所属文件是上方最近的「tests/xxx.test.ts:」标题行。
+check_test_skips() {
+  local stage="$1"
+  local file="$2"
+  local skip_count
+  skip_count="$(grep -E '^ +[0-9]+ skip$' "$file" | tail -n 1 | grep -oE '[0-9]+' || true)"
+  # 无 skip 汇总行 = 0 skip（bun test 只在有 skip 时才打印该行）
+  [ -z "$skip_count" ] && return 0
+  # skip = 0：静默返回（默认路径下主仓 0 skip，不产生任何输出）
+  [ "$skip_count" -eq 0 ] && return 0
+
+  echo "  ⚠ ${stage}: 检测到 ${skip_count} 个 skip（静默跳过会随版本累积，闸门默认只告警）"
+  # 列出 skip 所在文件：正文段里从 (skip) 行向上找最近的「…test.ts:」文件标题。
+  # 注意 bun test 末尾有「N tests skipped:」回顾段，会原样重复明细行 —— awk 遇到
+  # 该行即停，否则重复计数、且回顾段前最后一个文件头会把 skip 错记到别的文件名下。
+  awk '
+    /tests skipped:/ { exit }
+    /\.test\.ts:$/ { cur = $0; sub(/:$/, "", cur) }
+    /^\(skip\)/ { print "    - " cur "（第 " NR " 行）" }
+  ' "$file"
+  if [ "${NEO_STRICT_SKIPS:-0}" = "1" ]; then
+    echo "  ✖ ${stage}: NEO_STRICT_SKIPS=1 且存在 skip，按严格口径判失败" >&2
+    echo "FAILED: ${stage} (strict skips)" >&2
+    exit 1
+  fi
+  echo "    （设 NEO_STRICT_SKIPS=1 可让 skip 直接 fail）"
 }
 
 # 1) 类型检查：零错误是后续所有阶段的前提。

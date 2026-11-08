@@ -10,15 +10,35 @@ import { renderCore, renderSubagentCore, sanitizeSessionName } from "../src/prom
 import { TIER_CORE, type PromptTier } from "../src/prompt/tiers.ts";
 
 const TIERS: PromptTier[] = ["full", "standard", "mini"];
-const SOURCE_DIR = join(import.meta.dir, "..", "..", "bot-comments");
+// bot-comments 在仓库外的兄弟目录（三档正文的生成源，不入 git）。默认按仓库物理
+// 位置推断（<repo>/../bot-comments）——这依赖仓库目录名，worktree 布局下父目录
+// 不同会找不到；可用 NEO_BOT_COMMENTS_DIR 显式指定，让「与源文件逐字一致」契约
+// 在 worktree 里也能验证。
+const SOURCE_DIR =
+  process.env.NEO_BOT_COMMENTS_DIR ?? join(import.meta.dir, "..", "..", "bot-comments");
 const hasSources = TIERS.every((t) => existsSync(join(SOURCE_DIR, `prompt-${t}.md`)));
+// 显式指定了 NEO_BOT_COMMENTS_DIR 却找不到源文件 = 配置错误：直接 fail，不静默
+// skip（防止环境变量拼错让契约悄悄失效）。未指定环境变量时缺失走下方 skipIf。
+if (process.env.NEO_BOT_COMMENTS_DIR !== undefined && !hasSources) {
+  throw new Error(
+    `NEO_BOT_COMMENTS_DIR=${SOURCE_DIR} 下找不到 prompt-{full,standard,mini}.md —— 检查路径拼写`,
+  );
+}
 
 describe("tiers 与源文件一致", () => {
-  // bot-comments 在仓库外的兄弟目录；缺失时（CI/他人机器）跳过，不当作失败。
+  // bot-comments 不入 git，CI / 他人机器 / 未指定环境变量的 worktree 物理上没有
+  // 源文件：缺失时显式 skip（标题带原因，报告可见），不当作失败 —— 契约的验证
+  // 义务在有源文件的机器上；配合闸门 NEO_STRICT_SKIPS=1 可强制零跳过验收。
+  const skipReason = hasSources
+    ? ""
+    : "（跳过：找不到 bot-comments 源文件，可用 NEO_BOT_COMMENTS_DIR 指定）";
   for (const t of TIERS) {
-    test.skipIf(!hasSources)(`${t} 与 bot-comments/prompt-${t}.md 逐字一致`, () => {
-      expect(TIER_CORE[t]).toBe(readFileSync(join(SOURCE_DIR, `prompt-${t}.md`), "utf8"));
-    });
+    test.skipIf(!hasSources)(
+      `${t} 与 bot-comments/prompt-${t}.md 逐字一致${skipReason}`,
+      () => {
+        expect(TIER_CORE[t]).toBe(readFileSync(join(SOURCE_DIR, `prompt-${t}.md`), "utf8"));
+      },
+    );
   }
 });
 
