@@ -61,6 +61,12 @@ export interface ComposerDeps {
   files: () => string[];
   /** 提交一条消息（此时 buffer 已清空，attachments 是 chip 绑定列表）。 */
   onSubmit: (text: string, attachments: unknown[]) => void;
+  /**
+   * 提交一条 **shell 模式**下的命令（issue #30）。缓冲区原文，不含 `!`。
+   * 提供时走这条独立回调（宿主直接调 runShell），**不再走「整行 startsWith !」
+   * 那条路径**，避免双重剥前缀；不提供则退回旧语法 `!${cmd}` 交给 onSubmit。
+   */
+  onShellCommand?: (command: string) => void;
   /** 用户确认退出（双 Ctrl+C / Ctrl+D）。 */
   onExit: () => void;
   /** 运行中 ESC / Ctrl+C：请求取消当前轮。 */
@@ -137,6 +143,8 @@ export class Composer {
   private readonly pasteIdleMs: number;
   private attachments: unknown[] = [];
   private mode: "normal" | "ask" | "select" | "ask_user" = "normal";
+  /** shell 输入模式（issue #30）：空缓冲区键入 `!` 进入，提交/删空/Esc 退出。 */
+  private shellMode = false;
   private select: SelectSession | null = null;
   private askState: AskState | null = null;
   private askUserState: AskUserSession | null = null;
@@ -470,7 +478,7 @@ export class Composer {
       cursorRow = extras.length + box.cursorRow;
       cursorCol = box.cursorCol;
     } else {
-      const box = this.composeInput(width, this.buf, "normal");
+      const box = this.composeInput(width, this.buf, this.shellMode ? "shell" : "normal");
       rows = [...extras, ...box.rows, statusRow];
       cursorRow = extras.length + box.cursorRow;
       cursorCol = box.cursorCol;
@@ -503,7 +511,7 @@ export class Composer {
   private composeInput(
     width: number,
     buf: TextBuffer,
-    kind: "normal" | "ask",
+    kind: "normal" | "ask" | "shell",
   ): { rows: string[]; cursorRow: number; cursorCol: number } {
     const contentW = Math.max(4, width - 3);
     const layout = this.layoutFor(buf.text, buf.cursor, contentW);
@@ -531,9 +539,17 @@ export class Composer {
     }
     const rule = this.topRule(width, ruleTitle, kind !== "ask" && this.busy);
     rows.push(rule);
-    const prefix = kind === "ask" ? c.warn("? ") : c.accent("❯ ");
+    const prefix =
+      kind === "ask" ? c.warn("? ") : kind === "shell" ? c.warn("! ") : c.accent("❯ ");
     const cont = "  ";
-    const placeholder = kind === "ask" ? "y / N（Enter 确认，Esc 取消）" : "输入消息 · @ 文件 · / 命令 · Ctrl+J 换行";
+    const placeholder =
+      kind === "ask"
+        ? "y / N（Enter 确认，Esc 取消）"
+        : kind === "shell"
+          ? "shell 命令 · Enter 执行 · 删空或 Esc 退出"
+          : "输入消息 · @ 文件 · / 命令 · Ctrl+J 换行";
+    // issue #30：shell 模式正文用 warn 色，和普通输入（text 色）区分。
+    const paint = kind === "shell" ? c.warn : c.text;
     // issue #18：占位用 c.placeholder（grey + SGR 2），比正文暗一档且仍可读；
     // 正文/光标走 paintInputLine 的 c.text + c.inverse，不受这里影响。
     const paintPlaceholder = (s: string): string => c.placeholder(truncate(s, Math.max(0, contentW - 1)));
@@ -546,7 +562,10 @@ export class Composer {
         rows.push(`${head}${c.inverse(" ")}${paintPlaceholder(placeholder)}`);
         continue;
       }
-      rows.push(head + this.paintInputLine(line, isCursorLine ? layout.cursorIndex - line.start : null, contentW));
+      rows.push(
+        head +
+          this.paintInputLine(line, isCursorLine ? layout.cursorIndex - line.start : null, contentW, paint),
+      );
     }
     // 空文本时也要有一行
     if (rows.length === 1) {
@@ -562,15 +581,20 @@ export class Composer {
   }
 
   /** 单行输入渲染 + 光标反显（layout 已给出码点下标，不再二次换算显示列）。 */
-  private paintInputLine(line: VisualLine, cursorIdx: number | null, _contentW: number): string {
+  private paintInputLine(
+    line: VisualLine,
+    cursorIdx: number | null,
+    _contentW: number,
+    paint: (s: string) => string = c.text,
+  ): string {
     const chars = [...line.text];
-    if (cursorIdx === null) return c.text(line.text);
+    if (cursorIdx === null) return paint(line.text);
     const idx = Math.max(0, Math.min(chars.length, cursorIdx));
     const before = chars.slice(0, idx).join("");
     const at = chars[idx];
     const after = chars.slice(idx + 1).join("");
     const cursorCell = idx < chars.length ? c.inverse(at as string) : c.inverse(" ");
-    return c.text(before) + cursorCell + c.text(after);
+    return paint(before) + cursorCell + paint(after);
   }
 
   /** 顶线：横线 + 右侧 label；支持旧的 string 与结构化 TitleView。 */
@@ -896,8 +920,23 @@ export class Composer {
   }
 
   private handleNormalAction(action: KeyAction): void {
+    // issue #30：shell 模式下空缓冲区再删 = 退出模式（不执行、不残留）。
+    if (
+      (action.type === "backspace" || action.type === "delete") &&
+      this.shellMode &&
+      this.buf.text === ""
+    ) {
+      this.exitShellMode();
+      return;
+    }
     switch (action.type) {
       case "insert":
+        // issue #30：空缓冲区键入 `!` = 进入 shell 模式；`!` 是模式开关，不进正文。
+        // 缓冲区非空时按字面插入（避免把普通句子误切成 shell 命令）。
+        if (!this.shellMode && this.buf.text === "" && action.text === "!") {
+          this.enterShellMode();
+          return;
+        }
         this.buf.insert(action.text);
         this.resetTabIfEdited();
         this.scheduleRender();
@@ -911,12 +950,24 @@ export class Composer {
         this.scheduleRender();
         return;
       case "tab":
+        // issue #30：shell 命令是外部语法，不套用 neo 的命令/文件补全。
+        if (this.shellMode) {
+          this.hint = null;
+          this.scheduleRender();
+          return;
+        }
         this.tabComplete();
         return;
       case "escape":
         if (this.busy) {
           this.deps.onCancelTurn?.();
           this.notice("已请求取消本轮");
+        } else if (this.shellMode) {
+          this.exitShellMode();
+          this.buf.clear();
+          this.history.reset();
+          this.tabCycle = null;
+          this.hint = null;
         } else if (this.buf.text !== "") {
           this.buf.clear();
           this.history.reset(); // 清空后 ↓ 不能把 ↑ 之前的草稿复活
@@ -1000,6 +1051,11 @@ export class Composer {
   }
 
   private submit(): void {
+    // issue #30：shell 模式下走独立路径（命令原文交给 onShellCommand，不经过 `!` 前缀剥离）。
+    if (this.shellMode) {
+      this.submitShellCommand();
+      return;
+    }
     let text = this.buf.text;
     if (text.trim() === "") return;
     // 行尾反斜杠 = 续行（与 v0.2.4 兼容）
@@ -1024,12 +1080,54 @@ export class Composer {
     this.scheduleRender();
   }
 
+  /** 进入 shell 输入模式（issue #30）：清掉补全 hint，按 shell 前缀重画。 */
+  private enterShellMode(): void {
+    this.shellMode = true;
+    this.hint = null;
+    this.tabCycle = null;
+    this.scheduleRender();
+  }
+
+  /** 退出 shell 输入模式（不执行）。 */
+  private exitShellMode(): void {
+    this.shellMode = false;
+    this.scheduleRender();
+  }
+
+  /**
+   * shell 模式提交：命令原文交给宿主（`onShellCommand`），提交后回普通态。
+   * 空命令不执行，直接回普通态；宿主没接回调时退回旧语法 `!${cmd}` 交给 onSubmit。
+   */
+  private submitShellCommand(): void {
+    const command = this.buf.text.trim();
+    if (command === "") {
+      this.shellMode = false;
+      this.buf.clear();
+      this.scheduleRender();
+      return;
+    }
+    const attachments = this.attachments;
+    this.history.push(`!${command}`);
+    this.deps.beforeUserCommit?.();
+    this.commitUserInput(command, c.warn("! "));
+    this.buf.clear();
+    this.attachments = [];
+    this.tabCycle = null;
+    this.hint = null;
+    this.inputScroll = 0;
+    this.shellMode = false;
+    // 先清干净状态再回调：回调里可能同步触发 shell 执行 / 新一轮。
+    this.scheduleRender();
+    if (this.deps.onShellCommand) this.deps.onShellCommand(command);
+    else this.deps.onSubmit(`!${command}`, attachments);
+  }
+
   /** 用户消息进 scrollback：首行 `❯ `、续行两空格；折行与输入框共用 layoutBuffer。 */
-  private commitUserInput(text: string): void {
+  private commitUserInput(text: string, firstPrefix = c.accent("❯ ")): void {
     const contentW = this.contentWidth();
     const rows: string[] = [];
     text.split("\n").forEach((line, i) => {
-      const prefix = i === 0 ? c.accent("❯ ") : "  ";
+      const prefix = i === 0 ? firstPrefix : "  ";
       const layout = layoutBuffer(line, line.length, contentW);
       for (const vl of layout.lines) rows.push(prefix + c.text(vl.text));
     });

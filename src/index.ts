@@ -1287,6 +1287,11 @@ async function main(): Promise<number> {
     origin: QueueOrigin;
     /** mailbox/notice 的来源 session（状态机 turn.from）。 */
     from?: string;
+    /**
+     * shell 输入模式（issue #30）提交的命令：text 是命令原文（不含 `!`），
+     * 由 drain 直接交给 runShellWithTui —— 不再走「整行 startsWith !」那条，避免双重剥前缀。
+     */
+    shell?: boolean;
   }
   const queue: QueueItem[] = [];
   let draining = false;
@@ -1374,6 +1379,11 @@ async function main(): Promise<number> {
       const origin = q.origin;
 
       if (origin === "user") {
+        // issue #30：输入态 shell 模式提交的命令（原文，无 `!`）直接执行。
+        if (q.shell) {
+          await runShellWithTui(line);
+          continue;
+        }
         if (line.startsWith("!")) {
           await runShellWithTui(line.slice(1));
           continue;
@@ -1631,6 +1641,12 @@ async function main(): Promise<number> {
       commands: COMMANDS,
       files: () => fileIndex.list(),
       onSubmit: (text, attachments) => submitUserLine(text, attachments as Attachment[]),
+      // issue #30：输入态 shell 模式 → 入队标记 shell，由 drain 直接跑 shell（与 `?` 悬浮态解耦）
+      onShellCommand: (command) => {
+        queue.push({ text: command, attachments: [], origin: "user", shell: true });
+        composerRef?.setQueueCount(queue.length);
+        runDrainSafely();
+      },
       onExit: () => {
         void shutdown();
       },

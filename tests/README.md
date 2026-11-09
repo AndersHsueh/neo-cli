@@ -7,7 +7,7 @@
 ```bash
 bun x tsc --noEmit    # exit 0（strict + noUncheckedIndexedAccess；不用 bunx：部分 bun 安装没有独立 bunx 入口）
 bun test              # 1704 pass / 0 fail / 0 skip（93 个测试文件，约 30s；v0.4.80 实测）
-bash scripts/verify.sh # 全量闸门：上两条 + 真 PTY E2E（24 场景），输出落 docs/evidence/
+bash scripts/verify.sh # 全量闸门：上两条 + 真 PTY E2E（25 场景），输出落 docs/evidence/
 ```
 
 v0.4.80 基线（2026-11-08 实测）：**1704 pass / 0 fail / 93 文件**。更早的历史基线（v0.4.78 为 1676/0/92、v0.4.12 为 1097/0/70、v0.4.8 为 1076/0/69、v0.4.4 为 1061/0/68、v0.4.2 为 1039/0/67/PTY20、v0.4.0 为 974/59/PTY19、v0.2.4 为 660/37、v0.2.3 为 569/32 等）以 git 历史与本文件旧版为准，不再逐版维护。

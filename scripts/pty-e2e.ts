@@ -2488,6 +2488,63 @@ async function scenarioS21(tmpRoot: string): Promise<void> {
   }
 }
 
+/**
+ * S23（issue #30）：输入框 `!` shell 模式。
+ *
+ * 空缓冲键入 `!` → 前缀变 `! `、占位变「shell 命令」；输入命令回车后 shell 执行、
+ * scrollback 回显 `! <cmd>`；执行完输入框恢复普通占位。
+ *
+ * 注意：**不在这里断言「之后还能再输入一条命令」** —— 那是另一个已单独登记的问题
+ * （TUI 跑完 shell 之后输入不生效，旧语法 `!cmd` 同样复现，见 issue #34）。
+ */
+async function scenarioS23(tmpRoot: string): Promise<void> {
+  const dirs = await makeDirs(tmpRoot, "s23-shell-input-mode");
+  const fake = await startFake("resume");
+  const run = await startNeo({
+    fake,
+    dirs,
+    name: "s23",
+    args: BASE_ARGS,
+    cols: DEFAULT_COLS,
+    rows: DEFAULT_ROWS,
+  });
+  try {
+    await waitPrompt(run);
+
+    // 1) 空缓冲键入 `!`：进入 shell 模式（占位文案变化）
+    await run.write("!");
+    await waitFor(() => run.screen.text().includes("shell 命令"), {
+      label: "键入 ! 后进入 shell 模式（占位变为 shell 命令）",
+      run,
+      timeoutMs: 5000,
+    });
+
+    // 2) 输入命令回车：执行且输出可见
+    await run.type("echo NEO_SHELL_MODE_OK");
+    await waitFor(() => run.screen.text().includes("NEO_SHELL_MODE_OK"), {
+      label: "shell 命令输出可见",
+      run,
+      timeoutMs: 10_000,
+    });
+    // 3) scrollback 回显带 `! ` 前缀（和普通用户行区分）
+    await waitFor(() => run.screen.text().includes("! echo NEO_SHELL_MODE_OK"), {
+      label: "scrollback 回显 ! 前缀",
+      run,
+      timeoutMs: 5000,
+    });
+    // 4) 执行后回到普通输入态：占位恢复为普通提示（shell 占位消失）
+    await waitFor(
+      () => run.screen.text().includes("输入消息 · @ 文件") && !run.screen.text().includes("删空或 Esc 退出"),
+      { label: "shell 执行后回到普通输入态", run, timeoutMs: 8000 },
+    );
+  } catch (e) {
+    throw attachScreen(e, run.screen, run.stderr);
+  } finally {
+    await run.close();
+    await fake.stop();
+  }
+}
+
 const SCENARIOS: Scenario[] = [
   {
     id: "s1",
@@ -2632,6 +2689,12 @@ const SCENARIOS: Scenario[] = [
     title: "S22c 小窗口：系统提示词放不下预算时给一次性提示（排在记忆提示之后，日志里也有）",
     fn: scenarioS22c,
     focus: ["M.A.T.R.I.X", "已加载项目记忆", "系统提示词放不下预算"],
+  },
+  {
+    id: "s23",
+    title: "S23 输入框 ! shell 模式：进入/执行/回显/退出",
+    fn: scenarioS23,
+    focus: ["shell 命令", "NEO_SHELL_MODE_OK", "! echo NEO_SHELL_MODE_OK"],
   },
 ];
 
