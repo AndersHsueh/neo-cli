@@ -2790,6 +2790,63 @@ async function scenarioS28(tmpRoot: string): Promise<void> {
   }
 }
 
+/**
+ * S29（issue #24）：`/drive` 目标驱动自动续跑的启动 / 状态 / 停止。
+ *
+ * 不发真实轮次（那需要跑完整 turn + 检查命令），只锁命令层：空态 → 启动 → 状态 → 停止。
+ */
+async function scenarioS29(tmpRoot: string): Promise<void> {
+  const dirs = await makeDirs(tmpRoot, "s29-drive");
+  const fake = await startFake("resume");
+  const run = await startNeo({
+    fake,
+    dirs,
+    name: "s29",
+    args: BASE_ARGS,
+    cols: DEFAULT_COLS,
+    rows: DEFAULT_ROWS,
+  });
+  try {
+    await waitPrompt(run);
+
+    // 1) 空态
+    await run.type("/drive");
+    await waitFor(() => run.screen.text().includes("没有正在进行的自动续跑"), {
+      label: "/drive 无任务时提示空态",
+      run,
+      timeoutMs: 8000,
+    });
+    await waitPrompt(run, "/drive 空态后回到提示符");
+
+    // 2) 启动（检查命令用 true，便于确定性）
+    await run.type("/drive --max 2 true -- 再检查一次");
+    await waitFor(() => run.screen.text().includes("已启动自动续跑"), {
+      label: "/drive 启动成功",
+      run,
+      timeoutMs: 8000,
+    });
+    await waitFor(() => run.screen.text().includes("已自动推进 0/2 轮"), {
+      label: "/drive 状态显示轮次",
+      run,
+      timeoutMs: 5000,
+    });
+
+    // 3) 停止
+    await run.type("/drive stop");
+    await waitFor(() => run.screen.text().includes("已停止自动续跑"), {
+      label: "/drive stop 停止成功",
+      run,
+      timeoutMs: 8000,
+    });
+    await waitPrompt(run, "停止后回到提示符");
+  } catch (e) {
+    throw attachScreen(e, run.screen, run.stderr);
+  } finally {
+    await run.close();
+    await fake.stop();
+  }
+}
+
 const SCENARIOS: Scenario[] = [
   {
     id: "s1",
@@ -2970,6 +3027,12 @@ const SCENARIOS: Scenario[] = [
     title: "S28 /rewind 按轮次回滚：空态",
     fn: scenarioS28,
     focus: ["还没有可回滚的轮次"],
+  },
+  {
+    id: "s29",
+    title: "S29 /drive 目标驱动续跑：空态/启动/状态/停止",
+    fn: scenarioS29,
+    focus: ["没有正在进行的自动续跑", "已启动自动续跑", "已停止自动续跑"],
   },
 ];
 

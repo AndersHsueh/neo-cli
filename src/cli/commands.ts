@@ -43,6 +43,7 @@ import { repoMapSummary } from "../prompt/repoMap.ts";
 import type { BackgroundView } from "../tools/background.ts";
 import type { ShellJobView } from "../tools/backgroundShell.ts";
 import type { RewindMode, RewindResult, RewindTurn } from "../rewind.ts";
+import type { DriveSpec } from "../drive.ts";
 import { formatInterval, parseLoopCommand, type LoopSpec } from "../loop.ts";
 import { formatShellJobs } from "../tools/backgroundShell.ts";
 import type { ProjectRule, RuleMatch } from "../rules/index.ts";
@@ -152,6 +153,12 @@ export interface CommandContext {
    * 不传 = 不展示（子代理/测试场景）。
    */
   rules?: () => { alwaysOn: ProjectRule[]; loaded: RuleMatch[]; total: number };
+  /** 目标驱动自动续跑（issue #24）：/drive 列表 / 启动 / 停止。不传 = 不支持。 */
+  drive?: {
+    start: (spec: DriveSpec) => { ok: true } | { ok: false; error: string };
+    stop: () => void;
+    status: () => string[];
+  };
   /** 按轮次回滚（issue #27）：列出轮次 / 回滚到某轮之前。不传 = 不支持。 */
   rewind?: {
     list: () => RewindTurn[];
@@ -200,7 +207,7 @@ export interface CommandContext {
 export async function handleCommand(line: string, ctx: CommandContext): Promise<void> {
   const {
     agent, ui, cfg, memory, classifier, meta, shutdown, selectDeps, mailbox, checkpoints,
-    injectMailbox, onMailboxRekey, onNameChange, promptSelection, toolVisibility, rules, loop, tasks, shells, rewind,
+    injectMailbox, onMailboxRekey, onNameChange, promptSelection, toolVisibility, rules, loop, tasks, shells, rewind, drive,
   } = ctx;
   const memoryMode = ctx.memoryMode ?? "interactive";
   const [cmdRaw, ...rest] = line.slice(1).split(/\s+/);
@@ -948,6 +955,53 @@ export async function handleCommand(line: string, ctx: CommandContext): Promise<
       }
       // status
       for (const line of loop.status()) ui.line(line);
+      break;
+    }
+
+    // 目标驱动自动续跑（issue #24）：完成条件 = 检查命令 exit 0（只认可验证信号）。
+    case "drive": {
+      if (!drive) {
+        ui.warn("当前会话不支持自动续跑（未接线；-p 单次模式不可用）。");
+        break;
+      }
+      const text = arg.trim();
+      if (text === "" || text === "status") {
+        for (const line of drive.status()) ui.line(line);
+        ui.line(
+          c.dim(
+            "用法：/drive <检查命令> -- <提示> [--max N] · /drive stop。" +
+              "例：/drive bun test -- 把测试修到全绿（检查命令 exit 0 = 达成；模型自述完成不算）",
+          ),
+        );
+        break;
+      }
+      if (text === "stop") {
+        drive.stop();
+        ui.success("已停止自动续跑。");
+        break;
+      }
+      // 语法：/drive [--max N] <检查命令> -- <提示>
+      const sep = text.indexOf(" -- ");
+      if (sep === -1) {
+        ui.warn("缺少 `--` 分隔符。用法：/drive <检查命令> -- <提示> [--max N]");
+        break;
+      }
+      const left = text.slice(0, sep).trim();
+      const right = text.slice(sep + 4).trim();
+      const maxMatch = /^--max\s+(\d+)\s+(.*)$/.exec(left);
+      const spec: DriveSpec = {
+        check: maxMatch ? (maxMatch[2] ?? "").trim() : left,
+        prompt: right,
+        maxRounds: maxMatch ? Number(maxMatch[1]) : 5,
+      };
+      const r = drive.start(spec);
+      if (!r.ok) {
+        ui.warn(r.error);
+        break;
+      }
+      ui.success(`已启动自动续跑：检查命令 \`${spec.check}\`（exit 0 = 达成），最多 ${spec.maxRounds} 轮`);
+      for (const line of drive.status()) ui.line(c.dim(`  ${line}`));
+      ui.line(c.dim("  每轮结束自动跑检查；通过/到上限/连续空转/`/drive stop` 时停"));
       break;
     }
 

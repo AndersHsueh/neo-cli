@@ -585,6 +585,7 @@ deepseek-flash · balanced · ask · ⎇ main · ctx ▓▓░░░ 42% · 0:42
 | 文件引用 | `@src/ui/console.ts`：提交时把文件内容附在消息末尾（≤5 个文件、单文件 ≤400 行、总 ≤60KB），失败只警告不阻断 |
 | 多行输入 | v0.3.0 起由输入框原生多行承载：`Ctrl+J` / `Shift+Enter` / `Alt+Enter` 换行，`Enter` 提交为一条含换行的消息；行尾 `\` 等价 |
 | 工具回看 | `/last [n]`：回看最近 n 次工具调用的完整输出 |
+| 目标驱动续跑 | `/drive <检查命令> -- <提示>`：每轮结束跑检查命令（exit 0 = 达成），未通过自动再排一轮（默认最多 5 轮，`--max N` 可调）；`/drive` 看状态、`/drive stop` 停。**与 `/goal`（目标锚）是两件事**：`/drive` 只认可验证信号，模型自述「做完了」不算；连续 2 轮无工具调用会暂停防空转。检查命令是用户显式配置的，**不经审批、按配置自动跑**（与 hooks 同口径） |
 | 按轮次回滚 | `/rewind` 列出本次会话的用户轮次；`/rewind <n\|last> [code\|conversation\|both]` 回到该轮之前（默认 both = 代码+对话）。只覆盖 `write_file`/`edit_file` 写过的文件（shell 改的不跟踪），轮次表随会话保存，`--resume` 后仍可回滚；单文件 `/undo` 仍在 |
 
 > 为什么 Tab 由自己接管：bun 1.3.13 的原生 `completer` **可用**（M0 探针 P1/P3 实证），

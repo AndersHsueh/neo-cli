@@ -82,7 +82,7 @@ import { BackgroundTasks } from "./tools/background.ts";
 import { backgroundShells } from "./tools/backgroundShell.ts";
 import { makeAskUserTool } from "./tools/askUser.ts";
 import { registerWikiTools } from "./tools/wiki.ts";
-import { describeShell, getShell } from "./shell.ts";
+import { describeShell, getShell, prepareShellInvocation } from "./shell.ts";
 import { loadEnv } from "./env/probe.ts";
 import {
   detectAndRecordModelWindow,
@@ -123,6 +123,7 @@ import { mailboxRoot, type Envelope } from "./mailbox/types.ts";
 import { cleanupRuntime } from "./maintenance.ts";
 import { LoopScheduler, formatLoopStatus } from "./loop.ts";
 import { RewindLog, type RewindMode } from "./rewind.ts";
+import { DriveManager, formatDriveState } from "./drive.ts";
 import { CheckpointStore } from "./checkpoint.ts";
 import { formatResumeWarning, outcomeOf, type LastTurnMeta } from "./turnDiagnostics.ts";
 import {
@@ -1346,6 +1347,55 @@ async function main(): Promise<number> {
    * /loop 命令」时也为 true，用它会把启动瞬间的第一拍误丢。命令本身不占 turn，
    * 此时把拍入队后 drain 的 while 会自然接上。
    */
+  /**
+   * 目标驱动自动续跑（issue #24）。完成条件只认**可验证信号**：检查命令 exit 0。
+   * 检查命令是用户显式配置的（与 hooks 同口径：不经审批、按配置自动跑）。
+   */
+  const runDriveCheck = async (
+    cmd: string,
+  ): Promise<{ ok: boolean; code: number | null; output: string }> => {
+    const shellSpec = getShell(cfg);
+    const inv = prepareShellInvocation(shellSpec, cmd, {
+      ...process.env,
+      NO_COLOR: process.env.NO_COLOR ?? "1",
+    });
+    const proc = Bun.spawn(inv.argv, { cwd: cfg.cwd, stdout: "pipe", stderr: "pipe", env: inv.env });
+    const timer = setTimeout(() => proc.kill(9), 60_000);
+    const [out, err, code] = await Promise.all([
+      new Response(proc.stdout).text(),
+      new Response(proc.stderr).text(),
+      proc.exited,
+    ]);
+    clearTimeout(timer);
+    return { ok: code === 0, code, output: `${out}\n${err}`.trim().slice(-800) };
+  };
+  const drive = new DriveManager({
+    runCheck: async (cmd) => {
+      try {
+        return await runDriveCheck(cmd);
+      } catch (e) {
+        return { ok: false, code: null, output: `检查命令执行失败：${(e as Error).message}` };
+      }
+    },
+    enqueue: (prompt) => {
+      if (turnActive || queue.length > 0) return false;
+      // 与 /loop 同款：注入的拍回显一行，用户要知道自动发了什么。
+      queue.push({ text: prompt, attachments: [], origin: "user", loop: true });
+      composerRef?.setQueueCount(queue.length);
+      runDrainSafely();
+      return true;
+    },
+    onEnd: (state, action) => {
+      if (action === "continue") {
+        ui.info(`自动续跑（第 ${state.rounds}/${state.spec.maxRounds} 轮）：检查未通过，已再排一轮`);
+      } else if (action === "done") {
+        ui.success(state.reason ?? "目标达成");
+      } else {
+        ui.warn(state.reason ?? "自动续跑已暂停");
+      }
+    },
+  });
+
   const loopScheduler = new LoopScheduler({
     enqueue: (prompt) => {
       if (turnActive || queue.length > 0) return false;
@@ -1385,6 +1435,8 @@ async function main(): Promise<number> {
     backgroundTasks?.cancelAll();
     // issue #28：本次会话拉起的后台 shell 一并收掉，不留孤儿进程。
     backgroundShells.killAll();
+    // issue #24：自动续跑停止，不再往已退出的会话里排轮。
+    drive.stop();
     try {
       await memory.flush();
     } catch {
@@ -1505,6 +1557,12 @@ async function main(): Promise<number> {
               start: (spec) => loopScheduler.start(spec),
               stop: () => loopScheduler.stop(),
               status: () => formatLoopStatus(loopScheduler.state, Date.now()),
+            },
+            // issue #24：目标驱动自动续跑（完成条件 = 检查命令 exit 0）
+            drive: {
+              start: (spec) => drive.start(spec),
+              stop: () => drive.stop(),
+              status: () => formatDriveState(drive.state),
             },
             // issue #27：按轮次回滚（代码 / 对话 / 两者）
             rewind: {
@@ -1645,6 +1703,10 @@ async function main(): Promise<number> {
         composerRef?.setBusy(false);
         // issue #25：self 节奏循环在「每轮结束」后排下一拍（interval 模式自己在定时器里排）。
         loopScheduler.onTurnEnd();
+        // issue #24：目标驱动续跑 —— 每轮结束跑检查命令，未通过则自动再排一轮。
+        void drive.onTurnEnd({ toolCalls: turnStats?.toolCalls ?? 0 }).catch((e: unknown) => {
+          ui.warn(`自动续跑检查失败：${(e as Error).message}`);
+        });
         // issue #27：把本轮新产生的检查点归到这一轮，并写回 session meta。
         try {
           const newSeqs = checkpoints
