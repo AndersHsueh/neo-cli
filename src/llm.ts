@@ -333,6 +333,47 @@ export function resetLearnedMaxTokens(): void {
   learnedMaxTokens.clear();
 }
 
+/**
+ * 「从报错里学到精确输出上限」的监听器（issue #8 A：免费证据入账）。
+ *
+ * 请求层只负责发请求与夹紧重发，**落盘归 env 层**，所以这里只回调、不写文件。
+ * 监听器由入口（index.ts）注册一次；测试或库场景不注册就等于全关 —— 与今天行为一致。
+ * 监听器抛错一律吞掉：入账是增强项，绝不能让一次写盘失败把用户请求搞挂。
+ */
+export interface MaxTokensLimitLearned {
+  cfg: Config;
+  /** 解析出的精确上限。 */
+  limit: number;
+  /** 被服务端拒掉的那个预算（本次实际发送值）。 */
+  sent: number;
+  /** 原始报错文案片段（落 env 事作用，已截断）。 */
+  evidence: string;
+}
+
+let maxTokensLimitLearnedHandler: ((ev: MaxTokensLimitLearned) => void) | null = null;
+
+export function setMaxTokensLimitLearnedHandler(
+  fn: ((ev: MaxTokensLimitLearned) => void) | null,
+): void {
+  maxTokensLimitLearnedHandler = fn;
+}
+
+export function resetMaxTokensLimitLearnedHandler(): void {
+  maxTokensLimitLearnedHandler = null;
+}
+
+function announceLearnedLimit(cfg: Config, limit: number, sent: number, err: unknown): void {
+  const handler = maxTokensLimitLearnedHandler;
+  if (!handler) return;
+  const text =
+    err instanceof LLMError ? `${err.message}${err.body ? ` | ${err.body}` : ""}` : String(err);
+  try {
+    handler({ cfg, limit, sent, evidence: text.slice(0, 300) });
+  } catch {
+    /* 入账失败不影响请求 */
+  }
+}
+
 /** 已确认可用的协议（key = provider|baseUrl）。同一 provider 后续请求直接走它，不再反复试错。 */
 const workingProto = new Map<string, ProviderType>();
 
@@ -389,9 +430,21 @@ function protoHeaders(cfg: Config, proto: ProviderType): Record<string, string> 
   return h;
 }
 
-/** 单一协议的请求体。 */
-function bodyFor(proto: ProviderType, cfg0: Config, messages: Message[], tools: ToolSpec[], stream: boolean) {
-  const maxTokens = effectiveMaxTokens(cfg0);
+/**
+ * 单一协议的请求体。
+ *
+ * `respectLearned=false` 只给输出上限探测用：探测必须发**精确的候选值**，
+ * 不能被「已学到的上限」夹紧，否则每档都被夹到同一个值，阶梯就失去意义。
+ */
+function bodyFor(
+  proto: ProviderType,
+  cfg0: Config,
+  messages: Message[],
+  tools: ToolSpec[],
+  stream: boolean,
+  respectLearned = true,
+) {
+  const maxTokens = respectLearned ? effectiveMaxTokens(cfg0) : cfg0.maxTokens;
   const cfg = maxTokens === cfg0.maxTokens ? cfg0 : { ...cfg0, maxTokens };
   if (proto === "anthropic") {
     return buildAnthropicBody(
@@ -454,6 +507,7 @@ export async function chat(
       if (limit !== null) {
         clamped = true;
         learnedMaxTokens.set(maxTokensKey(cfg), limit);
+        announceLearnedLimit(cfg, limit, effectiveMaxTokens(activeCfg), e);
         i -= 1;
         continue;
       }
@@ -485,7 +539,11 @@ async function chatOnce(
     body: JSON.stringify(bodyFor(ep.proto, cfg, messages, tools, false)),
   });
   if (!res.ok) throw await describeError(res);
+  return parseChatResponse(ep, res);
+}
 
+/** 非流式响应 → StreamResult（OpenAI / Anthropic 两种协议）。 */
+async function parseChatResponse(ep: Endpoint, res: Response): Promise<StreamResult> {
   if (ep.proto === "anthropic") {
     return parseAnthropicMessage((await res.json()) as Record<string, unknown>);
   }
@@ -511,6 +569,29 @@ async function chatOnce(
     usage: json.usage ?? null,
     raw: json,
   };
+}
+
+/**
+ * 单次原始请求（issue #8 输出上限探测专用）。
+ *
+ * 与 `chat` 的区别是**刻意什么都不做**：不夹紧（不受 learnedMaxTokens 影响）、
+ * 不重试、不协议回退、不降级。探测要的是「这个预算网关到底收不收」这一个事实，
+ * 任何自动修正都会把实验条件改掉。错误原样抛给调用方判定。
+ */
+export async function rawChatOnce(
+  cfg: Config,
+  messages: Message[],
+  maxTokens: number,
+): Promise<StreamResult> {
+  const ep = orderedPlan(cfg)[0]!;
+  const probeCfg: Config = { ...cfg, maxTokens };
+  const res = await fetch(endpointUrl(ep, "chat"), {
+    method: "POST",
+    headers: protoHeaders(probeCfg, ep.proto),
+    body: JSON.stringify(bodyFor(ep.proto, probeCfg, messages, [], false, false)),
+  });
+  if (!res.ok) throw await describeError(res);
+  return parseChatResponse(ep, res);
 }
 
 /* ------------------------------------------------------------------ */
@@ -596,6 +677,7 @@ export async function chatStream(
         if (limit !== null) {
           clamped = true;
           learnedMaxTokens.set(maxTokensKey(cfg), limit);
+          announceLearnedLimit(cfg, limit, effectiveMaxTokens(activeCfg), err);
           handlers.onNotice?.(
             `${cfg.model} 的输出上限是 ${limit.toLocaleString()} tokens（当前配置 ${cfg.maxTokens.toLocaleString()}），本次起自动夹紧并重发。`,
           );

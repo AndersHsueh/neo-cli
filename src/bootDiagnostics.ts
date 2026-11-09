@@ -26,6 +26,8 @@ export interface BootDiagnostic {
     | "capability-gap"
     | "probe-writeback"
     | "model-window"
+    | "output-limit-learned"
+    | "output-probe"
     | "prompt-budget";
   /** 纯文本（不含 ANSI）：日志要能 grep，不能带颜色转义。 */
   message: string;

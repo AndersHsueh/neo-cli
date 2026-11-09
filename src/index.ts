@@ -66,7 +66,7 @@ import { PromptManager } from "./prompt/manager.ts";
 import { createMemoryBridge, type MemoryBridge } from "./memory/bridge.ts";
 import { makeRememberTool } from "./tools/memory.ts";
 import { makeTodoWriteTool, todosSummary, type TodoItem } from "./tools/todo.ts";
-import { contentText, type Message } from "./llm.ts";
+import { contentText, setMaxTokensLimitLearnedHandler, type Message } from "./llm.ts";
 import { toolNames, registerTool } from "./tools/index.ts";
 import { McpManager, type McpServerState } from "./mcp/index.ts";
 import { makeTaskTool, runSubagent } from "./tools/task.ts";
@@ -81,11 +81,19 @@ import {
   resolveAndApplyModelWindow,
 } from "./env/modelWindows.ts";
 import {
+  currentProviderConfig,
   probeCapabilitiesOnFirstUse,
   undeclaredCapabilityFields,
   writeBackContextLimit,
   writeBackOutputLimit,
 } from "./env/modelCaps.ts";
+import {
+  describeProbeOutcome,
+  persistLearnedOutputLimit,
+  probeOutputLimitForConfig,
+  readOutputProbeMemo,
+  shouldRunOutputProbe,
+} from "./env/outputProbe.ts";
 import { syncEnvPage } from "./env/wiki.ts";
 import { ensureScopeLayout } from "./memory/layout.ts";
 import { adoptSession, applyRestored, createSession, listSessions, loadSession, type SessionMeta } from "./session.ts";
@@ -438,6 +446,50 @@ async function main(): Promise<number> {
         : { getTier: () => cfg.modelTier },
   );
 
+  /**
+   * issue #8 B：输出上限的**受控主动探测**（默认关，见 settings 的
+   * `probe_max_output_tokens`）。只在「交互 + 开关开 + 手写为空 + `/models` 没给 +
+   * 7 天内没探过」时才会真的发请求；结论见 `src/env/outputProbe.ts`。
+   */
+  const maybeProbeOutputLimit = (): void => {
+    const settings = currentProviderConfig(cfg)?.outputProbe;
+    if (!settings) return;
+    const declared = !undeclaredCapabilityFields(cfg).includes("max_output_tokens");
+    const decision = shouldRunOutputProbe({
+      settings,
+      outputLimitDeclared: declared,
+      memo: readOutputProbeMemo(cfg),
+    });
+    logBootDiagnostic({
+      kind: "output-probe",
+      message: `输出上限探测决策：${decision.run ? "将探测" : `跳过（${decision.reason}）`}`,
+    });
+    if (!decision.run) return;
+    void probeOutputLimitForConfig(cfg, settings)
+      .then(({ outcome, written }) => {
+        if (written.length > 0) {
+          // TUI 只留「改了什么」（#18 口径）；诊断进日志。
+          const line = formatWritebackNotice(written);
+          ui.info(line);
+          logBootDiagnostic({ kind: "output-probe", message: line });
+        }
+        logBootDiagnostic({ kind: "output-probe", message: describeProbeOutcome(outcome) });
+      })
+      .catch(() => {
+        /* 探测失败不影响会话 */
+      });
+  };
+
+  // issue #8 A：请求层从 400/422 文案学到精确输出上限时，把这份「免费证据」入账 ——
+  // 只填空字段（手写优先）、永远不改 max_tokens；证据写进 env 事实。
+  setMaxTokensLimitLearnedHandler((ev) => {
+    const r = persistLearnedOutputLimit(ev.cfg, ev.limit, ev.evidence);
+    if (r.written.length === 0) return;
+    const line = formatWritebackNotice(r.written);
+    ui.info(line);
+    logBootDiagnostic({ kind: "output-limit-learned", message: line });
+  });
+
   // A2：交互模式下异步探测当前模型窗口（/models 元数据）；失败静默。
   // 探测成功会写入 env 事实文件，后续启动/切模型直接命中。
   // 同一 provider|model 的「网关没给能力」提示只说一次，避免每轮撞墙都刷屏；
@@ -480,6 +532,8 @@ async function main(): Promise<number> {
               });
             }
           }
+          // issue #8：/models 给不出上限时，才轮到主动探测（显式开启时才跑）。
+          maybeProbeOutputLimit();
         })
         .catch(() => {
           /* 探测失败不影响会话 */

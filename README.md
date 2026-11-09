@@ -435,6 +435,16 @@ Anthropic 路径的差异处理：`system` 提到顶层字段，连续 `tool` �
 
 **`max_tokens` 与模型上限。** Anthropic 协议里 `max_tokens` 必填，且服务端不会静默夹紧。上限因模型而异（MiniMax 实测：M3 / M3.1-Flash 为 524,288，M2.7 系为 196,608），而 provider 级的 `max_tokens` 四个档位共用。neo 会在收到「超过该模型上限」的 400 后解析出上限，夹紧并同轮重发一次（按 `provider|base_url|model` 记在进程内，不改写你的配置，并给出提示）。
 
+**学到的上限会入账（issue #8）。** 上面那次「解析出上限」不再只活在内存里：若该 provider 的 `max_output_tokens` 是空的，neo 会把这个精确上限写进 `settings.json`（只填空字段，手写值优先，`max_tokens` 永不被改），并把证据记进 env 事实（`~/.neo/env/<machineKey>.json`）。零额外请求，属于「本来就要撞的墙，顺手把结论记下来」。
+
+**网关什么都不说时，可以显式让它去试边界（默认关）。** 瘦网关的 `/models` 常常只回 `id/object/created/owned_by`，这时可以给 provider 加：
+
+```json
+"probe_max_output_tokens": { "enabled": true, "max_attempts": 3, "start": 8192, "cap": 131072 }
+```
+
+也接受布尔简写 `"probe_max_output_tokens": true`（其余取默认值）。开启后，**只在**「交互启动 + `max_output_tokens` 仍为空 + `/models` 没给 + 7 天内没探过」时才会真的发请求：从 `start` 起翻倍发最多 `max_attempts` 个极小请求（正文只有 `ok`），**只有服务端明确给出精确上限**才写回；不透明 400 / 上下文超长 / 鉴权失败 / 5xx 一律**不归因、不写配置**（单次观察不是事实）；阶梯顶全部成功也只记「已验证 ≥ X」，不改配置。`-p` 模式不探测，成本可控（默认最多 3 个请求）。
+
 **但有些网关不告诉你上限**，只回一句不透明的 400（如 `request was rejected by an internal MaaS component`）。这种情况解析不出数字，neo 会在**本次请求内**把 `max_tokens` 夹到 8192 重发一次（只降不升、每请求一次、不写进记忆、不改你的配置），并给出提示；降级后仍失败则透传原始报错。所以「配大了 → 会话整个发不出请求」这个坑现在有兜底了。但兜底不是许可：**`max_tokens` 是输出预算，请按需要写（如 `32768`），不要写成接近 `context_window`** —— agent 的预压缩条件是「估算 + `max_tokens` > 窗口 × 0.98」，写得太大会让每一轮都先压缩一次。启动时 neo 也会体检：`max_tokens ≥ context_window` 或超过已声明的 `max_output_tokens` 时直接告警（只告警，不替你改配置）。
 
 ### 覆盖优先级

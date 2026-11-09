@@ -29,6 +29,20 @@ const KNOWN_WINDOWS: ReadonlyArray<{ re: RegExp; tokens: number }> = [
   { re: /minimax-m[23]/i, tokens: 200_000 },
 ];
 
+/** 只有这四种来源能解释「窗口」；输出上限的来路（#8）不算。 */
+function windowSourceOf(source: ModelContextInfo["source"]): WindowSource {
+  switch (source) {
+    case "config":
+    case "models_api":
+    case "overflow_error":
+    case "known":
+      return source;
+    default:
+      // 旧快照缺字段 / 输出上限探测写入时保留的窗口值：当作网关元数据口径展示。
+      return "models_api";
+  }
+}
+
 export function knownWindow(model: string): number | null {
   for (const k of KNOWN_WINDOWS) if (k.re.test(model)) return k.tokens;
   return null;
@@ -46,7 +60,9 @@ export function resolveContextWindow(
   configuredExplicit = true,
 ): ResolvedWindow {
   if (env?.contextWindow && Number.isFinite(env.contextWindow) && env.contextWindow > 0) {
-    return { tokens: Math.floor(env.contextWindow), source: env.source, env };
+    // source 现在也承载「输出上限」的来路（error_evidence / behavior_probe，issue #8）；
+    // 那两种记录里 contextWindow 只会保留旧值或 null，不该被当成窗口来源。
+    return { tokens: Math.floor(env.contextWindow), source: windowSourceOf(env.source), env };
   }
   if (Number.isFinite(configured) && configured > 0) {
     return { tokens: Math.floor(configured), source: configuredExplicit ? "config" : "default" };

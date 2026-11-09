@@ -23,6 +23,7 @@
       "temperature": 0.6,
       "context_window": 200000,
       "max_output_tokens": null,
+      "probe_max_output_tokens_note": "输出上限的主动探测（issue #8），默认关。瘦网关 /models 不给 max_output_tokens 时可显式开启：true，或 {\"enabled\":true,\"max_attempts\":3,\"start\":8192,\"cap\":131072}。只在交互启动、max_output_tokens 仍为空、7 天内没探过时才发请求；只有服务端明确给出精确上限才写回，不透明 400/鉴权/5xx 一律不猜。",
       "capability_note": "瘦网关（/models 只有 id/object/created/owned_by/supported_endpoint_types，例如 ipsa-thor）不会返回 max_output_tokens、vision、tools、reasoning。留空表示未声明：neo 只补网关明确给出的值，补不到就保持「未探测到」，需要在这里手写。max_output_tokens 是模型能力上限，不是上面的请求预算 max_tokens，也不是上下文窗口。手写 false 也算已声明，不会被覆盖。",
 
       "vision": false,

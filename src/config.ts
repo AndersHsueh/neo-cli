@@ -147,6 +147,11 @@ export interface ProviderConfig {
    * 展示口径仍遵循 P2：能力上限 ≠ cfg.maxTokens（见 buildModelCapabilityView）。
    */
   maxOutputTokens?: number | null;
+  /**
+   * 输出上限的**主动探测**配置（issue #8）。undefined = 未配置 = 关闭。
+   * 只在交互启动、上限仍为空、`/models` 没给、7 天内没探过时才会真的发请求。
+   */
+  outputProbe?: OutputProbeSettings;
 }
 
 /** 档位 → 目标 {provider, model} 的绑定。跨供应商调度靠这个。 */
@@ -206,6 +211,55 @@ export function resolveParallelToolCalls(raw: unknown): ParallelToolCallsMode {
     if (v === "readonly" || v === "read_only" || v === "true" || v === "on") return "readonly";
   }
   return DEFAULT_PARALLEL_TOOL_CALLS;
+}
+
+/**
+ * 输出上限（`max_output_tokens`）主动探测的配置（issue #8）。
+ *
+ * 语义：只在「网关不给上限」时才会用请求去试边界，**默认关闭** —— 探测会真的花
+ * 请求配额，必须是用户显式开启的能力，不能偷偷替所有人跑。
+ */
+export interface OutputProbeSettings {
+  enabled: boolean;
+  /** 一次探测最多发几个请求（1–8）。 */
+  maxAttempts: number;
+  /** 第一个候选预算；之后每档翻倍。 */
+  start: number;
+  /** 候选上限，防止为探极端值多花请求。 */
+  cap: number;
+}
+
+export const DEFAULT_OUTPUT_PROBE: OutputProbeSettings = {
+  enabled: false,
+  maxAttempts: 3,
+  start: 8_192,
+  cap: 131_072,
+};
+
+function clampInt(v: unknown, min: number, max: number): number | null {
+  if (typeof v !== "number" || !Number.isFinite(v)) return null;
+  return Math.min(max, Math.max(min, Math.floor(v)));
+}
+
+/**
+ * 解析 settings 里的 `probe_max_output_tokens`：
+ *  - 未配置（undefined）→ undefined，表示「用户没表达意图」，行为与今天完全一致；
+ *  - 布尔简写 true/false → 只改 enabled；
+ *  - 对象 → `{ enabled?: boolean, max_attempts?, start?, cap? }`，缺 enabled 视为开启；
+ *  - 其它形状（字符串/数组/数字/null）→ undefined，不抛错 —— 拼错的开关不该让 CLI 起不来。
+ *
+ * 越界值夹紧：max_attempts 1–8、start ≥256、cap < start 时以 start 为准。
+ */
+export function resolveOutputProbe(raw: unknown): OutputProbeSettings | undefined {
+  if (raw === undefined) return undefined;
+  if (typeof raw === "boolean") return { ...DEFAULT_OUTPUT_PROBE, enabled: raw };
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return undefined;
+  const rec = raw as Record<string, unknown>;
+  const enabled = typeof rec["enabled"] === "boolean" ? rec["enabled"] : true;
+  const maxAttempts = clampInt(rec["max_attempts"], 1, 8) ?? DEFAULT_OUTPUT_PROBE.maxAttempts;
+  const start = clampInt(rec["start"], 256, Number.MAX_SAFE_INTEGER) ?? DEFAULT_OUTPUT_PROBE.start;
+  const capRaw = clampInt(rec["cap"], 256, Number.MAX_SAFE_INTEGER) ?? DEFAULT_OUTPUT_PROBE.cap;
+  return { enabled, maxAttempts, start, cap: Math.max(capRaw, start) };
 }
 
 export interface Config {
@@ -781,6 +835,7 @@ function parseProviders(raw: unknown): ProviderConfig[] {
       tools: boolOrUndef(p["tools"]),
       reasoning: boolOrUndef(p["reasoning"]),
       maxOutputTokens: numOrNull(p["max_output_tokens"]),
+      outputProbe: resolveOutputProbe(p["probe_max_output_tokens"]),
     };
   });
 }
@@ -812,6 +867,7 @@ function providerFromLegacy(raw: Raw): ProviderConfig | null {
     tools: boolOrUndef(raw["tools"]),
     reasoning: boolOrUndef(raw["reasoning"]),
     maxOutputTokens: numOrNull(raw["max_output_tokens"]),
+    outputProbe: resolveOutputProbe(raw["probe_max_output_tokens"]),
   };
 }
 

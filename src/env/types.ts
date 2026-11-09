@@ -89,7 +89,7 @@ export type CapabilityFlag = true | false | "unknown";
 export interface ModelContextInfo {
   /** 探测到的窗口；null = 只知道存在但没拿到值。 */
   contextWindow: number | null;
-  source: "models_api" | "overflow_error" | "config" | "known";
+  source: "models_api" | "overflow_error" | "config" | "known" | "error_evidence" | "behavior_probe";
   updatedAt: string;
   /** 依据（截断后的错误文案/字段名），便于 /env 展示与排障。 */
   evidence?: string;
@@ -107,6 +107,21 @@ export interface ModelContextInfo {
   tools?: CapabilityFlag;
   /** 是否为推理模型。 */
   reasoning?: CapabilityFlag;
+  /**
+   * 输出上限主动探测的时间与结论（issue #8）。它的唯一用途是**防空转**：
+   * 7 天内探过（不论结论）就不再重复发请求。结论本身不写进 settings，
+   * 只有 found 才会把值写进 `max_output_tokens`。
+   */
+  outputProbe?: {
+    at: string;
+    outcome: "found" | "lower_bound" | "inconclusive";
+    /** lower_bound 时「已验证至少能接受」的预算。 */
+    atLeast?: number;
+    /** found 时的精确上限（写回 settings 的同一个值）。 */
+    limit?: number;
+    /** inconclusive 的原因（opaque / context / auth / other）。 */
+    reason?: string;
+  };
 }
 
 export interface EnvDynamic {
