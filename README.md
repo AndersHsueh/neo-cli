@@ -19,7 +19,7 @@ bun run src/index.ts -p "用 glob 找出所有 .ts 文件"   # 单次模式
 
 | 平台 | shell | 状态 |
 | --- | --- | --- |
-| macOS | `$SHELL`（默认 zsh） | ✅ 实测（tsc / 1704 测试 / PTY 24/24） |
+| macOS | `$SHELL`（默认 zsh） | ✅ 实测（tsc / 1858 测试 / PTY 31/31） |
 | Ubuntu / Debian | `$SHELL`（默认 bash） | ✅ 实测（sp7, Ubuntu 24.04.4 LTS） |
 | 其它 POSIX（dash/ksh/fish） | 自动探测 | ✅ 解析器支持；fish 不吃登录 PATH preamble |
 | Windows 11 | `pwsh` → `powershell` → `cmd` | 🟡 **实验性，未实机验证**（见 PD-1） |
@@ -37,6 +37,7 @@ Windows 启动用 `neo.cmd`（需要 Bun 在 PATH）；Linux/macOS 用 `neo.sh` 
 - **v0.4.77**：写入 wiki 时校验正文里的 `[[链接]]` 目标 —— 本层没有会提示「缺失」，只在用户级/项目级另一层有会提示「在哪一层」（不阻断写入）。
 - **v0.4.78**：托管 worktree 的路径比对统一走 canonical 口径 —— 仓库路径含软链时（macOS 的 `/var`、`/tmp`）清单不再恒空。
 - **v0.4.79**：`max_tokens` 安全防护 —— 启动时体检并告警不合理配置；网关回**不透明 400** 时自动降级到安全值重发一次（只降不升、每次请求一次、不改你的配置）。
+- **v0.4.81**：把剩余 11 条增强 + 2 处修复一次交付（open issue 清零）：`!` 输入态 shell 模式与 ask 模式死锁修复、`/loop` 定时/自节奏循环、`/` 渐进式命令菜单、MCP 远程 HTTP、后台子代理（`task background` + `/tasks`）、后台长驻 shell（`shell background`/`shell_output`/`/ps`，前台超时转后台）、仓库地图、按轮次回滚 `/rewind`、目标驱动续跑 `/drive`（只认可验证信号）、LSP 编辑后诊断与只读导航、路径作用域规则、`max_tokens` 边界发现。详见 `docs/release-notes/v0.4.81.md`。
 
 shell 探测顺序：`settings.shell.path` → `NEO_SHELL` → `$SHELL` → 平台默认 → `which` → `/bin/sh`；
 启动横幅后会显示实际使用的 shell。环境探测（`/env`）不需要模型，纯脚本采集，约 10ms。
