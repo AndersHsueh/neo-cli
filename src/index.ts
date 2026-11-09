@@ -53,6 +53,14 @@ import { COMMANDS } from "./input/commands.ts";
 import { FileIndex } from "./input/fileIndex.ts";
 import { expandReferences } from "./input/references.ts";
 import {
+  discoverProjectRules,
+  extractTouchedPaths,
+  formatAlwaysOnRules,
+  formatScopedRulesBlock,
+  normalizeRelPath,
+  selectScopedRules,
+} from "./rules/index.ts";
+import {
   appendContinuation,
   continuationPrompt,
   emptyContinuation,
@@ -811,6 +819,11 @@ async function main(): Promise<number> {
     sessionName: sessionLabel,
     onSelection: onPromptSelection,
   });
+  // issue #17：路径作用域规则（.neo/rules + .claude/rules）。无规则时零额外上下文。
+  const projectRules = discoverProjectRules(cfg.cwd);
+  const scopedRuleList = projectRules.filter((r) => r.paths.length > 0);
+  const alwaysOnRules = projectRules.filter((r) => r.paths.length === 0);
+
   const agent = new Agent({
     cfg,
     console: ui,
@@ -819,6 +832,14 @@ async function main(): Promise<number> {
     renderSystemPrompt: () => promptManager.render(cfg).text,
     getSessionName: () => sessionLabel,
     classifier,
+    // issue #17：路径作用域规则。loop 只拿回调，不 import rules 模块。
+    toolPathsOf: (name, argsJson) => extractTouchedPaths(name, argsJson, cfg.cwd),
+    scopedRulesPrompt: (touched) => {
+      if (scopedRuleList.length === 0) return null;
+      const matches = selectScopedRules(scopedRuleList, touched, { cwd: cfg.cwd });
+      const text = formatScopedRulesBlock(matches);
+      return text === "" ? null : { text, matches };
+    },
     memory,
     checkpoint: checkpoints,
     sessionId: sess.meta.id,
@@ -1075,8 +1096,14 @@ async function main(): Promise<number> {
   const memoryFile = ["AGENTS.md", "NEO.md", ".neo.md"]
     .map((f) => join(cfg.cwd, f))
     .find((p) => existsSync(p));
-  if (memoryFile) {
-    promptManager.setProjectMemory({ path: memoryFile, text: readFileSync(memoryFile, "utf8") });
+  // issue #17：无 paths 的规则按「每会话」并入项目记忆段（独立小节，便于 /context 区分）。
+  const alwaysOnText = formatAlwaysOnRules(projectRules);
+  if (memoryFile || alwaysOnText !== "") {
+    const base = memoryFile ? readFileSync(memoryFile, "utf8") : "";
+    promptManager.setProjectMemory({
+      path: memoryFile ?? join(cfg.cwd, ".neo/rules"),
+      text: `${base}${alwaysOnText}`,
+    });
     agent.refreshSystemPrompt();
   }
 
@@ -1372,6 +1399,8 @@ async function main(): Promise<number> {
             // lastSelection 还是探针前的旧档，会和同一命令里的 window 行（读 cfg，已是新值）
             // 自相矛盾。currentSelection 只算不写 —— 不碰 messages[0]，提示词何时生效不受影响。
             promptSelection: () => promptManager.currentSelection(cfg),
+            // issue #17：规则条数与命中原因（/context 展示）。
+            rules: () => ({ alwaysOn: alwaysOnRules, loaded: agent.activeRules, total: projectRules.length }),
             // issue #20 收尾：工具可见集 dry-run（只算不生效，运行时工具集不变）。
             toolVisibility: () => promptManager.currentVisibility(cfg),
             onNameChange: (name) => {
@@ -1417,6 +1446,12 @@ async function main(): Promise<number> {
           ? resolveLine(expanded.text, q.attachments)
           : { text: line, images: [] as string[] };
       if (expanded.refs.length > 0) {
+        // issue #17：用户 @ 引用算触达（规则只看路径，不看被引用内容）。
+        agent.noteTouchedPaths(
+          expanded.refs
+            .map((r) => normalizeRelPath(cfg.cwd, r.path))
+            .filter((p): p is string => p !== null && p !== "."),
+        );
         const lines = expanded.refs.reduce((n, r) => n + r.lines, 0);
         ui.line(c.dim(`· 已引用 ${expanded.refs.length} 个文件（+${lines} 行）`));
       }

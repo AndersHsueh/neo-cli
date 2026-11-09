@@ -550,6 +550,33 @@ deepseek-flash · balanced · ask · ⎇ main · ctx ▓▓░░░ 42% · 0:42
 `!cmd` 与模型工具调用走**同一套权限判定**：`--plan` 下两者都会被拒绝，
 `auto-all` 下两者都直接放行，`ask` / `auto-edit` 下都要审批。
 
+## 路径作用域项目规则（issue #17）
+
+`AGENTS.md` 是「总是-on」的项目指令。monorepo / 前后端同仓时，目录专属约定（比如「改 `src/api/**` 才需要的接口约定」）
+不必再塞进 AGENTS.md 每轮付 token：放进规则目录，只在**本轮触达匹配文件**时加载。
+
+```
+<project>/.neo/rules/api.md        # 主流位置（递归收集 *.md）
+<project>/.claude/rules/*.md       # 兼容 Claude Code 的规则目录
+```
+
+```md
+---
+paths:
+  - "src/api/**"
+  - "src/server/**"
+---
+改接口时必须同步更新 openapi.yaml；不要直接改生成的 client。
+```
+
+- **有 `paths`**：只在「本轮已触达匹配路径」时以临时 system 消息注入，轮末从历史摘除、不落盘；
+  触达来源是 `read_file` / `write_file` / `edit_file` / `list_dir` / `glob` / `grep` 的参数路径，以及用户 `@` 引用
+  （**不猜** `shell` 命令文本里的路径——猜错会把规则误加载）。
+- **无 `paths`**：按每会话加载，等价于追加进项目记忆段（独立小节，便于区分）。
+- glob 支持 `**`（跨层）、`*`、`?`、`{a,b}`、尾部 `/`；不含 `/` 的模式按 basename 匹配任意层级。
+- 预算：单条正文最多 4000 字符，每会话合计 16000、单轮 scoped 合计 12000，超出截断并标注。
+- `/context` 里看得到「每会话几条 / 本轮命中几条 / 因何命中」；没有规则目录时行为与以前完全一致（零额外上下文）。
+
 ## 开发
 
 维护者入口：[docs/maintenance.md](docs/maintenance.md)（改代码前先读）。

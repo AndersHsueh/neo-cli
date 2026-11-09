@@ -38,6 +38,8 @@ import {
 import { loadEnv } from "../env/probe.ts";
 import { formatEnvForCli } from "../env/render.ts";
 import { syncEnvPage } from "../env/wiki.ts";
+import { rulesReport } from "../rules/index.ts";
+import type { ProjectRule, RuleMatch } from "../rules/index.ts";
 import { contentText } from "../llm.ts";
 import { listModels } from "../llm.ts";
 import type { MemoryBridge } from "../memory/bridge.ts";
@@ -139,6 +141,11 @@ export interface CommandContext {
    * /context 展示「按当前预算最多能暴露几个工具」；运行时暴露的工具集不变。
    */
   toolVisibility?: () => ToolVisibility | null;
+  /**
+   * 路径作用域规则（issue #17）：每会话条数、本轮已加载 scoped 条数与命中原因。
+   * 不传 = 不展示（子代理/测试场景）。
+   */
+  rules?: () => { alwaysOn: ProjectRule[]; loaded: RuleMatch[]; total: number };
   memoryMode?: "interactive" | "oneshot";
   /**
    * 把合成的用户消息排进主循环队列，作为下一轮发给模型（issue #13）。
@@ -163,7 +170,7 @@ export interface CommandContext {
 export async function handleCommand(line: string, ctx: CommandContext): Promise<void> {
   const {
     agent, ui, cfg, memory, classifier, meta, shutdown, selectDeps, mailbox, checkpoints,
-    injectMailbox, onMailboxRekey, onNameChange, promptSelection, toolVisibility,
+    injectMailbox, onMailboxRekey, onNameChange, promptSelection, toolVisibility, rules,
   } = ctx;
   const memoryMode = ctx.memoryMode ?? "interactive";
   const [cmdRaw, ...rest] = line.slice(1).split(/\s+/);
@@ -294,6 +301,18 @@ export async function handleCommand(line: string, ctx: CommandContext): Promise<
               : `  当前预算连 0 个工具都容不下；收窄尚未启用，当前仍暴露全部 ${vis.total} 个工具。`,
           ),
         );
+      }
+      // issue #17：路径作用域规则 —— 每会话几条、本轮命中了哪几条、为什么。
+      // 规则发现/匹配都可能抛错（cwd 权限、并发删除），失败就省略，不让 /context 崩。
+      if (rules) {
+        try {
+          const r = rules();
+          const report = rulesReport(r.alwaysOn, r.loaded, r.total);
+          ui.kv("规则", report[0] ?? "");
+          for (const line of report.slice(1)) ui.line(c.dim(line));
+        } catch {
+          /* 诊断是增强项 */
+        }
       }
       ui.kv("threshold", `${(cfg.compactThreshold * 100).toFixed(0)}% · ${Math.round(
         cfg.compactThreshold * cfg.contextWindow,

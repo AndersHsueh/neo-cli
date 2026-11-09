@@ -34,6 +34,7 @@ import {
 import { previewArgs } from "./render.ts";
 import { budgetMessage as buildBudgetMessage, readGoalSafe } from "./steer.ts";
 import type { AgentIO, AgentOptions, PermissionMode, TurnStats } from "./types.ts";
+import type { RuleMatch } from "../rules/index.ts";
 import { dispatchHooks, describeOutcome, hasAnyHook, type HookPayload } from "../hooks/index.ts";
 
 export type { AgentEvent, AgentIO, AgentOptions, PermissionMode, TurnStats } from "./types.ts";
@@ -90,6 +91,12 @@ export class Agent {
    * 都只改状态，不在流式期间动提示词。
    */
   private requestInFlight = false;
+  /** 本会话已触达的路径（cwd 相对 POSIX，issue #17）。 */
+  private touchedPaths = new Set<string>();
+  /** 本会话实际注入过的 scoped 规则（/context 展示用）。 */
+  private loadedRules: RuleMatch[] = [];
+  /** 当前在历史里的 scoped 规则临时消息（命中集合变化/轮末时摘除）。 */
+  private scopedRulesMsg: Message | null = null;
 
   constructor(private readonly opt: AgentOptions) {
     this.mode = opt.mode;
@@ -582,6 +589,11 @@ export class Agent {
       // 两者在「一轮一个工具调用」时相等，但 iter 与硬上限严格对齐，
       // 不会出现「显示 5/80 而循环已跑到 78」的错位（issue #11 起一轮可含多个工具调用，
       // toolCalls 会大于 iter，这个理由更充分）。
+      // ---- 路径作用域规则（issue #17）----
+      // 触达路径在工具批次之后才变多，所以按**每次请求**重算：命中集合变了就换掉临时
+      // system 消息，不再命中就摘除。与预算提示同口径：只服务当前请求，轮末统一清理。
+      this.syncScopedRulesMessage();
+
       const budgetMsg = this.budgetMessage(iter + 1, maxIter);
       this.messages.push(budgetMsg);
 
@@ -802,6 +814,7 @@ export class Agent {
             this.opt.onEvent?.({ type: "tool_start", data: { name: headName, args: head.function.arguments } });
             this.opt.console.toolHeader(headName, previewArgs(head.function.arguments));
             const r = await dispatch(headName, head.function.arguments, ctx);
+            this.noteToolPaths(headName, head.function.arguments);
             this.opt.console.toolResult(r.output, 2, r.ok);
             this.opt.onEvent?.({ type: "tool_end", data: { name: headName, ok: r.ok, truncated: r.truncated } });
             this.settleToolOutcome(headName, r.ok, r.executed !== false);
@@ -832,6 +845,7 @@ export class Agent {
             const call = slice[k]!;
             const r = results[k]!;
             this.opt.console.toolResult(r.output, 2, r.ok);
+            this.noteToolPaths(call.function.name, call.function.arguments);
             this.opt.onEvent?.({
               type: "tool_end",
               data: { name: call.function.name, ok: r.ok, truncated: r.truncated },
@@ -917,6 +931,7 @@ export class Agent {
               this.messages.length = startLen;
             }
             if (recallMsg) this.dropTransientMessage(recallMsg);
+            this.dropScopedRulesMessage();
             this.opt.onEvent?.({ type: "aborted" });
             this.emitMemoryCapture(turnStart, "aborted");
             this.lastStats = {
@@ -946,6 +961,7 @@ export class Agent {
           break;
         }
         if (recallMsg) this.dropTransientMessage(recallMsg);
+        this.dropScopedRulesMessage();
         throw e;
       }
     }
@@ -988,6 +1004,7 @@ export class Agent {
 
     // 临时召回消息只服务于本轮：轮末摘除，不进历史、不污染后续轮次
     if (recallMsg) this.dropTransientMessage(recallMsg);
+    this.dropScopedRulesMessage();
 
     this.opt.onEvent?.({ type: "turn_end", data: this.lastStats });
     this.emitMemoryCapture(turnStart, "turn");
@@ -1111,6 +1128,65 @@ export class Agent {
   }
 
   /** 移除临时消息（预算提示 / 重试提示）。按引用比对，避免误删历史里内容相同的消息。 */
+  /** /context 用：本会话已加载的路径作用域规则（含命中原因）。 */
+  get activeRules(): RuleMatch[] {
+    return this.loadedRules;
+  }
+
+  /**
+   * 记下本会话触达的路径（issue #17）。归一由宿主完成，这里只去重。
+   * 来源：工具参数（read/write/edit/list/glob/grep）+ 用户 `@` 引用。
+   */
+  noteTouchedPaths(paths: string[]): void {
+    for (const raw of paths) {
+      if (raw !== "") this.touchedPaths.add(raw);
+    }
+  }
+
+  private noteToolPaths(name: string, argsJson: string): void {
+    const extract = this.opt.toolPathsOf;
+    if (extract) this.noteTouchedPaths(extract(name, argsJson));
+  }
+
+  /** 本轮要注入的 scoped 规则消息；没配置 / 没触达 / 没命中 → null（并清空已加载记录）。 */
+  private buildScopedRulesMessage(): Message | null {
+    const build = this.opt.scopedRulesPrompt;
+    if (!build || this.touchedPaths.size === 0) {
+      this.loadedRules = [];
+      return null;
+    }
+    const built = build([...this.touchedPaths]);
+    this.loadedRules = built?.matches ?? [];
+    return built && built.text !== "" ? { role: "system", content: built.text } : null;
+  }
+
+  /**
+   * 按当前触达路径同步历史里的 scoped 规则消息：命中集合变了才换，没命中就摘掉。
+   * 内容相同不重推 —— 否则每轮都会在历史尾部堆一条一样的 system 消息。
+   */
+  private syncScopedRulesMessage(): void {
+    const next = this.buildScopedRulesMessage();
+    const nextText = next && typeof next.content === "string" ? next.content : null;
+    const curText =
+      this.scopedRulesMsg && typeof this.scopedRulesMsg.content === "string"
+        ? this.scopedRulesMsg.content
+        : null;
+    if (nextText === null) {
+      this.dropScopedRulesMessage();
+      return;
+    }
+    if (nextText === curText) return;
+    this.dropScopedRulesMessage();
+    this.messages.push(next!);
+    this.scopedRulesMsg = next!;
+  }
+
+  /** 摘掉历史里的 scoped 规则临时消息（命中集合变化 / 轮末）。 */
+  private dropScopedRulesMessage(): void {
+    if (this.scopedRulesMsg) this.dropTransientMessage(this.scopedRulesMsg);
+    this.scopedRulesMsg = null;
+  }
+
   private dropTransientMessage(msg: Message): void {
     const i = this.messages.lastIndexOf(msg);
     if (i !== -1) this.messages.splice(i, 1);

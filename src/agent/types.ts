@@ -6,6 +6,7 @@
  */
 import type { chatStream, Message, ToolSpec } from "../llm.ts";
 import type { Config, ModelTier } from "../config.ts";
+import type { RuleMatch } from "../rules/index.ts";
 import type { Classifier } from "../classifier/index.ts";
 import type { AskUserAnswer, AskUserRequest } from "../ui/askUser.ts";
 import type { MemoryPort } from "../memory/port.ts";
@@ -77,6 +78,16 @@ export interface AgentOptions {
   onEvent?: (e: AgentEvent) => void;
   /** 分类器。为 undefined 时不做自动分类。 */
   classifier?: Classifier;
+  /**
+   * 路径作用域规则（issue #17）：从一次工具调用参数里提取触达路径（返回 cwd 相对）。
+   * 由组合根注入，loop 不 import rules 模块（本文件头纪律）。
+   */
+  toolPathsOf?: (toolName: string, argsJson: string) => string[];
+  /**
+   * 路径作用域规则（issue #17）：按本会话已触达路径生成「本轮注入文本」与命中记录。
+   * 返回 null = 没有命中；不传 = 该能力整体关闭（子代理/测试默认）。
+   */
+  scopedRulesPrompt?: (touched: string[]) => { text: string; matches: RuleMatch[] } | null;
   /**
    * LLM 流式函数注入点，默认用真实 chatStream。
    * 测试用：避免 mock.module 全局污染其它测试文件（bun test 单进程共享模块表）。
