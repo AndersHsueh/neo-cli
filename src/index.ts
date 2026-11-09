@@ -78,6 +78,7 @@ import { contentText, setMaxTokensLimitLearnedHandler, type Message } from "./ll
 import { toolNames, registerTool } from "./tools/index.ts";
 import { McpManager, type McpServerState } from "./mcp/index.ts";
 import { makeTaskTool, runSubagent } from "./tools/task.ts";
+import { BackgroundTasks } from "./tools/background.ts";
 import { makeAskUserTool } from "./tools/askUser.ts";
 import { registerWikiTools } from "./tools/wiki.ts";
 import { describeShell, getShell } from "./shell.ts";
@@ -825,6 +826,9 @@ async function main(): Promise<number> {
   const scopedRuleList = projectRules.filter((r) => r.paths.length > 0);
   const alwaysOnRules = projectRules.filter((r) => r.paths.length === 0);
 
+  /** 后台子代理任务表（issue #16）：Agent 构造时要注入轮询闭包，实例在 Agent 之后创建。 */
+  let backgroundTasks: BackgroundTasks | null = null;
+
   const agent = new Agent({
     cfg,
     console: ui,
@@ -900,6 +904,8 @@ async function main(): Promise<number> {
     },
     // -p 单次模式：即使终端是 TTY 也按非交互块级渲染，避免 spinner/ANSI 污染输出
     nonInteractive: args.print !== null,
+    // issue #16：后台子代理结果（取走即清）在每次请求前注入。
+    pollBackground: () => backgroundTasks?.collectFinished() ?? [],
     pollInbox: mailbox
       ? () => {
           const mb = mailbox;
@@ -964,10 +970,30 @@ async function main(): Promise<number> {
     },
   });
 
+  // 后台子代理任务表（issue #16）：每个任务一个 AbortController；取消走 /tasks cancel
+  // 或会话退出，主 turn 的 ESC 不误伤后台任务（见 onCancelTurn 的提示）。
+  backgroundTasks = new BackgroundTasks({
+    run: (job, signal) =>
+      runSubagent(
+        agent,
+        job.prompt,
+        job.tier,
+        // 用自己的 signal：后台任务的生命周期独立于发起它的那一轮。
+        { ...job.ctx, signal, onProgress: undefined },
+        job.promptTier,
+      ),
+  });
+
   // task 工具：派生子代理。必须在首次 send 前注册 —— toolSpecs() 每轮现取，注册后即刻生效。
   registerTool(
     makeTaskTool({
       run: (prompt, tier, ctx, promptTier) => runSubagent(agent, prompt, tier, ctx, promptTier),
+      background: {
+        launch: (job) => {
+          const r = backgroundTasks!.launch(job);
+          return r.ok ? { ok: true, id: r.job.id } : { ok: false, error: r.error };
+        },
+      },
     }),
   );
 
@@ -1351,6 +1377,8 @@ async function main(): Promise<number> {
   async function shutdown(): Promise<void> {
     // issue #25：会话退出必须停掉循环定时器，避免残留在进程退出路径上。
     loopScheduler.dispose();
+    // issue #16：后台子代理一并取消，不留幽灵任务。
+    backgroundTasks?.cancelAll();
     try {
       await memory.flush();
     } catch {
@@ -1471,6 +1499,11 @@ async function main(): Promise<number> {
               start: (spec) => loopScheduler.start(spec),
               stop: () => loopScheduler.stop(),
               status: () => formatLoopStatus(loopScheduler.state, Date.now()),
+            },
+            // issue #16：后台子代理任务（列表 / 取消）
+            tasks: {
+              list: () => backgroundTasks?.list() ?? [],
+              cancel: (target) => backgroundTasks?.cancel(target) ?? 0,
             },
           });
           continue;
@@ -1695,7 +1728,13 @@ async function main(): Promise<number> {
       onExit: () => {
         void shutdown();
       },
-      onCancelTurn: () => agent.cancel(),
+      onCancelTurn: () => {
+        agent.cancel();
+        // issue #16：ESC 只取消当前 turn —— 后台任务是独立的，误杀会让用户白等。
+        // 有在跑的就把出口指出来，别让人以为 ESC 也把后台一起停了。
+        const running = backgroundTasks?.runningCount ?? 0;
+        if (running > 0) ui.line(c.dim(`· ${running} 个后台子代理仍在运行（/tasks cancel 可取消）`));
+      },
       pasteText: (text) => {
         pasteTextCounter += 1;
         const att = makeTextAttachment(pasteTextCounter, text);

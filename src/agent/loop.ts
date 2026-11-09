@@ -589,6 +589,19 @@ export class Agent {
       // 两者在「一轮一个工具调用」时相等，但 iter 与硬上限严格对齐，
       // 不会出现「显示 5/80 而循环已跑到 78」的错位（issue #11 起一轮可含多个工具调用，
       // toolCalls 会大于 iter，这个理由更充分）。
+      // ---- 后台子代理结果（issue #16）----
+      // 与信箱注入同口径：作为 user 消息追加，宿主取走即清（一次性）。
+      // 不需要「工具批次之后」这个限制 —— 后台结果随时可能到，越早注入越好。
+      if (this.opt.pollBackground) {
+        try {
+          for (const text of this.opt.pollBackground()) {
+            this.messages.push({ role: "user", content: text });
+          }
+        } catch {
+          /* 后台结果注入是增强项，失败不拖垮主循环 */
+        }
+      }
+
       // ---- 路径作用域规则（issue #17）----
       // 触达路径在工具批次之后才变多，所以按**每次请求**重算：命中集合变了就换掉临时
       // system 消息，不再命中就摘除。与预算提示同口径：只服务当前请求，轮末统一清理。

@@ -305,6 +305,15 @@ export async function runSubagent(
  */
 export function makeTaskTool(deps: {
   run: (prompt: string, tier: string | undefined, ctx: ToolCtx, promptTier?: string) => Promise<string>;
+  /**
+   * 后台模式（issue #16）。不传 = 只有同步模式（子代理、测试的裸装配）。
+   * 传了才允许 `background: true`：立刻返回任务 id，子代理在后台跑。
+   */
+  background?: {
+    launch: (job: { prompt: string; tier?: string; promptTier?: string; ctx: ToolCtx }) =>
+      | { ok: true; id: string }
+      | { ok: false; error: string };
+  };
 }): ToolImpl {
   return {
     // 敏感性取决于子代理内部做了什么，task 调用本身不敏感：
@@ -334,6 +343,12 @@ export function makeTaskTool(deps: {
               enum: ["fast", "balanced", "default", "deep", "deep_reasoning", "inherit"],
               description: "子代理模型档位。机械读写任务选 fast，深度推理选 deep（deep_reasoning）；留空自动判断",
             },
+            background: {
+              type: "boolean",
+              description:
+                "true = 后台跑：立刻返回任务 id，子代理在后台探索，完成后结果自动注入本会话（主会话继续推理不阻塞）。" +
+                "适合耗时探索/批量读写；需要马上拿到结果才能继续的任务请留空（同步模式）。",
+            },
             prompt_tier: {
               type: "string",
               enum: ["auto", "standard", "full"],
@@ -353,6 +368,18 @@ export function makeTaskTool(deps: {
       const label = tier ? `tier=${tier}` : "tier=auto";
       const ptRaw = args["prompt_tier"];
       const promptTier = typeof ptRaw === "string" && ptRaw.trim() !== "" ? ptRaw.trim() : undefined;
+      if (args["background"] === true) {
+        if (!deps.background) {
+          throw new ToolError("当前装配不支持后台子代理（background 未接线）");
+        }
+        if (!prompt.trim()) throw new ToolError("prompt 不能为空 —— 子代理没有主代理的上下文");
+        const launched = deps.background.launch({ prompt, tier, promptTier, ctx });
+        if (!launched.ok) throw new ToolError(launched.error);
+        return (
+          `后台子代理已启动（id=${launched.id}，${label}）。` +
+          "主会话可以继续；完成后结果会自动注入。用 /tasks 查看进度，/tasks cancel 取消。"
+        );
+      }
       ctx.onProgress?.(`子代理运行中（${label}）…`);
       return deps.run(prompt, tier, ctx, promptTier);
     },

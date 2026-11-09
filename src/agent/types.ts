@@ -79,6 +79,11 @@ export interface AgentOptions {
   /** 分类器。为 undefined 时不做自动分类。 */
   classifier?: Classifier;
   /**
+   * 后台子代理结果注入点（issue #16）。每次请求前调用；返回的文本块作为 user 消息
+   * 追加进历史（一次性，宿主负责取走即清）。不传 = 没有后台任务能力。
+   */
+  pollBackground?: () => string[];
+  /**
    * 路径作用域规则（issue #17）：从一次工具调用参数里提取触达路径（返回 cwd 相对）。
    * 由组合根注入，loop 不 import rules 模块（本文件头纪律）。
    */

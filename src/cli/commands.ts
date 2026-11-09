@@ -39,6 +39,7 @@ import { loadEnv } from "../env/probe.ts";
 import { formatEnvForCli } from "../env/render.ts";
 import { syncEnvPage } from "../env/wiki.ts";
 import { rulesReport } from "../rules/index.ts";
+import type { BackgroundView } from "../tools/background.ts";
 import { formatInterval, parseLoopCommand, type LoopSpec } from "../loop.ts";
 import type { ProjectRule, RuleMatch } from "../rules/index.ts";
 import { contentText } from "../llm.ts";
@@ -147,6 +148,11 @@ export interface CommandContext {
    * 不传 = 不展示（子代理/测试场景）。
    */
   rules?: () => { alwaysOn: ProjectRule[]; loaded: RuleMatch[]; total: number };
+  /** 后台子代理任务（issue #16）：列表 / 取消。不传 = 不支持（/tasks 会明说）。 */
+  tasks?: {
+    list: () => BackgroundView[];
+    cancel: (target: string) => number;
+  };
   /**
    * 定时 / 自节奏循环提示（issue #25）。仅交互会话注入；`-p` 下为 undefined，
    * `/loop` 会直接提示「不可用」而不启动任何定时器。
@@ -180,7 +186,7 @@ export interface CommandContext {
 export async function handleCommand(line: string, ctx: CommandContext): Promise<void> {
   const {
     agent, ui, cfg, memory, classifier, meta, shutdown, selectDeps, mailbox, checkpoints,
-    injectMailbox, onMailboxRekey, onNameChange, promptSelection, toolVisibility, rules, loop,
+    injectMailbox, onMailboxRekey, onNameChange, promptSelection, toolVisibility, rules, loop, tasks,
   } = ctx;
   const memoryMode = ctx.memoryMode ?? "interactive";
   const [cmdRaw, ...rest] = line.slice(1).split(/\s+/);
@@ -922,6 +928,45 @@ export async function handleCommand(line: string, ctx: CommandContext): Promise<
       }
       // status
       for (const line of loop.status()) ui.line(line);
+      break;
+    }
+
+    // 后台子代理任务（issue #16）：列表 / 取消。发起权在模型的 task 工具（background: true）。
+    case "tasks": {
+      if (!tasks) {
+        ui.warn("当前会话不支持后台子代理（未接线）。");
+        break;
+      }
+      const sub = arg.split(/\s+/).filter((x) => x !== "")[0] ?? "";
+      if (sub === "cancel") {
+        const target = arg.split(/\s+/).filter((x) => x !== "")[1] ?? "all";
+        const n = tasks.cancel(target);
+        if (n > 0) ui.success(`已取消 ${n} 个后台任务。`);
+        else ui.info("没有可取消的运行中任务。");
+        break;
+      }
+      const list = tasks.list();
+      if (list.length === 0) {
+        ui.info("没有后台任务。模型可用 task（background: true）发起，命令跑完会自动把结果注入会话。");
+        break;
+      }
+      ui.blank();
+      for (const t of list) {
+        const status =
+          t.status === "running"
+            ? c.warn("运行中")
+            : t.status === "done"
+              ? c.ok("已完成")
+              : t.status === "error"
+                ? c.err("失败")
+                : c.dim("已取消");
+        const secs = Math.max(0, Math.round(t.elapsedMs / 1000));
+        const prompt = t.prompt.length > 50 ? `${t.prompt.slice(0, 50)}…` : t.prompt;
+        ui.line(`  ${c.text(t.id)}  ${status}  ${c.dim(`${secs}s`)}  ${c.dim(prompt)}`);
+        if (t.error) ui.line(`      ${c.warn(t.error)}`);
+      }
+      ui.line(c.dim("  /tasks cancel 取消全部 · /tasks cancel <id> 取消单个"));
+      ui.blank();
       break;
     }
 

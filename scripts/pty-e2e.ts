@@ -2690,6 +2690,40 @@ async function scenarioS25(tmpRoot: string): Promise<void> {
   }
 }
 
+/**
+ * S26（issue #16）：后台子代理任务面板的空态。
+ *
+ * 完整后台链路要等子代理真的跑起来（依赖 fake LLM 的 task 场景），此处只断言
+ * `/tasks` 在无任务时的明确空态，以及不破坏输入框。
+ */
+async function scenarioS26(tmpRoot: string): Promise<void> {
+  const dirs = await makeDirs(tmpRoot, "s26-tasks");
+  const fake = await startFake("resume");
+  const run = await startNeo({
+    fake,
+    dirs,
+    name: "s26",
+    args: BASE_ARGS,
+    cols: DEFAULT_COLS,
+    rows: DEFAULT_ROWS,
+  });
+  try {
+    await waitPrompt(run);
+    await run.type("/tasks");
+    await waitFor(() => run.screen.text().includes("没有后台任务"), {
+      label: "/tasks 无任务时提示空态",
+      run,
+      timeoutMs: 8000,
+    });
+    await waitPrompt(run, "/tasks 后回到提示符");
+  } catch (e) {
+    throw attachScreen(e, run.screen, run.stderr);
+  } finally {
+    await run.close();
+    await fake.stop();
+  }
+}
+
 const SCENARIOS: Scenario[] = [
   {
     id: "s1",
@@ -2852,6 +2886,12 @@ const SCENARIOS: Scenario[] = [
     title: "S25 / 渐进式命令菜单：自动打开/过滤/Tab 接受/Enter 执行",
     fn: scenarioS25,
     focus: ["清空上下文", "/todos", "暂无待办"],
+  },
+  {
+    id: "s26",
+    title: "S26 /tasks 后台子代理面板：空态",
+    fn: scenarioS26,
+    focus: ["没有后台任务"],
   },
 ];
 

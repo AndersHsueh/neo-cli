@@ -39,6 +39,7 @@ export const COMMANDS: CommandEntry[] = [
   { name: "rename", description: "设置本会话名字" },
   { name: "goal", description: "设置/查看目标锚（防跑偏）" },
   { name: "loop", description: "定时/自节奏循环提示（/loop 2m <提示> · self · stop）" },
+  { name: "tasks", description: "后台子代理任务列表 / 取消（/tasks cancel [id]）" },
   { name: "todos", description: "查看本会话结构化待办" },
   { name: "skills", description: "技能列表与详情" },
   { name: "wiki-lint", description: "wiki 体检" },

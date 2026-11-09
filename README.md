@@ -676,7 +676,7 @@ bun run verify  # 全量闸门：tsc → test → pty，证据落 docs/evidence/
 | `shell` | 是 | 执行命令，带超时与退出码；shell 按平台自动选择（macOS/Linux/Windows） |
 | `web_fetch` | 否 | 抓网页转纯文本 |
 | `use_skill` | 否 | 按需加载技能正文（三层渐进披露） |
-| `task` | 否 | 派生子代理跑隔离子任务（深度结构性 ≤1） |
+| `task` | 否 | 派生子代理跑隔离子任务（深度结构性 ≤1）；`background: true` = 后台跑，立刻返回任务 id，完成后结果自动注入本会话（并发上限 3，`/tasks` 查看 / `/tasks cancel` 取消） |
 | `wiki_search` | 否 | 检索记忆 wiki；`scope=auto` 先项目级、后用户级 |
 | `wiki_write` | 否 | 回填记忆 wiki 的唯一合法路径（强制摘要/日期戳/INDEX/log） |
 | `remember` | 否 | 显式写入长期记忆（异步提炼落页，子代理不可见） |
