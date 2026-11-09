@@ -69,6 +69,7 @@ describe("F1 工具集完整性", () => {
     ["glob", false],
     ["grep", false],
     ["shell", true],
+    ["shell_output", false],
     ["web_fetch", false],
     ["web_search", false],
     ["use_skill", false],

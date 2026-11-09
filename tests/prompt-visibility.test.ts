@@ -231,13 +231,18 @@ describe("受控环境：各窗口的期望可见集", () => {
     expect(v.total).toBeGreaterThan(0);
   });
 
-  test("32K / 64K / 200K：受控环境下全部候选都放得下", () => {
-    for (const cw of [32_768, 65_536, 200_000]) {
+  test("48K / 64K / 200K：受控环境下全部候选都放得下；32K 会裁掉一个", () => {
+    // issue #28 起多了一个 shell_output 工具：32K 档的预算刚好差一个工具的 schema，
+    // 可见集会收窄到 11/12（收窄尚未启用，这里只是 dry-run 的预期）。48K 起全部放得下。
+    for (const cw of [49_152, 65_536, 200_000]) {
       const { v } = visAt(cw);
       expect(v.fits).toBe(true);
       expect(v.names.length).toBe(v.total);
       expect(v.hidden).toEqual([]);
     }
+    const tight = visAt(32_768).v;
+    expect(tight.fits).toBe(true);
+    expect(tight.names.length).toBe(tight.total - 1);
   });
 
   test("候选集 = 正常模式实际暴露的工具（plan-only 不在内）", () => {

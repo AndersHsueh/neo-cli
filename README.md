@@ -673,7 +673,8 @@ bun run verify  # 全量闸门：tsc → test → pty，证据落 docs/evidence/
 | `list_dir` | 否 | 列目录，含大小与修改时间 |
 | `glob` | 否 | glob 找文件 |
 | `grep` | 否 | 正则搜内容，`path` 可传目录或单文件 |
-| `shell` | 是 | 执行命令，带超时与退出码；shell 按平台自动选择（macOS/Linux/Windows） |
+| `shell` | 是 | 执行命令，带超时与退出码；shell 按平台自动选择（macOS/Linux/Windows）。`background: true` = 后台跑（dev server/watch/长测试），立刻返回 `sh-N`，不阻塞会话；**前台超时也会转后台而不是被杀** |
+| `shell_output` | 否 | 按 id（`sh-N`）读后台命令的状态/退出码/输出尾部；用户用 `/ps` 列表、`/ps kill` 停止 |
 | `web_fetch` | 否 | 抓网页转纯文本 |
 | `use_skill` | 否 | 按需加载技能正文（三层渐进披露） |
 | `task` | 否 | 派生子代理跑隔离子任务（深度结构性 ≤1）；`background: true` = 后台跑，立刻返回任务 id，完成后结果自动注入本会话（并发上限 3，`/tasks` 查看 / `/tasks cancel` 取消） |

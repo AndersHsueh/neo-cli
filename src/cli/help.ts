@@ -83,6 +83,7 @@ ${c.bold("交互命令")}
   /todos           查看本会话结构化待办（模型用 todo_write 维护）
   /loop [re]       定时/自节奏循环提示：/loop 2m <提示> · /loop self <提示> · /loop stop
   /tasks           后台子代理任务（列表 / cancel [id|all]）
+  /ps              后台长驻 shell（列表 / kill [id|all]）；模型用 shell background:true 启动
   /tier [name]     查看/切档位      /auto [name] 切换分类器（off/rule/llm）
   /fast /balanced /deep            档位快捷方式（等价 /tier）
   /why             上次分类判定与理由

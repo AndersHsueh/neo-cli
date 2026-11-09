@@ -2724,6 +2724,39 @@ async function scenarioS26(tmpRoot: string): Promise<void> {
   }
 }
 
+/**
+ * S27（issue #28）：`/ps` 后台 shell 面板的空态。
+ *
+ * 完整后台链路需要真实长进程，PTY 场景只锁「无后台命令时的明确空态」与输入框不被破坏。
+ */
+async function scenarioS27(tmpRoot: string): Promise<void> {
+  const dirs = await makeDirs(tmpRoot, "s27-ps");
+  const fake = await startFake("resume");
+  const run = await startNeo({
+    fake,
+    dirs,
+    name: "s27",
+    args: BASE_ARGS,
+    cols: DEFAULT_COLS,
+    rows: DEFAULT_ROWS,
+  });
+  try {
+    await waitPrompt(run);
+    await run.type("/ps");
+    await waitFor(() => run.screen.text().includes("没有后台命令"), {
+      label: "/ps 无后台命令时提示空态",
+      run,
+      timeoutMs: 8000,
+    });
+    await waitPrompt(run, "/ps 后回到提示符");
+  } catch (e) {
+    throw attachScreen(e, run.screen, run.stderr);
+  } finally {
+    await run.close();
+    await fake.stop();
+  }
+}
+
 const SCENARIOS: Scenario[] = [
   {
     id: "s1",
@@ -2892,6 +2925,12 @@ const SCENARIOS: Scenario[] = [
     title: "S26 /tasks 后台子代理面板：空态",
     fn: scenarioS26,
     focus: ["没有后台任务"],
+  },
+  {
+    id: "s27",
+    title: "S27 /ps 后台 shell 面板：空态",
+    fn: scenarioS27,
+    focus: ["没有后台命令"],
   },
 ];
 

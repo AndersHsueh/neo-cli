@@ -79,6 +79,7 @@ import { toolNames, registerTool } from "./tools/index.ts";
 import { McpManager, type McpServerState } from "./mcp/index.ts";
 import { makeTaskTool, runSubagent } from "./tools/task.ts";
 import { BackgroundTasks } from "./tools/background.ts";
+import { backgroundShells } from "./tools/backgroundShell.ts";
 import { makeAskUserTool } from "./tools/askUser.ts";
 import { registerWikiTools } from "./tools/wiki.ts";
 import { describeShell, getShell } from "./shell.ts";
@@ -1379,6 +1380,8 @@ async function main(): Promise<number> {
     loopScheduler.dispose();
     // issue #16：后台子代理一并取消，不留幽灵任务。
     backgroundTasks?.cancelAll();
+    // issue #28：本次会话拉起的后台 shell 一并收掉，不留孤儿进程。
+    backgroundShells.killAll();
     try {
       await memory.flush();
     } catch {
@@ -1499,6 +1502,11 @@ async function main(): Promise<number> {
               start: (spec) => loopScheduler.start(spec),
               stop: () => loopScheduler.stop(),
               status: () => formatLoopStatus(loopScheduler.state, Date.now()),
+            },
+            // issue #28：后台长驻 shell（列表 / 停止）
+            shells: {
+              list: () => backgroundShells.list(),
+              kill: (target) => backgroundShells.kill(target),
             },
             // issue #16：后台子代理任务（列表 / 取消）
             tasks: {

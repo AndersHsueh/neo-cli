@@ -40,6 +40,7 @@ export const TOOL_VISIBILITY_PRIORITY: readonly string[] = [
   "read_file",
   "edit_file",
   "shell",
+  "shell_output",
   "list_dir",
   "glob",
   "grep",
