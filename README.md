@@ -542,6 +542,8 @@ deepseek-flash · balanced · ask · ⎇ main · ctx ▓▓░░░ 42% · 0:42
 
 ## 开发
 
+维护者入口：[docs/maintenance.md](docs/maintenance.md)（改代码前先读）。
+
 ```bash
 bun run check   # tsc --noEmit，strict + noUncheckedIndexedAccess（含 scripts/）
 bun test        # 单元测试（数字以 bun test 输出为准）
