@@ -19,6 +19,7 @@ import { decodeHtmlEntities } from "./entities.ts";
 import { toolTmpDir } from "../runtimeTmp.ts";
 import { shellMarks } from "./shellMarks.ts";
 import { backgroundShells, shellStatusLabel } from "./backgroundShell.ts";
+import { lspServers } from "../lsp/index.ts";
 import { listSearchFiles } from "./fileList.ts";
 import { getShell, prepareShellInvocation, shellErrorHint } from "../shell.ts";
 
@@ -189,7 +190,9 @@ const writeFileTool: ToolImpl = {
     }
     mkdirSync(dirname(path), { recursive: true });
     writeFileSync(path, content, "utf8");
-    return `${isNew ? "已创建" : "已覆盖"} ${path}（${content.length} 字符，${content.split("\n").length} 行）`;
+    // issue #23：编辑后诊断（没配语言服务器时 afterEdit 恒返回 ""，零开销）。
+    const lspNote = await lspServers.afterEdit(path).catch(() => "");
+    return `${isNew ? "已创建" : "已覆盖"} ${path}（${content.length} 字符，${content.split("\n").length} 行）${lspNote}`;
   },
 };
 
@@ -258,7 +261,9 @@ const editFile: ToolImpl = {
     // split/join 与单次 replace 语义等价，且没有模式展开。
     const out = src.split(oldS).join(newS);
     writeFileSync(path, out, "utf8");
-    return `已修改 ${path}（${all ? count : 1} 处）`;
+    // issue #23：编辑后诊断（零配置零开销）。
+    const lspNote = await lspServers.afterEdit(path).catch(() => "");
+    return `已修改 ${path}（${all ? count : 1} 处）${lspNote}`;
   },
 };
 
@@ -722,6 +727,58 @@ const shell: ToolImpl = {
 /* shell_output：按 id 读后台命令                                      */
 /* ------------------------------------------------------------------ */
 
+/* ------------------------------------------------------------------ */
+/* lsp：只读符号导航（definition / references / hover，issue #23）    */
+/* ------------------------------------------------------------------ */
+
+const lspTool: ToolImpl = {
+  sensitive: false,
+  kind: "evidence",
+  spec: {
+    type: "function",
+    function: {
+      name: "lsp",
+      description:
+        "只读符号导航（需在 settings.lsp.servers 配好语言服务器，如 typescript-language-server --stdio）。" +
+        "operation=definition 找定义、references 找引用、hover 看类型/签名。比全文 grep 准且省 token。" +
+        "未配置/未连接时返回可读错误；不写盘、无副作用。",
+      parameters: {
+        type: "object",
+        properties: {
+          operation: { type: "string", enum: ["definition", "references", "hover"], description: "要做的查询" },
+          file: { type: "string", description: "文件路径（相对项目根或绝对路径）" },
+          line: { type: "integer", description: "行号，1 起" },
+          character: { type: "integer", description: "列号，1 起；默认 1" },
+        },
+        required: ["operation", "file", "line"],
+      },
+    },
+  },
+  async execute(args, ctx) {
+    if (!lspServers.configured) {
+      throw new ToolError(
+        "没有可用的语言服务器：在 settings.json 的 lsp.servers 里配置（如 " +
+          '{ "command": "typescript-language-server", "args": ["--stdio"] }），未配置时该工具零开销不可用。',
+      );
+    }
+    const op = String(args["operation"] ?? "");
+    if (op !== "definition" && op !== "references" && op !== "hover") {
+      throw new ToolError(`operation 只能是 definition / references / hover（得到 "${op}"）`);
+    }
+    const file = String(args["file"] ?? "").trim();
+    if (file === "") throw new ToolError("file 为空");
+    const line = Number(args["line"]);
+    const character = args["character"] === undefined ? 1 : Number(args["character"]);
+    if (!Number.isInteger(line) || line < 1) throw new ToolError("line 必须是 ≥1 的整数");
+    if (!Number.isInteger(character) || character < 1) throw new ToolError("character 必须是 ≥1 的整数");
+    try {
+      return await lspServers.navigate(op, { file: abs(ctx, file), line, character });
+    } catch (e) {
+      throw new ToolError((e as Error).message);
+    }
+  },
+};
+
 const shellOutput: ToolImpl = {
   sensitive: false,
   kind: "evidence",
@@ -1043,6 +1100,7 @@ export const TOOLS: ToolImpl[] = [
   grepTool,
   shell,
   shellOutput,
+  lspTool,
   webFetch,
   webSearchTool,
   useSkill,

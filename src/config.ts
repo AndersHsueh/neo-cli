@@ -377,6 +377,10 @@ export interface Config {
   systemPrompt: PromptSelectionConfig;
   /** 仓库地图（issue #15）：符号级地图注入系统提示词；`repo_map` 段可关/调预算。 */
   repoMap: RepoMapConfig;
+  /** 语言服务器（issue #23）：编辑后诊断 + 只读符号导航；未配置 = 零开销。 */
+  lsp: LspConfig;
+  /** lsp 配置告警（启动时打印一次）。 */
+  lspWarnings: string[];
 }
 
 /**
@@ -473,6 +477,91 @@ export interface McpHttpServerConfig extends McpServerBase {
 }
 
 export type McpServerConfig = McpStdioServerConfig | McpHttpServerConfig;
+
+/**
+ * 语言服务器配置（issue #23）。
+ *
+ * 设计：**不捆绑语言服务器**，只按配置启动用户本机已安装的命令（如
+ * `typescript-language-server --stdio`）。没配 servers = 零开销（不 spawn、不扫盘）。
+ */
+export interface LspServerConfig {
+  name: string;
+  command: string;
+  args: string[];
+  /** 归这个 server 处理的后缀（含点，小写）。 */
+  extensions: string[];
+}
+
+export interface LspConfig {
+  enabled: boolean;
+  servers: LspServerConfig[];
+  /** 等编辑后诊断的超时（毫秒，默认 1500）。 */
+  diagnosticsTimeoutMs: number;
+}
+
+export const DEFAULT_LSP: LspConfig = { enabled: true, servers: [], diagnosticsTimeoutMs: 1_500 };
+
+/** 常见 server 的扩展名推断（用户没写 extensions 时兜底）。 */
+function inferLspExtensions(name: string, command: string): string[] {
+  const id = `${name} ${command}`.toLowerCase();
+  if (id.includes("typescript") || id.includes("ts-ls") || id.includes("vtsls")) {
+    return [".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs"];
+  }
+  if (id.includes("pyright") || id.includes("pylsp") || id.includes("python")) return [".py"];
+  if (id.includes("gopls") || id.includes("go-")) return [".go"];
+  if (id.includes("rust-analyzer") || id.includes("rust")) return [".rs"];
+  return [];
+}
+
+/**
+ * 解析 settings 顶层 `lsp`：
+ *   "lsp": { "enabled": true, "servers": [ { "command": "typescript-language-server", "args": ["--stdio"] } ],
+ *            "diagnostics_timeout_ms": 1500 }
+ * 非法条目只跳过并给 warning（不让整个 CLI 起不来）。
+ */
+export function resolveLspConfig(raw: unknown): { config: LspConfig; warnings: string[] } {
+  const warnings: string[] = [];
+  if (raw === undefined) return { config: { ...DEFAULT_LSP, servers: [] }, warnings };
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
+    return { config: { ...DEFAULT_LSP, servers: [] }, warnings: ["lsp 段必须是对象，已忽略。"] };
+  }
+  const r = raw as Raw;
+  const enabled = typeof r["enabled"] === "boolean" ? r["enabled"] : DEFAULT_LSP.enabled;
+  const timeoutRaw = numOrNull(r["diagnostics_timeout_ms"]);
+  const diagnosticsTimeoutMs =
+    timeoutRaw !== null && timeoutRaw >= 200 ? Math.min(10_000, Math.floor(timeoutRaw)) : DEFAULT_LSP.diagnosticsTimeoutMs;
+  const servers: LspServerConfig[] = [];
+  const list = r["servers"];
+  if (Array.isArray(list)) {
+    for (const [i, item] of list.entries()) {
+      if (typeof item !== "object" || item === null || Array.isArray(item)) {
+        warnings.push(`lsp.servers[${i}] 不是对象，已跳过。`);
+        continue;
+      }
+      const s = item as Raw;
+      const command = str(s["command"], "").trim();
+      const name = str(s["name"], command.split(/[\\/]/).pop() ?? `lsp-${i}`).trim() || `lsp-${i}`;
+      if (command === "") {
+        warnings.push(`lsp.servers[${i}]（${name}）缺少 command，已跳过。`);
+        continue;
+      }
+      const argsRaw = s["args"];
+      const args = Array.isArray(argsRaw) ? argsRaw.map((a) => String(a)) : [];
+      const extRaw = s["extensions"];
+      const extensions = Array.isArray(extRaw)
+        ? extRaw.map((x) => String(x).trim().toLowerCase()).filter((x) => x.startsWith("."))
+        : inferLspExtensions(name, command);
+      if (extensions.length === 0) {
+        warnings.push(`lsp.servers[${i}]（${name}）没有可用的 extensions（推断不出语言），已跳过。`);
+        continue;
+      }
+      servers.push({ name, command, args, extensions });
+    }
+  } else if (list !== undefined) {
+    warnings.push("lsp.servers 必须是数组，已忽略。");
+  }
+  return { config: { enabled, servers, diagnosticsTimeoutMs }, warnings };
+}
 
 /**
  * 仓库地图配置（issue #15）。settings.json 顶层 `repo_map` 段。
@@ -1136,6 +1225,8 @@ export function loadConfig(overrides: Partial<Config> = {}): Config {
     systemPrompt: resolveSystemPromptConfig(raw["system_prompt"]),
     paste: resolvePasteConfig(raw["paste"] as Raw | undefined),
     repoMap: resolveRepoMapConfig(raw["repo_map"]),
+    lsp: resolveLspConfig(raw["lsp"]).config,
+    lspWarnings: resolveLspConfig(raw["lsp"]).warnings,
     mailbox: resolveMailboxSettings(raw),
     crossSessionInbound: resolveInboundPolicy(raw["cross_session_inbound"]),
     ...overrides,

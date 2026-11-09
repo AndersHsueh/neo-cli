@@ -1,4 +1,11 @@
 {
+  "lsp": {
+    "enabled": true,
+    "diagnostics_timeout_ms": 1500,
+    "servers": [],
+    "_note": "语言服务器（可选）：编辑后诊断 + lsp 工具的 definition/references/hover。示例：{ \"command\": \"typescript-language-server\", \"args\": [\"--stdio\"], \"extensions\": [\".ts\",\".tsx\"] }。neo 不捆绑 server；空数组 = 零开销。"
+  },
+
   "repo_map": {
     "enabled": true,
     "budget_tokens": 800,

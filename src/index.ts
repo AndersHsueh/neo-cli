@@ -124,6 +124,7 @@ import { cleanupRuntime } from "./maintenance.ts";
 import { LoopScheduler, formatLoopStatus } from "./loop.ts";
 import { RewindLog, type RewindMode } from "./rewind.ts";
 import { DriveManager, formatDriveState } from "./drive.ts";
+import { lspServers } from "./lsp/index.ts";
 import { CheckpointStore } from "./checkpoint.ts";
 import { formatResumeWarning, outcomeOf, type LastTurnMeta } from "./turnDiagnostics.ts";
 import {
@@ -600,6 +601,7 @@ async function main(): Promise<number> {
   // issue #21 A：max_tokens 配置体检。加载时已逐 provider 判定，这里逐条摆出来 ——
   // 输出预算 ≥ 上下文窗口这类配置几乎必然 400，启动时说清楚，别让用户对着不透明报错猜。
   for (const w of cfg.maxTokensWarnings) ui.warn(w);
+  for (const w of cfg.lspWarnings) ui.warn(w);
 
   // issue #9：让用户一眼看出「这次会话在 worktree 里」，而不是在主仓库里改文件。
   if (worktreeInfo) {
@@ -685,6 +687,26 @@ async function main(): Promise<number> {
   const checkpoints = new CheckpointStore({ cwd: cfg.cwd, sessionId: sess.meta.id });
   /** 按轮次回滚（issue #27）：轮次表从 session meta 恢复，回滚后写回。 */
   const rewindLog = new RewindLog({ records: sess.meta.rewind });
+
+  // issue #23：语言服务器（编辑后诊断 + 只读符号导航）。零配置 = 不 spawn。
+  void lspServers
+    .configure(cfg)
+    .then((problems) => {
+      if (!interactiveTTY) return;
+      for (const p of problems) ui.warn(`LSP: ${p}`);
+      const st = lspServers.states();
+      if (st.length > 0) {
+        const ok = st.filter((x) => x.status === "connected").map((x) => x.name).join(", ");
+        ui.line(
+          c.dim(
+            `LSP：${st.length} 个 server（已连接 ${st.filter((x) => x.status === "connected").length}${ok ? `: ${ok}` : ""}）`,
+          ),
+        );
+      }
+    })
+    .catch(() => {
+      /* 语言服务器是增强项，失败不影响会话 */
+    });
 
   // 记忆桥（v0.2 记忆激活）：
   //  - -p / 非交互 = oneshot：只用项目级记忆（服务器脚本场景，不混入操作员个人记忆）；
@@ -1437,6 +1459,8 @@ async function main(): Promise<number> {
     backgroundShells.killAll();
     // issue #24：自动续跑停止，不再往已退出的会话里排轮。
     drive.stop();
+    // issue #23：语言服务器一并收掉，不留孤儿进程。
+    lspServers.closeAll();
     try {
       await memory.flush();
     } catch {

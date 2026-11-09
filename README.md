@@ -296,6 +296,28 @@ exit 0
 格式化失败（没装 prettier、语法错）只给一条诊断，不会让工具结果变成错误 ——
 `onFailure: "continue"` 就是为这种「锦上添花」的 hook 准备的。
 
+### lsp —— 代码智能（编辑后诊断 + 只读导航，issue #23）
+
+按配置启动**你本机已安装**的语言服务器（neo 不捆绑、不做沙箱；没配就是零开销）：
+
+```json
+"lsp": {
+  "enabled": true,
+  "diagnostics_timeout_ms": 1500,
+  "servers": [
+    { "command": "typescript-language-server", "args": ["--stdio"],
+      "extensions": [".ts", ".tsx", ".js", ".jsx"] }
+  ]
+}
+```
+
+- 安装示例：`bun add -g typescript-language-server typescript`（或你惯用的包管理器）。
+- **编辑后诊断**：`write_file` / `edit_file` 落在被 server 处理的后缀上时，把该文件的新诊断摘要
+  （前 10 条，`文件:行:列 [severity] 消息`）附在工具结果里；无 server / 无诊断时结果不变。
+- **只读工具 `lsp`**：`operation = definition | references | hover`，参数 `file`、`line`（1 起）、`character`（1 起）；
+  未配置/未连接会返回可读错误。`extensions` 省略时按 server 名/命令推断（typescript / pyright / gopls / rust-analyzer）。
+- 启动失败的 server 只记 error 状态不拖垮会话；会话退出会关掉子进程。
+
 ### repo_map —— 仓库地图（issue #15）
 
 系统提示词会带一份**符号级仓库地图**：每个源码文件后跟其主要导出/定义（TS/JS/Python/Go/Rust），
