@@ -51,7 +51,7 @@ bun test              # 记 pass / fail / skip 与测试文件数
 - [ ] `docs/evidence/` 已 gitignore。基线输出留在本地，不 `git add`。
 - [ ] 基线本身不是绿的：先停，把失败记清楚再决定是否继续。不要把既有失败混进这次改动。
 
-`package.json` 的 `check` 脚本目前写成 `bunx tsc --noEmit`。维护时以 `tests/README.md` 的 `bun x tsc --noEmit` 为准。是否改脚本，见 §14。
+`package.json` 的 `check` 脚本是 `bun x tsc --noEmit`，与本文、`tests/README.md` 以及人手执行同一条命令。
 
 ## 3. 先红后绿
 
@@ -128,7 +128,7 @@ Anders 已授权 Leo：对 **neo 自身的改进产出**，Leo 自审后可以 c
 
 自审留下与默认路径同等的证据：闸门输出、改动文件列表、若发版则 §10 四件套对齐。证据写在提交说明或 PR 描述里。
 
-范围从紧：修 neo 自己的缺陷，补 neo 自己的测试与文档，且任务书允许自审。外部 issue、权限模型、发版口径本身的变更，走 §7.1。边界再放宽见 §14。
+范围保持从紧：修 neo 自己的缺陷，补 neo 自己的测试与文档，且任务书允许自审。外部 issue、权限模型、发版口径本身的变更，走 §7.1。
 
 ## 8. 合入 main 并清理 worktree
 
@@ -146,23 +146,24 @@ git worktree prune
 - [ ] 提交说明含对应 issue 的 `#N`（有 issue 时，见 §11）。
 - [ ] 有未提交改动时，`/worktree remove` 与 `git worktree remove` 都会拒绝。确认要丢弃才 `--force`，且 neo 的 `/worktree remove --force` 仍会再确认一次。当前会话所在的 worktree 不能删。
 - [ ] 只清理 `.neo/worktrees/<name>` 且分支为 `neo/<name>` 的托管检出。别人自己的 worktree 不删。
+- [ ] 合入用 `git merge --ff-only`。main 已前进时，先在 worktree 里 rebase 到 main，再 ff-only。只有必须保留合并提交节点时才用 `--no-ff`。
 - [ ] 合入后用文件内容核对「改动真的在 main 上」。不要只靠 patch-id（cherry-pick 解过 `package.json` 冲突时，patch-id 会假报未合入）。
-
-合并策略的默认值见 §14。
 
 ## 9. 发版
 
 只在这次改动要发布时做。纯文档合入不做本节。
 
+功能与发版拆开：功能先提交并合入 main（§8）。发版是另一次提交，携带 release note、README 对齐、`.gitignore` 核对、`package.json` 的 `version`。
+
 顺序：
 
-1. 版本 PRD。行为有变时，在 `docs/` 留一份。总览体例 `docs/v0.1.0-prd[done].md`，专题体例 `docs/v0.2.4-input-prd[done].md` 及其它 `docs/*-prd[done].md`，验收清单体例 `docs/skills-acceptance-checklist[done].md`。做完的文件名带 `[done]`。无行为变更不新开 PRD，在 release note 里写「无行为变更」。
+1. 版本 PRD。行为有变时，在 `docs/` 留一份。文件名用 `docs/<主题>-prd.md`，完成后改为 `docs/<主题>-prd[done].md`。总览体例 `docs/v0.1.0-prd[done].md`，专题体例 `docs/v0.2.4-input-prd[done].md` 及其它 `docs/*-prd[done].md`，验收清单体例 `docs/skills-acceptance-checklist[done].md`。无行为变更不新开 PRD，在 release note 里写「无行为变更」。
 2. 写 `docs/release-notes/vX.Y.Z.md`。抬头对齐 `docs/release-notes/v0.4.80.md`：发布日、基线 commit、闸门结果、证据路径、关联 issue。正文写为什么发、变更、验证时的 `bun x tsc --noEmit` / `bun test` 数字 / `bash scripts/verify.sh` 是否 `ALL GREEN`、已知未做。
 3. 刷新 `README.md`：把本版特性短句和测试基线数字改到与实测一致。只改相关句。
 4. 检查 `.gitignore`（§13 的清单仍在）。
 5. 只改 `package.json` 的 `version` 字段，改为 `X.Y.Z`。其它字段不动。
-6. 提交。说明里写版本号；有 issue 则写 `#N`。
-7. 在该提交上打 annotated tag，再推送：
+6. 先提交含该 `version` 的发版提交。说明里写版本号；有 issue 则写 `#N`。
+7. 再在该提交上 `git tag -a`，然后推送。顺序固定：含 `version` 的提交 → `git tag -a` 打在该提交上 → 推送。
 
 ```bash
 git tag -a vX.Y.Z -m "vX.Y.Z"
@@ -170,7 +171,7 @@ git push origin HEAD
 git push origin vX.Y.Z
 ```
 
-推送目标是 `github.com/AndersHsueh/neo-cli`。tag 打在已包含该 `version` 的提交上。
+只推 `github.com/AndersHsueh/neo-cli`。Gitee 第二远程不是本流程的要求。
 
 - [ ] 发版前再跑一次 `bash scripts/verify.sh`，确认证据前缀已是 `vX.Y.Z`（前缀从 `package.json` 读，不手写）。
 - [ ] §10 四件套对齐后再推。
@@ -186,18 +187,16 @@ git push origin vX.Y.Z
 - [ ] 文件 `docs/release-notes/vX.Y.Z.md` 存在，标题版本一致
 - [ ] `README.md` 里涉及本版的特性与基线数字与 release note 一致
 
-远程：`github.com/AndersHsueh/neo-cli`。
+远程只推 `github.com/AndersHsueh/neo-cli`。Gitee 第二远程不是本流程的要求。
 
 ## 11. Issue 闭环
 
 仓库：`AndersHsueh/neo-cli`。
 
-- [ ] 改动绑到已有 GitHub issue。外部缺陷与下达的任务必须有 issue。
-- [ ] 每次提交说明写 `#N`。
-- [ ] 合入 main 之后关闭 issue。评论里写：合入 commit、闸门结果（tsc 退出码、`bun test` 的 pass/fail/skip、verify 是否 `ALL GREEN`）、若已发版则写版本号与 tag。
+- [ ] 外部缺陷与下达的任务必须有 GitHub issue，改动绑到该 issue。提交说明写 `#N`。
+- [ ] 自我改进可以没有 issue：不必为此另开 issue，不编造 `#N`，在提交说明里写清动机。
+- [ ] 有 issue 时，合入 main 之后关闭 issue。评论里写：合入 commit、闸门结果（tsc 退出码、`bun test` 的 pass/fail/skip、verify 是否 `ALL GREEN`）、若已发版则写版本号与 tag。
 - [ ] 开着 PR、尚未合入时不关闭 issue。
-
-没有 issue 的自我改进如何编号，见 §14。不编造 `#N`。
 
 ## 12. 推理分工
 
@@ -217,18 +216,3 @@ git push origin vX.Y.Z
 - [ ] 不改与本次任务无关的文件。不顺手重构、不顺手格式化、不顺手改版本号。
 - [ ] 产品立场是 AI 自由，不做沙箱。worktree 是文件级隔离，不是安全沙箱（`src/worktree.ts` 文件头；README「托管 worktree」）。hooks 不提供沙箱（README hooks 段）。「没有沙箱」不是待办，不开 issue、不补实现。
 - [ ] 下列已拍板事项不要当缺口重开：提示词正文内容断言暂不开 issue；跨层互链保持现状，不做跨层链接解析。记录见 `docs/release-notes/v0.4.80.md`「已知未做」。
-
-## 14. 待 Anders 拍板
-
-下列用当前默认执行。拍板之后改本文件对应小节，删掉本条。
-
-| 项 | 当前默认 |
-|---|---|
-| 合入方式 | `git merge --ff-only`。main 已前进则先 rebase 再 ff-only。需要保留合并节点时再改用 `--no-ff`。 |
-| 发版提交是否与功能提交拆开 | 功能在 worktree 里先提交并合入。发版提交携带 release note、README 对齐、`.gitignore` 核对、`package.json` 的 version。release note 已在功能提交里写完时，发版提交可以只 bump version，但推送前 §10 必须已经对齐。 |
-| tag 与 commit 的先后 | 先提交含 `version` 的那一次，再 `git tag -a` 打在该提交上，再推送。 |
-| 无 issue 的自我改进 | 不编造 `#N`。提交说明写清动机。是否每个改动都要先开 issue，尚未规定；外部任务仍必须有 issue。 |
-| 自我改进的范围 | 按 §7.2 从紧。放宽到哪些类型的产出，尚未规定。 |
-| PRD 文件名 | 行为变更用 `docs/<主题>-prd.md`，完成后改为 `docs/<主题>-prd[done].md`。 |
-| `package.json` 的 `check` 脚本 | 仍是 `bunx`。人手执行与文档一律写 `bun x tsc --noEmit`。本流程不为此改脚本。 |
-| 第二远程 | 只推 `github.com/AndersHsueh/neo-cli`。仓库历史里出现过 Gitee 镜像同时更新；本流程不要求推第二远程。 |
