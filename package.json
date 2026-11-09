@@ -10,7 +10,7 @@
   "scripts": {
     "start": "bun run src/index.ts",
     "neo": "bun run src/index.ts",
-    "check": "bunx tsc --noEmit",
+    "check": "bun x tsc --noEmit",
     "test": "bun test",
     "e2e": "bun run scripts/pty-e2e.ts",
     "verify": "bash scripts/verify.sh"
