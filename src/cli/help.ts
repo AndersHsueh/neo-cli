@@ -79,6 +79,7 @@ ${c.bold("交互命令")}
   /resume [id]     恢复会话（无参进入选择；last = 最近一次）
   /last [n]        回看最近 n 次工具调用（默认 1；紧凑模式的信息找回入口）
   /undo [n]        撤销最近 n 次 write/edit（默认 1；仅工具写，不含 shell）
+  /rewind [n|last] 按轮次回滚（默认 both = 代码+对话；可 code / conversation；--resume 后仍可用）
   /checkpoints [n] 列出最近的写文件检查点（默认 10）
   /todos           查看本会话结构化待办（模型用 todo_write 维护）
   /loop [re]       定时/自节奏循环提示：/loop 2m <提示> · /loop self <提示> · /loop stop

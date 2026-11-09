@@ -2757,6 +2757,39 @@ async function scenarioS27(tmpRoot: string): Promise<void> {
   }
 }
 
+/**
+ * S28（issue #27）：`/rewind` 空态。
+ *
+ * 完整回滚链路需要先跑真实轮次 + 文件改动；PTY 只锁「还没有轮次时的明确空态」。
+ */
+async function scenarioS28(tmpRoot: string): Promise<void> {
+  const dirs = await makeDirs(tmpRoot, "s28-rewind");
+  const fake = await startFake("resume");
+  const run = await startNeo({
+    fake,
+    dirs,
+    name: "s28",
+    args: BASE_ARGS,
+    cols: DEFAULT_COLS,
+    rows: DEFAULT_ROWS,
+  });
+  try {
+    await waitPrompt(run);
+    await run.type("/rewind");
+    await waitFor(() => run.screen.text().includes("还没有可回滚的轮次"), {
+      label: "/rewind 无轮次时提示空态",
+      run,
+      timeoutMs: 8000,
+    });
+    await waitPrompt(run, "/rewind 后回到提示符");
+  } catch (e) {
+    throw attachScreen(e, run.screen, run.stderr);
+  } finally {
+    await run.close();
+    await fake.stop();
+  }
+}
+
 const SCENARIOS: Scenario[] = [
   {
     id: "s1",
@@ -2931,6 +2964,12 @@ const SCENARIOS: Scenario[] = [
     title: "S27 /ps 后台 shell 面板：空态",
     fn: scenarioS27,
     focus: ["没有后台命令"],
+  },
+  {
+    id: "s28",
+    title: "S28 /rewind 按轮次回滚：空态",
+    fn: scenarioS28,
+    focus: ["还没有可回滚的轮次"],
   },
 ];
 

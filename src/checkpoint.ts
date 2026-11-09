@@ -172,7 +172,20 @@ export class CheckpointStore implements CheckpointSink {
   /** 恢复最近 count 条写操作（逆序执行）。 */
   undo(count = 1): UndoResult[] {
     const entries = this.readEntries();
-    const targets = entries.slice(-Math.max(1, count)).reverse();
+    return this.undoSeqs(entries.slice(-Math.max(1, count)).map((e) => e.seq));
+  }
+
+  /**
+   * 回滚**指定**检查点（issue #27 按轮次回滚用）。
+   *
+   * 与 undo(count) 的区别：目标由调用方给（某几轮里产生的 seq 集合），不要求是「最近 N 条」。
+   * 恢复顺序仍是**从新到旧**（同一文件被多轮改过时，先恢复新快照才能得到当时内容）。
+   * 返回按恢复顺序的结果；未被恢复的（快照缺失/超大）保留在 manifest 里。
+   */
+  undoSeqs(seqs: Iterable<number>): UndoResult[] {
+    const entries = this.readEntries();
+    const wanted = new Set(seqs);
+    const targets = entries.filter((e) => wanted.has(e.seq)).reverse();
     const results: UndoResult[] = [];
     const consumed = new Set<number>();
 

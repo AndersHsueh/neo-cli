@@ -8,6 +8,7 @@ import { join } from "node:path";
 import type { ContentPart, Message } from "./llm.ts";
 import type { LastTurnMeta } from "./turnDiagnostics.ts";
 import type { TodoItem } from "./tools/todo.ts";
+import type { RewindTurn } from "./rewind.ts";
 
 export interface SessionMeta {
   id: string;
@@ -29,6 +30,11 @@ export interface SessionMeta {
    * 只替换 messages，meta 原样保留，所以清单独立于对话摘要存活。
    */
   todos?: TodoItem[];
+  /**
+   * 按轮次回滚的轮次表（issue #27）。跟会话一起保存：
+   * `--resume` 同一会话后仍能 `/rewind`（messages 由会话文件完整恢复，截断点仍然有效）。
+   */
+  rewind?: RewindTurn[];
 }
 
 export interface SessionFile {

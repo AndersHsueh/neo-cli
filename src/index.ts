@@ -122,6 +122,7 @@ import { makeListPeersTool, makeSendMessageTool } from "./tools/mailbox.ts";
 import { mailboxRoot, type Envelope } from "./mailbox/types.ts";
 import { cleanupRuntime } from "./maintenance.ts";
 import { LoopScheduler, formatLoopStatus } from "./loop.ts";
+import { RewindLog, type RewindMode } from "./rewind.ts";
 import { CheckpointStore } from "./checkpoint.ts";
 import { formatResumeWarning, outcomeOf, type LastTurnMeta } from "./turnDiagnostics.ts";
 import {
@@ -681,6 +682,8 @@ async function main(): Promise<number> {
   // 写文件检查点（P0-4）：会话级目录，/undo 用它在写盘后恢复本会话的 write/edit。
   // 只覆盖工具写路径（shell 改动不追），只快照工作目录内文件。
   const checkpoints = new CheckpointStore({ cwd: cfg.cwd, sessionId: sess.meta.id });
+  /** 按轮次回滚（issue #27）：轮次表从 session meta 恢复，回滚后写回。 */
+  const rewindLog = new RewindLog({ records: sess.meta.rewind });
 
   // 记忆桥（v0.2 记忆激活）：
   //  - -p / 非交互 = oneshot：只用项目级记忆（服务器脚本场景，不混入操作员个人记忆）；
@@ -1503,6 +1506,26 @@ async function main(): Promise<number> {
               stop: () => loopScheduler.stop(),
               status: () => formatLoopStatus(loopScheduler.state, Date.now()),
             },
+            // issue #27：按轮次回滚（代码 / 对话 / 两者）
+            rewind: {
+              list: () => rewindLog.list(),
+              apply: (target, mode) => {
+                const r = rewindLog.rewind({
+                  target,
+                  mode: mode as RewindMode,
+                  store: { undoSeqs: (seqs) => checkpoints.undoSeqs(seqs) },
+                  conversation: {
+                    length: () => agent.messages.length,
+                    truncate: (n) => {
+                      agent.messages.length = Math.max(1, n); // 永远保住 messages[0] 系统提示
+                    },
+                  },
+                });
+                sess.meta.rewind = rewindLog.serialize();
+                persist(agent.messages, sess.meta);
+                return r;
+              },
+            },
             // issue #28：后台长驻 shell（列表 / 停止）
             shells: {
               list: () => backgroundShells.list(),
@@ -1571,6 +1594,13 @@ async function main(): Promise<number> {
           // 状态机失败不阻塞 turn
         }
       }
+      // issue #27：轮次记账（回到「发这句话之前」的锚点）。begin 必须在 send 之前 ——
+      // agent.send 会把 user 消息压进 messages，之后就拿不到精确边界了。
+      const rewindPending = rewindLog.beginTurn({
+        prompt: resolved.text,
+        messagesLength: agent.messages.length,
+        checkpointSeqBefore: checkpoints.list(1)[0]?.seq ?? 0,
+      });
       let turnStats: Awaited<ReturnType<typeof agent.send>> | null = null;
       try {
         // ESC 回滚语义（PRD §4.11 裁决 A）：人类输入的 turn 保留回滚；
@@ -1615,6 +1645,17 @@ async function main(): Promise<number> {
         composerRef?.setBusy(false);
         // issue #25：self 节奏循环在「每轮结束」后排下一拍（interval 模式自己在定时器里排）。
         loopScheduler.onTurnEnd();
+        // issue #27：把本轮新产生的检查点归到这一轮，并写回 session meta。
+        try {
+          const newSeqs = checkpoints
+            .list(1_000)
+            .filter((e) => e.seq > rewindPending.checkpointSeqBefore)
+            .map((e) => e.seq);
+          rewindLog.endTurn(rewindPending, newSeqs);
+          sess.meta.rewind = rewindLog.serialize();
+        } catch {
+          /* 轮次记账失败不影响主流程 */
+        }
         lastTurnMs = turnStartedAt > 0 ? Date.now() - turnStartedAt : 0;
         activeTurnFrom = null;
         if (mailbox) {

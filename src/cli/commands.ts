@@ -42,6 +42,7 @@ import { rulesReport } from "../rules/index.ts";
 import { repoMapSummary } from "../prompt/repoMap.ts";
 import type { BackgroundView } from "../tools/background.ts";
 import type { ShellJobView } from "../tools/backgroundShell.ts";
+import type { RewindMode, RewindResult, RewindTurn } from "../rewind.ts";
 import { formatInterval, parseLoopCommand, type LoopSpec } from "../loop.ts";
 import { formatShellJobs } from "../tools/backgroundShell.ts";
 import type { ProjectRule, RuleMatch } from "../rules/index.ts";
@@ -151,6 +152,11 @@ export interface CommandContext {
    * 不传 = 不展示（子代理/测试场景）。
    */
   rules?: () => { alwaysOn: ProjectRule[]; loaded: RuleMatch[]; total: number };
+  /** 按轮次回滚（issue #27）：列出轮次 / 回滚到某轮之前。不传 = 不支持。 */
+  rewind?: {
+    list: () => RewindTurn[];
+    apply: (target: number | "last", mode: RewindMode) => RewindResult;
+  };
   /** 后台长驻 shell（issue #28）：列表 / 停止。不传 = 不支持（/ps 会明说）。 */
   shells?: {
     list: () => ShellJobView[];
@@ -194,7 +200,7 @@ export interface CommandContext {
 export async function handleCommand(line: string, ctx: CommandContext): Promise<void> {
   const {
     agent, ui, cfg, memory, classifier, meta, shutdown, selectDeps, mailbox, checkpoints,
-    injectMailbox, onMailboxRekey, onNameChange, promptSelection, toolVisibility, rules, loop, tasks, shells,
+    injectMailbox, onMailboxRekey, onNameChange, promptSelection, toolVisibility, rules, loop, tasks, shells, rewind,
   } = ctx;
   const memoryMode = ctx.memoryMode ?? "interactive";
   const [cmdRaw, ...rest] = line.slice(1).split(/\s+/);
@@ -942,6 +948,59 @@ export async function handleCommand(line: string, ctx: CommandContext): Promise<
       }
       // status
       for (const line of loop.status()) ui.line(line);
+      break;
+    }
+
+    // 按轮次回滚（issue #27）：/rewind（列表）· /rewind <n|last> [code|conversation|both]
+    case "rewind": {
+      if (!rewind) {
+        ui.warn("当前会话不支持按轮次回滚（未接线）。");
+        break;
+      }
+      const parts = arg.split(/\s+/).filter((x) => x !== "");
+      const sub = parts[0] ?? "";
+      if (sub === "" || sub === "list") {
+        const turns = rewind.list();
+        if (turns.length === 0) {
+          ui.info("还没有可回滚的轮次（每个用户轮次会自动记一个检查点，含当轮写过的文件）。");
+        } else {
+          ui.blank();
+          for (const t of turns) {
+            const time = t.at.slice(11, 19);
+            const prompt = t.prompt.length > 50 ? `${t.prompt.slice(0, 50)}…` : t.prompt;
+            const files = t.checkpointSeqs.length > 0 ? ` · ${t.checkpointSeqs.length} 个文件检查点` : "";
+            ui.line(`  [${t.index}] ${c.dim(time)}  ${c.text(prompt)}${c.dim(files)}`);
+          }
+          ui.line(
+            c.dim(
+              "  /rewind <n|last> [code|conversation|both] 回到该轮之前；默认 both（代码+对话）；" +
+                "只覆盖 write_file/edit_file 写过的文件，shell 改的不跟踪",
+            ),
+          );
+        }
+        break;
+      }
+      const target = sub === "last" ? ("last" as const) : Number(sub);
+      if (target !== "last" && (!Number.isInteger(target) || target < 0)) {
+        ui.warn(`轮次写法不对："${sub}"（用数字或 last）`);
+        break;
+      }
+      const modeRaw = parts[1] ?? "both";
+      const mode: RewindMode = modeRaw === "code" || modeRaw === "conversation" ? modeRaw : "both";
+      if (modeRaw !== mode && modeRaw !== "both") {
+        ui.warn(`模式 "${modeRaw}" 不认识，按 both 处理（可选 code / conversation / both）`);
+      }
+      const r = rewind.apply(target, mode);
+      if (r.turnsRemoved === 0) {
+        for (const note of r.notes) ui.warn(note);
+        break;
+      }
+      ui.success(
+        `已回滚 ${r.turnsRemoved} 轮（code+conversation=${mode}）：` +
+          `对话 -${r.messagesRemoved} 条，文件恢复 ${r.filesRestored} 处` +
+          (r.filesSkipped > 0 ? `，跳过 ${r.filesSkipped} 处（快照缺失/过大）` : ""),
+      );
+      for (const note of r.notes) ui.line(c.dim(`  ${note}`));
       break;
     }
 

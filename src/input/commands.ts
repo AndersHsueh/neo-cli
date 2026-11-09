@@ -57,6 +57,7 @@ export const COMMANDS: CommandEntry[] = [
   { name: "resume", description: "恢复会话" },
   { name: "last", description: "回看最近 n 次工具调用" },
   { name: "undo", description: "撤销最近 n 次 write/edit" },
+  { name: "rewind", description: "按轮次回滚：/rewind 列表 · <n|last> [code|conversation|both]" },
   { name: "checkpoints", description: "列出写文件检查点" },
   { name: "sessions", description: "历史会话列表" },
   { name: "exit", description: "退出；别名 quit" },
