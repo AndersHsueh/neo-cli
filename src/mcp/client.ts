@@ -14,7 +14,8 @@
  */
 import type { McpServerConfig } from "../config.ts";
 import { registerTool } from "../tools/index.ts";
-import { StdioRpc } from "./jsonrpc.ts";
+import { StdioRpc, type McpRpc } from "./jsonrpc.ts";
+import { HttpRpc } from "./httpRpc.ts";
 import { computeMcpNames, makeMcpTool } from "./tool.ts";
 
 /** tools/list 返回的工具条目（只取我们真正用到的字段）。 */
@@ -37,6 +38,8 @@ export interface McpToolEntry {
 
 export interface McpServerState {
   name: string;
+  /** 传输类型（issue #29）：stdio 本地进程 / http 远程。 */
+  transport?: "stdio" | "http";
   status: McpServerStatus;
   /** 已注册（真正可用）的工具。`tools` 是它的名字投影，保留给老调用方。 */
   toolEntries?: McpToolEntry[];
@@ -66,7 +69,7 @@ export interface McpClientOptions {
 
 interface Live {
   cfg: McpServerConfig;
-  rpc: StdioRpc;
+  rpc: McpRpc;
   tools: McpToolInfo[];
   /** 注册名 → 远端原名（tools/call 用远端名，注册名只是本地别名）。 */
   entries: McpToolEntry[];
@@ -82,7 +85,7 @@ type Handshake =
   | {
       ok: true;
       cfg: McpServerConfig;
-      rpc: StdioRpc;
+      rpc: McpRpc;
       tools: McpToolInfo[];
       serverInfo?: { name?: string; version?: string };
       connectMs: number;
@@ -109,6 +112,7 @@ export class McpManager {
       (c) =>
         this.states.get(c.name) ?? {
           name: c.name,
+          transport: c.transport,
           status: c.enabled ? "pending" : "disabled",
           tools: [],
         },
@@ -135,7 +139,8 @@ export class McpManager {
   async connectAll(): Promise<number> {
     const enabled = this.configs.filter((c) => c.enabled);
     for (const c of this.configs) {
-      if (!c.enabled) this.states.set(c.name, { name: c.name, status: "disabled", tools: [] });
+      if (!c.enabled)
+        this.states.set(c.name, { name: c.name, transport: c.transport, status: "disabled", tools: [] });
     }
     // 阶段一：并行连接（npx 冷启动可能要几秒，串行会把启动时间累加）。
     const handshakes = await Promise.all(enabled.map((c) => this.handshake(c)));
@@ -153,17 +158,22 @@ export class McpManager {
   private async handshake(cfg: McpServerConfig): Promise<Handshake> {
     const started = Date.now();
     const timeoutMs = this.opts.connectTimeoutMs ?? 30_000;
-    const rpc = new StdioRpc({
-      command: cfg.command,
-      args: cfg.args,
-      env: cfg.env,
-      cwd: cfg.cwd,
-      requestTimeoutMs: this.opts.requestTimeoutMs ?? 20_000,
-      onStderr: (line) => this.opts.onStderr?.(cfg.name, line),
-    });
+    // issue #29：传输层分支。stdio 要拉子进程；http 直接对端点发 POST。
+    const requestTimeoutMs = this.opts.requestTimeoutMs ?? 20_000;
+    const rpc: McpRpc =
+      cfg.transport === "http"
+        ? new HttpRpc({ url: cfg.url, headers: cfg.headers, requestTimeoutMs })
+        : new StdioRpc({
+            command: cfg.command,
+            args: cfg.args,
+            env: cfg.env,
+            cwd: cfg.cwd,
+            requestTimeoutMs,
+            onStderr: (line) => this.opts.onStderr?.(cfg.name, line),
+          });
 
     try {
-      rpc.start();
+      if (rpc instanceof StdioRpc) rpc.start();
       const init = await withTimeout(
         rpc.request<{ protocolVersion?: string; serverInfo?: { name?: string; version?: string } }>(
           "initialize",
@@ -176,7 +186,7 @@ export class McpManager {
         timeoutMs,
         `initialize 超时（${timeoutMs}ms）`,
       );
-      rpc.notify("notifications/initialized");
+      await rpc.notify("notifications/initialized");
 
       const listed = await withTimeout(
         rpc.request<{ tools?: unknown }>("tools/list", {}),
@@ -217,6 +227,7 @@ export class McpManager {
       if (!h.ok) {
         this.states.set(h.cfg.name, {
           name: h.cfg.name,
+          transport: h.cfg.transport,
           status: "error",
           tools: [],
           error: h.error,
@@ -251,6 +262,7 @@ export class McpManager {
       this.live.set(h.cfg.name, { cfg: h.cfg, rpc: h.rpc, tools: h.tools, entries });
       this.states.set(h.cfg.name, {
         name: h.cfg.name,
+        transport: h.cfg.transport,
         status: "connected",
         toolEntries: entries,
         tools: entries.map((t) => t.name),
@@ -353,10 +365,12 @@ export function formatCallResult(server: string, toolName: string, res: unknown)
 }
 
 /** 失败原因拼成人话：server 名 + 原因 + stderr 尾巴（npx 的报错都在 stderr）。 */
-function describeError(cfg: McpServerConfig, e: unknown, rpc: StdioRpc): string {
+function describeError(cfg: McpServerConfig, e: unknown, rpc: McpRpc): string {
   const msg = (e as Error)?.message ?? String(e);
   const tail = rpc.stderrTail.slice(-2).join(" / ");
-  return `MCP server "${cfg.name}" 连接失败（${cfg.command}）：${msg}${tail ? `｜stderr: ${tail}` : ""}`;
+  const target = cfg.transport === "http" ? cfg.url : cfg.command;
+  const label = cfg.transport === "http" ? "HTTP" : "stdio";
+  return `MCP server "${cfg.name}"（${label} ${target}）连接失败：${msg}${tail ? `｜${tail}` : ""}`;
 }
 
 function withTimeout<T>(p: Promise<T>, ms: number, message: string): Promise<T> {

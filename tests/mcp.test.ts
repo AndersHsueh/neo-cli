@@ -18,7 +18,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { parseMcpServers, type McpServerConfig } from "../src/config.ts";
+import { parseMcpServers, type McpStdioServerConfig } from "../src/config.ts";
 import { McpManager, formatCallResult } from "../src/mcp/client.ts";
 import { StdioRpc } from "../src/mcp/jsonrpc.ts";
 import { makeMcpTool, mcpToolName, parseMcpToolName, isMcpTool } from "../src/mcp/tool.ts";
@@ -38,7 +38,7 @@ const FIXTURE = join(import.meta.dir, "fixtures", "mcp-server.ts");
 afterAll(() => rmSync(SANDBOX, { recursive: true, force: true }));
 
 /** 假 server 的启动配置。args 里带 mode，用来驱动不同失败路径。 */
-function server(name: string, mode = "ok", over: Partial<McpServerConfig> = {}): McpServerConfig {
+function server(name: string, mode = "ok", over: Partial<McpStdioServerConfig> = {}): McpStdioServerConfig {
   return {
     name,
     transport: "stdio",
@@ -107,8 +107,9 @@ describe("a. mcpServers 配置解析", () => {
     expect(servers).toHaveLength(1);
     expect(servers[0]?.name).toBe("fs");
     expect(servers[0]?.transport).toBe("stdio");
-    expect(servers[0]?.command).toBe("npx");
-    expect(servers[0]?.args).toEqual(["-y", "@modelcontextprotocol/server-filesystem", "/tmp"]);
+    const first = servers[0] as { command?: string; args?: string[] };
+    expect(first.command).toBe("npx");
+    expect(first.args).toEqual(["-y", "@modelcontextprotocol/server-filesystem", "/tmp"]);
     expect(servers[0]?.enabled).toBe(true); // 缺省启用
   });
 
@@ -118,6 +119,7 @@ describe("a. mcpServers 配置解析", () => {
     ]);
     expect(servers[0]).toMatchObject({
       name: "gh",
+      transport: "stdio",
       command: "node",
       env: { TOKEN: "t" },
       cwd: "/tmp",
@@ -135,7 +137,40 @@ describe("a. mcpServers 配置解析", () => {
     expect(servers.map((s) => s.name)).toEqual(["good"]);
     expect(warnings.join("\n")).toContain("noCommand 缺少 command");
     expect(warnings.join("\n")).toContain("bad.name 名字非法");
-    expect(warnings.join("\n")).toContain("transport=\"http\" 暂不支持");
+    expect(warnings.join("\n")).toContain("transport=\"http\" 缺少 url");
+  });
+
+  test("issue #29：http 传输解析 url / headers / enabled，兼容 type 别名", () => {
+    const { servers, warnings } = parseMcpServers({
+      gh: {
+        type: "http",
+        url: "https://api.example.com/mcp/",
+        headers: { Authorization: "Bearer t", "X-Env": "dev" },
+      },
+      off: { transport: "http", url: "https://x.example.com/mcp", enabled: false },
+    });
+    expect(warnings).toEqual([]);
+    expect(servers.map((s) => s.transport)).toEqual(["http", "http"]);
+    expect(servers[0]).toMatchObject({
+      name: "gh",
+      url: "https://api.example.com/mcp/",
+      headers: { Authorization: "Bearer t", "X-Env": "dev" },
+      enabled: true,
+    });
+    expect(servers[1]?.enabled).toBe(false);
+  });
+
+  test("issue #29：http 缺 url / 非 http(s) / sse 未支持 → 各自 warning 并跳过", () => {
+    const { servers, warnings } = parseMcpServers({
+      noUrl: { transport: "http" },
+      badUrl: { transport: "http", url: "ftp://x" },
+      legacy: { transport: "sse", url: "https://x.example.com/sse" },
+    });
+    expect(servers).toEqual([]);
+    const text = warnings.join("\n");
+    expect(text).toContain("noUrl 的 transport=\"http\" 缺少 url");
+    expect(text).toContain("必须是 http(s) 绝对地址");
+    expect(text).toContain("transport=\"sse\" 暂不支持");
   });
 
   test("重名只保留第一条；非对象/非数组整段忽略并 warning", () => {
@@ -144,7 +179,7 @@ describe("a. mcpServers 配置解析", () => {
       { name: "a", command: "y" },
     ]);
     expect(dup.servers).toHaveLength(1);
-    expect(dup.servers[0]?.command).toBe("x");
+    expect((dup.servers[0] as { command?: string })?.command).toBe("x");
     expect(dup.warnings.join("")).toContain("重名");
 
     const bad = parseMcpServers("nope");

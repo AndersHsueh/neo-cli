@@ -331,8 +331,27 @@ neo 可以连接 [MCP](https://modelcontextprotocol.io) server，把它们的工
 | `args` | 否 | 参数数组 |
 | `env` | 否 | 追加/覆盖子进程环境变量（在 `process.env` 之上） |
 | `cwd` | 否 | 子进程工作目录，缺省 = neo 的 cwd |
-| `transport` | 否 | 目前只支持 `stdio`（缺省）；写 `http`/`sse` 会被跳过并给出 warning |
+| `transport` / `type` | 否 | `stdio`（缺省）或 `http`（issue #29 远程端点）；`sse` 暂不支持，会 warning 跳过 |
 | `enabled` | 否 | `false` = 保留配置但不启动（缺省 `true`） |
+
+**远程 HTTP（issue #29）**：改用 `url` + 静态 `headers`，不写 `command`：
+
+```json
+{
+  "mcpServers": {
+    "github": {
+      "type": "http",
+      "url": "https://api.githubcopilot.com/mcp/",
+      "headers": { "Authorization": "Bearer ghp_xxx" }
+    }
+  }
+}
+```
+
+- 传输实现是 **streamable HTTP**：POST 到 `url`，响应支持 `application/json` 与 `text/event-stream` 两种形态，
+  并把响应头 `Mcp-Session-Id` 回带到后续请求；`Authorization` 等静态 header 原样透传。
+- 工具命名、审批、plan 拒绝、`/mcp` 面板与 stdio **完全一致**（不新增旁路）；OAuth 浏览器登录分期，首期用静态 token。
+- 连接失败/401 只让该 server 进 error（错误带 URL 与状态码），其余 server 照常连接。
 
 也接受数组形态（与 `providers` 风格一致）：`"mcpServers": [{ "name": "fs", "command": "npx", ... }]`。
 

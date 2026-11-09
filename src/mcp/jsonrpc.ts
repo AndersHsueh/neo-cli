@@ -55,7 +55,21 @@ const MAX_LINE = 8 * 1024 * 1024;
  * 生命周期：start() → request()* → close()。任何一侧断开都会让**所有**在途请求
  * 立刻 reject（而不是等到超时），这样工具调用能马上给模型一句「连接已断开」。
  */
-export class StdioRpc {
+/**
+ * 传输层最小契约（issue #29）：stdio 与 HTTP 两种实现都满足它，
+ * 客户端管理器只依赖这层，不关心底下是子进程还是 fetch。
+ */
+export interface McpRpc {
+  /** 连接是否可用（HTTP 是无状态传输，「可用」= 未被 close）。 */
+  readonly alive: boolean;
+  /** 传输层自己的最后几行错误线索（stdio 是 stderr；HTTP 是失败的通知/响应摘要）。 */
+  readonly stderrTail: string[];
+  request<T = unknown>(method: string, params?: unknown): Promise<T>;
+  notify(method: string, params?: unknown): Promise<void>;
+  close(): void;
+}
+
+export class StdioRpc implements McpRpc {
   private proc: Subprocess<"pipe", "pipe", "pipe"> | null = null;
   private nextId = 1;
   private pending = new Map<number, Pending>();
@@ -231,7 +245,7 @@ export class StdioRpc {
   }
 
   /** 发通知（无响应）。 */
-  notify(method: string, params?: unknown): void {
+  async notify(method: string, params?: unknown): Promise<void> {
     this.write({ jsonrpc: "2.0", method, params: params ?? {} });
   }
 

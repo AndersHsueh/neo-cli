@@ -717,7 +717,9 @@ export async function handleCommand(line: string, ctx: CommandContext): Promise<
                 ? c.dim("已禁用")
                 : c.warn("未连接");
         const meta = s.status === "connected" ? `${s.tools.length} 个工具` : "";
-        ui.line(`  ${c.tool("⚡")} ${c.text(s.name)}  ${tag}${meta ? c.dim(`  ${meta}`) : ""}`);
+        // issue #29：传输类型一眼可见（stdio 本地进程 / http 远程端点）。
+        const transport = s.transport ? c.dim(`  [${s.transport}]`) : "";
+        ui.line(`  ${c.tool("⚡")} ${c.text(s.name)}${transport}  ${tag}${meta ? c.dim(`  ${meta}`) : ""}`);
         if (s.status === "connected") {
           // 只列**注册成功**的工具：注册失败的既不在模型工具清单里，也不该在这里
           // 显示成可用 —— 否则用户会以为能调，模型却根本看不见。

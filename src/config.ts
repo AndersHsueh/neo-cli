@@ -437,9 +437,15 @@ type Raw = Record<string, unknown>;
  *   }
  * 对象形态（键即 server 名）与数组形态（每项带 name）都接受，见 parseMcpServers。
  */
-export interface McpServerConfig {
+export interface McpServerBase {
   /** server 名。工具名会拼成 `mcp__<name>__<tool>`，因此只允许 [A-Za-z0-9_-]。 */
   name: string;
+  /** false = 跳过连接（保留配置但不启动）。 */
+  enabled: boolean;
+}
+
+/** 本地进程传输（issue #2）。 */
+export interface McpStdioServerConfig extends McpServerBase {
   transport: "stdio";
   /** 可执行文件（npx / bunx / node / 绝对路径）。 */
   command: string;
@@ -448,9 +454,23 @@ export interface McpServerConfig {
   env: Record<string, string>;
   /** 子进程工作目录；缺省 = neo 的 cwd。 */
   cwd?: string;
-  /** false = 跳过连接（保留配置但不启动）。 */
-  enabled: boolean;
 }
+
+/**
+ * 远程 HTTP 传输（issue #29，streamable HTTP）。
+ *
+ * 形状对齐主流 CLI：`{ "type": "http", "url": "https://…", "headers": { "Authorization": "Bearer …" } }`。
+ * 首期只做静态 `headers`，不做 OAuth 浏览器登录（见 docs/mcp-http-prd.md 非目标）。
+ */
+export interface McpHttpServerConfig extends McpServerBase {
+  transport: "http";
+  /** 完整端点 URL（streamable HTTP 入口）。 */
+  url: string;
+  /** 额外请求头（鉴权等）。 */
+  headers: Record<string, string>;
+}
+
+export type McpServerConfig = McpStdioServerConfig | McpHttpServerConfig;
 
 /**
  * 粘贴增强配置（PRD docs/paste-enhancement-prd[done].md §5.7）。
@@ -584,15 +604,41 @@ export function parseMcpServers(raw: unknown): { servers: McpServerConfig[]; war
       warnings.push(`mcpServers.${name} 重名，已跳过后面那条。`);
       continue;
     }
+    // issue #29：传输层先看 `transport`，兼容 `type` 别名（Claude Code 的写法）。
+    // issue #29：先判传输再看 command —— http 条目没有 command，顺序反了会误报「缺少 command」。
+    const transport = str(r["transport"], str(r["type"], "stdio")).trim().toLowerCase();
+    if (transport === "http") {
+      const url = str(r["url"], "").trim();
+      if (!url) {
+        warnings.push(`mcpServers.${name} 的 transport="http" 缺少 url，已跳过。`);
+        continue;
+      }
+      if (!/^https?:\/\//i.test(url)) {
+        warnings.push(`mcpServers.${name} 的 url 必须是 http(s) 绝对地址（得到 "${url}"），已跳过。`);
+        continue;
+      }
+      const headersRaw = r["headers"];
+      const headers: Record<string, string> = {};
+      if (typeof headersRaw === "object" && headersRaw !== null && !Array.isArray(headersRaw)) {
+        for (const [k, v] of Object.entries(headersRaw as Raw)) {
+          if (v === null || v === undefined) continue;
+          headers[k] = String(v);
+        }
+      }
+      seen.add(name);
+      servers.push({ name, transport: "http", url, headers, enabled: bool(r["enabled"], true) });
+      continue;
+    }
+    if (transport !== "stdio") {
+      // sse 尚未支持：给一句明确的话，而不是「连不上」。
+      warnings.push(
+        `mcpServers.${name} 的 transport="${transport}" 暂不支持（支持 stdio / http；SSE 见 docs/mcp-http-prd.md 非目标），已跳过。`,
+      );
+      continue;
+    }
     const command = str(r["command"], "").trim();
     if (!command) {
       warnings.push(`mcpServers.${name} 缺少 command，已跳过。`);
-      continue;
-    }
-    const transport = str(r["transport"], "stdio").trim().toLowerCase();
-    if (transport !== "stdio") {
-      // 本片只做 stdio；写 http/sse 的用户需要一句明确的话，而不是「连不上」。
-      warnings.push(`mcpServers.${name} 的 transport="${transport}" 暂不支持（当前仅 stdio），已跳过。`);
       continue;
     }
     const argsRaw = r["args"];
