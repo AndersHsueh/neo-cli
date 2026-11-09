@@ -2624,6 +2624,72 @@ async function scenarioS24(tmpRoot: string): Promise<void> {
   }
 }
 
+/**
+ * S25（issue #31）：`/` 渐进式命令菜单。
+ *
+ * 行首 `/` 自动出菜单（左名/右说明）→ 输入过滤 → Tab 接受不执行 → Enter 执行；
+ * 全程不得再出现旧的「N 个命令候选」单行 hint。
+ */
+async function scenarioS25(tmpRoot: string): Promise<void> {
+  const dirs = await makeDirs(tmpRoot, "s25-command-menu");
+  const fake = await startFake("resume");
+  const run = await startNeo({
+    fake,
+    dirs,
+    name: "s25",
+    args: BASE_ARGS,
+    cols: DEFAULT_COLS,
+    rows: DEFAULT_ROWS,
+  });
+  try {
+    await waitPrompt(run);
+
+    // 1) 行首 `/` 自动开菜单（能看到命令说明）
+    await run.write("/");
+    await waitFor(() => run.screen.text().includes("清空上下文"), {
+      label: "键入 / 后自动打开命令菜单（含短说明）",
+      run,
+      timeoutMs: 8000,
+    });
+
+    // 2) 边打边过滤
+    await run.type("tod");
+    await waitFor(() => run.screen.text().includes("/todos"), {
+      label: "输入 tod 后菜单过滤到 /todos",
+      run,
+      timeoutMs: 8000,
+    });
+
+    // 3) Tab 只接受不执行：输入框应变成 /todos
+    await run.write("\t");
+    await waitFor(() => run.screen.text().includes("❯ /todos"), {
+      label: "Tab 接受高亮项写入输入框",
+      run,
+      timeoutMs: 8000,
+    });
+
+    // 4) Enter 执行
+    await run.type("");
+    await waitFor(() => run.screen.text().includes("暂无待办"), {
+      label: "Enter 执行高亮命令 /todos",
+      run,
+      timeoutMs: 8000,
+    });
+
+    // 5) 旧 hint 不再出现
+    if (run.screen.text().includes("个命令候选")) {
+      const err = new CheckError("仍出现旧「N 个命令候选」hint", ["/todos", "暂无待办"]);
+      err.screen = run.screen;
+      throw err;
+    }
+  } catch (e) {
+    throw attachScreen(e, run.screen, run.stderr);
+  } finally {
+    await run.close();
+    await fake.stop();
+  }
+}
+
 const SCENARIOS: Scenario[] = [
   {
     id: "s1",
@@ -2780,6 +2846,12 @@ const SCENARIOS: Scenario[] = [
     title: "S24 /loop 定时循环：启动/注入/状态/停止",
     fn: scenarioS24,
     focus: ["已启动循环", "❯ 看一下日志", "已跑 1 次"],
+  },
+  {
+    id: "s25",
+    title: "S25 / 渐进式命令菜单：自动打开/过滤/Tab 接受/Enter 执行",
+    fn: scenarioS25,
+    focus: ["清空上下文", "/todos", "暂无待办"],
   },
 ];
 

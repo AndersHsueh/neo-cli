@@ -247,6 +247,12 @@ export function applyMatch(
 }
 
 /** 候选提示行（纯文本；调用方负责着色与前缀）。 */
+/**
+ * 单行候选提示（只服务 readline 降级路径与文件补全）。
+ *
+ * 命令补全**不再**用这条 hint（issue #31 改成 composer 里的纵向菜单）—— 传 "command"
+ * 只保留给「没有 composer 的降级模式」，正常 TUI 里命令走菜单，不会再出现「N 个命令候选」。
+ */
 export function formatCandidateHint(kind: "file" | "command", matches: string[], max = 8): string {
   const shown = matches.slice(0, max).join("  ");
   const more = matches.length > max ? `  … 还有 ${matches.length - max} 个` : "";

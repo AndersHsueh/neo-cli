@@ -228,7 +228,7 @@ describe("C1e Tab 连按循环（同一批候选）", () => {
     expect(hint).toContain("Tab");
   });
 
-  test("命令候选提示不截断数量（33 条全可见）", () => {
+  test("命令候选提示只留给 readline 降级路径（不再是 TUI 主交互）", () => {
     const names = Array.from({ length: 33 }, (_, i) => `/cmd${i}`);
     const hint = formatCandidateHint("command", names);
     expect(hint).toContain("33 个命令候选");

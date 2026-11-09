@@ -20,7 +20,14 @@
  */
 import { emitKeypressEvents } from "node:readline";
 import { c, displayWidth, truncate } from "../ui/theme.ts";
-import { formatCandidateHint, applyMatch, completeLine, triggerAt, type CommandEntry } from "../input/completion.ts";
+import {
+  formatCandidateHint,
+  applyMatch,
+  completeLine,
+  rankCommands,
+  triggerAt,
+  type CommandEntry,
+} from "../input/completion.ts";
 import { reduce as reduceSelect, type SelectOption, type SelectState } from "../ui/select.ts";
 import {
   askAnswerText,
@@ -145,6 +152,14 @@ export class Composer {
   private mode: "normal" | "ask" | "select" | "ask_user" = "normal";
   /** shell 输入模式（issue #30）：空缓冲区键入 `!` 进入，提交/删空/Esc 退出。 */
   private shellMode = false;
+  /** `/` 渐进式命令菜单（issue #31）：null = 菜单未打开。 */
+  private menu: { query: string; items: CommandEntry[]; index: number } | null = null;
+  /**
+   * Esc 关掉菜单时记下当时的缓冲区文本：菜单是「由 `/` 自动推导」的状态，
+   * 不记住这一点的话下一次 compose 会立刻把它重新打开，Esc 等于无效。
+   * 缓冲区一变（继续打字/删字）就清空，菜单恢复自动打开。
+   */
+  private menuDismissedFor: string | null = null;
   private select: SelectSession | null = null;
   private askState: AskState | null = null;
   private askUserState: AskUserSession | null = null;
@@ -454,6 +469,9 @@ export class Composer {
     if (this.hint) extras.push(truncateAnsi(c.dim(`· ${this.hint}`), width));
     if (this.noticeText) extras.push(truncateAnsi(`${c.warn("! ")}${c.warn(this.noticeText)}`, width));
     if (this.activity) extras.push(...wrapAnsi(c.dim(this.activity), width).slice(-1));
+    // issue #31：`/` 命令菜单画在输入框上方（extras 区），替代旧的单行候选 hint。
+    this.syncCommandMenu();
+    if (this.menu) extras.push(...this.menuRows(width));
 
     let rows: string[] = [];
     let cursorRow = 0;
@@ -920,6 +938,9 @@ export class Composer {
   }
 
   private handleNormalAction(action: KeyAction): void {
+    // issue #31：先按当前缓冲区同步菜单状态，菜单打开时优先吃掉它的导航/接受键。
+    this.syncCommandMenu();
+    if (this.menu && this.handleMenuKey(action)) return;
     // issue #30：shell 模式下空缓冲区再删 = 退出模式（不执行、不残留）。
     if (
       (action.type === "backspace" || action.type === "delete") &&
@@ -1051,6 +1072,7 @@ export class Composer {
   }
 
   private submit(): void {
+    this.menu = null;
     // issue #30：shell 模式下走独立路径（命令原文交给 onShellCommand，不经过 `!` 前缀剥离）。
     if (this.shellMode) {
       this.submitShellCommand();
@@ -1146,6 +1168,108 @@ export class Composer {
     this.notice("再按 Ctrl+C 退出", DOUBLE_CTRL_C_MS);
   }
 
+  // ---------------------------------------------------------------- 命令菜单（issue #31）
+
+  /** 按当前缓冲区同步 `/` 命令菜单；不在命令上下文（如已敲空格/非行首）就关闭。 */
+  private syncCommandMenu(): void {
+    if (this.mode !== "normal") {
+      this.menu = null;
+      return;
+    }
+    if (this.menuDismissedFor !== null && this.menuDismissedFor === this.buf.text) {
+      this.menu = null;
+      return;
+    }
+    this.menuDismissedFor = null;
+    const ctx = triggerAt(this.buf.text, this.buf.cursor);
+    if (!ctx || ctx.kind !== "command") {
+      this.menu = null;
+      return;
+    }
+    const items = rankCommands(ctx.query, this.deps.commands, 50);
+    if (items.length === 0) {
+      this.menu = { query: ctx.query, items, index: 0 };
+      return;
+    }
+    const keep = this.menu && this.menu.query === ctx.query ? this.menu.index : 0;
+    this.menu = { query: ctx.query, items, index: Math.min(keep, items.length - 1) };
+  }
+
+  /** 菜单行：左 `/name`、右短说明；超过 8 行滚动并提示剩余。 */
+  private menuRows(width: number): string[] {
+    const menu = this.menu;
+    if (!menu) return [];
+    if (menu.items.length === 0) {
+      return [truncateAnsi(`${c.warn("  无匹配")} ${c.dim(`"/${menu.query}"`)}`, width)];
+    }
+    const max = 8;
+    const total = menu.items.length;
+    const start = Math.max(0, Math.min(menu.index - Math.floor(max / 2), total - max));
+    const visible = menu.items.slice(start, start + max);
+    const nameW = Math.min(
+      26,
+      Math.max(...menu.items.map((it) => displayWidth(`/${it.name}`))) + 1,
+    );
+    const rows = visible.map((item, i) => {
+      const selected = start + i === menu.index;
+      const marker = selected ? c.accent("❯ ") : "  ";
+      const name = `/${item.name}`;
+      const pad = " ".repeat(Math.max(1, nameW - displayWidth(name)));
+      const desc = truncate(item.description, Math.max(4, width - 2 - nameW - 1));
+      return `${marker}${selected ? c.accent(name) : c.text(name)}${pad}${c.dim(desc)}`;
+    });
+    const hidden = total - visible.length;
+    if (hidden > 0) rows.push(c.dim(`   … 还有 ${hidden} 项（继续输入过滤）`));
+    return rows.map((r) => truncateAnsi(r, width));
+  }
+
+  /** 菜单打开时的按键：↑↓ 移动、Tab 接受不执行、Enter 接受并执行、Esc 关闭。 */
+  private handleMenuKey(action: KeyAction): boolean {
+    const menu = this.menu;
+    if (!menu) return false;
+    if (action.type === "up" || action.type === "down" || action.type === "page-up" || action.type === "page-down") {
+      // 空态也吃掉，避免 ↑ 误翻出历史。
+      if (menu.items.length === 0) return true;
+      const n = menu.items.length;
+      const step =
+        action.type === "up" ? -1 : action.type === "down" ? 1 : action.type === "page-up" ? -5 : 5;
+      menu.index = (menu.index + step + n * 100) % n;
+      this.scheduleRender();
+      return true;
+    }
+    if (action.type === "tab") {
+      this.acceptMenuCommand(false);
+      return true;
+    }
+    if (action.type === "submit") {
+      this.acceptMenuCommand(true);
+      return true;
+    }
+    if (action.type === "escape") {
+      this.menu = null;
+      this.menuDismissedFor = this.buf.text;
+      this.scheduleRender();
+      return true;
+    }
+    return false;
+  }
+
+  /** 接受高亮项：写进缓冲区；execute=true 时立即提交（Enter）。 */
+  private acceptMenuCommand(execute: boolean): void {
+    const menu = this.menu;
+    if (!menu || menu.items.length === 0) return;
+    const item = menu.items[menu.index];
+    if (!item) return;
+    const text = `/${item.name}`;
+    this.menu = null;
+    this.hint = null;
+    this.tabCycle = null;
+    this.buf.setText(text, text.length);
+    this.resetTabIfEdited();
+    if (execute) this.submit();
+    else this.scheduleRender();
+  }
+
   private tabComplete(): void {
     const line = this.buf.text;
     const cursor = this.buf.cursor;
@@ -1155,12 +1279,14 @@ export class Composer {
       const applied = applyMatch(line, cursor, cyc.start, cyc.matches[index] as string);
       this.buf.setText(applied.line, applied.cursor);
       this.tabCycle = { ...cyc, index, applied: applied.line, cursorAfter: applied.cursor };
-      this.hint = formatCandidateHint(this.lastKind, cyc.matches);
+      this.hint = formatCandidateHint("file", cyc.matches);
       this.scheduleRender();
       return;
     }
     const ctx = triggerAt(line, cursor);
-    if (!ctx || (ctx.kind === "file" && line.trimStart().startsWith("/"))) return;
+    // issue #31：命令补全改走菜单（Tab 只接受高亮项），这里只剩文件补全。
+    if (!ctx || ctx.kind === "command") return;
+    if (line.trimStart().startsWith("/")) return;
     const result = completeLine(line, {
       files: ctx.kind === "file" ? this.deps.files() : [],
       commands: this.deps.commands,
@@ -1173,7 +1299,6 @@ export class Composer {
       return;
     }
     const applied = applyMatch(line, cursor, result.start, result.matches[0] as string);
-    this.lastKind = ctx.kind;
     this.buf.setText(applied.line, applied.cursor);
     this.tabCycle = {
       start: result.start,
@@ -1182,11 +1307,9 @@ export class Composer {
       applied: applied.line,
       cursorAfter: applied.cursor,
     };
-    this.hint = result.matches.length > 1 ? formatCandidateHint(ctx.kind, result.matches) : null;
+    this.hint = result.matches.length > 1 ? formatCandidateHint("file", result.matches) : null;
     this.scheduleRender();
   }
-
-  private lastKind: "file" | "command" = "file";
 
   private async pasteImage(): Promise<void> {
     if (!this.deps.pasteImage) return;
