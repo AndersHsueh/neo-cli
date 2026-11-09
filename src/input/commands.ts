@@ -38,6 +38,7 @@ export const COMMANDS: CommandEntry[] = [
   { name: "inbox", description: "查看/放行 held 消息" },
   { name: "rename", description: "设置本会话名字" },
   { name: "goal", description: "设置/查看目标锚（防跑偏）" },
+  { name: "loop", description: "定时/自节奏循环提示（/loop 2m <提示> · self · stop）" },
   { name: "todos", description: "查看本会话结构化待办" },
   { name: "skills", description: "技能列表与详情" },
   { name: "wiki-lint", description: "wiki 体检" },

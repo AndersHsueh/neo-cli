@@ -39,6 +39,7 @@ import { loadEnv } from "../env/probe.ts";
 import { formatEnvForCli } from "../env/render.ts";
 import { syncEnvPage } from "../env/wiki.ts";
 import { rulesReport } from "../rules/index.ts";
+import { formatInterval, parseLoopCommand, type LoopSpec } from "../loop.ts";
 import type { ProjectRule, RuleMatch } from "../rules/index.ts";
 import { contentText } from "../llm.ts";
 import { listModels } from "../llm.ts";
@@ -146,6 +147,15 @@ export interface CommandContext {
    * 不传 = 不展示（子代理/测试场景）。
    */
   rules?: () => { alwaysOn: ProjectRule[]; loaded: RuleMatch[]; total: number };
+  /**
+   * 定时 / 自节奏循环提示（issue #25）。仅交互会话注入；`-p` 下为 undefined，
+   * `/loop` 会直接提示「不可用」而不启动任何定时器。
+   */
+  loop?: {
+    start: (spec: LoopSpec) => void;
+    stop: () => void;
+    status: () => string[];
+  };
   memoryMode?: "interactive" | "oneshot";
   /**
    * 把合成的用户消息排进主循环队列，作为下一轮发给模型（issue #13）。
@@ -170,7 +180,7 @@ export interface CommandContext {
 export async function handleCommand(line: string, ctx: CommandContext): Promise<void> {
   const {
     agent, ui, cfg, memory, classifier, meta, shutdown, selectDeps, mailbox, checkpoints,
-    injectMailbox, onMailboxRekey, onNameChange, promptSelection, toolVisibility, rules,
+    injectMailbox, onMailboxRekey, onNameChange, promptSelection, toolVisibility, rules, loop,
   } = ctx;
   const memoryMode = ctx.memoryMode ?? "interactive";
   const [cmdRaw, ...rest] = line.slice(1).split(/\s+/);
@@ -879,6 +889,37 @@ export async function handleCommand(line: string, ctx: CommandContext): Promise<
       } catch (e) {
         ui.warn(`设置目标失败：${(e as Error).message}`);
       }
+      break;
+    }
+
+    // 定时 / 自节奏循环提示（issue #25）：时钟驱动，与 /goal（条件驱动）正交。
+    case "loop": {
+      if (!loop) {
+        ui.warn("循环提示仅在交互会话可用（-p / 非交互模式不支持）。");
+        break;
+      }
+      const parsed = parseLoopCommand(arg);
+      if (parsed.kind === "error") {
+        ui.warn(parsed.message);
+        break;
+      }
+      if (parsed.kind === "stop") {
+        loop.stop();
+        ui.success("已停止循环。");
+        break;
+      }
+      if (parsed.kind === "start") {
+        if (parsed.warning) ui.warn(parsed.warning);
+        loop.start(parsed.spec);
+        const modeText =
+          parsed.spec.mode === "self" ? "自节奏（上一轮结束后）" : `每 ${formatInterval(parsed.spec.intervalMs)}`;
+        ui.success(`已启动循环：${modeText}`);
+        for (const line of loop.status()) ui.line(c.dim(`  ${line}`));
+        ui.line(c.dim("  /loop 看状态 · /loop stop 停止 · 忙碌时该拍会被丢弃"));
+        break;
+      }
+      // status
+      for (const line of loop.status()) ui.line(line);
       break;
     }
 

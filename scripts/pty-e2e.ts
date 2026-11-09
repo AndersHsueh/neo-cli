@@ -2549,6 +2549,81 @@ async function scenarioS23(tmpRoot: string): Promise<void> {
   }
 }
 
+/**
+ * S24（issue #25）：`/loop` 定时循环提示。
+ *
+ * 用 1h 间隔（启动即跑第一拍、测试期间不会再有第二拍）保证确定性：
+ * 状态查询 → 启动 → 注入的拍以 `❯ <提示>` 出现 → 已跑 1 次 → 停止 → 无循环。
+ */
+async function scenarioS24(tmpRoot: string): Promise<void> {
+  const dirs = await makeDirs(tmpRoot, "s24-loop");
+  const fake = await startFake("resume");
+  const run = await startNeo({
+    fake,
+    dirs,
+    name: "s24",
+    args: BASE_ARGS,
+    cols: DEFAULT_COLS,
+    rows: DEFAULT_ROWS,
+  });
+  try {
+    await waitPrompt(run);
+
+    // 1) 未启动时无循环
+    await run.type("/loop");
+    await waitFor(() => run.screen.text().includes("当前没有循环"), {
+      label: "/loop 无参时提示当前没有循环",
+      run,
+      timeoutMs: 8000,
+    });
+    await waitPrompt(run, "/loop 状态后回到提示符");
+
+    // 2) 启动 1h 循环（立刻跑第一拍）
+    await run.type("/loop 1h 看一下日志");
+    await waitFor(() => run.screen.text().includes("已启动循环"), {
+      label: "/loop 1h <提示> 启动成功",
+      run,
+      timeoutMs: 8000,
+    });
+
+    // 3) 注入的拍以用户行出现
+    await waitFor(() => run.screen.text().includes("❯ 看一下日志"), {
+      label: "循环注入的提示出现在会话里",
+      run,
+      timeoutMs: 15_000,
+    });
+
+    // 4) 状态能看到已跑次数
+    await waitPrompt(run, "循环第一拍结束后回到提示符");
+    await run.type("/loop");
+    await waitFor(() => run.screen.text().includes("已跑 1 次"), {
+      label: "/loop 状态显示已跑 1 次",
+      run,
+      timeoutMs: 8000,
+    });
+
+    // 5) 停止后回到无循环
+    await run.type("/loop stop");
+    await waitFor(() => run.screen.text().includes("已停止循环"), {
+      label: "/loop stop 停止成功",
+      run,
+      timeoutMs: 8000,
+    });
+    await waitPrompt(run, "停止循环后回到提示符");
+    await run.type("/loop");
+    await waitFor(() => run.screen.text().includes("当前没有循环"), {
+      label: "停止后 /loop 再次显示无循环",
+      run,
+      timeoutMs: 8000,
+    });
+  } catch (e) {
+    throw attachScreen(e, run.screen, run.stderr);
+  } finally {
+    await run.close();
+    await fake.stop();
+  }
+}
+
 const SCENARIOS: Scenario[] = [
   {
     id: "s1",
@@ -2699,6 +2774,12 @@ const SCENARIOS: Scenario[] = [
     title: "S23 输入框 ! shell 模式：进入/执行/回显/退出",
     fn: scenarioS23,
     focus: ["shell 命令", "NEO_SHELL_MODE_OK", "! echo NEO_SHELL_MODE_OK"],
+  },
+  {
+    id: "s24",
+    title: "S24 /loop 定时循环：启动/注入/状态/停止",
+    fn: scenarioS24,
+    focus: ["已启动循环", "❯ 看一下日志", "已跑 1 次"],
   },
 ];
 

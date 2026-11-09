@@ -119,6 +119,7 @@ import { decideInbound, formatIncomingFrame, formatNotice, formatNoticePreview, 
 import { makeListPeersTool, makeSendMessageTool } from "./tools/mailbox.ts";
 import { mailboxRoot, type Envelope } from "./mailbox/types.ts";
 import { cleanupRuntime } from "./maintenance.ts";
+import { LoopScheduler, formatLoopStatus } from "./loop.ts";
 import { CheckpointStore } from "./checkpoint.ts";
 import { formatResumeWarning, outcomeOf, type LastTurnMeta } from "./turnDiagnostics.ts";
 import {
@@ -1287,6 +1288,8 @@ async function main(): Promise<number> {
     origin: QueueOrigin;
     /** mailbox/notice 的来源 session（状态机 turn.from）。 */
     from?: string;
+    /** 由 `/loop` 注入的拍（issue #25）：需要像用户输入一样在 scrollback 回显一行。 */
+    loop?: boolean;
     /**
      * shell 输入模式（issue #30）提交的命令：text 是命令原文（不含 `!`），
      * 由 drain 直接交给 runShellWithTui —— 不再走「整行 startsWith !」那条，避免双重剥前缀。
@@ -1306,6 +1309,22 @@ async function main(): Promise<number> {
   let lastTurnMs = 0;
   /** 真正在跑 agent turn（不含斜杠命令/选择菜单）；状态行的时长只认它。 */
   let turnActive = false;
+  /**
+   * 定时 / 自节奏循环提示（issue #25）。
+   *
+   * 丢弃条件用 `turnActive`（turn 正在跑）而不是 `draining`：`draining` 在「正在处理
+   * /loop 命令」时也为 true，用它会把启动瞬间的第一拍误丢。命令本身不占 turn，
+   * 此时把拍入队后 drain 的 while 会自然接上。
+   */
+  const loopScheduler = new LoopScheduler({
+    enqueue: (prompt) => {
+      if (turnActive || queue.length > 0) return false;
+      queue.push({ text: prompt, attachments: [], origin: "user", loop: true });
+      composerRef?.setQueueCount(queue.length);
+      runDrainSafely();
+      return true;
+    },
+  });
   let pasteTextCounter = 0; // chip 编号会话内递增（PRD §3），图片/文本各自独立
   let pasteImageCounter = 0;
 
@@ -1330,6 +1349,8 @@ async function main(): Promise<number> {
 
   /** 退出：两类输入源都收敛到 closeInput()。 */
   async function shutdown(): Promise<void> {
+    // issue #25：会话退出必须停掉循环定时器，避免残留在进程退出路径上。
+    loopScheduler.dispose();
     try {
       await memory.flush();
     } catch {
@@ -1393,6 +1414,8 @@ async function main(): Promise<number> {
       const origin = q.origin;
 
       if (origin === "user") {
+        // issue #25：循环注入的拍不是用户亲手敲的，必须回显一行，否则用户不知道自动发了什么。
+        if (q.loop) ui.line(`${c.accent("❯ ")}${c.text(line)}`);
         // issue #30：输入态 shell 模式提交的命令（原文，无 `!`）直接执行。
         if (q.shell) {
           await runShellWithTui(line);
@@ -1443,6 +1466,12 @@ async function main(): Promise<number> {
             memoryMode,
             todos: () => sessionTodos,
             mcp: () => mcpManager.statuses(),
+            // issue #25：定时/自节奏循环（仅交互会话；-p 不传 → 命令提示不可用）
+            loop: {
+              start: (spec) => loopScheduler.start(spec),
+              stop: () => loopScheduler.stop(),
+              status: () => formatLoopStatus(loopScheduler.state, Date.now()),
+            },
           });
           continue;
         }
@@ -1543,6 +1572,8 @@ async function main(): Promise<number> {
       } finally {
         turnActive = false;
         composerRef?.setBusy(false);
+        // issue #25：self 节奏循环在「每轮结束」后排下一拍（interval 模式自己在定时器里排）。
+        loopScheduler.onTurnEnd();
         lastTurnMs = turnStartedAt > 0 ? Date.now() - turnStartedAt : 0;
         activeTurnFrom = null;
         if (mailbox) {
