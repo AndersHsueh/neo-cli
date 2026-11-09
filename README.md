@@ -296,6 +296,21 @@ exit 0
 格式化失败（没装 prettier、语法错）只给一条诊断，不会让工具结果变成错误 ——
 `onFailure: "continue"` 就是为这种「锦上添花」的 hook 准备的。
 
+### repo_map —— 仓库地图（issue #15）
+
+系统提示词会带一份**符号级仓库地图**：每个源码文件后跟其主要导出/定义（TS/JS/Python/Go/Rust），
+让模型在大仓里先看见结构、少做几轮盲扫。默认开启，预算保守：
+
+```json
+"repo_map": { "enabled": true, "budget_tokens": 800, "max_files": 1200 }
+```
+
+- 生成时机：每次渲染系统提示词时生成，结果**缓存 20 秒**；改文件后最迟一次渲染生效。
+- 预算：`budget_tokens`（按 4 字符≈1 token 折算字符上限）到顶就截断并标注；单文件最多 10 个符号、>300KB 跳过。
+- 扫描：最多 `max_files` 个源文件，跳过 `node_modules/.git/dist/build/venv/target/vendor/.cache/.neo` 等目录。
+- 关闭：`"repo_map": { "enabled": false }`；`/context` 的 `repo map` 行能看到文件数/符号数/估算 tokens/是否截断。
+- 与「工作目录结构（最多两层）」并存：树说有什么文件，地图说哪个文件定义了什么，不重复灌同一信息。
+
 ### mcpServers —— 接入外部 MCP 工具（issue #2）
 
 neo 可以连接 [MCP](https://modelcontextprotocol.io) server，把它们的工具动态注册进工具清单。

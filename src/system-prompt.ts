@@ -25,6 +25,8 @@ const IGNORE_DIRS = new Set([
   "target",
 ]);
 
+import { buildRepoMap } from "./prompt/repoMap.ts";
+
 function listFiles(root: string, depth = 2, max = 200): string[] {
   const out: string[] = [];
   const walk = (dir: string, d: number): void => {
@@ -64,6 +66,15 @@ export function buildSystemPrompt(cfg: Config, opts: { mailbox?: boolean; askUse
     tree.length > 0
       ? `\n工作目录结构（最多两层）：\n${tree.map((t) => `  ${t}`).join("\n")}`
       : `\n工作目录为空。`;
+
+  // issue #15：符号级仓库地图。空图/关闭/异常一律不注入（增强项）。
+  let repoMapText = "";
+  try {
+    const map = buildRepoMap(cfg);
+    if (map.text !== "") repoMapText = `\n${map.text}`;
+  } catch {
+    repoMapText = "";
+  }
 
   const tools = mainToolNames().join(", ");
   const mailboxText = opts.mailbox ? buildMailboxSection() : "";
@@ -127,7 +138,7 @@ ${opts.mailbox ? "- send_message：给另一个存活的 neo 会话投递纯文�
 
 - 工作目录：${cfg.cwd}
 ${formatModelLine(cfg)}
-${envText ? `${envText}\n` : ""}${treeText}
+${envText ? `${envText}\n` : ""}${treeText}${repoMapText}
 `;
 }
 

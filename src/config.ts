@@ -375,6 +375,8 @@ export interface Config {
   env?: EnvConfig;
   /** 系统提示词三档选择（issue #20）。settings.json 顶层 `system_prompt` 段；缺省按 DEFAULT_SELECTION_CONFIG。 */
   systemPrompt: PromptSelectionConfig;
+  /** 仓库地图（issue #15）：符号级地图注入系统提示词；`repo_map` 段可关/调预算。 */
+  repoMap: RepoMapConfig;
 }
 
 /**
@@ -471,6 +473,40 @@ export interface McpHttpServerConfig extends McpServerBase {
 }
 
 export type McpServerConfig = McpStdioServerConfig | McpHttpServerConfig;
+
+/**
+ * 仓库地图配置（issue #15）。settings.json 顶层 `repo_map` 段。
+ *
+ * 定位：给系统提示词注入一份**受预算限制的符号地图**（文件 → 主要导出/定义），
+ * 让模型在大仓里先看见结构再 grep。默认开启、预算保守（800 tokens 估算）。
+ */
+export interface RepoMapConfig {
+  enabled: boolean;
+  /** 地图预算（按 4 字符 ≈ 1 token 估算成字符上限）。 */
+  budgetTokens: number;
+  /** 一次扫描最多读多少个源文件（防超大仓把启动拖慢）。 */
+  maxFiles: number;
+}
+
+export const DEFAULT_REPO_MAP: RepoMapConfig = {
+  enabled: true,
+  budgetTokens: 800,
+  maxFiles: 1_200,
+};
+
+/** 解析 `repo_map` 段：非法值回落默认；显式 enabled:false 才关闭。 */
+export function resolveRepoMapConfig(raw: unknown): RepoMapConfig {
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return { ...DEFAULT_REPO_MAP };
+  const r = raw as Raw;
+  const enabled = typeof r["enabled"] === "boolean" ? r["enabled"] : DEFAULT_REPO_MAP.enabled;
+  const budget = numOrNull(r["budget_tokens"]);
+  const maxFiles = numOrNull(r["max_files"]);
+  return {
+    enabled,
+    budgetTokens: budget !== null && budget >= 100 ? Math.min(8_000, Math.floor(budget)) : DEFAULT_REPO_MAP.budgetTokens,
+    maxFiles: maxFiles !== null && maxFiles >= 10 ? Math.min(20_000, Math.floor(maxFiles)) : DEFAULT_REPO_MAP.maxFiles,
+  };
+}
 
 /**
  * 粘贴增强配置（PRD docs/paste-enhancement-prd[done].md §5.7）。
@@ -1099,6 +1135,7 @@ export function loadConfig(overrides: Partial<Config> = {}): Config {
     env: resolveEnvConfig(raw["env"]),
     systemPrompt: resolveSystemPromptConfig(raw["system_prompt"]),
     paste: resolvePasteConfig(raw["paste"] as Raw | undefined),
+    repoMap: resolveRepoMapConfig(raw["repo_map"]),
     mailbox: resolveMailboxSettings(raw),
     crossSessionInbound: resolveInboundPolicy(raw["cross_session_inbound"]),
     ...overrides,

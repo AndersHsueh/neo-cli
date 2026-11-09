@@ -39,6 +39,7 @@ import { loadEnv } from "../env/probe.ts";
 import { formatEnvForCli } from "../env/render.ts";
 import { syncEnvPage } from "../env/wiki.ts";
 import { rulesReport } from "../rules/index.ts";
+import { repoMapSummary } from "../prompt/repoMap.ts";
 import type { BackgroundView } from "../tools/background.ts";
 import type { ShellJobView } from "../tools/backgroundShell.ts";
 import { formatInterval, parseLoopCommand, type LoopSpec } from "../loop.ts";
@@ -324,6 +325,12 @@ export async function handleCommand(line: string, ctx: CommandContext): Promise<
               : `  当前预算连 0 个工具都容不下；收窄尚未启用，当前仍暴露全部 ${vis.total} 个工具。`,
           ),
         );
+      }
+      // issue #15：仓库地图状态（命中缓存，不重复扫描）。
+      try {
+        ui.kv("repo map", repoMapSummary(cfg));
+      } catch {
+        /* 诊断是增强项 */
       }
       // issue #17：路径作用域规则 —— 每会话几条、本轮命中了哪几条、为什么。
       // 规则发现/匹配都可能抛错（cwd 权限、并发删除），失败就省略，不让 /context 崩。

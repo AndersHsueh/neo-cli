@@ -1,4 +1,11 @@
 {
+  "repo_map": {
+    "enabled": true,
+    "budget_tokens": 800,
+    "max_files": 1200,
+    "_note": "仓库地图：给系统提示词注入符号级地图（文件→主要导出/定义）。budget_tokens 按 4 字符≈1 token 折算；max_files 限制扫描文件数；关闭写 enabled:false。"
+  },
+
   "default_provider": "example",
   "default_model_tier": "default",
 
