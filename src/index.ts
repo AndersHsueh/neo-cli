@@ -28,7 +28,7 @@ import { Agent, type PermissionMode } from "./agent.ts";
 import { dispatchCommand } from "./cli/commands.ts";
 import { helpText } from "./cli/help.ts";
 import { persist, printSessions, replayTranscript, showStats } from "./cli/sessions.ts";
-import { runShell } from "./cli/shell.ts";
+import { authorizeShell, executeShell, runShell } from "./cli/shell.ts";
 import { VERSION } from "./cli/version.ts";
 import { detectRepo, ensureWorktree } from "./worktree.ts";
 import { HotkeyRouter, doubleStrike } from "./hotkeys.ts";
@@ -1351,14 +1351,28 @@ async function main(): Promise<number> {
 
   /** `!cmd`：TTY 下先让出终端（cooked + 显示光标 + 擦帧），命令跑完再恢复自绘帧。 */
   async function runShellWithTui(cmd: string): Promise<void> {
+    const command = cmd.trim();
+    if (!command) return;
     if (!composer || composer.isSuspended) {
-      await runShell(cmd, cfg, ui, agent.mode);
+      await runShell(command, cfg, ui, agent.mode);
+      return;
+    }
+    // issue #34：授权（ask 模式下会弹 y/N 确认框）必须在挂起输入框**之前**。
+    // 旧顺序是先 suspend 再 runShell，而确认框要靠 composer 渲染 —— 挂起后 composer
+    // 既不渲染也不收键，确认框永远不出现，shell 永远不执行（表面像「输入失效」的死锁）。
+    const verdict = await authorizeShell(command, ui, agent.mode);
+    if (verdict === "plan") {
+      ui.warn(`plan 模式禁止执行 shell：${command}`);
+      return;
+    }
+    if (verdict === "deny") {
+      ui.info("已拒绝。");
       return;
     }
     externalShellActive = true;
     composer.suspend();
     try {
-      await runShell(cmd, cfg, ui, agent.mode);
+      await executeShell(command, cfg, ui);
     } finally {
       externalShellActive = false;
       composer.resume();

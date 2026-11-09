@@ -2489,13 +2489,11 @@ async function scenarioS21(tmpRoot: string): Promise<void> {
 }
 
 /**
- * S23（issue #30）：输入框 `!` shell 模式。
+ * S23（issue #30）：输入框 `!` shell 模式（含权限确认 + 执行后继续输入）。
  *
- * 空缓冲键入 `!` → 前缀变 `! `、占位变「shell 命令」；输入命令回车后 shell 执行、
- * scrollback 回显 `! <cmd>`；执行完输入框恢复普通占位。
- *
- * 注意：**不在这里断言「之后还能再输入一条命令」** —— 那是另一个已单独登记的问题
- * （TUI 跑完 shell 之后输入不生效，旧语法 `!cmd` 同样复现，见 issue #34）。
+ * 空缓冲键入 `!` → 前缀变 `! `、占位变「shell 命令」；输入命令回车 → 走既有权限确认
+ * （ask 模式）→ 回答 y 后 shell 真正执行；执行完输入框回普通态，**并且还能继续输入**
+ * —— 最后一步同时用于核查 issue #34 的「跑完 shell 后输入失效」猜想。
  */
 async function scenarioS23(tmpRoot: string): Promise<void> {
   const dirs = await makeDirs(tmpRoot, "s23-shell-input-mode");
@@ -2519,24 +2517,30 @@ async function scenarioS23(tmpRoot: string): Promise<void> {
       timeoutMs: 5000,
     });
 
-    // 2) 输入命令回车：执行且输出可见
+    // 2) 输入命令回车 → 权限确认问句（ask 模式）
     await run.type("echo NEO_SHELL_MODE_OK");
-    await waitFor(() => run.screen.text().includes("NEO_SHELL_MODE_OK"), {
-      label: "shell 命令输出可见",
+    await waitFor(() => run.screen.text().includes("shell — 执行"), {
+      label: "shell 命令先走权限确认",
+      run,
+      timeoutMs: 8000,
+    });
+
+    // 3) 回答 y → 真正执行（出现 `$ echo ...` 行说明走的是 runShell，不是纯回显）
+    await run.type("y");
+    await waitFor(() => run.screen.text().includes("$ echo NEO_SHELL_MODE_OK"), {
+      label: "确认后 shell 真正执行",
       run,
       timeoutMs: 10_000,
     });
-    // 3) scrollback 回显带 `! ` 前缀（和普通用户行区分）
-    await waitFor(() => run.screen.text().includes("! echo NEO_SHELL_MODE_OK"), {
-      label: "scrollback 回显 ! 前缀",
+
+    // 4) 执行完回普通输入态，并且还能继续输入（斜杠命令必须走命令路径）
+    await waitPrompt(run, "shell 执行后回到提示符");
+    await run.type("/todos");
+    await waitFor(() => run.screen.text().includes("暂无待办"), {
+      label: "shell 执行后普通输入仍然可用",
       run,
-      timeoutMs: 5000,
+      timeoutMs: 8000,
     });
-    // 4) 执行后回到普通输入态：占位恢复为普通提示（shell 占位消失）
-    await waitFor(
-      () => run.screen.text().includes("输入消息 · @ 文件") && !run.screen.text().includes("删空或 Esc 退出"),
-      { label: "shell 执行后回到普通输入态", run, timeoutMs: 8000 },
-    );
   } catch (e) {
     throw attachScreen(e, run.screen, run.stderr);
   } finally {
