@@ -117,7 +117,19 @@
 
 **合并口径**：peer 只在自己的分支提交（不改版本号 / 不打 tag / 不 push / 不合 main）；Lead 复核 diff、独立重跑 `NEO_BOT_COMMENTS_DIR=… bash scripts/verify.sh` 为 ALL GREEN 后，ff-only 合入 main 并按 §11 关单。
 
-## 9. 附录：peer 回执
+## 9. 第 2 批分派（2026-11-10 下午，已开工）
+
+| 任务 | issue | 执行者 | worktree | 状态 |
+|---|---|---|---|---|
+| #27 定点 compact | #46 | Morpheus | `fix-compact-from` | ✅ 已合入 `a4d2240`（#46 已关） |
+| #27 交互式 rewind 菜单（Esc Esc） | #47 | Oracle（Lead 修 PTY 根因） | `feat-rewind-menu` | ✅ 已合入 `cbef7a4`（#47 已关） |
+| #16② 跨会话恢复 + 续聊（/tasks chat） | #48 | Tank | `feat-bg-task-chat` | ✅ 已合入 `6761deb`（#48 已关） |
+| #15 纯文本 import 引用图 | #49 | Cypher | `feat-repo-map-refs` | ✅ 已合入 `5fb4c45`（#49 已关） |
+| #24 LLM 评估（接受模型判断） | #50（待开） | Lead 先写口径 PRD，再派 | — | 待开 |
+
+发版：第 0/1 批随 v0.4.82 发布并已推送（`31c440b` + tag）；**第 2 批 4 项随 v0.4.83 就绪**（`cbef7a4` + 本批 tag，等推送确认）。另：`f282ace` 为 -p 清理测试的负载下假红修正（test-only）。
+
+## 10. 附录：peer 回执
 
 | peer | 负责 | 用时 | 主要结论 |
 |---|---|---|---|
