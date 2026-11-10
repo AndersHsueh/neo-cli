@@ -15,7 +15,7 @@
 ## 2 需求
 
 1. **验证优先；无法验证时接受模型判断，并单独标注来源**（issue #50 修正，见
-   `docs/goal-drive-judge-prd.md`）：
+   `docs/goal-drive-judge-prd[done].md`）：
    - 检查命令 exit 0 = **已验证**（verified），这是硬条件，优先于一切；
    - 用户显式 `--judge "<完成标准>"` 时，检查命令未过（或没有检查命令）再问模型判断，
      达成则停止推进，但来源标注为**模型判断**（model），**绝不冒充「已验证」**；
@@ -48,7 +48,7 @@
 ## 4 非目标
 
 - ~~不用小模型「评估条件是否达成」~~ —— **已由 issue #50 修正**：用户显式 `--judge` 时接受模型判断，
-  但来源必须标注为「模型判断」而非「已验证」，口径见 `docs/goal-drive-judge-prd.md`；
+  但来源必须标注为「模型判断」而非「已验证」，口径见 `docs/goal-drive-judge-prd[done].md`；
 - 不做「模型判断代替检查命令」的默认行为（只有显式 `--judge` 才启用）；
 - 不做 `/goal pause|resume` 状态机（`/drive stop` + 重新 start 即可）；
 - 不持久化到 session（进程退出即结束）；

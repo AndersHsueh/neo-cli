@@ -1,7 +1,7 @@
 /**
  * `-p` 无人值守长跑（issue #51，来源 #24 非目标）。
  *
- * 口径见 `docs/oneshot-drive-prd.md`（§0 是硬口径）。三条铁律：
+ * 口径见 `docs/oneshot-drive-prd[done].md`（§0 是硬口径）。三条铁律：
  *
  *  1. **不新增 max-turns**。已有三层不同轴的上限：
  *     `max_tool_iterations`（单轮内工具迭代，默认 80）×

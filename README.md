@@ -21,13 +21,13 @@ bun run src/index.ts -p "修到测试全绿" --drive "bun test" --max 5 --max-mi
 可选 `--judge "<标准>"` 让模型判断完成条件（来源标注为**模型判断**，绝不冒充已验证）。
 必须显式 `-y`（无人值守没有人类点确认，缺了直接用法错误 exit 2）。
 退出码：达成 0 / 未达成 1 / SIGINT 130 / 用法错误 2；结束时 stderr 打一行
-`[drive] status=done source=verified rounds=2 elapsed=184s`。详见 `docs/oneshot-drive-prd.md`。
+`[drive] status=done source=verified rounds=2 elapsed=184s`。详见 `docs/oneshot-drive-prd[done].md`。
 
 ## 平台支持
 
 | 平台 | shell | 状态 |
 | --- | --- | --- |
-| macOS | `$SHELL`（默认 zsh） | ✅ 实测（tsc / 1956 测试 / PTY 32/32） |
+| macOS | `$SHELL`（默认 zsh） | ✅ 实测（tsc / 1995 测试 / PTY 32/32） |
 | Ubuntu / Debian | `$SHELL`（默认 bash） | ✅ 实测（sp7, Ubuntu 24.04.4 LTS） |
 | 其它 POSIX（dash/ksh/fish） | 自动探测 | ✅ 解析器支持；fish 不吃登录 PATH preamble |
 | Windows 11 | `pwsh` → `powershell` → `cmd` | 🟡 **实验性，未实机验证**（见 PD-1） |
@@ -48,7 +48,7 @@ Windows 启动用 `neo.cmd`（需要 Bun 在 PATH）；Linux/macOS 用 `neo.sh` 
 - **v0.4.81**：把剩余 11 条增强 + 2 处修复一次交付（open issue 清零）：`!` 输入态 shell 模式与 ask 模式死锁修复、`/loop` 定时/自节奏循环、`/` 渐进式命令菜单、MCP 远程 HTTP、后台子代理（`task background` + `/tasks`）、后台长驻 shell（`shell background`/`shell_output`/`/ps`，前台超时转后台）、仓库地图、按轮次回滚 `/rewind`、目标驱动续跑 `/drive`（只认可验证信号）、LSP 编辑后诊断与只读导航、路径作用域规则、`max_tokens` 边界发现。详见 `docs/release-notes/v0.4.81.md`。
 - **v0.4.82**：issue #35 第 0/1 批 —— `/rewind` 只列用户轮次、`/compact` 后轮次下标平移、`-p` 非交互路径回收全部临时资源、`-p` 下斜杠命令明确提示；LSP 扩展（workspaceSymbol / callHierarchy / completion）、MCP 旧式 SSE 传输、后台子代理任务落盘。详见 `docs/release-notes/v0.4.82.md`。
 - **v0.4.83**：issue #35 第 2 批 —— `/compact --from <轮次>` 定点压缩、Esc Esc 交互式 rewind 菜单、子代理对话落盘与 `/tasks chat` 续聊、仓库地图按 import 引用图排序（纯文本，不引 tree-sitter）。详见 `docs/release-notes/v0.4.83.md`。shell 探测顺序：`settings.shell.path` → `NEO_SHELL` → `$SHELL` → 平台默认 → `which` → `/bin/sh`；
-启动横幅后会显示实际使用的 shell。环境探测（`/env`）不需要模型，纯脚本采集，约 10ms。
+- **v0.4.84**：目标驱动补齐两端 —— `/drive --judge "<标准>"` 模型判断完成条件（检查命令仍是硬条件，来源分「已验证/模型判断」标注）；`neo -p … --drive "检查命令" [--judge] [--max N] [--max-minutes M] -y` 无人值守长跑（退出码 0/1/130/2，stderr 摘要，`max_tool_iterations`×轮次×墙钟三层上限）。详见 `docs/release-notes/v0.4.84.md`。启动横幅后会显示实际使用的 shell。环境探测（`/env`）不需要模型，纯脚本采集，约 10ms。
 
 ## 配置
 
