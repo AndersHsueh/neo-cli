@@ -1033,7 +1033,8 @@ export async function handleCommand(line: string, ctx: CommandContext): Promise<
         ui.warn("缺少完成条件：给检查命令（exit 0 = 已验证）或 --judge \"<标准>\"（模型判断）。");
         break;
       }
-      const maxMatch = /^--max\s+(\d+)\s+(.*)$/.exec(left);      if (maxMatch) left = (maxMatch[2] ?? "").trim();
+      const maxMatch = /^--max\s+(\d+)\s+(.*)$/.exec(left);
+      if (maxMatch) left = (maxMatch[2] ?? "").trim();
       // --judge "<标准>"：可出现在检查命令前后；引号可省（取到行尾），标准里允许空格。
       let criteria = "";
       const judgeQuoted = /--judge\s+"([^"]*)"\s*/.exec(left);

@@ -8,7 +8,7 @@
  * 本文件只负责循环。类型在 types.ts，预算提示在 steer.ts，权限判定在 policy.ts，
  * 压缩切分在 compact.ts。新增一种宿主能力走 AgentOptions 回调，不要把具体模块 import 进来。
  */
-import { chatStream, estimateTokens, contentText, LLMError, type Message, type ToolSpec } from "../llm.ts";
+import { chatStream, estimateTokens, contentText, LLMError, type Message, type ToolSpec, type Usage } from "../llm.ts";
 import type { Classifier } from "../classifier/index.ts";
 import { applyTier, type Config } from "../config.ts";
 import { StreamFormatter } from "../ui/stream.ts";
@@ -217,6 +217,18 @@ export class Agent {
 
   get cumulative(): { prompt: number; completion: number; reasoning: number } {
     return { prompt: this.totalPrompt, completion: this.totalCompletion, reasoning: this.totalReasoning };
+  }
+
+  /**
+   * 把一次**外部单次请求**的 usage 计入本会话累计（issue #50）。
+   *
+   * `/drive` 的模型判断、压缩摘要这类请求不经过主循环的 `res.usage` 记账路径，
+   * 由调用方显式回报；否则 `/cost` 会少算这部分成本。
+   */
+  recordUsage(usage: Usage): void {
+    this.totalPrompt += usage.prompt_tokens ?? 0;
+    this.totalCompletion += usage.completion_tokens ?? 0;
+    this.totalReasoning += usage.completion_tokens_details?.reasoning_tokens ?? 0;
   }
 
   get historyLength(): number {

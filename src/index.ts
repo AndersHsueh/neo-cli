@@ -1499,6 +1499,8 @@ async function main(): Promise<number> {
         [],
         {},
       );
+      // issue #50：judge 请求是独立小请求，不经过主循环记账 → 显式回报 usage（否则 /cost 少算）。
+      if (res.usage) agent.recordUsage(res.usage);
       const text = res.content.trim();
       const json = /\{[\s\S]*\}/.exec(text)?.[0];
       if (!json) return { done: false, invalid: true };
@@ -1904,11 +1906,16 @@ async function main(): Promise<number> {
         loopScheduler.onTurnEnd();
         // issue #24：目标驱动续跑 —— 每轮结束跑检查命令，未通过则自动再排一轮。
         // issue #50：把最近一轮的工具输出摘要交给 judge（截断并标注，PRD §2.3）。
-        const recentToolOutput = agent.messages
-          .filter((m) => m.role === "tool")
-          .slice(-4)
-          .map((m) => `tool(${m.name ?? ""}): ${contentText(m.content) ?? ""}`)
-          .join("\n");
+        // issue #50：只取**本轮**的工具输出（turnStats.toolCalls 条）；0 工具轮给空，避免混入上一轮尾巴。
+        const thisTurnToolCalls = turnStats?.toolCalls ?? 0;
+        const recentToolOutput =
+          thisTurnToolCalls > 0
+            ? agent.messages
+                .filter((m) => m.role === "tool")
+                .slice(-thisTurnToolCalls)
+                .map((m) => `tool(${m.name ?? ""}): ${contentText(m.content) ?? ""}`)
+                .join("\n")
+            : "";
         const clipped =
           recentToolOutput.length > 2_000
             ? `${recentToolOutput.slice(-2_000)}\n…[已截断，只保留最近 2000 字符]`
