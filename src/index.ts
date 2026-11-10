@@ -74,7 +74,7 @@ import { PromptManager } from "./prompt/manager.ts";
 import { createMemoryBridge, type MemoryBridge } from "./memory/bridge.ts";
 import { makeRememberTool } from "./tools/memory.ts";
 import { makeTodoWriteTool, todosSummary, type TodoItem } from "./tools/todo.ts";
-import { contentText, setMaxTokensLimitLearnedHandler, type Message } from "./llm.ts";
+import { chatStream, contentText, setMaxTokensLimitLearnedHandler, type Message } from "./llm.ts";
 import { toolNames, registerTool } from "./tools/index.ts";
 import { McpManager, type McpServerState } from "./mcp/index.ts";
 import { makeTaskTool, runSubagent } from "./tools/task.ts";
@@ -1432,8 +1432,9 @@ async function main(): Promise<number> {
    * 此时把拍入队后 drain 的 while 会自然接上。
    */
   /**
-   * 目标驱动自动续跑（issue #24）。完成条件只认**可验证信号**：检查命令 exit 0。
-   * 检查命令是用户显式配置的（与 hooks 同口径：不经审批、按配置自动跑）。
+   * 目标驱动自动续跑（issue #24 / #50）。
+   *  - 检查命令：用户显式配置（与 hooks 同口径：不经审批、按配置自动跑）；
+   *  - 模型判断：只在用户显式 `--judge` 时启用，一次独立小请求，结果标注为「模型判断」。
    */
   const runDriveCheck = async (
     cmd: string,
@@ -1469,11 +1470,58 @@ async function main(): Promise<number> {
       runDrainSafely();
       return true;
     },
+    // issue #50：模型判断 —— 一次独立小请求（与 compactNow 同模式），要求 JSON 输出。
+    evaluate: async (input) => {
+      const stream = agent.injectedStreamFn ?? chatStream;
+      const budget = Math.min(2_000, Math.floor(cfg.contextWindow * 0.05));
+      const checkLine = input.lastCheck
+        ? `检查命令结果：exit ${input.lastCheck.code ?? "?"}（未通过）\n输出尾部：${input.lastCheck.output.slice(-600)}`
+        : "没有配置检查命令。";
+      const res = await stream(
+        { ...cfg, maxTokens: budget, temperature: 0 },
+        [
+          {
+            role: "system",
+            content:
+              "你是完成条件判定器。只根据给出的工具输出判断目标是否达成。" +
+              "不要臆测没有出现在输出里的结果；不确定就判 false。" +
+              '只输出一行 JSON：{"done": true|false, "reason": "一句话理由"}。',
+          },
+          {
+            role: "user",
+            content:
+              `【目标提示】\n${input.prompt}\n\n` +
+              `【完成标准】\n${input.criteria}\n\n` +
+              `【${checkLine}】\n\n` +
+              `【最近一轮工具输出（可能已截断）】\n${input.recentOutput || "（无）"}`,
+          },
+        ],
+        [],
+        {},
+      );
+      const text = res.content.trim();
+      const json = /\{[\s\S]*\}/.exec(text)?.[0];
+      if (!json) return { done: false, invalid: true };
+      try {
+        const parsed = JSON.parse(json) as { done?: unknown; reason?: unknown };
+        if (typeof parsed.done !== "boolean") return { done: false, invalid: true };
+        return {
+          done: parsed.done,
+          ...(typeof parsed.reason === "string" && parsed.reason.trim() !== ""
+            ? { reason: parsed.reason.trim() }
+            : {}),
+        };
+      } catch {
+        return { done: false, invalid: true };
+      }
+    },
     onEnd: (state, action) => {
       if (action === "continue") {
-        ui.info(`自动续跑（第 ${state.rounds}/${state.spec.maxRounds} 轮）：检查未通过，已再排一轮`);
+        ui.info(`自动续跑（第 ${state.rounds}/${state.spec.maxRounds} 轮）：条件未达成，已再排一轮`);
       } else if (action === "done") {
-        ui.success(state.reason ?? "目标达成");
+        // issue #50：来源决定文案 —— verified 才能说「已验证」，model 只能说「模型判断」。
+        if (state.source === "verified") ui.success(state.reason ?? "目标达成（已验证）");
+        else ui.success(state.reason ?? "目标达成（模型判断）");
       } else {
         ui.warn(state.reason ?? "自动续跑已暂停");
       }
@@ -1855,9 +1903,21 @@ async function main(): Promise<number> {
         // issue #25：self 节奏循环在「每轮结束」后排下一拍（interval 模式自己在定时器里排）。
         loopScheduler.onTurnEnd();
         // issue #24：目标驱动续跑 —— 每轮结束跑检查命令，未通过则自动再排一轮。
-        void drive.onTurnEnd({ toolCalls: turnStats?.toolCalls ?? 0 }).catch((e: unknown) => {
-          ui.warn(`自动续跑检查失败：${(e as Error).message}`);
-        });
+        // issue #50：把最近一轮的工具输出摘要交给 judge（截断并标注，PRD §2.3）。
+        const recentToolOutput = agent.messages
+          .filter((m) => m.role === "tool")
+          .slice(-4)
+          .map((m) => `tool(${m.name ?? ""}): ${contentText(m.content) ?? ""}`)
+          .join("\n");
+        const clipped =
+          recentToolOutput.length > 2_000
+            ? `${recentToolOutput.slice(-2_000)}\n…[已截断，只保留最近 2000 字符]`
+            : recentToolOutput;
+        void drive
+          .onTurnEnd({ toolCalls: turnStats?.toolCalls ?? 0, recentOutput: clipped })
+          .catch((e: unknown) => {
+            ui.warn(`自动续跑检查失败：${(e as Error).message}`);
+          });
         // issue #27：把本轮新产生的检查点归到这一轮，并写回 session meta。
         try {
           const newSeqs = checkpoints

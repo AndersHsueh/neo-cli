@@ -6,15 +6,22 @@
  *  - `/drive <检查命令> -- <提示>` = **可验证完成条件 + 自动续跑**：每轮结束跑检查命令，
  *    未通过就自动再排一轮提示，通过/到上限/连续空转就停。
  *
- * 设计铁律：**完成条件只认可验证信号**（检查命令退出码 0）。
- * 模型自己说「做完了」不算 —— 自述不可验证，会给「自欺循环」开闸。
+ * 设计铁律（issue #50 修正后）：**验证优先，模型判断单独标注来源**。
+ *  - 检查命令 exit 0 = **已验证**（verified），这是硬条件；
+ *  - 用户显式给 `--judge "<标准>"` 时，检查命令未过（或没有检查命令）再问模型判断，
+ *    达成则停止推进，但来源标注为**模型判断**（model），绝不冒充「已验证」。
  *
- * 本模块只放纯逻辑（状态机）；跑检查命令与入队都由调用方注入，便于单测。
+ * 本模块只放纯逻辑（状态机）；跑检查命令、问模型、入队都由调用方注入，便于单测。
  */
 
+/** 完成判定的来源：verified = 检查命令 exit 0；model = 模型判断（issue #50）。 */
+export type DriveSource = "verified" | "model";
+
 export interface DriveSpec {
-  /** 完成条件：一条 shell 命令，退出码 0 = 达成。 */
+  /** 完成条件：一条 shell 命令，退出码 0 = 达成。空串 = 没有检查命令（只靠 judge）。 */
   check: string;
+  /** 模型判断标准（issue #50）。不给 = 不启用模型判断。 */
+  judge?: { criteria: string };
   /** 每轮未达成时自动发送的提示（用户原始意图）。 */
   prompt: string;
   /** 最多自动推进多少轮（默认 5）。 */
@@ -39,6 +46,14 @@ export interface DriveState {
   lastCheck: DriveCheckResult | null;
   startedAt: number;
   reason: string | null;
+  /** 完成判定的来源（issue #50）：done 才有意义；null = 还没判定过。 */
+  source: DriveSource | null;
+  /** 最近一次模型判断的结果（issue #50）：null = 还没问过。 */
+  lastJudge: { done: boolean; reason: string | null } | null;
+  /** 连续 judge 失败次数（抛错/超时/输出不可解析），issue #50。 */
+  judgeFailures: number;
+  /** 最近一次 judge 失败的说明（给用户看）。 */
+  lastJudgeNote: string | null;
 }
 
 export interface DriveOutcome {
@@ -46,11 +61,29 @@ export interface DriveOutcome {
   state: DriveState | null;
 }
 
+/** 模型判断的输入（issue #50，PRD §2.3）。 */
+export interface JudgeInput {
+  criteria: string;
+  prompt: string;
+  /** 最近一轮工具输出摘要（已截断并标注）。 */
+  recentOutput: string;
+  lastCheck: DriveCheckResult | null;
+}
+
+/** 模型判断的结果；`invalid: true` = 输出不可解析（按未达成处理）。 */
+export interface JudgeResult {
+  done: boolean;
+  reason?: string;
+  invalid?: boolean;
+}
+
 export interface DriveDeps {
   /** 跑检查命令（注入 shell 执行）。 */
   runCheck: (cmd: string) => Promise<DriveCheckResult>;
   /** 把提示排进会话队列；返回 false = 忙/队列非空（这一拍跳过）。 */
   enqueue: (prompt: string) => boolean;
+  /** 模型判断（issue #50）。不传 = 不支持 judge，start 会明确报错。 */
+  evaluate?: (input: JudgeInput) => Promise<JudgeResult>;
   now?: () => number;
   /** 状态变化时通知（命令层用来打一行）。 */
   onEnd?: (state: DriveState, action: DriveOutcome["action"]) => void;
@@ -59,6 +92,8 @@ export interface DriveDeps {
 export const DEFAULT_DRIVE_MAX_ROUNDS = 5;
 /** 连续多少轮没有工具调用就暂停（防空转烧钱）。 */
 export const DRIVE_IDLE_LIMIT = 2;
+/** 模型判断连续失败多少次就暂停（issue #50，PRD §2.2）。 */
+export const JUDGE_FAILURE_LIMIT = 2;
 
 export class DriveManager {
   private cur: DriveState | null = null;
@@ -76,18 +111,31 @@ export class DriveManager {
   start(spec: DriveSpec): { ok: true } | { ok: false; error: string } {
     const check = spec.check.trim();
     const prompt = spec.prompt.trim();
-    if (check === "") return { ok: false, error: "缺少检查命令（退出码 0 = 达成）" };
+    const criteria = spec.judge?.criteria.trim() ?? "";
+    if (check === "" && criteria === "") {
+      return {
+        ok: false,
+        error: "缺少完成条件：给检查命令（退出码 0 = 达成）或 --judge \"<标准>\"（模型判断）",
+      };
+    }
+    if (criteria !== "" && !this.deps.evaluate) {
+      return { ok: false, error: "当前会话不支持模型判断（未接线 evaluate）" };
+    }
     if (prompt === "") return { ok: false, error: "缺少提示（未达成时自动发送的内容）" };
     const raw = Number.isFinite(spec.maxRounds) ? Math.floor(spec.maxRounds) : DEFAULT_DRIVE_MAX_ROUNDS;
     const maxRounds = Math.max(1, Math.min(20, raw));
     this.cur = {
-      spec: { check, prompt, maxRounds },
+      spec: { check, ...(criteria !== "" ? { judge: { criteria } } : {}), prompt, maxRounds },
       status: "running",
       rounds: 0,
       idleRounds: 0,
       lastCheck: null,
       startedAt: this.now(),
       reason: null,
+      source: null,
+      lastJudge: null,
+      judgeFailures: 0,
+      lastJudgeNote: null,
     };
     return { ok: true };
   }
@@ -99,32 +147,64 @@ export class DriveManager {
   }
 
   /** 每轮结束时由组合根调用；返回本轮采取的动作。 */
-  async onTurnEnd(args: { toolCalls: number }): Promise<DriveOutcome> {
+  async onTurnEnd(args: { toolCalls: number; recentOutput?: string }): Promise<DriveOutcome> {
     const state = this.cur;
     if (!state || state.status !== "running") return { action: "none", state: this.state };
     if (this.running) return { action: "none", state: this.state }; // 上一拍的检查还没跑完
     this.running = true;
     try {
-      const check = await this.deps.runCheck(state.spec.check);
-      state.lastCheck = check;
-      if (check.ok) {
-        state.status = "done";
-        state.reason = `检查命令通过（exit 0）：${state.spec.check}`;
-        this.deps.onEnd?.(this.state!, "done");
-        return { action: "done", state: this.state };
+      // ---- 1. 检查命令（硬条件）：有才跑；exit 0 → 已验证 ----
+      let check: DriveCheckResult | null = null;
+      if (state.spec.check !== "") {
+        check = await this.deps.runCheck(state.spec.check);
+        state.lastCheck = check;
+        if (check.ok) {
+          state.status = "done";
+          state.source = "verified";
+          state.reason = `检查命令通过（exit 0，已验证）：${state.spec.check}`;
+          this.deps.onEnd?.(this.state!, "done");
+          return { action: "done", state: this.state };
+        }
       }
+
+      // ---- 2. 模型判断（issue #50）：检查命令未过 / 没有检查命令时再问 ----
+      const criteria = state.spec.judge?.criteria;
+      if (criteria && this.deps.evaluate) {
+        const verdict = await this.judgeOnce(state, criteria, check, args.recentOutput ?? "");
+        if (verdict === "failed") {
+          // 连续失败到上限 → 暂停并交回用户（PRD §2.2）。
+          if (state.judgeFailures >= JUDGE_FAILURE_LIMIT) {
+            state.status = "stopped";
+            state.reason = `模型判断连续 ${state.judgeFailures} 次失败（${state.lastJudgeNote ?? "未知原因"}），已暂停`;
+            this.deps.onEnd?.(this.state!, "idle-stop");
+            return { action: "idle-stop", state: this.state };
+          }
+        } else if (verdict.done) {
+          state.status = "done";
+          state.source = "model";
+          const why = verdict.reason ? `：${verdict.reason}` : "";
+          state.reason =
+            check !== null
+              ? `模型判断达成（检查命令未通过；来源为模型判断，不是检查命令结果）${why}`
+              : `模型判断达成（来源为模型判断，不是检查命令结果）${why}`;
+          this.deps.onEnd?.(this.state!, "done");
+          return { action: "done", state: this.state };
+        }
+      }
+
+      // ---- 3. 未达成：防空转 / 上限 / 再排一轮 ----
       // 防空转：连续 N 轮模型一个工具都没调，说明它大概率在原地打转。
       if (args.toolCalls === 0) state.idleRounds += 1;
       else state.idleRounds = 0;
       if (state.idleRounds >= DRIVE_IDLE_LIMIT) {
         state.status = "stopped";
-        state.reason = `连续 ${state.idleRounds} 轮没有工具调用，已暂停（检查仍未通过）`;
+        state.reason = `连续 ${state.idleRounds} 轮没有工具调用，已暂停（条件仍未达成）`;
         this.deps.onEnd?.(this.state!, "idle-stop");
         return { action: "idle-stop", state: this.state };
       }
       if (state.rounds >= state.spec.maxRounds) {
         state.status = "exhausted";
-        state.reason = `已达自动推进上限 ${state.spec.maxRounds} 轮，检查仍未通过`;
+        state.reason = `已达自动推进上限 ${state.spec.maxRounds} 轮，条件仍未达成`;
         this.deps.onEnd?.(this.state!, "exhausted");
         return { action: "exhausted", state: this.state };
       }
@@ -137,12 +217,46 @@ export class DriveManager {
       this.running = false;
     }
   }
+
+  /**
+   * 问一次模型判断（issue #50）。
+   *
+   * 抛错 / 超时 / 输出不可解析都按**未达成**处理并累加失败计数 ——
+   * 绝不因为「判断失败」就宣布完成，也不让异常击穿状态机。
+   */
+  private async judgeOnce(
+    state: DriveState,
+    criteria: string,
+    check: DriveCheckResult | null,
+    recentOutput: string,
+  ): Promise<JudgeResult | "failed"> {
+    let result: JudgeResult;
+    try {
+      result = await this.deps.evaluate!({ criteria, prompt: state.spec.prompt, recentOutput, lastCheck: check });
+    } catch (e) {
+      state.judgeFailures += 1;
+      state.lastJudgeNote = `判断请求失败：${(e as Error).message}`;
+      return "failed";
+    }
+    if (result.invalid || typeof result.done !== "boolean") {
+      state.judgeFailures += 1;
+      state.lastJudgeNote = "判断输出无法解析（按未达成处理）";
+      return "failed";
+    }
+    state.judgeFailures = 0;
+    state.lastJudgeNote = null;
+    state.lastJudge = { done: result.done, reason: result.reason?.trim() || null };
+    return result;
+  }
 }
 
 /** `/drive` 无参时的状态行（纯函数，便于单测）。 */
 export function formatDriveState(state: DriveState | null): string[] {
   if (!state) {
-    return ["没有正在进行的自动续跑（/drive <检查命令> -- <提示> 启动，最多 5 轮）"];
+    return [
+      "没有正在进行的自动续跑（/drive <检查命令> -- <提示> 启动，最多 5 轮）",
+      "  也可用 /drive --judge \"<完成标准>\" -- <提示>：由模型判断是否达成（来源标注为模型判断）",
+    ];
   }
   const status =
     state.status === "running"
@@ -154,13 +268,32 @@ export function formatDriveState(state: DriveState | null): string[] {
           : "已停止";
   const lines = [
     `状态：${status} · 已自动推进 ${state.rounds}/${state.spec.maxRounds} 轮`,
-    `检查命令（exit 0 = 达成）：${state.spec.check}`,
-    `提示：${state.spec.prompt.length > 60 ? `${state.spec.prompt.slice(0, 60)}…` : state.spec.prompt}`,
   ];
+  if (state.spec.check !== "") {
+    lines.push(`检查命令（exit 0 = 达成）：${state.spec.check}`);
+  }
+  if (state.spec.judge) {
+    lines.push(`模型判断标准：${state.spec.judge.criteria}`);
+  }
+  lines.push(
+    `提示：${state.spec.prompt.length > 60 ? `${state.spec.prompt.slice(0, 60)}…` : state.spec.prompt}`,
+  );
   const last = state.lastCheck;
   if (last) {
     const tail = last.output.split(/\\r?\\n/).filter((l) => l.trim() !== "").slice(-2).join(" / ");
     lines.push(`最近一次检查：exit ${last.code ?? "?"}${tail ? ` · ${tail.slice(0, 160)}` : ""}`);
+  }
+  // issue #50：最近一次判断的来源与原因要看得见（PRD §2.2）。
+  if (state.lastJudge) {
+    const verdict = state.lastJudge.done ? "达成" : "未达成";
+    const why = state.lastJudge.reason ? ` · ${state.lastJudge.reason}` : "";
+    lines.push(`最近判断：模型判断 · ${verdict}${why}`);
+  }
+  if (state.source) {
+    lines.push(`完成来源：${state.source === "verified" ? "已验证（检查命令 exit 0）" : "模型判断（来源为模型判断，不是检查命令结果）"}`);
+  }
+  if (state.judgeFailures > 0 && state.lastJudgeNote) {
+    lines.push(`判断异常：连续 ${state.judgeFailures} 次 · ${state.lastJudgeNote}`);
   }
   if (state.reason) lines.push(`说明：${state.reason}`);
   return lines;

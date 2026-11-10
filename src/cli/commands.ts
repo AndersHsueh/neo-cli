@@ -996,7 +996,7 @@ export async function handleCommand(line: string, ctx: CommandContext): Promise<
       break;
     }
 
-    // 目标驱动自动续跑（issue #24）：完成条件 = 检查命令 exit 0（只认可验证信号）。
+    // 目标驱动自动续跑（issue #24 / #50）：检查命令 exit 0 = 已验证；--judge 走模型判断。
     case "drive": {
       if (!drive) {
         ui.warn("当前会话不支持自动续跑（未接线；-p 单次模式不可用）。");
@@ -1007,8 +1007,9 @@ export async function handleCommand(line: string, ctx: CommandContext): Promise<
         for (const line of drive.status()) ui.line(line);
         ui.line(
           c.dim(
-            "用法：/drive <检查命令> -- <提示> [--max N] · /drive stop。" +
-              "例：/drive bun test -- 把测试修到全绿（检查命令 exit 0 = 达成；模型自述完成不算）",
+            "用法：/drive <检查命令> -- <提示> [--max N] · /drive --judge \"<完成标准>\" -- <提示> · /drive stop。" +
+              "例：/drive bun test -- 把测试修到全绿（检查命令 exit 0 = 已验证）；" +
+              "/drive --judge \"README 可读性已改好\" -- 改 README（模型判断，来源标注为模型判断）",
           ),
         );
         break;
@@ -1018,17 +1019,42 @@ export async function handleCommand(line: string, ctx: CommandContext): Promise<
         ui.success("已停止自动续跑。");
         break;
       }
-      // 语法：/drive [--max N] <检查命令> -- <提示>
-      const sep = text.indexOf(" -- ");
+      // 语法：/drive [--max N] [--judge "<标准>"] [<检查命令>] -- <提示>
+      // 分隔符允许出现在行首（`-- 提示`，此时完成条件为空 → 走「两者都缺」的用法错误）。
+      const sep = text.startsWith("-- ") ? 0 : text.indexOf(" -- ");
       if (sep === -1) {
-        ui.warn("缺少 `--` 分隔符。用法：/drive <检查命令> -- <提示> [--max N]");
+        ui.warn("缺少 `--` 分隔符。用法：/drive [--max N] [--judge \"<标准>\"] [<检查命令>] -- <提示>");
         break;
       }
-      const left = text.slice(0, sep).trim();
+      let left = text.slice(0, sep).trim();
       const right = text.slice(sep + 4).trim();
-      const maxMatch = /^--max\s+(\d+)\s+(.*)$/.exec(left);
+      // 完成条件在 `--` 之前：空着就是两者都缺。
+      if (left === "") {
+        ui.warn("缺少完成条件：给检查命令（exit 0 = 已验证）或 --judge \"<标准>\"（模型判断）。");
+        break;
+      }
+      const maxMatch = /^--max\s+(\d+)\s+(.*)$/.exec(left);      if (maxMatch) left = (maxMatch[2] ?? "").trim();
+      // --judge "<标准>"：可出现在检查命令前后；引号可省（取到行尾），标准里允许空格。
+      let criteria = "";
+      const judgeQuoted = /--judge\s+"([^"]*)"\s*/.exec(left);
+      if (judgeQuoted) {
+        criteria = (judgeQuoted[1] ?? "").trim();
+        left = `${left.slice(0, judgeQuoted.index)} ${left.slice(judgeQuoted.index + judgeQuoted[0].length)}`.trim();
+      } else {
+        const judgeBare = /--judge\s+(.+)$/.exec(left);
+        if (judgeBare) {
+          criteria = (judgeBare[1] ?? "").trim();
+          left = left.slice(0, judgeBare.index).trim();
+        }
+      }
+      const check = left.trim();
+      if (check === "" && criteria === "") {
+        ui.warn("缺少完成条件：给检查命令（exit 0 = 已验证）或 --judge \"<标准>\"（模型判断）。");
+        break;
+      }
       const spec: DriveSpec = {
-        check: maxMatch ? (maxMatch[2] ?? "").trim() : left,
+        check,
+        ...(criteria !== "" ? { judge: { criteria } } : {}),
         prompt: right,
         maxRounds: maxMatch ? Number(maxMatch[1]) : 5,
       };
@@ -1037,9 +1063,12 @@ export async function handleCommand(line: string, ctx: CommandContext): Promise<
         ui.warn(r.error);
         break;
       }
-      ui.success(`已启动自动续跑：检查命令 \`${spec.check}\`（exit 0 = 达成），最多 ${spec.maxRounds} 轮`);
+      const parts: string[] = [];
+      if (spec.check !== "") parts.push(`检查命令 \`${spec.check}\`（exit 0 = 已验证）`);
+      if (spec.judge) parts.push(`模型判断（标准：${spec.judge.criteria}）`);
+      ui.success(`已启动自动续跑：${parts.join(" + ")}，最多 ${spec.maxRounds} 轮`);
       for (const line of drive.status()) ui.line(c.dim(`  ${line}`));
-      ui.line(c.dim("  每轮结束自动跑检查；通过/到上限/连续空转/`/drive stop` 时停"));
+      ui.line(c.dim("  每轮结束先跑检查（有的话），未过再问模型判断；通过/到上限/连续空转/`/drive stop` 时停"));
       break;
     }
 
