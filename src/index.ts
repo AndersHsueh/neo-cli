@@ -79,6 +79,8 @@ import { toolNames, registerTool } from "./tools/index.ts";
 import { McpManager, type McpServerState } from "./mcp/index.ts";
 import { makeTaskTool, runSubagent } from "./tools/task.ts";
 import { BackgroundTasks, serializeJobs, restoreJobs } from "./tools/background.ts";
+import { saveSubagentTranscript, loadSubagentTranscript } from "./tools/transcript.ts";
+import type { ToolCtx } from "./tools/types.ts";
 import { backgroundShells } from "./tools/backgroundShell.ts";
 import { cleanupEphemeral } from "./cleanup.ts";
 import { makeAskUserTool } from "./tools/askUser.ts";
@@ -1018,6 +1020,9 @@ async function main(): Promise<number> {
         // 用自己的 signal：后台任务的生命周期独立于发起它的那一轮。
         { ...job.ctx, signal, onProgress: undefined },
         job.promptTier,
+        // issue #48：把子代理的最终 messages 交出来，任务结束即落盘（续聊要用它重建上下文）。
+        // 放在这里而不是 runSubagent 内部：runSubagent 不知道自己的 jobId。
+        { onMessages: (msgs) => saveSubagentTranscript(sess.meta.id, job.id, msgs) },
       ),
   });
 
@@ -1702,6 +1707,33 @@ async function main(): Promise<number> {
                 return live.length > 0 ? live : restoredJobs;
               },
               cancel: (target) => backgroundTasks?.cancel(target) ?? 0,
+              // issue #48：续聊 —— 读回该任务的子代理对话，追加用户消息后继续跑。
+              // 恢复后的任务没有活 Agent，这里重建一个（AbortController 也重新建）。
+              chat: async (id, text) => {
+                const messages = loadSubagentTranscript(sess.meta.id, id);
+                if (!messages || messages.length === 0) {
+                  return {
+                    ok: false as const,
+                    error: `任务 ${id} 没有可续聊的对话记录（可能未落盘或已被清理）。`,
+                  };
+                }
+                const ctrl = new AbortController();
+                const ctx: ToolCtx = {
+                  cfg,
+                  approve: (_tool, detail) => ui.confirm(detail),
+                  checkpoint: checkpoints,
+                  signal: ctrl.signal,
+                };
+                try {
+                  const reply = await runSubagent(agent, text, undefined, ctx, undefined, {
+                    messages,
+                    onMessages: (msgs) => saveSubagentTranscript(sess.meta.id, id, msgs),
+                  });
+                  return { ok: true as const, reply };
+                } catch (e) {
+                  return { ok: false as const, error: `续聊失败：${(e as Error).message}` };
+                }
+              },
             },
           });
           continue;

@@ -173,6 +173,11 @@ export interface CommandContext {
   tasks?: {
     list: () => BackgroundView[];
     cancel: (target: string) => number;
+    /**
+     * 续聊（issue #48）：给指定任务追加一条用户消息并继续该子代理。
+     * 不传 = 不支持续聊（`/tasks chat` 会明说）。
+     */
+    chat?: (id: string, text: string) => Promise<{ ok: true; reply: string } | { ok: false; error: string }>;
   };
   /**
    * 定时 / 自节奏循环提示（issue #25）。仅交互会话注入；`-p` 下为 undefined，
@@ -1090,6 +1095,30 @@ export async function handleCommand(line: string, ctx: CommandContext): Promise<
         else ui.info("没有可取消的运行中任务。");
         break;
       }
+      // issue #48：/tasks chat <id> <消息> —— 给已完成的任务追加一条消息并继续该子代理。
+      if (sub === "chat") {
+        const parts = arg.split(/\s+/).filter((x) => x !== "");
+        const id = parts[1] ?? "";
+        const text = parts.slice(2).join(" ").trim();
+        if (!id || !text) {
+          ui.warn("用法：/tasks chat <id> <消息>（先 /tasks 看 id）");
+          break;
+        }
+        if (!tasks.chat) {
+          ui.warn("当前会话不支持续聊（未接线）。");
+          break;
+        }
+        ui.info(`继续子代理 ${id}…`);
+        const r = await tasks.chat(id, text);
+        if (!r.ok) {
+          ui.warn(r.error);
+          break;
+        }
+        ui.blank();
+        ui.line(r.reply);
+        ui.blank();
+        break;
+      }
       const list = tasks.list();
       if (list.length === 0) {
         ui.info("没有后台任务。模型可用 task（background: true）发起，命令跑完会自动把结果注入会话。");
@@ -1112,7 +1141,7 @@ export async function handleCommand(line: string, ctx: CommandContext): Promise<
         ui.line(`  ${c.text(t.id)}  ${status}  ${c.dim(`${secs}s`)}  ${c.dim(prompt)}`);
         if (t.error) ui.line(`      ${c.warn(t.error)}`);
       }
-      ui.line(c.dim("  /tasks cancel 取消全部 · /tasks cancel <id> 取消单个"));
+      ui.line(c.dim("  /tasks cancel 取消全部 · /tasks cancel <id> 取消单个 · /tasks chat <id> <消息> 继续该子代理"));
       ui.blank();
       break;
     }

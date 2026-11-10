@@ -15,6 +15,7 @@
  */
 import { Agent, type AgentIO } from "../agent.ts";
 import { contentText } from "../llm.ts";
+import type { Message } from "../llm.ts";
 import { applyTier, normalizeTierName, tierAvailable, type Config, type ModelTier } from "../config.ts";
 import { resolveAndApplyModelWindow } from "../env/modelWindows.ts";
 import { toolSpecs } from "./index.ts";
@@ -192,6 +193,18 @@ export async function runSubagent(
   declaredTier: string | undefined,
   ctx: ToolCtx,
   declaredPromptTier?: string,
+  /**
+   * 续聊（issue #48）：已有的子代理 messages。传了就**接着这份历史跑**，
+   * 不再从零 new Agent；不传 = 旧行为（从零起跑）。
+   *
+   * 只用于 `/tasks chat`，`task` 工具本身永远从零 —— 子代理的隔离性是它的核心契约。
+   */
+  resume?: {
+    /** 已有历史；不传 = 从零起跑（旧行为）。 */
+    messages?: Message[];
+    /** 跑完把最终 messages 交回去（调用方负责落盘）。 */
+    onMessages?: (messages: Message[]) => void;
+  },
 ): Promise<string> {
   const trimmed = prompt.trim();
   if (!trimmed) {
@@ -253,11 +266,16 @@ export async function runSubagent(
         `请收窄为只读/短任务，或指定窗口更大的 tier 后重试；不要用更短的提示词绕过控制要求。`,
     );
   }
+  // 续聊（issue #48）：有历史就复用它的系统提示词，保证「还是同一个子代理」。
+  const resumedSystem = resume?.messages?.find((m) => m.role === "system");
+  const effectiveSystemPrompt =
+    resumedSystem && typeof resumedSystem.content === "string" ? resumedSystem.content : subPrompt.text;
+
   const sub = new Agent({
     cfg: subCfg,
     console: new SilentConsole(main.io),
     mode: main.mode,
-    systemPrompt: subPrompt.text,
+    systemPrompt: effectiveSystemPrompt,
     chatStream: main.injectedStreamFn,
     isSubagent: true,
     // 子代理的写操作也进父会话的检查点（/undo 能一起恢复）
@@ -275,6 +293,12 @@ export async function runSubagent(
   // abort 链路：父任务被 Ctrl+C 打断时，子代理一并取消。
   const onAbort = () => sub.cancel();
   ctx.signal?.addEventListener("abort", onAbort, { once: true });
+
+  // 续聊（issue #48）：把已有历史灌进子代理，再追加本轮用户消息。
+  // 放在 send 之前 —— send 会把新消息 push 到 messages 末尾，历史必须先就位。
+  if (resume?.messages && resume.messages.length > 0) {
+    sub.messages = resume.messages.map((m) => ({ ...m }));
+  }
 
   try {
     const stats = await sub.send(trimmed);
@@ -297,6 +321,12 @@ export async function runSubagent(
     return `${report}\n\n${usage}`;
   } finally {
     ctx.signal?.removeEventListener("abort", onAbort);
+    // issue #48：把最终 messages 交回调用方（落盘供续聊）。失败不阻断任务。
+    try {
+      resume?.onMessages?.(sub.messages);
+    } catch {
+      /* 落盘是增强项 */
+    }
   }
 }
 
