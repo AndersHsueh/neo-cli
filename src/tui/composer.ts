@@ -46,6 +46,15 @@ import { renderStatus, type StatusSnapshot, type StatusSegment } from "./status.
 import { stripAnsi, truncateAnsi, wrapAnsi } from "./ansi.ts";
 import { TitleAnimator, type TitleView } from "./title.ts";
 import { shouldFold } from "../paste.ts";
+import {
+  EscDoublePress,
+  REWIND_MODE_QUESTION,
+  REWIND_TURN_QUESTION,
+  modeMenuItems,
+  rewindSummary,
+  turnMenuItems,
+} from "./rewindMenu.ts";
+import type { RewindMode, RewindResult, RewindTurn } from "../rewind.ts";
 
 /** 状态行数据源（index.ts 提供闭包；width/queueCount 由 Composer 补）。 */
 export type ComposerStatus = Omit<StatusSnapshot, "width" | "queueCount">;
@@ -89,6 +98,14 @@ export interface ComposerDeps {
   beforeUserCommit?: () => void;
   /** resize 时通知宿主（dock 用新宽度重排 pending）。 */
   onResize?: () => void;
+  /**
+   * 交互式 rewind（issue #47）：菜单选中轮次与模式后由宿主执行回滚。
+   * 不提供 = 本会话不支持（连按 Esc 不打开菜单）。
+   */
+  rewind?: {
+    list: () => RewindTurn[];
+    apply: (target: number | "last", mode: RewindMode) => RewindResult;
+  };
   now?: () => number;
 }
 
@@ -152,6 +169,10 @@ export class Composer {
   private mode: "normal" | "ask" | "select" | "ask_user" = "normal";
   /** shell 输入模式（issue #30）：空缓冲区键入 `!` 进入，提交/删空/Esc 退出。 */
   private shellMode = false;
+  /** Esc Esc 双击判定（issue #47）：只在「Esc 本来无事可做」时武装。 */
+  private readonly escDouble = new EscDoublePress();
+  /** rewind 菜单是否正在打开中（防重入：两次 Esc 之间可能夹着异步）。 */
+  private rewindMenuOpen = false;
   /** `/` 渐进式命令菜单（issue #31）：null = 菜单未打开。 */
   private menu: { query: string; items: CommandEntry[]; index: number } | null = null;
   /**
@@ -761,6 +782,8 @@ export class Composer {
 
     const action = mapKey(raw);
     if (!action) return;
+    // issue #47：Esc 之外的任何键都复位双击窗口（Esc → 打字 → Esc 不算双击）。
+    if (action.type !== "escape" && action.type !== "escape-escape") this.escDouble.reset();
 
     // 粘贴边界必须先于模态分发：否则审批/选择态里 paste-start 被当普通键吃掉，
     // 粘贴内容会逐字符走 mapKey（审批可能被 "y\r" 代答）。
@@ -807,6 +830,46 @@ export class Composer {
       this.finishSelect();
       sel.resolve(null);
       return;
+    }
+  }
+
+  /**
+   * 交互式 rewind 菜单（issue #47）：选轮次 → 选模式 → 交给宿主执行。
+   *
+   * 复用 `choose()`（select 模态）而不是新造一套：Esc 取消、↑↓ 移动、状态行保持
+   * 都由现有实现保证。菜单存续期间 `rewindMenuOpen` 挡住重复打开。
+   */
+  private async openRewindMenu(): Promise<void> {
+    const rewind = this.deps.rewind;
+    if (!rewind || this.rewindMenuOpen) return;
+    this.rewindMenuOpen = true;
+    try {
+      const turns = rewind.list();
+      if (turns.length === 0) {
+        this.notice("还没有可回滚的轮次（只算用户轮次）");
+        return;
+      }
+      const target = await this.choose<number>(REWIND_TURN_QUESTION, turnMenuItems(turns), turns.length - 1);
+      if (target === null) {
+        this.notice("已取消");
+        return;
+      }
+      const mode = await this.choose<RewindMode>(REWIND_MODE_QUESTION, modeMenuItems(), 0);
+      if (mode === null) {
+        this.notice("已取消");
+        return;
+      }
+      const r = rewind.apply(target, mode);
+      if (r.turnsRemoved === 0) {
+        for (const note of r.notes) this.notice(note);
+        return;
+      }
+      // 结果进 scrollback（与 /rewind 命令同口径），note 用 dim 行补在后面。
+      const rows = [c.ok(`✓ ${rewindSummary(r)}`)];
+      for (const note of r.notes) rows.push(c.dim(`  ${note}`));
+      this.frame.commitAboveAndRender(rows, this.compose());
+    } finally {
+      this.rewindMenuOpen = false;
     }
   }
 
@@ -980,6 +1043,22 @@ export class Composer {
         this.tabComplete();
         return;
       case "escape":
+      case "escape-escape": {
+        const doubleEsc = action.type === "escape-escape";
+        // issue #47：终端/readline 会把连按两下 Esc 合并成一个事件（sequence 是两个 ESC 字节）
+        // → keys.ts 映射成 escape-escape。只在「Esc 本来无事可做」（空闲 + 空缓冲 + 非 shell 模式）
+        // 才打开 rewind 菜单；其它状态退回单 Esc 语义（不多做任何事）。
+        if (
+          doubleEsc &&
+          !this.busy &&
+          !this.shellMode &&
+          this.buf.text === "" &&
+          this.deps.rewind &&
+          !this.rewindMenuOpen
+        ) {
+          void this.openRewindMenu();
+          return;
+        }
         if (this.busy) {
           this.deps.onCancelTurn?.();
           this.notice("已请求取消本轮");
@@ -994,9 +1073,17 @@ export class Composer {
           this.history.reset(); // 清空后 ↓ 不能把 ↑ 之前的草稿复活
           this.tabCycle = null;
           this.hint = null;
+        } else if (!doubleEsc && this.deps.rewind && !this.rewindMenuOpen) {
+          // issue #47：只有「Esc 本来无事可做」（空闲 + 空缓冲 + 无 shell 模式）才武装双击。
+          // 上面三条分支各自 return 前都不武装 —— 单 Esc 的 5 种语义一律不变。
+          if (this.escDouble.arm(this.now())) {
+            void this.openRewindMenu();
+            return;
+          }
         }
         this.scheduleRender();
         return;
+      }
       case "ctrl-c":
         this.handleCtrlC();
         return;

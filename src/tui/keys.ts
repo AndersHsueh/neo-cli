@@ -43,6 +43,7 @@ export type KeyAction =
   | { type: "kill-word" }
   | { type: "tab" }
   | { type: "escape" }
+  | { type: "escape-escape" }
   | { type: "ctrl-c" }
   | { type: "ctrl-d" }
   | { type: "ctrl-o" }
@@ -73,6 +74,11 @@ export function insertableText(k: RawKey): string | null {
 export function mapKey(k: RawKey): KeyAction | null {
   // 1) Ctrl+J：M0 实测 sequence 是 "\n"（name 仍是 "enter"）——必须最先判。
   if (k.sequence === "\n") return { type: "newline" };
+
+  // 1.5) 连按两下 Esc：PTY / readline 会把两个 ESC 字节合并成一个 keypress
+  //      （name=escape、meta=true、sequence="\x1b\x1b"）。issue #47 用它开 rewind 菜单；
+  //      必须早于下面按 name=escape 的判定，否则会被当成单 Esc。
+  if (k.sequence === "\x1b\x1b") return { type: "escape-escape" };
 
   // 2) 换行组合键：Shift+Enter（Kitty 协议）/ Ctrl+Enter / Alt+Enter。
   //    必须在 sequence "\r" 的提交判定之前 —— 否则它们会被当成提交。

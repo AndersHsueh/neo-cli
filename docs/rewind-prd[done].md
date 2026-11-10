@@ -86,3 +86,14 @@
 - **边界**：`from` 越界（<1 或 >最后一条下标）、该轮之后不足 2 条 → 抛错，命令层提示「未做处理」。
 - **不做**：不加 PTY 场景。定点压缩的判定全在纯逻辑层（切点/配对/平移），PTY 只能断言屏幕文案，
   而要造「多轮 → 定点压缩 → 回滚」需改 `scripts/fake-llm.ts` 的多阶段 SCENARIO，会波及 S1–S29 既有断言。
+
+## 8 交互式菜单（2026-11-10，issue #47）
+
+- **入口**：空闲且输入框为空时连按两次 Esc。readline/PTY 会把连续两个 ESC 字节合并成一个
+  keypress（`name=escape`、`meta=true`、`sequence="\x1b\x1b"`），`tui/keys.ts` 把它映射成
+  `escape-escape`；两次**独立** escape 事件（部分终端）则由 400ms 双击窗口兜底。
+- **只在「Esc 本来无事可做」时生效**：单 Esc 的 5 种既有语义（取消本轮 / 清空输入 / 退出 shell
+  模式 / 关 `/` 菜单 / 审批或 select 模态）一律不变；菜单打开期间 Esc 取消。
+- **流程**：选用户轮次（#42 口径，只列用户轮次）→ 选 code / conversation / both → 执行；
+  与 `/rewind` 命令共用同一份 `RewindLog.rewind` 逻辑与落盘。
+- **范围**：仅 TUI 路径（readline 路径不做交互菜单）；PTY 场景 S30 覆盖打开/选择/执行/取消。

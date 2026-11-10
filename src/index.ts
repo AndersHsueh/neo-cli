@@ -2019,6 +2019,26 @@ async function main(): Promise<number> {
       paste: { foldLines: cfg.paste.foldLines, foldChars: cfg.paste.foldChars },
       beforeUserCommit: () => dock?.flushPending(),
       onResize: () => dock?.resize(),
+      // issue #47：交互式 rewind 菜单（空闲连按两次 Esc）。与 /rewind 命令同一份 apply 逻辑。
+      rewind: {
+        list: () => rewindLog.list(),
+        apply: (target, mode) => {
+          const r = rewindLog.rewind({
+            target,
+            mode,
+            store: { undoSeqs: (seqs) => checkpoints.undoSeqs(seqs) },
+            conversation: {
+              length: () => agent.messages.length,
+              truncate: (n) => {
+                agent.messages.length = Math.max(1, n);
+              },
+            },
+          });
+          sess.meta.rewind = rewindLog.serialize();
+          persist(agent.messages, sess.meta);
+          return r;
+        },
+      },
     });
     composerRef = composer;
     titleAnimator = new TitleAnimator({});

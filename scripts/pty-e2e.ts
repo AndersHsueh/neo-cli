@@ -2847,6 +2847,111 @@ async function scenarioS29(tmpRoot: string): Promise<void> {
   }
 }
 
+/**
+ * S30（issue #47）：空闲连按两次 Esc 打开 rewind 菜单。
+ *
+ * 覆盖：打开菜单 → 选轮次 → 选模式 → 执行；Esc 取消；单 Esc 语义不变（清空输入）。
+ * 轮次来自真实一轮对话（fake-llm 的 resume 场景，不调工具）。
+ */
+async function scenarioS30(tmpRoot: string): Promise<void> {
+  const dirs = await makeDirs(tmpRoot, "s30-rewind-menu");
+  const fake = await startFake("resume");
+  const run = await startNeo({
+    fake,
+    dirs,
+    name: "s30",
+    args: BASE_ARGS,
+    cols: DEFAULT_COLS,
+    rows: DEFAULT_ROWS,
+  });
+  try {
+    await waitPrompt(run);
+
+    // 0) 单 Esc 语义回归：输入框有内容时 Esc = 清空（不能打开菜单）
+    await run.write("abc");
+    await waitFor(() => (lastPromptLine(run.screen) ?? "").includes("abc"), {
+      label: "输入 abc",
+      run,
+      timeoutMs: 5000,
+    });
+    await run.write("\x1b");
+    await waitFor(() => inputEmpty(run.screen), { label: "单 Esc 清空输入（语义不变）", run, timeoutMs: 5000 });
+    check(!run.screen.text().includes("回滚到哪一轮之前"), "清空输入的单 Esc 误开了 rewind 菜单", run.screen);
+
+    // 1) 跑一轮对话，产生一个用户轮次
+    await run.type("读一下 a.txt");
+    await waitFor(() => run.screen.text().includes("会话恢复测试答案。"), {
+      label: "第一轮完成",
+      run,
+      timeoutMs: 15_000,
+    });
+    await waitPrompt(run, "第一轮后回到提示符");
+
+    // 2) 空闲 + 空输入框：连按两次 Esc 打开菜单
+    // 两次 Esc 分开写、留足间隔：同批写入会被 readline 解析成「Alt+Esc」单个事件。
+    await run.write("\x1b\x1b");
+    await waitFor(() => run.screen.text().includes("回滚到哪一轮之前？"), {
+      label: "连按两次 Esc 打开 rewind 菜单",
+      run,
+      timeoutMs: 8000,
+    });
+    check(run.screen.text().includes("读一下 a.txt"), "菜单里没有列出用户轮次", run.screen);
+
+    // 3) 选轮次（Enter 选第一条）→ 进入模式菜单
+    await run.write("\r");
+    await waitFor(() => run.screen.text().includes("回滚什么？"), {
+      label: "选轮次后进入模式菜单",
+      run,
+      timeoutMs: 8000,
+    });
+    check(run.screen.text().includes("代码 + 对话"), "模式菜单缺少默认项", run.screen);
+
+    // 4) Esc 取消模式菜单 → 回提示符，且没有执行回滚
+    await run.write("\x1b");
+    await waitFor(() => run.screen.text().includes("已取消"), {
+      label: "Esc 取消 rewind 菜单",
+      run,
+      timeoutMs: 8000,
+    });
+    await waitPrompt(run, "取消后回到提示符");
+    check(!run.screen.text().includes("已回滚"), "取消后不应执行回滚", run.screen);
+
+    // 5) 再开一次，走完整链路：选轮次 → 选模式 → 执行
+    await run.write("\x1b\x1b");
+    await waitFor(() => run.screen.text().includes("回滚到哪一轮之前？"), {
+      label: "第二次打开 rewind 菜单",
+      run,
+      timeoutMs: 8000,
+    });
+    await run.write("\r"); // 选轮次
+    await waitFor(() => run.screen.text().includes("回滚什么？"), { label: "第二次进入模式菜单", run });
+    await run.write("\r"); // 选默认 both
+    await waitFor(() => run.screen.text().includes("已回滚"), {
+      label: "选模式后执行回滚",
+      run,
+      timeoutMs: 10_000,
+    });
+    await waitPrompt(run, "回滚后回到提示符");
+
+    // 6) 回滚后轮次表已清空：再开菜单应提示空态
+    await run.write("\x1b\x1b");
+    await waitFor(() => run.screen.text().includes("还没有可回滚的轮次"), {
+      label: "回滚后菜单提示空态",
+      run,
+      timeoutMs: 8000,
+    });
+    await waitPrompt(run, "空态后回到提示符");
+
+    await run.type("/exit");
+    await run.waitExit();
+  } catch (e) {
+    throw attachScreen(e, run.screen, run.stderr);
+  } finally {
+    await run.close();
+    await fake.stop();
+  }
+}
+
 const SCENARIOS: Scenario[] = [
   {
     id: "s1",
@@ -3033,6 +3138,12 @@ const SCENARIOS: Scenario[] = [
     title: "S29 /drive 目标驱动续跑：空态/启动/状态/停止",
     fn: scenarioS29,
     focus: ["没有正在进行的自动续跑", "已启动自动续跑", "已停止自动续跑"],
+  },
+  {
+    id: "s30",
+    title: "S30 Esc Esc 打开 rewind 菜单：选轮次/选模式/执行/取消",
+    fn: scenarioS30,
+    focus: ["回滚到哪一轮之前？", "回滚什么？", "已回滚"],
   },
 ];
 

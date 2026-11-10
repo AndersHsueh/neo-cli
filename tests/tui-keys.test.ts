@@ -270,3 +270,16 @@ describe("K1g 换行组合键（v0.3.0 补充）", () => {
     expect(mapKey({ name: "return", sequence: "\r" })).toEqual({ type: "submit" });
   });
 });
+
+describe("K1i 连按两下 Esc（issue #47）", () => {
+  test("K1i 两个 ESC 字节合并成一个 keypress → escape-escape", () => {
+    // readline 实测：连按两下 Esc 会合成一个事件（name=escape, meta=true, sequence="\x1b\x1b"）
+    expect(mapKey({ name: "escape", sequence: "\x1b\x1b", meta: true })).toEqual({ type: "escape-escape" });
+    expect(mapKey({ sequence: "\x1b\x1b" })).toEqual({ type: "escape-escape" });
+  });
+
+  test("K1i 单个 Esc 仍是 escape（不被双击规则误伤）", () => {
+    expect(mapKey({ name: "escape", sequence: "\x1b" })).toEqual({ type: "escape" });
+    expect(mapKey({ name: "escape" })).toEqual({ type: "escape" });
+  });
+});
