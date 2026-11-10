@@ -80,6 +80,7 @@ import { McpManager, type McpServerState } from "./mcp/index.ts";
 import { makeTaskTool, runSubagent } from "./tools/task.ts";
 import { BackgroundTasks } from "./tools/background.ts";
 import { backgroundShells } from "./tools/backgroundShell.ts";
+import { cleanupEphemeral } from "./cleanup.ts";
 import { makeAskUserTool } from "./tools/askUser.ts";
 import { registerWikiTools } from "./tools/wiki.ts";
 import { describeShell, getShell, prepareShellInvocation } from "./shell.ts";
@@ -1208,7 +1209,7 @@ async function main(): Promise<number> {
     if (!prompt.trim()) {
       console.error(c.err("✖ -p 需要提供内容"));
       // 此时 MCP server 可能已经连上（连接发生在 -p 分支之前），必须收掉。
-      try { mcpManager.closeAll(); } catch { /* 清理失败不掩盖用法错误 */ }
+      cleanupEphemeralResources();
       return 2;
     }
     // json 模式把 SIGINT 转成 aborted 统计：Ctrl+C 后仍能输出一行 JSON（exit 130），
@@ -1221,16 +1222,18 @@ async function main(): Promise<number> {
     } catch (e) {
       // 异常退出路径：agent.send 抛错时不能把 MCP 子进程留在后面当孤儿。
       // 收完再原样抛出，让外层（main 的 catch / 进程退出）按原语义处理。
-      try { mcpManager.closeAll(); } catch { /* 清理失败不掩盖原异常 */ }
+      cleanupEphemeralResources();
       throw e;
     } finally {
       if (jsonMode) process.off("SIGINT", onSigint);
     }
-    // 正常结束（含 hadError / aborted）：先收 MCP 子进程再落盘退出。
+    // 正常结束（含 hadError / aborted）：先收子进程再落盘退出。
     // -p 是「跑完就退」的一次性进程，子进程没有第二次机会被回收。
     // 顺序执行而非 finally：json 输出分支与 return 都在其后，清理必须在
     // persist 之前完成（persist 之后还有 await memory.flush，进程仍活着）。
-    try { mcpManager.closeAll(); } catch { /* 清理失败不阻止退出 */ }
+    // issue #40：清理清单与 shutdown() 共用 cleanupEphemeral —— 旧实现只收 MCP，
+    // 于是模型在 -p 里起的后台 shell / 后台子代理 / 语言服务器全成了孤儿。
+    cleanupEphemeralResources();
     persist(agent.messages, sess.meta);
     // 单次模式：把记忆写队列在退出前冲刷掉（仅项目级；带超时，不阻塞关闭）
     await memory.flush();
@@ -1284,8 +1287,8 @@ async function main(): Promise<number> {
     try {
       await agent.send(args.rest.join(" "));
     } finally {
-      // 与 -p 同一条一次性进程路径：MCP 子进程必须显式收掉，否则留下孤儿 node。
-      try { mcpManager.closeAll(); } catch { /* 清理失败不掩盖原异常 */ }
+      // 与 -p 同一条一次性进程路径（issue #40）：子进程必须显式收掉，否则留下孤儿。
+      cleanupEphemeralResources();
     }
     persist(agent.messages, sess.meta);
     await memory.flush();
@@ -1454,30 +1457,52 @@ async function main(): Promise<number> {
     runDrainSafely();
   }
 
+  /**
+   * 取一个可能还在 TDZ 里的 `const` 绑定：未初始化时返回 null 而不是抛错。
+   *
+   * `typeof x` 对 `let`/`const` 的 TDZ **不安全**（实测 Bun 1.3.13 仍抛
+   * ReferenceError），所以只能靠 try/catch。
+   */
+  function tdzSafe<T>(read: () => T): T | null {
+    try {
+      return read();
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * 本会话所有临时资源的清理入口（issue #40）：`shutdown()` / `-p` / 非交互路径共用。
+   *
+   * 清单与顺序在 `src/cleanup.ts`（唯一真源），这里只做依赖绑定。
+   * 同步、幂等、逐项容错 —— 所以 `-p` 的异常路径也能在 `throw` 之前安全调用。
+   *
+   * 注意 `loopScheduler` / `drive` 是 `const`，声明在 `-p` 分支**之后**（index.ts 的
+   * 组合顺序），在 `-p` 路径上访问会命中 TDZ 抛 ReferenceError。
+   * `typeof` 挡不住 TDZ（它只对「未声明」安全，对「已声明未初始化」照样抛），
+   * 所以用 try/catch 取值：`-p` 分支跑的时候它们根本还没创建，本来也不需要清理。
+   */
+  function cleanupEphemeralResources(): void {
+    cleanupEphemeral({
+      loop: tdzSafe(() => loopScheduler),
+      drive: tdzSafe(() => drive),
+      tasks: backgroundTasks,
+      shells: backgroundShells,
+      lsp: lspServers,
+      mcp: mcpManager,
+      closeMailbox,
+    });
+  }
+
   /** 退出：两类输入源都收敛到 closeInput()。 */
   async function shutdown(): Promise<void> {
-    // issue #25：会话退出必须停掉循环定时器，避免残留在进程退出路径上。
-    loopScheduler.dispose();
-    // issue #16：后台子代理一并取消，不留幽灵任务。
-    backgroundTasks?.cancelAll();
-    // issue #28：本次会话拉起的后台 shell 一并收掉，不留孤儿进程。
-    backgroundShells.killAll();
-    // issue #24：自动续跑停止，不再往已退出的会话里排轮。
-    drive.stop();
-    // issue #23：语言服务器一并收掉，不留孤儿进程。
-    lspServers.closeAll();
+    // issue #40：资源清理统一走 cleanupEphemeral（与 -p / 非交互路径同一份清单）。
+    cleanupEphemeralResources();
     try {
       await memory.flush();
     } catch {
       // 记忆失败不阻止退出
     }
-    // MCP 子进程必须显式收掉：否则 npx/node 会挂在父进程后面成为孤儿。
-    try {
-      mcpManager.closeAll();
-    } catch {
-      // 清理失败不阻止退出
-    }
-    closeMailbox();
     persist(agent.messages, sess.meta);
     ui.blank();
     ui.line(c.dim("再见。"));
