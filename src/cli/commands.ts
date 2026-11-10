@@ -1104,7 +1104,9 @@ export async function handleCommand(line: string, ctx: CommandContext): Promise<
               ? c.ok("已完成")
               : t.status === "error"
                 ? c.err("失败")
-                : c.dim("已取消");
+                : t.status === "interrupted"
+                  ? c.warn("中断")
+                  : c.dim("已取消");
         const secs = Math.max(0, Math.round(t.elapsedMs / 1000));
         const prompt = t.prompt.length > 50 ? `${t.prompt.slice(0, 50)}…` : t.prompt;
         ui.line(`  ${c.text(t.id)}  ${status}  ${c.dim(`${secs}s`)}  ${c.dim(prompt)}`);

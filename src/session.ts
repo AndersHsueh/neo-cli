@@ -9,6 +9,7 @@ import type { ContentPart, Message } from "./llm.ts";
 import type { LastTurnMeta } from "./turnDiagnostics.ts";
 import type { TodoItem } from "./tools/todo.ts";
 import type { RewindTurn } from "./rewind.ts";
+import type { PersistedBackgroundJob } from "./tools/background.ts";
 
 export interface SessionMeta {
   id: string;
@@ -35,6 +36,14 @@ export interface SessionMeta {
    * `--resume` 同一会话后仍能 `/rewind`（messages 由会话文件完整恢复，截断点仍然有效）。
    */
   rewind?: RewindTurn[];
+  /**
+   * 后台子代理任务的历史快照（issue #45）。
+   *
+   * 只存**可序列化**的纯数据（无 ctx / signal），`--resume` 后作为只读历史展示：
+   * 进程退出时还在跑的任务恢复时一律标 `interrupted`，不假装它还在跑。
+   * 旧会话没有该字段 = 空清单。
+   */
+  backgroundTasks?: PersistedBackgroundJob[];
 }
 
 export interface SessionFile {

@@ -16,6 +16,38 @@ import type { ToolCtx } from "./types.ts";
 
 export type BackgroundStatus = "running" | "done" | "error" | "cancelled";
 
+/**
+ * 落盘后的状态（issue #45）。
+ *
+ * `interrupted` 只存在于**恢复后**的只读历史里：进程退出时还在跑的任务不可能还在跑，
+ * 恢复时必须显式标成中断，而不是留着 `running` 让 `/tasks` 假装它还在推进。
+ */
+export type PersistedBackgroundStatus = BackgroundStatus | "interrupted";
+
+/** 落盘条数上限：只保留最近的 N 条（session 文件是整篇重写，不能无限膨胀）。 */
+export const MAX_PERSISTED_JOBS = 20;
+
+/** 单条结果字符上限（超出截断并标注）。 */
+export const MAX_PERSISTED_RESULT_CHARS = 2_000;
+
+/**
+ * 可序列化的任务快照（issue #45）。
+ *
+ * 与 `BackgroundJob` 的差别只有一条：**没有 `ctx`**。`ctx` 里有 console / checkpoint /
+ * signal 等活引用，既不能 JSON 化，也不该跨进程复活。落盘只保留「人看历史」需要的字段。
+ */
+export interface PersistedBackgroundJob {
+  id: string;
+  prompt: string;
+  startedAt: number;
+  status: BackgroundStatus;
+  finishedAt: number | null;
+  result: string | null;
+  error: string | null;
+  tier?: string;
+  promptTier?: string;
+}
+
 export interface BackgroundJob {
   /** 稳定 id（bg-1、bg-2…，本进程内递增）。 */
   id: string;
@@ -45,7 +77,7 @@ export interface BackgroundLaunch {
 /** 交给 `/tasks` 展示的只读视图。 */
 export interface BackgroundView {
   id: string;
-  status: BackgroundStatus;
+  status: PersistedBackgroundStatus;
   prompt: string;
   elapsedMs: number;
   result: string | null;
@@ -81,6 +113,11 @@ export class BackgroundTasks {
 
   get size(): number {
     return this.jobs.length;
+  }
+
+  /** 原始任务记录（只读语义，供落盘序列化用；调用方不得持有）。 */
+  rawJobs(): readonly BackgroundJob[] {
+    return this.jobs;
   }
 
   /**
@@ -191,4 +228,75 @@ export class BackgroundTasks {
   cancelAll(): void {
     this.cancel("all");
   }
+}
+
+/* ------------------------------------------------------------------ */
+/* 落盘（issue #45）                                                     */
+/* ------------------------------------------------------------------ */
+
+/** 结果截断：超长时保留头部并标注，避免 session 文件被一条大结果撑爆。 */
+function clipResult(text: string | null): string | null {
+  if (text === null) return null;
+  if (text.length <= MAX_PERSISTED_RESULT_CHARS) return text;
+  return `${text.slice(0, MAX_PERSISTED_RESULT_CHARS)}\n…（已截断，原长 ${text.length} 字符）`;
+}
+
+/**
+ * 任务记录 → 可序列化快照。
+ *
+ * 只保留最近 `MAX_PERSISTED_JOBS` 条（按 startedAt 升序取尾部），并截断超长结果。
+ * 显式逐字段拷贝而不是 `{...job}`：后者会把 `ctx` 一起带出去，等于把活引用写进 JSON。
+ */
+export function serializeJobs(jobs: readonly BackgroundJob[]): PersistedBackgroundJob[] {
+  const sorted = [...jobs].sort((a, b) => a.startedAt - b.startedAt);
+  const kept = sorted.slice(-MAX_PERSISTED_JOBS);
+  return kept.map((j) => ({
+    id: j.id,
+    prompt: j.prompt,
+    startedAt: j.startedAt,
+    status: j.status,
+    finishedAt: j.finishedAt,
+    result: clipResult(j.result),
+    error: j.error,
+    ...(j.tier !== undefined ? { tier: j.tier } : {}),
+    ...(j.promptTier !== undefined ? { promptTier: j.promptTier } : {}),
+  }));
+}
+
+const KNOWN_STATUS: ReadonlySet<string> = new Set(["running", "done", "error", "cancelled"]);
+
+/**
+ * 落盘快照 → `/tasks` 只读视图。
+ *
+ * 两条纪律：
+ *  - **`running` 一律映射成 `interrupted`**：进程重启后不可能还有任务在跑，
+ *    留着 running 会让用户以为它还在推进；
+ *  - **脏数据不崩**：非数组 / 缺 id / 类型不对的条目直接丢弃，不是整段失败。
+ */
+export function restoreJobs(raw: unknown): BackgroundView[] {
+  if (!Array.isArray(raw)) return [];
+  const out: BackgroundView[] = [];
+  for (const item of raw) {
+    if (typeof item !== "object" || item === null) continue;
+    const r = item as Record<string, unknown>;
+    const id = typeof r["id"] === "string" ? r["id"] : "";
+    if (!id) continue;
+    const startedAt = typeof r["startedAt"] === "number" ? r["startedAt"] : 0;
+    const finishedAt = typeof r["finishedAt"] === "number" ? r["finishedAt"] : null;
+    const rawStatus = typeof r["status"] === "string" ? r["status"] : "";
+    // 未知状态与 running 一样退化成 interrupted：宁可说「不知道」也不假装在跑。
+    const status: PersistedBackgroundStatus =
+      rawStatus === "running" || !KNOWN_STATUS.has(rawStatus)
+        ? "interrupted"
+        : (rawStatus as BackgroundStatus);
+    out.push({
+      id,
+      status,
+      prompt: typeof r["prompt"] === "string" ? r["prompt"] : "",
+      elapsedMs: Math.max(0, (finishedAt ?? startedAt) - startedAt),
+      result: typeof r["result"] === "string" ? r["result"] : null,
+      error: typeof r["error"] === "string" ? r["error"] : null,
+    });
+  }
+  return out;
 }

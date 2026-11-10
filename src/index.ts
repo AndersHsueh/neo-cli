@@ -78,7 +78,7 @@ import { contentText, setMaxTokensLimitLearnedHandler, type Message } from "./ll
 import { toolNames, registerTool } from "./tools/index.ts";
 import { McpManager, type McpServerState } from "./mcp/index.ts";
 import { makeTaskTool, runSubagent } from "./tools/task.ts";
-import { BackgroundTasks } from "./tools/background.ts";
+import { BackgroundTasks, serializeJobs, restoreJobs } from "./tools/background.ts";
 import { backgroundShells } from "./tools/backgroundShell.ts";
 import { cleanupEphemeral } from "./cleanup.ts";
 import { makeAskUserTool } from "./tools/askUser.ts";
@@ -938,7 +938,11 @@ async function main(): Promise<number> {
     // -p 单次模式：即使终端是 TTY 也按非交互块级渲染，避免 spinner/ANSI 污染输出
     nonInteractive: args.print !== null,
     // issue #16：后台子代理结果（取走即清）在每次请求前注入。
-    pollBackground: () => backgroundTasks?.collectFinished() ?? [],
+    pollBackground: () => {
+      // issue #45：每次取结果前同步落盘快照（只在变化时写，见 syncBackgroundJobs）。
+      syncBackgroundJobs();
+      return backgroundTasks?.collectFinished() ?? [];
+    },
     pollInbox: mailbox
       ? () => {
           const mb = mailbox;
@@ -1017,6 +1021,35 @@ async function main(): Promise<number> {
       ),
   });
 
+  // issue #45：后台任务落盘。只存纯数据快照（无 ctx / signal），
+  // 位置选 session meta 而不是独立文件 —— 理由：
+  //  1. 与 todos / rewind 同一先例，`--resume` 走同一条恢复路径，不需要新增目录与清理逻辑；
+  //  2. 任务表本身很小（上限 20 条 + 结果截断 2k 字符），不会让 session 文件显著膨胀；
+  //  3. 独立 JSONL 需要额外的「会话删除时同步删」与「并发追加」两套机制，收益不抵成本。
+  // 写盘时机与 todos 一致：任务状态变化后立刻落盘（persist 内部已吞异常）。
+  const persistBackgroundJobs = (): void => {
+    if (!backgroundTasks) return;
+    sess.meta.backgroundTasks = serializeJobs(backgroundTasks.rawJobs());
+    persist(agent.messages, sess.meta);
+  };
+  // 恢复（issue #45）：旧会话没有该字段 = 空清单；running 一律映射成 interrupted。
+  const restoredJobs = restoreJobs(sess.meta.backgroundTasks);
+  // 任务结束（done / error / cancelled）时落盘。BackgroundTasks 没有完成回调，
+  // 这里用主循环已有的 pollBackground 钩子顺带刷新：每次取结果前先同步快照。
+  const syncBackgroundJobs = (): void => {
+    if (!backgroundTasks) return;
+    const before = sess.meta.backgroundTasks?.length ?? 0;
+    const next = serializeJobs(backgroundTasks.rawJobs());
+    // 只在「条数或末条状态」变化时写盘，避免每轮请求都整篇重写 session 文件。
+    const changed =
+      next.length !== before ||
+      JSON.stringify(next[next.length - 1] ?? null) !==
+        JSON.stringify(sess.meta.backgroundTasks?.[(sess.meta.backgroundTasks?.length ?? 0) - 1] ?? null);
+    if (!changed) return;
+    sess.meta.backgroundTasks = next;
+    persist(agent.messages, sess.meta);
+  };
+
   // task 工具：派生子代理。必须在首次 send 前注册 —— toolSpecs() 每轮现取，注册后即刻生效。
   registerTool(
     makeTaskTool({
@@ -1024,6 +1057,8 @@ async function main(): Promise<number> {
       background: {
         launch: (job) => {
           const r = backgroundTasks!.launch(job);
+          // issue #45：发起即落盘（状态 running 也写，重启后会被映射成 interrupted）。
+          if (r.ok) persistBackgroundJobs();
           return r.ok ? { ok: true, id: r.job.id } : { ok: false, error: r.error };
         },
       },
@@ -1662,8 +1697,12 @@ async function main(): Promise<number> {
               kill: (target) => backgroundShells.kill(target),
             },
             // issue #16：后台子代理任务（列表 / 取消）
+            // issue #45：本进程没有任务时，回落到 resume 载入的只读历史（running 已映射成 interrupted）。
             tasks: {
-              list: () => backgroundTasks?.list() ?? [],
+              list: () => {
+                const live = backgroundTasks?.list() ?? [];
+                return live.length > 0 ? live : restoredJobs;
+              },
               cancel: (target) => backgroundTasks?.cancel(target) ?? 0,
             },
           });
