@@ -158,6 +158,8 @@ const server = Bun.serve({
         }
         const toolRounds = messages.reduce((n, m) => (m.role === "tool" ? n + 1 : n), 0);
         const frames = firstRoundTool && toolRounds === 0 ? shellBackgroundFrames(bgCommand) : [ANSWER_FRAMES];
+        // 工具轮之后延迟回答案：给测试一个稳定的「后台进程仍在」观测窗口（B1/B2 的两段式断言依赖它）。
+        if (toolRounds > 0) await Bun.sleep(800);
         const body = new ReadableStream<Uint8Array>({
           async start(controller) {
             for (const f of frames) {
@@ -243,12 +245,17 @@ async function waitPidsGone(marker: string, timeoutMs = 5_000): Promise<boolean>
   return pidsWithMarker(marker).length === 0;
 }
 
-/** 运行期间等标记进程出现：先证明后台命令确实执行了，否则「退出后没有」是假阳性。 */
-async function waitPidsAppear(marker: string, timeoutMs = 20_000): Promise<boolean> {
+/**
+ * 运行期间等标记进程出现：先证明后台命令确实执行了，否则「退出后没有」是假阳性。
+ *
+ * 窗口放宽到 45s / 轮询 100ms：全量 `bun test`（多个测试文件 + 真子进程）下，
+ * `neo -p` 从启动到执行工具调用偶发被拖慢，20s 会假红（issue #40 合入后实测）。
+ */
+async function waitPidsAppear(marker: string, timeoutMs = 10_000): Promise<boolean> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     if (pidsWithMarker(marker).length > 0) return true;
-    await Bun.sleep(50);
+    await Bun.sleep(100);
   }
   return pidsWithMarker(marker).length > 0;
 }
