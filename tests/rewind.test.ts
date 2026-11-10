@@ -199,3 +199,85 @@ describe("B RewindLog 轮次记账与回滚", () => {
     expect(turns[0]?.prompt).toBe(`t${5}`);
   });
 });
+
+/* ------------------------------------------------------------------ */
+/* C. #42 只把用户轮次当回滚目标（跨会话 / 自动轮过滤）                */
+/* ------------------------------------------------------------------ */
+
+function mixedWorld(): FakeWorld {
+  const restored: number[][] = [];
+  const messages = { arr: ["system", "u1", "a1", "m1", "u2", "a2", "u3", "a3"] };
+  const log = new RewindLog({ now: () => new Date("2026-11-10T00:00:00Z") });
+  const w: FakeWorld = {
+    log,
+    messages,
+    restored,
+    conv: {
+      length: () => messages.arr.length,
+      truncate: (n) => {
+        messages.arr.length = n;
+      },
+    },
+    store: {
+      undoSeqs: (seqs) => {
+        restored.push(seqs);
+        return seqs.map(() => ({ restored: "content" as const }));
+      },
+    },
+    setCheckpoints: () => {},
+  };
+  // 轮 0 human（之前 1 条）→ 跨会话消息 auto（之前 3 条）→ 轮 1 human（之前 4 条）→ loop auto（之前 6 条）
+  log.endTurn(log.beginTurn({ prompt: "第一轮", messagesLength: 1, checkpointSeqBefore: 0 }), [1]);
+  log.endTurn(
+    log.beginTurn({ prompt: "<跨会话消息 from=Tank>", messagesLength: 3, checkpointSeqBefore: 1, source: "auto" }),
+    [2],
+  );
+  log.endTurn(log.beginTurn({ prompt: "第二轮", messagesLength: 4, checkpointSeqBefore: 2 }), [3]);
+  log.endTurn(log.beginTurn({ prompt: "自动续跑", messagesLength: 6, checkpointSeqBefore: 3, source: "auto" }), [4]);
+  return w;
+}
+
+describe("C 只列用户轮次（issue #42）", () => {
+  test("C1 列表只列用户轮次、编号连续，自动轮不出现", () => {
+    const w = mixedWorld();
+    const turns = w.log.list();
+    expect(turns.map((t) => t.prompt)).toEqual(["第一轮", "第二轮"]);
+    expect(turns.map((t) => t.index)).toEqual([0, 1]);
+  });
+
+  test("C2 回滚到用户轮次时，其后的自动轮检查点一并恢复", () => {
+    const w = mixedWorld();
+    const r = w.log.rewind({ target: 0, mode: "both", store: w.store, conversation: w.conv });
+    expect(r.turnsRemoved).toBe(2); // 用户轮次
+    expect(r.autoTurnsRemoved).toBe(2); // 跨会话 + loop 自动轮
+    expect(w.restored).toEqual([[1, 2, 3, 4]]);
+    expect(w.messages.arr).toEqual(["system"]);
+    expect(w.log.list()).toEqual([]);
+  });
+
+  test("C3 last = 最近一个用户轮次（不是最近一条记录）", () => {
+    const w = mixedWorld();
+    const r = w.log.rewind({ target: "last", mode: "code", store: w.store, conversation: w.conv });
+    expect(r.turnsRemoved).toBe(1);
+    expect(r.autoTurnsRemoved).toBe(1);
+    expect(w.restored).toEqual([[3, 4]]);
+  });
+
+  test("C4 serialize 保留自动轮（否则其检查点回滚不了），revive 后用户列表不变", () => {
+    const w = mixedWorld();
+    const saved = w.log.serialize();
+    expect(saved.length).toBe(4);
+    expect(saved.filter((t) => t.source === "auto").length).toBe(2);
+    const revived = new RewindLog({ records: saved });
+    expect(revived.list().map((t) => t.prompt)).toEqual(["第一轮", "第二轮"]);
+  });
+
+  test("C5 旧会话记录没有 source 字段：按用户轮次兼容", () => {
+    const old: RewindTurn[] = [
+      { index: 0, prompt: "旧1", at: "2026-11-01T00:00:00Z", messagesBefore: 1, checkpointSeqs: [] },
+      { index: 1, prompt: "旧2", at: "2026-11-01T00:01:00Z", messagesBefore: 3, checkpointSeqs: [] },
+    ];
+    const log = new RewindLog({ records: old });
+    expect(log.list().map((t) => t.prompt)).toEqual(["旧1", "旧2"]);
+  });
+});

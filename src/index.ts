@@ -1682,6 +1682,9 @@ async function main(): Promise<number> {
         prompt: resolved.text,
         messagesLength: agent.messages.length,
         checkpointSeqBefore: checkpoints.list(1)[0]?.seq ?? 0,
+        // issue #42：只有用户亲自发的轮次才是 /rewind 目标；跨会话 / 通知 / loop·drive 注入记为自动轮
+        // （仍要记账，回滚用户轮次时它们的文件检查点也要一起恢复）。
+        source: origin === "user" && !q.loop ? "human" : "auto",
       });
       let turnStats: Awaited<ReturnType<typeof agent.send>> | null = null;
       try {
