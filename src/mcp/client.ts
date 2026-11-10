@@ -16,6 +16,7 @@ import type { McpServerConfig } from "../config.ts";
 import { registerTool } from "../tools/index.ts";
 import { StdioRpc, type McpRpc } from "./jsonrpc.ts";
 import { HttpRpc } from "./httpRpc.ts";
+import { SseRpc } from "./sseRpc.ts";
 import { computeMcpNames, makeMcpTool } from "./tool.ts";
 
 /** tools/list 返回的工具条目（只取我们真正用到的字段）。 */
@@ -38,8 +39,8 @@ export interface McpToolEntry {
 
 export interface McpServerState {
   name: string;
-  /** 传输类型（issue #29）：stdio 本地进程 / http 远程。 */
-  transport?: "stdio" | "http";
+  /** 传输类型（issue #29 / #44）：stdio 本地进程 / http streamable / sse 旧式事件流。 */
+  transport?: "stdio" | "http" | "sse";
   status: McpServerStatus;
   /** 已注册（真正可用）的工具。`tools` 是它的名字投影，保留给老调用方。 */
   toolEntries?: McpToolEntry[];
@@ -159,21 +160,26 @@ export class McpManager {
     const started = Date.now();
     const timeoutMs = this.opts.connectTimeoutMs ?? 30_000;
     // issue #29：传输层分支。stdio 要拉子进程；http 直接对端点发 POST。
+    // issue #44：sse 走 GET 长连接 + endpoint 握手，结果从长连接流回来。
     const requestTimeoutMs = this.opts.requestTimeoutMs ?? 20_000;
     const rpc: McpRpc =
       cfg.transport === "http"
         ? new HttpRpc({ url: cfg.url, headers: cfg.headers, requestTimeoutMs })
-        : new StdioRpc({
-            command: cfg.command,
-            args: cfg.args,
-            env: cfg.env,
-            cwd: cfg.cwd,
-            requestTimeoutMs,
-            onStderr: (line) => this.opts.onStderr?.(cfg.name, line),
-          });
+        : cfg.transport === "sse"
+          ? new SseRpc({ url: cfg.url, headers: cfg.headers, requestTimeoutMs })
+          : new StdioRpc({
+              command: cfg.command,
+              args: cfg.args,
+              env: cfg.env,
+              cwd: cfg.cwd,
+              requestTimeoutMs,
+              onStderr: (line) => this.opts.onStderr?.(cfg.name, line),
+            });
 
     try {
       if (rpc instanceof StdioRpc) rpc.start();
+      // issue #44：SSE 必须先建长连接拿到 endpoint，否则第一个 request 无处可 POST。
+      if (rpc instanceof SseRpc) await rpc.start();
       const init = await withTimeout(
         rpc.request<{ protocolVersion?: string; serverInfo?: { name?: string; version?: string } }>(
           "initialize",
@@ -368,8 +374,8 @@ export function formatCallResult(server: string, toolName: string, res: unknown)
 function describeError(cfg: McpServerConfig, e: unknown, rpc: McpRpc): string {
   const msg = (e as Error)?.message ?? String(e);
   const tail = rpc.stderrTail.slice(-2).join(" / ");
-  const target = cfg.transport === "http" ? cfg.url : cfg.command;
-  const label = cfg.transport === "http" ? "HTTP" : "stdio";
+  const target = cfg.transport === "stdio" ? cfg.command : cfg.url;
+  const label = cfg.transport === "stdio" ? "stdio" : cfg.transport === "sse" ? "SSE" : "HTTP";
   return `MCP server "${cfg.name}"（${label} ${target}）连接失败：${msg}${tail ? `｜${tail}` : ""}`;
 }
 

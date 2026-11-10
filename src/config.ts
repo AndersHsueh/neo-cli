@@ -476,7 +476,19 @@ export interface McpHttpServerConfig extends McpServerBase {
   headers: Record<string, string>;
 }
 
-export type McpServerConfig = McpStdioServerConfig | McpHttpServerConfig;
+/**
+ * 旧式 SSE 传输（issue #44，来源 #29 非目标）。
+ *
+ * `url` 是 **GET 长连接**地址；POST 目标由服务端首事件 `event: endpoint` 给出。
+ * 与 `McpHttpServerConfig` 字段相同，但协议形态完全不同（见 `src/mcp/sseRpc.ts` 文件头）。
+ */
+export interface McpSseServerConfig extends McpServerBase {
+  transport: "sse";
+  url: string;
+  headers: Record<string, string>;
+}
+
+export type McpServerConfig = McpStdioServerConfig | McpHttpServerConfig | McpSseServerConfig;
 
 /**
  * 语言服务器配置（issue #23）。
@@ -731,11 +743,12 @@ export function parseMcpServers(raw: unknown): { servers: McpServerConfig[]; war
     }
     // issue #29：传输层先看 `transport`，兼容 `type` 别名（Claude Code 的写法）。
     // issue #29：先判传输再看 command —— http 条目没有 command，顺序反了会误报「缺少 command」。
+    // issue #44：sse 与 http 字段形状相同（url / headers），只有协议形态不同，共用这段解析。
     const transport = str(r["transport"], str(r["type"], "stdio")).trim().toLowerCase();
-    if (transport === "http") {
+    if (transport === "http" || transport === "sse") {
       const url = str(r["url"], "").trim();
       if (!url) {
-        warnings.push(`mcpServers.${name} 的 transport="http" 缺少 url，已跳过。`);
+        warnings.push(`mcpServers.${name} 的 transport="${transport}" 缺少 url，已跳过。`);
         continue;
       }
       if (!/^https?:\/\//i.test(url)) {
@@ -751,13 +764,18 @@ export function parseMcpServers(raw: unknown): { servers: McpServerConfig[]; war
         }
       }
       seen.add(name);
-      servers.push({ name, transport: "http", url, headers, enabled: bool(r["enabled"], true) });
+      const enabled = bool(r["enabled"], true);
+      servers.push(
+        transport === "sse"
+          ? { name, transport: "sse", url, headers, enabled }
+          : { name, transport: "http", url, headers, enabled },
+      );
       continue;
     }
     if (transport !== "stdio") {
-      // sse 尚未支持：给一句明确的话，而不是「连不上」。
+      // 未知传输：给一句明确的话，而不是「连不上」。
       warnings.push(
-        `mcpServers.${name} 的 transport="${transport}" 暂不支持（支持 stdio / http；SSE 见 docs/mcp-http-prd.md 非目标），已跳过。`,
+        `mcpServers.${name} 的 transport="${transport}" 暂不支持（支持 stdio / http / sse），已跳过。`,
       );
       continue;
     }

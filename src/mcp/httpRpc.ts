@@ -14,6 +14,7 @@
  * 越权/凭据：只发配置里显式给的 `headers`（首期静态 Bearer），不做 OAuth 登录。
  */
 import type { McpRpc } from "./jsonrpc.ts";
+import { parseSseBlocks, type JsonRpcResponse } from "./sseParse.ts";
 
 export interface HttpRpcOptions {
   /** streamable HTTP 端点（完整 URL）。 */
@@ -23,13 +24,6 @@ export interface HttpRpcOptions {
   requestTimeoutMs?: number;
   /** 测试注入点：默认全局 fetch。 */
   fetchImpl?: typeof fetch;
-}
-
-interface JsonRpcResponse {
-  jsonrpc?: string;
-  id?: number | string | null;
-  result?: unknown;
-  error?: { code?: number; message?: string; data?: unknown };
 }
 
 const DEFAULT_TIMEOUT_MS = 20_000;
@@ -153,22 +147,14 @@ export class HttpRpc implements McpRpc {
         const { value, done } = await reader.read();
         if (done) break;
         buf += decoder.decode(value, { stream: true });
-        // SSE 事件以空行分隔。
-        for (;;) {
-          const sep = buf.indexOf("\n\n");
-          if (sep === -1) break;
-          const block = buf.slice(0, sep);
-          buf = buf.slice(sep + 2);
-          const data = block
-            .split("\n")
-            .filter((line) => line.startsWith("data:"))
-            .map((line) => line.slice(5).trimStart())
-            .join("\n")
-            .trim();
-          if (data === "" || data === "[DONE]") continue;
+        // SSE 事件以空行分隔（切分规则与旧式 SSE 传输共用，见 sseParse.ts）。
+        const { blocks, rest } = parseSseBlocks(buf);
+        buf = rest;
+        for (const block of blocks) {
+          if (block.data === "" || block.data === "[DONE]") continue;
           let parsed: JsonRpcResponse;
           try {
-            parsed = JSON.parse(data) as JsonRpcResponse;
+            parsed = JSON.parse(block.data) as JsonRpcResponse;
           } catch {
             continue; // 心跳/非 JSON 事件跳过
           }

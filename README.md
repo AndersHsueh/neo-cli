@@ -369,7 +369,7 @@ neo 可以连接 [MCP](https://modelcontextprotocol.io) server，把它们的工
 | `args` | 否 | 参数数组 |
 | `env` | 否 | 追加/覆盖子进程环境变量（在 `process.env` 之上） |
 | `cwd` | 否 | 子进程工作目录，缺省 = neo 的 cwd |
-| `transport` / `type` | 否 | `stdio`（缺省）或 `http`（issue #29 远程端点）；`sse` 暂不支持，会 warning 跳过 |
+| `transport` / `type` | 否 | `stdio`（缺省）、`http`（issue #29 streamable HTTP）或 `sse`（issue #44 旧式事件流） |
 | `enabled` | 否 | `false` = 保留配置但不启动（缺省 `true`） |
 
 **远程 HTTP（issue #29）**：改用 `url` + 静态 `headers`，不写 `command`：
@@ -390,6 +390,9 @@ neo 可以连接 [MCP](https://modelcontextprotocol.io) server，把它们的工
   并把响应头 `Mcp-Session-Id` 回带到后续请求；`Authorization` 等静态 header 原样透传。
 - 工具命名、审批、plan 拒绝、`/mcp` 面板与 stdio **完全一致**（不新增旁路）；OAuth 浏览器登录分期，首期用静态 token。
 - 连接失败/401 只让该 server 进 error（错误带 URL 与状态码），其余 server 照常连接。
+- **旧式 SSE（issue #44）**：`"transport": "sse"` + `url`（GET 长连接地址）。服务端首事件
+  `event: endpoint` 给出 POST 目标（相对路径按 GET URL 解析），之后消息 POST 到该目标收 202，
+  结果从 GET 长连接流回来。断流即在途请求立即失败，**不重连**（与 http 同口径：看 `/mcp`、重启 neo）。
 
 也接受数组形态（与 `providers` 风格一致）：`"mcpServers": [{ "name": "fs", "command": "npx", ... }]`。
 

@@ -45,8 +45,8 @@ neo 的 MCP 入口对这类服务是空的。
 
 ## 4 非目标
 
-- **SSE 旧传输**（GET 事件流拿 endpoint 的那套）暂不实现；显式 `transport: "sse"` 给 warning 并跳过，
-  后续按需加（streamable HTTP 是当前主流）。
+- **SSE 旧传输**（GET 事件流拿 endpoint 的那套）已在 **issue #44** 实现（`src/mcp/sseRpc.ts`）：
+  `transport: "sse"` + `url`，首事件 `event: endpoint` 握手，结果从 GET 长连接流回来，不重连。
 - **OAuth 浏览器登录**（`/mcp login`）分期；首期静态 `headers` 足够接 GitHub PAT 类端点。
 - 不重连、不做多进程协调（与 stdio 既有口径一致：失败看 `/mcp`，重启 neo）。
 - 不改工具命名/审批/plan 的既有规则。

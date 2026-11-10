@@ -160,17 +160,23 @@ describe("a. mcpServers 配置解析", () => {
     expect(servers[1]?.enabled).toBe(false);
   });
 
-  test("issue #29：http 缺 url / 非 http(s) / sse 未支持 → 各自 warning 并跳过", () => {
+  test("issue #29：http 缺 url / 非 http(s) → 各自 warning 并跳过", () => {
     const { servers, warnings } = parseMcpServers({
       noUrl: { transport: "http" },
       badUrl: { transport: "http", url: "ftp://x" },
-      legacy: { transport: "sse", url: "https://x.example.com/sse" },
     });
     expect(servers).toEqual([]);
     const text = warnings.join("\n");
     expect(text).toContain("noUrl 的 transport=\"http\" 缺少 url");
     expect(text).toContain("必须是 http(s) 绝对地址");
-    expect(text).toContain("transport=\"sse\" 暂不支持");
+  });
+
+  test("issue #44：sse 传输能解析（不再 warning 跳过）", () => {
+    const { servers, warnings } = parseMcpServers({
+      legacy: { transport: "sse", url: "https://x.example.com/sse" },
+    });
+    expect(warnings).toEqual([]);
+    expect(servers.map((s) => s.transport)).toEqual(["sse"]);
   });
 
   test("重名只保留第一条；非对象/非数组整段忽略并 warning", () => {
