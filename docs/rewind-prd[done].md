@@ -48,4 +48,22 @@
 - **内部记账保留自动轮**：回滚用户轮次时，其后的自动轮（含跨会话消息轮次）产生的文件检查点会一并恢复，
   否则「代码退干净」不成立。
 - 旧会话的 `meta.rewind` 没有来源字段，按用户轮次兼容。
-- 已知未修：`/compact` 之后 `messagesBefore` 绝对下标失效导致对话回滚不可信，另见 issue #39。
+
+## 6 修正记录（2026-11-10，issue #39）
+
+`/compact`、`compact_ctx`、上下文溢出自动压缩都会把较早的整段历史换成 1 条摘要
+（`applyCompaction`），后续消息整体前移；而 `RewindTurn.messagesBefore` 记的是**绝对下标**，
+压缩后不跟着平移 → 对话回滚截错位置或静默不回滚（`both` 模式下代码退了、对话没退）。
+现修正：
+
+- **压缩生效后平移**：`AgentOptions.onCompacted({ removedFrom, removedTo, summaryIndex })`
+  在 `applyCompaction` 之后调用一次；组合根调 `RewindLog.noteCompaction` 平移所有轮次的
+  `messagesBefore`（含尚未 endTurn 的 pending 轮次），并写回 `sess.meta.rewind`。
+  压缩失败/被跳过时不调用，下标不动。
+- **平移口径**：被删区间是 `[removedFrom, removedTo]`（`system` 在下标 0，摘要落在 `summaryIndex`）。
+  - 起点在区间**之后** → 平移 `(removedTo - removedFrom + 1) - 1` 条；
+  - 起点落在区间**之内**（含左端点） → **clamp 到 `summaryIndex`**，并给该轮打 `compacted: true`。
+- **clamp 的代价写清**：这些轮次的逐字原文已进摘要、不可恢复，对话只能回到摘要位置；
+  回滚时 `RewindResult.notes` 会说明「该轮起点已被压进摘要」。代码回滚不受影响。
+- **兼容**：旧会话 `meta.rewind` 没有 `compacted` 字段 = 未压缩过；没有压缩记录的会话行为完全不变。
+- 已知未做：定点 compact（从某轮向后压缩）仍是非目标，见 §4。

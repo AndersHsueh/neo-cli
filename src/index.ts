@@ -914,6 +914,11 @@ async function main(): Promise<number> {
           /* 探测/写回失败不影响重试 */
         });
     },
+    // issue #39：压缩生效后平移轮次下标，否则 `/rewind` 的对话回滚会截错位置。
+    onCompacted: (rec) => {
+      rewindLog.noteCompaction(rec);
+      sess.meta.rewind = rewindLog.serialize();
+    },
     askUser: interactiveTTY
       ? (req) => {
           const c = composerRef;

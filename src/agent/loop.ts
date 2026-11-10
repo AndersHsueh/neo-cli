@@ -375,6 +375,17 @@ export class Agent {
     }
 
     this.messages = applyCompaction(this.messages, res.content.trim(), plan);
+    // issue #39：压缩把 head 换成 1 条摘要，后续消息整体前移 —— 通知宿主平移轮次下标。
+    // 区间取 applyCompaction 的真实形状：[1, head.length]（下标 0 是 system），摘要落在 1。
+    try {
+      this.opt.onCompacted?.({
+        removedFrom: 1,
+        removedTo: plan.head.length,
+        summaryIndex: 1,
+      });
+    } catch {
+      // 下标平移失败不影响压缩本身
+    }
     const afterTokens = estimateTokens(this.messages);
     this.lastCompact = { beforeTokens: plan.convoTokens, afterTokens };
     this.opt.onEvent?.({ type: "compact", data: { beforeTokens: plan.convoTokens, afterTokens } });

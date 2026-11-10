@@ -31,6 +31,11 @@ export interface RewindTurn {
   checkpointSeqs: number[];
   /** 轮次来源；旧会话没有该字段 = 用户轮次。 */
   source?: RewindTurnSource;
+  /**
+   * 该轮起点已被压进摘要（issue #39）：对话只能回到摘要位置，逐字原文不可恢复。
+   * 旧会话 / 未压缩过的轮次没有该字段 = false。
+   */
+  compacted?: boolean;
 }
 
 export interface PendingTurn {
@@ -57,6 +62,18 @@ export interface RewindDeps {
   store: { undoSeqs(seqs: number[]): Array<{ restored: "content" | "deleted" | "skipped"; reason?: string }> };
   /** 对话截断（Agent.messages 的窄接口）。 */
   conversation: { length(): number; truncate(n: number): void };
+}
+
+/**
+ * 一次压缩对消息下标的影响（issue #39）。
+ *
+ * `applyCompaction` 把 `messages[removedFrom..removedTo]`（含两端）换成 1 条摘要，
+ * 摘要落在 `summaryIndex`。之后的轮次起点整体平移 `(removedTo - removedFrom + 1) - 1` 条。
+ */
+export interface CompactionRecord {
+  removedFrom: number;
+  removedTo: number;
+  summaryIndex: number;
 }
 
 /** 本会话最多保留多少轮快照（老会话/长会话不无限增长）。 */
@@ -139,6 +156,39 @@ export class RewindLog {
   }
 
   /**
+   * 压缩发生后的下标平移（issue #39）。
+   *
+   * 压缩把 `[removedFrom, removedTo]` 换成 1 条摘要（落在 `summaryIndex`），
+   * 之后所有消息整体前移。已有轮次的 `messagesBefore` 是绝对下标，必须跟着平移，
+   * 否则 `/rewind` 的对话回滚会截到错误位置或静默不回滚。
+   *
+   * 口径（写进 PRD 与测试）：
+   *  - 起点在被压缩区间**之后** → 平移 `(removedTo - removedFrom + 1) - 1` 条；
+   *  - 起点落在被压缩区间**之内** → clamp 到 `summaryIndex`（摘要位置），
+   *    并在回滚时给出一条说明（该轮原文已进摘要，回不到逐字状态）。
+   *
+   * 只在压缩**实际生效后**调用；压缩失败/被跳过时不要调。
+   */
+  noteCompaction(rec: CompactionRecord): void {
+    const removed = rec.removedTo - rec.removedFrom + 1;
+    if (removed <= 0) return;
+    const delta = removed - 1; // 删 removed 条、补 1 条摘要
+    const shift = (n: number): number => {
+      if (n <= rec.removedFrom) return Math.min(n, rec.summaryIndex);
+      if (n <= rec.removedTo) return rec.summaryIndex;
+      return n - delta;
+    };
+    for (const r of this.records) {
+      // 起点落在被删区间内（含左端点：下标 removedFrom 本身被删掉）→ 标记「已压缩」。
+      if (r.messagesBefore >= rec.removedFrom && r.messagesBefore <= rec.removedTo) {
+        r.compacted = true;
+      }
+      r.messagesBefore = shift(r.messagesBefore);
+    }
+    if (this.pending) this.pending.messagesBefore = shift(this.pending.messagesBefore);
+  }
+
+  /**
    * 回滚到「某个轮次开始之前」。
    *
    * - `target`: 轮次下标；`"last"` = 最近一轮（最常见的「刚才那句」）。
@@ -193,6 +243,12 @@ export class RewindLog {
       if (boundary < current) {
         opts.conversation.truncate(boundary);
         result.messagesRemoved = current - boundary;
+      }
+      // issue #39：起点落在被压缩区间内的轮次只能回到摘要位置，原文已不可逐字恢复。
+      if (doomed[0]!.compacted) {
+        result.notes.push(
+          "该轮起点已被压进摘要：对话只能回到摘要位置，逐字原文不可恢复（代码回滚不受影响）",
+        );
       }
     }
 

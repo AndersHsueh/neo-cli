@@ -248,6 +248,7 @@ describe("compactNow / compact", () => {
 
   test("压缩成功：摘要 + 最近原文保留，事件携带前后 token", async () => {
     const events: string[] = [];
+    const compacted: Array<{ removedFrom: number; removedTo: number; summaryIndex: number }> = [];
     const { fn } = fakeStream([
       () => ({ content: "## 摘要\n用户在做 X。" }),
     ]);
@@ -258,6 +259,7 @@ describe("compactNow / compact", () => {
       systemPrompt: "sys",
       chatStream: fn,
       onEvent: (e) => events.push(e.type),
+      onCompacted: (rec) => compacted.push(rec),
     });
     agent.messages.push(
       { role: "user", content: "m1" },
@@ -275,6 +277,8 @@ describe("compactNow / compact", () => {
     expect(agent.messages[1]!.content).toContain("用户在做 X");
     expect(agent.messages.slice(2).map((m) => m.content)).toEqual(["m2", "a2"]);
     expect(events).toContain("compact");
+    // issue #39：压缩生效后必须通知宿主平移轮次下标（system 在下标 0，被删区间从 1 起）
+    expect(compacted).toEqual([{ removedFrom: 1, removedTo: 2, summaryIndex: 1 }]);
   });
 
   test("P0-2：保留最近原文，且不拆散 assistant(tool_calls) 与 tool 结果", async () => {

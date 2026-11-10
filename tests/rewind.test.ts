@@ -4,6 +4,8 @@
  * 覆盖：
  *  A `CheckpointStore.undoSeqs`：只恢复指定快照、恢复顺序从新到旧、undо(count) 行为不变
  *  B `RewindLog`：轮次记账、both / code / conversation 三种模式、边界与持久化
+ *  C 压缩后下标平移（issue #39）：`noteCompaction` 把已有轮次的 messagesBefore 按被删头段
+ *    平移；起点落在被压缩区间内的轮次 clamp 到摘要位置；旧会话（无新字段）行为不变
  */
 import { afterEach, describe, expect, test } from "bun:test";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -197,6 +199,112 @@ describe("B RewindLog 轮次记账与回滚", () => {
     expect(turns.length).toBe(MAX_REWIND_TURNS);
     expect(turns[turns.length - 1]?.index).toBe(MAX_REWIND_TURNS - 1);
     expect(turns[0]?.prompt).toBe(`t${5}`);
+  });
+});
+
+/* ------------------------------------------------------------------ */
+/* C. 压缩后下标平移（issue #39）                                       */
+/* ------------------------------------------------------------------ */
+
+describe("C 压缩后 messagesBefore 平移（issue #39）", () => {
+  /**
+   * 会话形状（与 world() 同款）：system + 3 轮，每轮 user+assistant。
+   * 下标：0 system / 1 u1 / 2 a1 / 3 u2 / 4 a2 / 5 u3 / 6 a3
+   * 轮次起点：第 0 轮 1、第 1 轮 3、第 2 轮 5。
+   */
+  function threeTurns(): { log: RewindLog; messages: { arr: string[] } } {
+    const messages = { arr: ["system", "u1", "a1", "u2", "a2", "u3", "a3"] };
+    const log = new RewindLog({ now: () => new Date("2026-11-09T00:00:00Z") });
+    log.endTurn(log.beginTurn({ prompt: "第一轮", messagesLength: 1, checkpointSeqBefore: 0 }), []);
+    log.endTurn(log.beginTurn({ prompt: "第二轮", messagesLength: 3, checkpointSeqBefore: 0 }), []);
+    log.endTurn(log.beginTurn({ prompt: "第三轮", messagesLength: 5, checkpointSeqBefore: 0 }), []);
+    return { log, messages };
+  }
+
+  test("C1 压缩掉头部 4 条（下标 1..4）→ 已有轮次 messagesBefore 平移 -3", () => {
+    const { log } = threeTurns();
+    // applyCompaction 的真实形状：system + 1 条摘要 + tail（这里 tail = [u3, a3]）
+    // 被删掉的是下标 1..4 共 4 条，替换成 1 条摘要 → 净减 3。
+    log.noteCompaction({ removedFrom: 1, removedTo: 4, summaryIndex: 1 });
+    const turns = log.list();
+    // 第 0 轮起点 1 落在被压缩区间内 → clamp 到摘要位置 1
+    expect(turns[0]?.messagesBefore).toBe(1);
+    // 第 1 轮起点 3 也在区间内 → clamp 到 1
+    expect(turns[1]?.messagesBefore).toBe(1);
+    // 第 2 轮起点 5 在区间之后 → 平移 4 条被删、补 1 条摘要 = 5 - 4 + 1 = 2
+    expect(turns[2]?.messagesBefore).toBe(2);
+  });
+
+  test("C2 压缩后 rewind conversation 截到正确位置（不再静默不回滚）", () => {
+    const { log, messages } = threeTurns();
+    // 压缩后真实历史：system / 摘要 / u3 / a3 —— 长度 4
+    messages.arr = ["system", "摘要", "u3", "a3"];
+    log.noteCompaction({ removedFrom: 1, removedTo: 4, summaryIndex: 1 });
+    const conv = {
+      length: () => messages.arr.length,
+      truncate: (n: number) => {
+        messages.arr.length = n;
+      },
+    };
+    const store = { undoSeqs: () => [] };
+    // 回滚到第 2 轮（起点原为 5，平移后 2）之前 → 截到 2
+    const r = log.rewind({ target: 2, mode: "conversation", store, conversation: conv });
+    expect(r.messagesRemoved).toBe(2);
+    expect(messages.arr).toEqual(["system", "摘要"]);
+  });
+
+  test("C3 起点落在被压缩区间内的轮次：clamp 到摘要位置并给出说明", () => {
+    const { log, messages } = threeTurns();
+    messages.arr = ["system", "摘要", "u3", "a3"];
+    log.noteCompaction({ removedFrom: 1, removedTo: 4, summaryIndex: 1 });
+    const conv = {
+      length: () => messages.arr.length,
+      truncate: (n: number) => {
+        messages.arr.length = n;
+      },
+    };
+    const store = { undoSeqs: () => [] };
+    // 回滚到第 0 轮（起点 1 已被压进摘要）→ clamp 到 1，摘要保留
+    const r = log.rewind({ target: 0, mode: "conversation", store, conversation: conv });
+    expect(messages.arr).toEqual(["system"]);
+    expect(r.messagesRemoved).toBe(3);
+    expect(r.notes.join("")).toContain("压进摘要");
+  });
+
+  test("C4 多次压缩累计平移", () => {
+    const { log } = threeTurns();
+    // 第一次：删 1..2（2 条）→ 净减 1
+    log.noteCompaction({ removedFrom: 1, removedTo: 2, summaryIndex: 1 });
+    // 第二次：历史已变成 [system, 摘要1, u2, a2, u3, a3]（6 条），压缩 1..3（摘要1,u2,a2 3 条）→ 净减 2
+    log.noteCompaction({ removedFrom: 1, removedTo: 3, summaryIndex: 1 });
+    const turns = log.list();
+    // 第 2 轮起点 5：第一次后 5-2+1=4；第二次后 4-3+1=2
+    expect(turns[2]?.messagesBefore).toBe(2);
+  });
+
+  test("C5 旧会话（无压缩记录）行为不变", () => {
+    const { log, messages } = threeTurns();
+    const conv = {
+      length: () => messages.arr.length,
+      truncate: (n: number) => {
+        messages.arr.length = n;
+      },
+    };
+    const store = { undoSeqs: () => [] };
+    const r = log.rewind({ target: 2, mode: "conversation", store, conversation: conv });
+    expect(r.messagesRemoved).toBe(2);
+    expect(messages.arr).toEqual(["system", "u1", "a1", "u2", "a2"]);
+  });
+
+  test("C6 压缩记录随 serialize 往返（--resume 后仍正确）", () => {
+    const { log } = threeTurns();
+    log.noteCompaction({ removedFrom: 1, removedTo: 4, summaryIndex: 1 });
+    const saved = log.serialize();
+    const revived = new RewindLog({ records: saved as RewindTurn[] });
+    expect(revived.list()[2]?.messagesBefore).toBe(2);
+    // 再压缩一次，revived 也要跟着平移
+    revived.noteCompaction({ removedFrom: 1, removedTo: 1, summaryIndex: 1 });
+    expect(revived.list()[2]?.messagesBefore).toBe(2);
   });
 });
 

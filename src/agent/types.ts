@@ -135,6 +135,14 @@ export interface AgentOptions {
    */
   onContextLimit?: (tokens: number, model: string) => void;
   /**
+   * 压缩生效回调（issue #39）：`applyCompaction` 把 `messages[removedFrom..removedTo]`
+   * 换成 1 条摘要（落在 `summaryIndex`）之后调用一次。
+   * 组合根用 `RewindLog.noteCompaction` 平移已有轮次的 `messagesBefore`，
+   * 否则 `/rewind` 的对话回滚会截到错误位置或静默不回滚。
+   * 只在压缩**实际生效后**调用；压缩失败/被跳过时不调。
+   */
+  onCompacted?: (rec: { removedFrom: number; removedTo: number; summaryIndex: number }) => void;
+  /**
    * 输出撞墙回调（P3 / #6）：本轮第一次 `finish_reason === "length"` 时调用。
    * 空正文、非空截断正文、工具轮上的 length 都算同一次命中。
    * 组合根只探测 `/models` 并补 settings 的空字段；不得把本次
