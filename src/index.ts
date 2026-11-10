@@ -1038,14 +1038,10 @@ async function main(): Promise<number> {
   // 这里用主循环已有的 pollBackground 钩子顺带刷新：每次取结果前先同步快照。
   const syncBackgroundJobs = (): void => {
     if (!backgroundTasks) return;
-    const before = sess.meta.backgroundTasks?.length ?? 0;
     const next = serializeJobs(backgroundTasks.rawJobs());
-    // 只在「条数或末条状态」变化时写盘，避免每轮请求都整篇重写 session 文件。
-    const changed =
-      next.length !== before ||
-      JSON.stringify(next[next.length - 1] ?? null) !==
-        JSON.stringify(sess.meta.backgroundTasks?.[(sess.meta.backgroundTasks?.length ?? 0) - 1] ?? null);
-    if (!changed) return;
+    // 整表比对（上限 20 条 + 单条结果 2k 字符，成本可忽略）：只比「条数或末条」会漏掉
+    // 非末条任务的完成状态（任务可以乱序完成），导致 resume 后看到过期的 running。
+    if (JSON.stringify(next) === JSON.stringify(sess.meta.backgroundTasks ?? [])) return;
     sess.meta.backgroundTasks = next;
     persist(agent.messages, sess.meta);
   };
@@ -1549,6 +1545,8 @@ async function main(): Promise<number> {
 
   /** 退出：两类输入源都收敛到 closeInput()。 */
   async function shutdown(): Promise<void> {
+    // issue #45：退出前把后台任务表的最新状态同步进 session（任务可能在上一次请求之后才完成）。
+    syncBackgroundJobs();
     // issue #40：资源清理统一走 cleanupEphemeral（与 -p / 非交互路径同一份清单）。
     cleanupEphemeralResources();
     try {
