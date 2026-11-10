@@ -130,7 +130,15 @@ export class LspClient {
         processId: process.pid,
         rootUri: `file://${this.opts.cwd}`,
         capabilities: {
-          textDocument: { publishDiagnostics: {}, hover: {}, definition: {}, references: {} },
+          textDocument: {
+            publishDiagnostics: {},
+            hover: {},
+            definition: {},
+            references: {},
+            completion: {},
+            callHierarchy: {},
+          },
+          workspace: { symbol: {}, configuration: true },
         },
       });
       this.notify("initialized", {});
@@ -256,6 +264,12 @@ export class LspClient {
       else p.resolve(msg.result);
       return;
     }
+    // server→client 请求（有 id 也有 method）：必须应答，否则真实 server（pyright 等）会挂住。
+    // 我们不提供任何配置/注册能力，回「空结果」即符合协议（workspace/configuration 要回等长数组）。
+    if (msg.id !== undefined && msg.id !== null && msg.method !== undefined) {
+      this.answerServerRequest(msg.id, msg.method, msg.params);
+      return;
+    }
     if (msg.method === "textDocument/publishDiagnostics") {
       const params = msg.params as { uri?: string; diagnostics?: unknown[] } | undefined;
       const uri = params?.uri;
@@ -263,6 +277,22 @@ export class LspClient {
       this.diagnostics.set(uri, normalizeDiagnostics(params?.diagnostics));
       this.dirty.delete(uri);
     }
+  }
+
+  /** 应答 server→client 请求：只回形状正确的最小结果，不实现任何能力。 */
+  private answerServerRequest(id: number | string, method: string, params: unknown): void {
+    let result: unknown = null;
+    if (method === "workspace/configuration") {
+      const items = (params as { items?: unknown[] } | undefined)?.items;
+      result = Array.isArray(items) ? items.map(() => null) : [];
+    } else if (method === "workspace/workspaceFolders") {
+      result = [{ uri: `file://${this.opts.cwd}`, name: this.opts.name }];
+    } else if (method === "client/registerCapability" || method === "client/unregisterCapability") {
+      result = null;
+    }
+    // 其余（window/workDoneProgress/create、window/showMessageRequest 等）一律回 null：
+    // 宁可让 server 拿到「没有值」，也不能让它等到超时。
+    this.write({ jsonrpc: "2.0", id, result });
   }
 
   private failAll(err: Error): void {

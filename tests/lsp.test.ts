@@ -120,7 +120,7 @@ describe("issue #23 LSP", () => {
     expect(def).toContain("a.ts:2:3");
 
     const refs = String(await lspTool().execute({ operation: "references", file: "a.ts", line: 1 }, ctx(cwd)));
-    expect(refs).toContain("[references] 2 处");
+    expect(refs).toContain("[references] 2 条");
     expect(refs).toContain("a.ts:4:1");
 
     const hover = String(await lspTool().execute({ operation: "hover", file: "a.ts", line: 1 }, ctx(cwd)));
@@ -143,5 +143,163 @@ describe("issue #23 LSP", () => {
     expect(out).toContain("src/a.ts:10:1");
     expect(formatNavigation("definition", null, "/repo")).toContain("没有找到定义");
     expect(formatNavigation("hover", { contents: "**T**" }, "/repo")).toContain("**T**");
+  });
+});
+
+/* ------------------------------------------------------------------ */
+/* issue #43：LSP 后续三件套（workspaceSymbol / callHierarchy / completion） */
+/* ------------------------------------------------------------------ */
+
+describe("issue #43 LSP 扩展", () => {
+  test("E1 server→client 请求必须应答（workspace/configuration），否则真实 server 挂住", async () => {
+    const cwd = sandbox();
+    await lspServers.configure(cfgFor(cwd));
+    // 假 server 在 initialize 后主动发 workspace/configuration；客户端应答后
+    // 后续请求才能正常往返 —— 这里用一次 definition 证明链路没被挂住。
+    writeFileSync(join(cwd, "a.ts"), "export function f() {}\n", "utf8");
+    const def = String(await lspTool().execute({ operation: "definition", file: "a.ts", line: 1 }, ctx(cwd)));
+    expect(def).toContain("[definition]");
+  });
+
+  test("E2 workspaceSymbol：不需要 line，query 透传，结果按位置列出", async () => {
+    const cwd = sandbox();
+    await lspServers.configure(cfgFor(cwd));
+    writeFileSync(join(cwd, "a.ts"), "export function f() {}\n", "utf8");
+    // 先让 server 知道 lastUri（workspace/symbol 的 location 用它）
+    await lspTool().execute({ operation: "definition", file: "a.ts", line: 1 }, ctx(cwd));
+
+    const out = String(await lspTool().execute({ operation: "workspaceSymbol", query: "foo" }, ctx(cwd)));
+    expect(out).toContain("[workspaceSymbol]");
+    expect(out).toContain("foo0");
+    expect(out).toContain("a.ts:1:1");
+  });
+
+  test("E3 workspaceSymbol：结果超上限时截断并标注总数", async () => {
+    const cwd = sandbox();
+    await lspServers.configure(cfgFor(cwd));
+    writeFileSync(join(cwd, "a.ts"), "export function f() {}\n", "utf8");
+    await lspTool().execute({ operation: "definition", file: "a.ts", line: 1 }, ctx(cwd));
+
+    // 空 query = 假 server 返回 25 条；上限 20 → 必须截断并说明总数
+    const out = String(await lspTool().execute({ operation: "workspaceSymbol", query: "" }, ctx(cwd)));
+    expect(out).toContain("sym0");
+    expect(out).toContain("25");
+    expect(out).toContain("截断");
+  });
+
+  test("E4 callHierarchy：两段式（prepare + incomingCalls），item 原样回传", async () => {
+    const cwd = sandbox();
+    await lspServers.configure(cfgFor(cwd));
+    writeFileSync(join(cwd, "a.ts"), "export function f() {}\n", "utf8");
+
+    const out = String(
+      await lspTool().execute({ operation: "callHierarchy", file: "a.ts", line: 1, direction: "incoming" }, ctx(cwd)),
+    );
+    // 假 server 在 item.data 丢失时会报 -32602；能拿到结果即证明原样回传
+    expect(out).toContain("[callHierarchy]");
+    expect(out).toContain("caller0");
+    // fromRanges 是「调用发生在我这一侧」的位置（第 11 行第 3 列）
+    expect(out).toContain("@11:3");
+  });
+
+  test("E5 callHierarchy：direction=outgoing 走 outgoingCalls", async () => {
+    const cwd = sandbox();
+    await lspServers.configure(cfgFor(cwd));
+    writeFileSync(join(cwd, "a.ts"), "export function f() {}\n", "utf8");
+
+    const out = String(
+      await lspTool().execute({ operation: "callHierarchy", file: "a.ts", line: 1, direction: "outgoing" }, ctx(cwd)),
+    );
+    expect(out).toContain("callee0");
+  });
+
+  test("E6 callHierarchy：direction 缺省 = incoming；非法值报可读错误", async () => {
+    const cwd = sandbox();
+    await lspServers.configure(cfgFor(cwd));
+    writeFileSync(join(cwd, "a.ts"), "export function f() {}\n", "utf8");
+
+    const out = String(await lspTool().execute({ operation: "callHierarchy", file: "a.ts", line: 1 }, ctx(cwd)));
+    expect(out).toContain("caller0");
+    await expect(
+      lspTool().execute({ operation: "callHierarchy", file: "a.ts", line: 1, direction: "sideways" }, ctx(cwd)),
+    ).rejects.toThrow(/direction/);
+  });
+
+  test("E7 completion：返回候选并截断到上限，标注总数与 isIncomplete", async () => {
+    const cwd = sandbox();
+    await lspServers.configure(cfgFor(cwd));
+    writeFileSync(join(cwd, "a.ts"), "export function f() {}\n", "utf8");
+
+    const out = String(await lspTool().execute({ operation: "completion", file: "a.ts", line: 1, character: 1 }, ctx(cwd)));
+    expect(out).toContain("[completion]");
+    expect(out).toContain("cand0");
+    expect(out).toContain("25");
+    expect(out).toContain("截断");
+  });
+
+  test("E8 line 改可选：workspaceSymbol 不需要 line；其余 operation 缺 line 仍报错", async () => {
+    const cwd = sandbox();
+    await lspServers.configure(cfgFor(cwd));
+    writeFileSync(join(cwd, "a.ts"), "export function f() {}\n", "utf8");
+
+    // 缺 line 的 workspaceSymbol 可跑
+    const ok = String(await lspTool().execute({ operation: "workspaceSymbol", query: "foo" }, ctx(cwd)));
+    expect(ok).toContain("[workspaceSymbol]");
+
+    for (const op of ["definition", "references", "hover", "completion", "callHierarchy"]) {
+      await expect(lspTool().execute({ operation: op, file: "a.ts" }, ctx(cwd))).rejects.toThrow(/line/);
+    }
+  });
+
+  test("E9 未知 operation 的报错列出全部可用值", async () => {
+    const cwd = sandbox();
+    await lspServers.configure(cfgFor(cwd));
+    writeFileSync(join(cwd, "a.ts"), "export function f() {}\n", "utf8");
+    await expect(lspTool().execute({ operation: "bogus", file: "a.ts", line: 1 }, ctx(cwd))).rejects.toThrow(
+      /workspaceSymbol/,
+    );
+  });
+
+  test("E10 工具 schema：operation enum 含新值，line 不在 required 里", () => {
+    const params = lspTool().spec.function.parameters as {
+      properties: Record<string, { enum?: string[] }>;
+      required: string[];
+    };
+    expect(params.properties["operation"]?.enum).toEqual([
+      "definition",
+      "references",
+      "hover",
+      "workspaceSymbol",
+      "callHierarchy",
+      "completion",
+    ]);
+    expect(params.required).not.toContain("line");
+    expect(params.required).toContain("operation");
+  });
+
+  test("E11 formatNavigation：workspaceSymbol / callHierarchy / completion 各自格式化", () => {
+    const sym = formatNavigation(
+      "workspaceSymbol",
+      [{ name: "foo", kind: 12, location: { uri: "file:///repo/src/a.ts", range: { start: { line: 4, character: 2 } } } }],
+      "/repo",
+    );
+    expect(sym).toContain("foo");
+    expect(sym).toContain("src/a.ts:5:3");
+
+    const calls = formatNavigation(
+      "callHierarchy",
+      [{ from: { name: "caller", uri: "file:///repo/src/b.ts", range: { start: { line: 0, character: 0 } } }, fromRanges: [] }],
+      "/repo",
+    );
+    expect(calls).toContain("caller");
+    expect(calls).toContain("src/b.ts:1:1");
+
+    const comp = formatNavigation(
+      "completion",
+      { isIncomplete: false, items: [{ label: "alpha", kind: 3, detail: "d" }] },
+      "/repo",
+    );
+    expect(comp).toContain("alpha");
+    expect(comp).toContain("d");
   });
 });
