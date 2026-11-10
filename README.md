@@ -13,7 +13,15 @@ cd neo
 cp settings.example.json settings.json   # 填入 api-key / OpenAI / model_name
 bun run src/index.ts                     # 交互模式
 bun run src/index.ts -p "用 glob 找出所有 .ts 文件"   # 单次模式
+bun run src/index.ts -p "修到测试全绿" --drive "bun test" --max 5 --max-minutes 30 -y  # 无人值守长跑
 ```
+
+`-p --drive` 是无人值守长跑（issue #51）：每轮结束跑检查命令，`exit 0` = **已验证**；
+未达成自动再发同一提示，直到达成 / 轮次到 `--max` / 墙钟到 `--max-minutes`。
+可选 `--judge "<标准>"` 让模型判断完成条件（来源标注为**模型判断**，绝不冒充已验证）。
+必须显式 `-y`（无人值守没有人类点确认，缺了直接用法错误 exit 2）。
+退出码：达成 0 / 未达成 1 / SIGINT 130 / 用法错误 2；结束时 stderr 打一行
+`[drive] status=done source=verified rounds=2 elapsed=184s`。详见 `docs/oneshot-drive-prd.md`。
 
 ## 平台支持
 

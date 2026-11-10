@@ -85,6 +85,12 @@ export interface DriveDeps {
   /** 模型判断（issue #50）。不传 = 不支持 judge，start 会明确报错。 */
   evaluate?: (input: JudgeInput) => Promise<JudgeResult>;
   now?: () => number;
+  /**
+   * 防空转阈值（issue #51）。默认 `DRIVE_IDLE_LIMIT`；传 0 = 关闭防空转。
+   * `-p --drive` 无人值守下必须关掉：无人可问，「停下来」没有意义，
+   * 轮次耗尽才是 PRD §2.2 规定的终态。
+   */
+  idleLimit?: number;
   /** 状态变化时通知（命令层用来打一行）。 */
   onEnd?: (state: DriveState, action: DriveOutcome["action"]) => void;
 }
@@ -99,9 +105,12 @@ export class DriveManager {
   private cur: DriveState | null = null;
   private running = false;
   private readonly now: () => number;
+  /** 防空转阈值；0 = 关闭（issue #51：`-p` 无人值守下没有「停下来问人」这回事）。 */
+  private readonly idleLimit: number;
 
   constructor(private readonly deps: DriveDeps) {
     this.now = deps.now ?? (() => Date.now());
+    this.idleLimit = deps.idleLimit ?? DRIVE_IDLE_LIMIT;
   }
 
   get state(): DriveState | null {
@@ -141,6 +150,24 @@ export class DriveManager {
   }
 
   stop(reason = "用户停止"): void {
+    if (!this.cur || this.cur.status !== "running") return;
+    this.cur.status = "stopped";
+    this.cur.reason = reason;
+  }
+
+  /**
+   * 墙钟是否已超时（issue #51）。
+   *
+   * 只在**轮间**由调用方检查 —— 单轮本身可能超过上限（受 80 次工具迭代与单轮
+   * token 预算约束），到点时若正处一轮中，等该轮结束再停，不做硬杀（PRD §2.5）。
+   */
+  expired(maxMs: number): boolean {
+    if (!this.cur || this.cur.status !== "running") return false;
+    return this.now() - this.cur.startedAt >= maxMs;
+  }
+
+  /** 标记为墙钟超时（issue #51）：与 exhausted 区分，摘要里 status=timeout。 */
+  timeout(reason: string): void {
     if (!this.cur || this.cur.status !== "running") return;
     this.cur.status = "stopped";
     this.cur.reason = reason;
@@ -194,9 +221,11 @@ export class DriveManager {
 
       // ---- 3. 未达成：防空转 / 上限 / 再排一轮 ----
       // 防空转：连续 N 轮模型一个工具都没调，说明它大概率在原地打转。
+      // issue #51：`-p` 无人值守下关掉这条（idleLimit=0）—— 无人可问，「停下来」没有意义，
+      // 轮次耗尽才是 PRD §2.2 规定的终态 exhausted。
       if (args.toolCalls === 0) state.idleRounds += 1;
       else state.idleRounds = 0;
-      if (state.idleRounds >= DRIVE_IDLE_LIMIT) {
+      if (this.idleLimit > 0 && state.idleRounds >= this.idleLimit) {
         state.status = "stopped";
         state.reason = `连续 ${state.idleRounds} 轮没有工具调用，已暂停（条件仍未达成）`;
         this.deps.onEnd?.(this.state!, "idle-stop");

@@ -127,6 +127,13 @@ import { cleanupRuntime } from "./maintenance.ts";
 import { LoopScheduler, formatLoopStatus } from "./loop.ts";
 import { RewindLog, type RewindMode } from "./rewind.ts";
 import { DriveManager, formatDriveState } from "./drive.ts";
+import { makeDriveJudge } from "./driveJudge.ts";
+import {
+  parseDriveArgs,
+  driveExitCode,
+  formatDriveSummary,
+  type DriveRunResult,
+} from "./oneshotDrive.ts";
 import { lspServers } from "./lsp/index.ts";
 import { CheckpointStore } from "./checkpoint.ts";
 import { formatResumeWarning, outcomeOf, type LastTurnMeta } from "./turnDiagnostics.ts";
@@ -1258,13 +1265,165 @@ async function main(): Promise<number> {
       cleanupEphemeralResources();
       return 2;
     }
+    // issue #51：`-p --drive` 无人值守长跑。参数在进入单次模式前就解析好，
+    // 用法错误在这里直接 exit 2（一次模型请求都不发）。
+    const driveArgs = parseDriveArgs(process.argv.slice(2));
+    if (driveArgs !== null && !driveArgs.ok) {
+      console.error(c.err(`✖ ${driveArgs.error}`));
+      cleanupEphemeralResources();
+      return 2;
+    }
+    const oneShotDrive = driveArgs?.ok ? driveArgs.spec : null;
+    if (oneShotDrive) {
+      // PRD §5：-y 全自动在 CI 上可能执行危险命令，这是用户显式选择 —— 但必须让日志看得见。
+      console.error(c.warn("无人值守：-y 会自动批准所有操作"));
+    }
+
     // json 模式把 SIGINT 转成 aborted 统计：Ctrl+C 后仍能输出一行 JSON（exit 130），
     // 而不是被信号直接杀掉、编排器拿到空 stdout。
     const onSigint = (): void => agent.cancel();
     if (jsonMode) process.on("SIGINT", onSigint);
     let stats: Awaited<ReturnType<typeof agent.send>>;
+    // issue #51：驱动终态（普通 -p 为 null）。
+    let driveResult: DriveRunResult | null = null;
     try {
-      stats = await agent.send(prompt);
+      if (!oneShotDrive) {
+        stats = await agent.send(prompt);
+      } else {
+        // 本地 while 循环消费 DriveManager 的 action（不排交互队列）。
+        const dm = new DriveManager({
+          runCheck: async (cmd) => {
+            // 内联实现：`runDriveCheck` 定义在 `-p` 分支之后（const 暂时性死区），
+            // 这里不能直接引用；逻辑与它一致（同一 shell 解析 + 60s 硬超时）。
+            try {
+              const shellSpec = getShell(cfg);
+              const inv = prepareShellInvocation(shellSpec, cmd, {
+                ...process.env,
+                NO_COLOR: process.env.NO_COLOR ?? "1",
+              });
+              const proc = Bun.spawn(inv.argv, {
+                cwd: cfg.cwd,
+                stdout: "pipe",
+                stderr: "pipe",
+                env: inv.env,
+              });
+              const timer = setTimeout(() => proc.kill(9), 60_000);
+              const [out, err, code] = await Promise.all([
+                new Response(proc.stdout).text(),
+                new Response(proc.stderr).text(),
+                proc.exited,
+              ]);
+              clearTimeout(timer);
+              return { ok: code === 0, code, output: `${out}\n${err}`.trim().slice(-800) };
+            } catch (e) {
+              return { ok: false, code: null, output: `检查命令执行失败：${(e as Error).message}` };
+            }
+          },
+          // -p 没有交互队列：这里恒返回 true，由下面的 while 直接再 send。
+          enqueue: () => true,
+          // issue #51：无人值守下关闭防空转（无人可问），轮次耗尽才是终态 exhausted。
+          idleLimit: 0,
+          evaluate: makeDriveJudge({
+            cfg,
+            stream: (c2, messages, tools, opts) =>
+              (agent.injectedStreamFn ?? chatStream)(
+                c2,
+                messages as Parameters<typeof chatStream>[1],
+                tools as Parameters<typeof chatStream>[2],
+                opts,
+              ),
+            recordUsage: (usage) => agent.recordUsage(usage),
+          }),
+        });
+        const started = dm.start({
+          check: oneShotDrive.check,
+          ...(oneShotDrive.judge ? { judge: oneShotDrive.judge } : {}),
+          prompt,
+          maxRounds: oneShotDrive.maxRounds,
+        });
+        if (!started.ok) {
+          console.error(c.err(`✖ ${started.error}`));
+          cleanupEphemeralResources();
+          return 2;
+        }
+        const maxMs = oneShotDrive.maxMinutes * 60_000;
+        const t0 = Date.now();
+        let round = 0;
+        let final: DriveRunResult;
+        for (;;) {
+          stats = await agent.send(prompt);
+          round += 1;
+          const thisTurnToolCalls = stats.toolCalls;
+          const recentToolOutput =
+            thisTurnToolCalls > 0
+              ? agent.messages
+                  .filter((m) => m.role === "tool")
+                  .slice(-thisTurnToolCalls)
+                  .map((m) => `tool(${m.name ?? ""}): ${contentText(m.content) ?? ""}`)
+                  .join("\n")
+              : "";
+          const clipped =
+            recentToolOutput.length > 2_000
+              ? `${recentToolOutput.slice(-2_000)}\n…[已截断，只保留最近 2000 字符]`
+              : recentToolOutput;
+          const outcome = await dm.onTurnEnd({ toolCalls: thisTurnToolCalls, recentOutput: clipped });
+          const st = outcome.state;
+          if (outcome.action === "done") {
+            final = {
+              status: "done",
+              source: st?.source ?? null,
+              rounds: st?.rounds ?? 0,
+              elapsedMs: Date.now() - t0,
+              reason: st?.reason ?? null,
+            };
+            break;
+          }
+          // issue #51：`-p` 的轮次由本循环控制，**不适用**交互模式的防空转语义
+          // （交互下 idle-stop 是「模型原地打转，停下来问人」；-p 无人可问，
+          //  轮次耗尽才是 PRD §2.2 规定的终态 exhausted）。
+          // 因此这里把 idle-stop 折算成 exhausted，只在轮次到顶时停。
+          if (outcome.action === "exhausted" || outcome.action === "idle-stop") {
+            const rounds = st?.rounds ?? 0;
+            const maxRounds = oneShotDrive.maxRounds;
+            if (rounds >= maxRounds) {
+              final = {
+                status: "exhausted",
+                source: null,
+                rounds,
+                elapsedMs: Date.now() - t0,
+                reason: `已达自动推进上限 ${maxRounds} 轮，条件仍未达成`,
+              };
+              break;
+            }
+            // 未到轮次上限：继续推进（防空转在无人值守下没有意义）。
+            continue;
+          }
+          // 墙钟只在轮间检查（PRD §2.5）：到点就停，不硬杀正在跑的一轮。
+          if (dm.expired(maxMs)) {
+            dm.timeout(`已达墙钟上限 ${oneShotDrive.maxMinutes} 分钟，条件仍未达成`);
+            final = {
+              status: "timeout",
+              source: null,
+              rounds: st?.rounds ?? 0,
+              elapsedMs: Date.now() - t0,
+              reason: `已达墙钟上限 ${oneShotDrive.maxMinutes} 分钟`,
+            };
+            break;
+          }
+          // 防御：action=skipped/none 在 -p 下不该出现（enqueue 恒 true）；出现即停，避免死循环。
+          if (outcome.action !== "continue") {
+            final = {
+              status: "idle-stop",
+              source: null,
+              rounds: st?.rounds ?? 0,
+              elapsedMs: Date.now() - t0,
+              reason: st?.reason ?? `驱动未推进（action=${outcome.action}）`,
+            };
+            break;
+          }
+        }
+        driveResult = final;
+      }
     } catch (e) {
       // 异常退出路径：agent.send 抛错时不能把 MCP 子进程留在后面当孤儿。
       // 收完再原样抛出，让外层（main 的 catch / 进程退出）按原语义处理。
@@ -1285,7 +1444,16 @@ async function main(): Promise<number> {
     await memory.flush();
 
     // 退出码约定（P0-6）：0 成功 / 1 LLM 或 agent 失败 / 2 用法错误 / 130 用户中断
-    const exitCode = stats.aborted ? 130 : stats.hadError ? 1 : 0;
+    // issue #51：`-p --drive` 时退出码由驱动终态决定（达成 0 / 未达成 1），
+    // 但 SIGINT 仍优先 130、LLM 硬错误仍 1（驱动跑完但模型报错不能报成功）。
+    let exitCode = stats.aborted ? 130 : stats.hadError ? 1 : 0;
+    if (driveResult) {
+      if (stats.aborted) exitCode = 130;
+      else exitCode = driveExitCode(driveResult);
+      // PRD §2.4：结束摘要走 stderr（stdout 保持 -p 现有风格）。
+      console.error(formatDriveSummary(driveResult));
+      if (driveResult.reason) console.error(c.dim(`[drive] ${driveResult.reason}`));
+    }
 
     if (jsonMode) {
       // 失败/中断时不要回填历史里的旧 assistant（--resume 场景会误导编排器）。
@@ -1471,52 +1639,18 @@ async function main(): Promise<number> {
       return true;
     },
     // issue #50：模型判断 —— 一次独立小请求（与 compactNow 同模式），要求 JSON 输出。
-    evaluate: async (input) => {
-      const stream = agent.injectedStreamFn ?? chatStream;
-      const budget = Math.min(2_000, Math.floor(cfg.contextWindow * 0.05));
-      const checkLine = input.lastCheck
-        ? `检查命令结果：exit ${input.lastCheck.code ?? "?"}（未通过）\n输出尾部：${input.lastCheck.output.slice(-600)}`
-        : "没有配置检查命令。";
-      const res = await stream(
-        { ...cfg, maxTokens: budget, temperature: 0 },
-        [
-          {
-            role: "system",
-            content:
-              "你是完成条件判定器。只根据给出的工具输出判断目标是否达成。" +
-              "不要臆测没有出现在输出里的结果；不确定就判 false。" +
-              '只输出一行 JSON：{"done": true|false, "reason": "一句话理由"}。',
-          },
-          {
-            role: "user",
-            content:
-              `【目标提示】\n${input.prompt}\n\n` +
-              `【完成标准】\n${input.criteria}\n\n` +
-              `【${checkLine}】\n\n` +
-              `【最近一轮工具输出（可能已截断）】\n${input.recentOutput || "（无）"}`,
-          },
-        ],
-        [],
-        {},
-      );
-      // issue #50：judge 请求是独立小请求，不经过主循环记账 → 显式回报 usage（否则 /cost 少算）。
-      if (res.usage) agent.recordUsage(res.usage);
-      const text = res.content.trim();
-      const json = /\{[\s\S]*\}/.exec(text)?.[0];
-      if (!json) return { done: false, invalid: true };
-      try {
-        const parsed = JSON.parse(json) as { done?: unknown; reason?: unknown };
-        if (typeof parsed.done !== "boolean") return { done: false, invalid: true };
-        return {
-          done: parsed.done,
-          ...(typeof parsed.reason === "string" && parsed.reason.trim() !== ""
-            ? { reason: parsed.reason.trim() }
-            : {}),
-        };
-      } catch {
-        return { done: false, invalid: true };
-      }
-    },
+    // issue #51：提示词与解析抽到 driveJudge.ts，交互 `/drive` 与 `-p --drive` 共用同一份。
+    evaluate: makeDriveJudge({
+      cfg,
+      stream: (c, messages, tools, opts) =>
+        (agent.injectedStreamFn ?? chatStream)(
+          c,
+          messages as Parameters<typeof chatStream>[1],
+          tools as Parameters<typeof chatStream>[2],
+          opts,
+        ),
+      recordUsage: (usage) => agent.recordUsage(usage),
+    }),
     onEnd: (state, action) => {
       if (action === "continue") {
         ui.info(`自动续跑（第 ${state.rounds}/${state.spec.maxRounds} 轮）：条件未达成，已再排一轮`);

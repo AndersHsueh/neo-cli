@@ -22,6 +22,13 @@ ${c.bold("用法")}
 ${c.bold("选项")}
   -p, --print <text>    单次模式
       --output-format <fmt>  -p 输出格式：text（默认）| json（CI 可解析，stdout 单行）
+      --drive <检查命令>  -p 无人值守长跑：每轮结束跑检查命令，exit 0 = 达成（已验证）。
+                        未达成自动再发同一提示。必须配 -y（无人值守无人类确认）
+      --judge <标准>     模型判断完成标准（来源标注为「模型判断」，绝不冒充已验证）
+      --max <N>          驱动轮次上限，默认 5（夹紧 1–20，与 /drive 同口径）
+      --max-minutes <M>  墙钟上限，默认 30 分钟（夹紧 1–240），只在轮间检查
+                        退出码：达成 0 / 未达成 1 / SIGINT 130 / 用法错误 2；
+                        结束时 stderr 打一行 [drive] status=… source=… rounds=… elapsed=…s
   -m, --model <id>      直接指定模型 ID（绕过档位）
   -P, --provider <name> 切换 provider
   -t, --tier <name>     模型档位：${MODEL_TIERS.join(" / ")}
