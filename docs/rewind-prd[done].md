@@ -66,4 +66,23 @@
 - **clamp 的代价写清**：这些轮次的逐字原文已进摘要、不可恢复，对话只能回到摘要位置；
   回滚时 `RewindResult.notes` 会说明「该轮起点已被压进摘要」。代码回滚不受影响。
 - **兼容**：旧会话 `meta.rewind` 没有 `compacted` 字段 = 未压缩过；没有压缩记录的会话行为完全不变。
-- 已知未做：定点 compact（从某轮向后压缩）仍是非目标，见 §4。
+- 定点 compact 已另立 §7（issue #46），不再是 §4 的非目标。
+
+## 7 定点 compact（2026-11-10，issue #46）
+
+以**用户轮次**为锚点，只压缩「从第 N 轮往后」的那段；更早的原文原样保留、不进摘要。
+
+- **命令面**：`/compact --from <轮次|last>`（选它而不是 `/rewind <n> --compact`：`/rewind` 的职责是回滚，
+  压缩挂在 `/compact` 下语义更直）。无参数仍是整体压缩，行为不变。
+- **锚点换算**：`/compact --from N` 用 `rewind.turnStart(N)` 把用户轮次换成该轮起点的消息下标
+  （`RewindTurn.messagesBefore`，已由 §6 保证压缩后仍准确），再交给 `planCompaction(messages, { from })`。
+- **`CompactionPlan.kept`**：`from` 之前的消息整段进 `kept`，`applyCompaction` 输出
+  `system + kept + 摘要 + tail`。整体压缩时 `kept` 恒为空，与 v0.4.82 完全一致。
+- **配对完整性**：`from` 可能落在 `assistant(tool_calls)` 与 `tool` 结果之间或 tool 结果上。
+  此时把起点**整体前移**到该工具链的 `assistant(tool_calls)` 之前（它一起进 head），
+  保证 head 不以 `tool` 开头、kept 不以 `tool_calls` 结尾。
+- **下标平移**：压缩后仍走 §6 的 `onCompacted` / `noteCompaction`，不绕过。
+  被删区间为 `[1 + kept.length, 1 + kept.length + head.length - 1]`，摘要落在 `1 + kept.length`。
+- **边界**：`from` 越界（<1 或 >最后一条下标）、该轮之后不足 2 条 → 抛错，命令层提示「未做处理」。
+- **不做**：不加 PTY 场景。定点压缩的判定全在纯逻辑层（切点/配对/平移），PTY 只能断言屏幕文案，
+  而要造「多轮 → 定点压缩 → 回滚」需改 `scripts/fake-llm.ts` 的多阶段 SCENARIO，会波及 S1–S29 既有断言。

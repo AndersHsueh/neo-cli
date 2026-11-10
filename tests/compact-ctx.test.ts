@@ -17,6 +17,9 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { mkdirSync } from "node:fs";
 
+import { applyCompaction, planCompaction } from "../src/agent/compact.ts";
+import { RewindLog } from "../src/rewind.ts";
+
 import { Agent, type AgentIO } from "../src/agent.ts";
 import { dispatch, toolSpecs, TOOL_NAMES_EXCLUDED_FOR_SUBAGENT } from "../src/tools/index.ts";
 import type { ToolCtx } from "../src/tools/types.ts";
@@ -605,5 +608,162 @@ describe("子代理排除", () => {
   test("toolSpecs()（全量）含 compact_ctx —— 主代理可见", () => {
     const names = toolSpecs().map((s) => s.function.name);
     expect(names).toContain("compact_ctx");
+  });
+});
+
+/* ------------------------------------------------------------------ */
+/* 定点 compact（issue #46）：以用户轮次为锚点，只压该轮之后那段        */
+/* ------------------------------------------------------------------ */
+
+describe("定点 compact（issue #46）", () => {
+  /** 会话：system + 4 轮（每轮 user+assistant），共 9 条。 */
+  function convo(): Message[] {
+    return [
+      { role: "system", content: "sys" },
+      { role: "user", content: "u0" },
+      { role: "assistant", content: "a0" },
+      { role: "user", content: "u1" },
+      { role: "assistant", content: "a1" },
+      { role: "user", content: "u2" },
+      { role: "assistant", content: "a2" },
+      { role: "user", content: "u3" },
+      { role: "assistant", content: "a3" },
+    ];
+  }
+
+  test("F1 from 指定起点：head 从该下标起，之前的原文原样保留在 kept 里", () => {
+    const plan = planCompaction(convo(), { from: 5 });
+    // 下标 1..4（u0,a0,u1,a1）原样保留，不参与压缩
+    expect(plan.kept.map((m) => m.content)).toEqual(["u0", "a0", "u1", "a1"]);
+    // head 从下标 5（u2）起
+    expect(plan.head[0]!.content).toBe("u2");
+    expect(plan.head.length).toBeGreaterThan(0);
+    // 摘要提示只覆盖 head，不含 kept
+    expect(plan.prompt).not.toContain("u0");
+    expect(plan.prompt).toContain("u2");
+  });
+
+  test("F2 切点不拆 assistant(tool_calls) ↔ tool 配对", () => {
+    const toolCall: ToolCall = {
+      id: "call_1",
+      type: "function",
+      function: { name: "read_file", arguments: '{"path":"src/a.ts"}' },
+    };
+    const msgs: Message[] = [
+      { role: "system", content: "sys" },
+      { role: "user", content: "u0" },
+      { role: "assistant", content: "a0" },
+      { role: "user", content: "u1" },
+      { role: "assistant", content: "", tool_calls: [toolCall] },
+      { role: "tool", tool_call_id: "call_1", name: "read_file", content: "R1" },
+      { role: "assistant", content: "a1" },
+      { role: "user", content: "u2" },
+      { role: "assistant", content: "a2" },
+    ];
+    // from=5 落在 tool 结果上 → 切点整体前移到这条工具链的 assistant(tool_calls) 之前
+    const plan = planCompaction(msgs, { from: 5 });
+    // head 必须以 assistant(tool_calls) 开头，紧跟其 tool 结果 —— 配对完整
+    expect(plan.head[0]!.role).toBe("assistant");
+    expect(plan.head[0]!.tool_calls?.length).toBe(1);
+    expect(plan.head[1]!.role).toBe("tool");
+    expect(plan.head[1]!.tool_call_id).toBe("call_1");
+    // kept 不能以 tool 结尾（否则配对被拆到两边）
+    expect(plan.kept[plan.kept.length - 1]!.role).not.toBe("tool");
+    // 每个 tool 结果都能在 head 里找到对应的 assistant(tool_calls)
+    const callIds = new Set(plan.head.flatMap((m) => (m.tool_calls ?? []).map((tc) => tc.id)));
+    for (const m of plan.head.filter((x) => x.role === "tool")) {
+      expect(callIds.has(m.tool_call_id!)).toBe(true);
+    }
+  });
+
+  test("F3 from 越界 / 太靠后：抛错而不是产出空压缩", () => {
+    const msgs = convo();
+    expect(() => planCompaction(msgs, { from: 99 })).toThrow();
+    // from 落在最后一条之后没有可压缩区间
+    expect(() => planCompaction(msgs, { from: 8 })).toThrow();
+    // 负数
+    expect(() => planCompaction(msgs, { from: -1 })).toThrow();
+  });
+
+  test("F4 定点压缩后 rewind 表按 #39 机制平移（只平 head 之后的部分）", () => {
+    const msgs = convo();
+    const plan = planCompaction(msgs, { from: 5 });
+    const next = applyCompaction(msgs, "摘要X", plan);
+    // system + kept(4) + 摘要 + tail
+    expect(next[0]!.content).toBe("sys");
+    expect(next.slice(1, 5).map((m) => m.content)).toEqual(["u0", "a0", "u1", "a1"]);
+    expect(next[5]!.content).toContain("<对话摘要>");
+    // 被删区间：下标 5..(5+head.length-1)，摘要落在 5
+    const removedFrom = 1 + plan.kept.length;
+    expect(removedFrom).toBe(5);
+    const rec = { removedFrom, removedTo: removedFrom + plan.head.length - 1, summaryIndex: removedFrom };
+    const log = new RewindLog();
+    log.endTurn(log.beginTurn({ prompt: "u0", messagesLength: 1, checkpointSeqBefore: 0 }), []);
+    log.endTurn(log.beginTurn({ prompt: "u1", messagesLength: 3, checkpointSeqBefore: 0 }), []);
+    log.endTurn(log.beginTurn({ prompt: "u2", messagesLength: 5, checkpointSeqBefore: 0 }), []);
+    log.noteCompaction(rec);
+    const turns = log.list();
+    // u0/u1 起点在被删区间之前 → 不动
+    expect(turns[0]?.messagesBefore).toBe(1);
+    expect(turns[1]?.messagesBefore).toBe(3);
+    // u2 起点 5 正好是被删区间左端 → clamp 到摘要位置 5（不变），并标记 compacted
+    expect(turns[2]?.messagesBefore).toBe(5);
+    expect(turns[2]?.compacted).toBe(true);
+  });
+});
+
+/* ------------------------------------------------------------------ */
+/* 命令面（issue #46）：/compact --from <轮次|last>                     */
+/* ------------------------------------------------------------------ */
+
+describe("/compact --from 命令解析（issue #46）", () => {
+  async function run(arg: string, turnStart: (t: number | "last") => number | null) {
+    const { dispatchCommand, wireCommands } = await import("../src/cli/commands.ts");
+    const { captureConsole } = await import("./helpers.ts");
+    wireCommands();
+    const cap = captureConsole();
+    const calls: Array<{ from?: number } | undefined> = [];
+    const ctx = {
+      cfg: { cwd: "/tmp" } as unknown as Config,
+      ui: cap.ui,
+      agent: {
+        compact: async (o?: { from?: number }) => {
+          calls.push(o);
+          return true;
+        },
+        contextUsage: () => 0.1,
+      },
+      rewind: { list: () => [], apply: () => ({}) as never, turnStart },
+    } as unknown as Parameters<typeof dispatchCommand>[1];
+    await dispatchCommand(`/compact ${arg}`.trim(), ctx);
+    return { out: cap.out(), calls };
+  }
+
+  test("G1 --from 1 → 按轮次起点下标调用 compact({ from })", async () => {
+    const { out, calls } = await run("--from 1", () => 5);
+    expect(calls).toEqual([{ from: 5 }]);
+    expect(out).toContain("定点压缩");
+  });
+
+  test("G2 --from last → 用最后一轮起点", async () => {
+    const { calls } = await run("--from last", (t) => (t === "last" ? 7 : null));
+    expect(calls).toEqual([{ from: 7 }]);
+  });
+
+  test("G3 轮次不存在 → 明确报错，不调 compact", async () => {
+    const { out, calls } = await run("--from 9", () => null);
+    expect(calls).toEqual([]);
+    expect(out).toContain("不存在");
+  });
+
+  test("G4 非法参数 → 用法提示，不调 compact", async () => {
+    const { out, calls } = await run("--from abc", () => 1);
+    expect(calls).toEqual([]);
+    expect(out).toContain("轮次写法不对");
+  });
+
+  test("G5 无参数 → 仍走整体压缩（不传 from）", async () => {
+    const { calls } = await run("", () => 5);
+    expect(calls).toEqual([undefined]);
   });
 });

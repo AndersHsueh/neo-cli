@@ -342,8 +342,8 @@ export class Agent {
    * 工具循环中途调用会拆散配对，下一轮请求会被服务端以协议错误拒绝。
    * 抛错式：失败向上传，由调用方决定如何呈现。
    */
-  async compactNow(): Promise<{ beforeTokens: number; afterTokens: number }> {
-    const plan = planCompaction(this.messages);
+  async compactNow(opts: { from?: number } = {}): Promise<{ beforeTokens: number; afterTokens: number }> {
+    const plan = planCompaction(this.messages, opts);
     const budget = Math.min(12_000, Math.floor(this.opt.cfg.contextWindow * 0.2));
     const res = await this.streamFn(
       { ...this.opt.cfg, maxTokens: budget, temperature: 0.2 },
@@ -376,12 +376,14 @@ export class Agent {
 
     this.messages = applyCompaction(this.messages, res.content.trim(), plan);
     // issue #39：压缩把 head 换成 1 条摘要，后续消息整体前移 —— 通知宿主平移轮次下标。
-    // 区间取 applyCompaction 的真实形状：[1, head.length]（下标 0 是 system），摘要落在 1。
+    // issue #46：定点压缩时 head 之前还有 kept 段，被删区间与摘要位置都要跟着后移。
+    // 区间取 applyCompaction 的真实形状：system(0) + kept + 摘要 + tail。
     try {
+      const removedFrom = 1 + plan.kept.length;
       this.opt.onCompacted?.({
-        removedFrom: 1,
-        removedTo: plan.head.length,
-        summaryIndex: 1,
+        removedFrom,
+        removedTo: removedFrom + plan.head.length - 1,
+        summaryIndex: removedFrom,
       });
     } catch {
       // 下标平移失败不影响压缩本身
@@ -396,9 +398,9 @@ export class Agent {
    * 压缩入口（薄壳，保持旧契约）：太短或失败返回 false，不抛错。
    * /compact 命令与自动压缩走这里；工具触发的压缩走 compactNow + 标记收口。
    */
-  async compact(): Promise<boolean> {
+  async compact(opts: { from?: number } = {}): Promise<boolean> {
     try {
-      await this.compactNow();
+      await this.compactNow(opts);
       return true;
     } catch {
       return false;

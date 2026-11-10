@@ -19,6 +19,11 @@ export const COMPACT_INPUT_CHAR_CAP = 60_000;
 export interface CompactionPlan {
   /** 将被摘要替换的较早消息。 */
   head: Message[];
+  /**
+   * 定点压缩（issue #46）时，`head` 之前**原样保留**的消息。
+   * 整体压缩恒为空数组 —— 那时 head 从第一条非 system 消息起。
+   */
+  kept: Message[];
   /** 保留原文的近期消息。 */
   tail: Message[];
   /** 喂给压缩器的 user 提示。 */
@@ -51,30 +56,70 @@ function compactText(content: Message["content"]): string {
  * 从当前历史算出安全切点。
  *
  * 只能在消息序列已经配对完整时调用。召回临时消息不是历史的一部分，输入与输出都不含它。
+ *
+ * `opts.from`（issue #46 定点压缩）：以**消息下标**（`messages` 的原始下标，含 system）
+ * 为起点，只压缩从那里往后的那段；更早的消息原样进 `kept`，不参与摘要。
+ * 不传 = 整体压缩（head 从第一条非 system 消息起），行为与 v0.4.82 完全一致。
  */
-export function planCompaction(messages: Message[]): CompactionPlan {
+export function planCompaction(messages: Message[], opts: { from?: number } = {}): CompactionPlan {
   const convo = messages.slice(1).filter((m) => !isRecallMessage(m));
   if (convo.length < 4) {
     throw new ToolError("对话太短，压缩不划算（非 system 消息不足 4 条）");
   }
 
+  // 定点压缩：把 from 之前的部分整段划进 kept，只对之后的部分找切点。
+  // 注意 convo 已滤掉召回临时消息，下标要按「原始 messages 下标 → convo 下标」换算。
+  const keptCount = (() => {
+    if (opts.from === undefined) return 0;
+    const from = opts.from;
+    if (!Number.isInteger(from) || from < 1 || from > messages.length - 1) {
+      throw new ToolError(`轮次起点 ${String(from)} 超出可压缩范围（1–${messages.length - 1}）`);
+    }
+    // 原始下标 from 对应 convo 里的第几条（system 占 0，召回消息不在 convo 里）。
+    let seen = 0;
+    for (let i = 1; i < from; i++) {
+      if (!isRecallMessage(messages[i]!)) seen += 1;
+    }
+    if (convo.length - seen < 2) {
+      throw new ToolError("该轮之后的消息太少，压缩不划算（至少留 2 条）");
+    }
+    return seen;
+  })();
+
   // 切点必须落在 user 消息之前：assistant(tool_calls) 与紧随其后的 tool 结果不会被拆开。
   // 保留条数优先 6 条；历史较短时按「至少给摘要留 2 条」退让，而不是按一半砍。
-  const desiredTail = Math.min(COMPACT_KEEP_TAIL, Math.max(2, convo.length - 2));
-  let cut = Math.max(0, convo.length - desiredTail);
-  while (cut > 0 && convo[cut]?.role !== "user") cut -= 1;
-  if (cut === 0) {
+  const desiredTail = Math.min(COMPACT_KEEP_TAIL, Math.max(2, convo.length - keptCount - 2));
+  let cut = Math.max(keptCount, convo.length - desiredTail);
+  while (cut > keptCount && convo[cut]?.role !== "user") cut -= 1;
+  if (cut === keptCount) {
+    // 从 keptCount 往后找不到 user 起点：退让到该区间内最后一个 user 消息。
     const lastUser = convo.map((m) => m.role).lastIndexOf("user");
-    if (lastUser > 0) {
+    if (lastUser > keptCount) {
       cut = lastUser;
     } else {
-      cut = Math.max(1, convo.length - 1);
-      while (cut > 0 && convo[cut]?.role === "tool") cut -= 1;
+      cut = Math.max(keptCount + 1, convo.length - 1);
+      while (cut > keptCount && convo[cut]?.role === "tool") cut -= 1;
     }
   }
-  const head = convo.slice(0, cut);
+  let kept = convo.slice(0, keptCount);
+  let head = convo.slice(keptCount, cut);
   const tail = convo.slice(cut);
   if (head.length === 0) throw new ToolError("找不到可压缩的安全切点");
+
+  // 定点压缩的起点可能落在 assistant(tool_calls) 与 tool 结果之间，或落在 tool 结果上：
+  // 那样 head 会以 tool 开头、kept 以 tool_calls 结尾，配对被拆开 → 服务端拒绝。
+  // 把起点整体前移到「这条工具链的 assistant(tool_calls)」之前。
+  if (head[0]!.role === "tool") {
+    const moved: Message[] = [];
+    while (kept.length > 0) {
+      const last = kept[kept.length - 1]!;
+      moved.unshift(last);
+      kept = kept.slice(0, -1);
+      if (last.role === "assistant" && last.tool_calls?.length) break;
+      if (last.role !== "tool") break; // 防御：工具链不完整时不无限回退
+    }
+    head = [...moved, ...head];
+  }
 
   let convoText = head
     .map((m) => {
@@ -92,18 +137,22 @@ export function planCompaction(messages: Message[]): CompactionPlan {
     convoText = `${convoText.slice(0, COMPACT_INPUT_CHAR_CAP)}\n…[较早历史过长，已截断 ${convoText.length - COMPACT_INPUT_CHAR_CAP} 字符]`;
   }
 
+  const keptNote =
+    kept.length > 0
+      ? `更早的 ${kept.length} 条消息已原样保留、也不在此次压缩范围内；\n`
+      : "";
   const prompt =
     `请把下面的对话历史压缩成一份结构化摘要，供后续继续工作使用。\n` +
     `必须保留：用户的目标与明确要求、已确定的事实与结论、已改动的文件路径、关键代码片段、待办事项与未解决问题。\n` +
     `丢弃：寒暄、重复内容、冗长的工具原始输出。\n` +
     `输出纯文本摘要，不要加前言。\n` +
-    `注意：最近 ${tail.length} 条消息已保留原文、不在此次压缩范围内；摘要只需覆盖下面这段较早的历史。\n\n` +
+    `注意：${keptNote}最近 ${tail.length} 条消息已保留原文、不在此次压缩范围内；摘要只需覆盖下面这段较早的历史。\n\n` +
     `【较早的历史（共 ${head.length} 条消息）】\n${convoText}`;
 
-  return { head, tail, prompt, convoTokens: estimateTokens(convo) };
+  return { head, kept, tail, prompt, convoTokens: estimateTokens(convo) };
 }
 
-/** 用摘要替换较早历史，保留 system 与近期原文。 */
+/** 用摘要替换较早历史，保留 system、`kept`（定点压缩时 head 之前的原文）与近期原文。 */
 export function applyCompaction(messages: Message[], summary: string, plan: CompactionPlan): Message[] {
   const sys = messages[0]?.role === "system" ? messages[0] : undefined;
   const summaryMsg: Message = {
@@ -112,5 +161,5 @@ export function applyCompaction(messages: Message[], summary: string, plan: Comp
       `<对话摘要>\n${summary}\n</对话摘要>\n\n` +
       `（较早的 ${plan.head.length} 条消息已压缩为上述摘要；最近 ${plan.tail.length} 条保留原文。）`,
   };
-  return [...(sys ? [sys] : []), summaryMsg, ...plan.tail];
+  return [...(sys ? [sys] : []), ...plan.kept, summaryMsg, ...plan.tail];
 }

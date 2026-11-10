@@ -16,7 +16,7 @@ export const COMMANDS: CommandEntry[] = [
   { name: "help", description: "帮助；别名 ?" },
   { name: "?", description: "别名：/help" },
   { name: "clear", description: "清空上下文" },
-  { name: "compact", description: "压缩上下文" },
+  { name: "compact", description: "压缩上下文：/compact · /compact --from <轮次|last> 只压该轮往后" },
   { name: "cost", description: "token 与 provider 统计" },
   { name: "context", description: "上下文窗口/用量/最近压缩" },
   { name: "export", description: "导出会话 Markdown（/export <session-id>）" },

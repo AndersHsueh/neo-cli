@@ -42,7 +42,7 @@ ${c.bold("选项")}
 
 ${c.bold("交互命令")}
   /help            帮助            /clear       清空上下文
-  /compact         压缩上下文      /cost        token 统计
+  /compact [--from n] 压缩上下文（--from 只压该轮往后）  /cost  token 统计
   /context         上下文窗口/用量 /env         环境快照
   /export [id]     导出会话 Markdown
   /provider        切换 provider   /model       查看/切模型

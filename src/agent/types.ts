@@ -237,8 +237,8 @@ export interface AgentHost {
   noteModelChange(cfg: Config): void;
   refreshSystemPrompt(): void;
   reset(keepSystem?: boolean): void;
-  compactNow(): Promise<{ beforeTokens: number; afterTokens: number }>;
-  compact(): Promise<boolean>;
+  compactNow(opts?: { from?: number }): Promise<{ beforeTokens: number; afterTokens: number }>;
+  compact(opts?: { from?: number }): Promise<boolean>;
   contextUsage(): number;
   send(
     userInput: string | { text: string; images: string[] },

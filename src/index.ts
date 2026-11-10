@@ -1693,6 +1693,13 @@ async function main(): Promise<number> {
                 persist(agent.messages, sess.meta);
                 return r;
               },
+              // issue #46：用户轮次 → 该轮起点的消息下标（定点 compact 的锚点）。
+              turnStart: (target) => {
+                const turns = rewindLog.list();
+                if (turns.length === 0) return null;
+                const idx = target === "last" ? turns.length - 1 : target;
+                return turns[idx]?.messagesBefore ?? null;
+              },
             },
             // issue #28：后台长驻 shell（列表 / 停止）
             shells: {

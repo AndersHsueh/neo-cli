@@ -163,6 +163,11 @@ export interface CommandContext {
   rewind?: {
     list: () => RewindTurn[];
     apply: (target: number | "last", mode: RewindMode) => RewindResult;
+    /**
+     * 用户轮次 → 该轮起点的消息下标（issue #46 定点 compact 用）。
+     * 返回 null = 轮次不存在。
+     */
+    turnStart?: (target: number | "last") => number | null;
   };
   /** 后台长驻 shell（issue #28）：列表 / 停止。不传 = 不支持（/ps 会明说）。 */
   shells?: {
@@ -231,6 +236,34 @@ export async function handleCommand(line: string, ctx: CommandContext): Promise<
       break;
 
     case "compact": {
+      // issue #46：`/compact --from <轮次>` 定点压缩 —— 以用户轮次为锚点，只压该轮往后那段。
+      const fromArg = /^--from\s+(\S+)\s*$/.exec(arg.trim());
+      if (arg.trim() !== "" && !fromArg) {
+        ui.warn("用法：/compact（整体压缩）· /compact --from <轮次|last>（只压该轮往后）");
+        break;
+      }
+      if (fromArg) {
+        const raw = fromArg[1]!;
+        const target = raw === "last" ? ("last" as const) : Number(raw);
+        if (target !== "last" && (!Number.isInteger(target) || target < 0)) {
+          ui.warn(`轮次写法不对："${raw}"（用数字或 last）`);
+          break;
+        }
+        if (!rewind?.turnStart) {
+          ui.warn("当前会话不支持定点压缩（未接线轮次表）。");
+          break;
+        }
+        const from = rewind.turnStart(target);
+        if (from === null) {
+          ui.warn(`用户轮次 ${raw} 不存在（先用 /rewind 看可用范围）。`);
+          break;
+        }
+        ui.line(`定点压缩：从第 ${raw} 轮往后…`);
+        const ok = await agent.compact({ from });
+        if (ok) ui.success(`压缩完成。上下文使用率 ${(agent.contextUsage() * 100).toFixed(1)}%`);
+        else ui.warn("该轮之后的消息太少或压缩失败，未做处理。");
+        break;
+      }
       ui.line("压缩上下文中…");
       const ok = await agent.compact();
       if (ok) ui.success(`压缩完成。上下文使用率 ${(agent.contextUsage() * 100).toFixed(1)}%`);
