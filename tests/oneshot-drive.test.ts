@@ -178,6 +178,8 @@ let seq = 0;
 
 /** 第几次 chat/completions 请求（决定 fake-llm 回什么）。 */
 let hits = 0;
+/** 打开后每轮都先回一次工具调用（给「轮次耗尽」用例：否则会先撞 idle-stop）。 */
+let forceToolCall = false;
 
 const server = Bun.serve({
   port: 0,
@@ -192,12 +194,39 @@ const server = Bun.serve({
       if (text.includes("完成条件判定器")) {
         return sse('{"done": false, "reason": "还没好"}');
       }
+      // 「轮次耗尽」用例：每轮先来个无害工具调用（shell true），保证 toolCalls>0。
+      const last = body.messages?.[body.messages.length - 1];
+      if (forceToolCall && last?.role !== "tool") return sseToolCall();
       // 普通轮次：回一句可见正文。
       return sse(`第 ${hits} 轮回答`);
     }
     return new Response("not found", { status: 404 });
   },
 });
+
+/** 工具调用帧（OpenAI 流式 tool_calls）：带一次 `shell true`，本回合 toolCalls>0。 */
+function sseToolCall(): Response {
+  const args = JSON.stringify({ command: "true" });
+  const frames =
+    `data: ${JSON.stringify({
+      choices: [
+        {
+          delta: {
+            tool_calls: [
+              { index: 0, id: "call_fake_shell", type: "function", function: { name: "shell", arguments: "" } },
+            ],
+          },
+          finish_reason: null,
+        },
+      ],
+    })}\n\n` +
+    `data: ${JSON.stringify({
+      choices: [{ delta: { tool_calls: [{ index: 0, function: { arguments: args } }] }, finish_reason: null }],
+    })}\n\n` +
+    `data: ${JSON.stringify({ choices: [{ delta: {}, finish_reason: "tool_calls" }] })}\n\n` +
+    "data: [DONE]\n\n";
+  return new Response(frames, { headers: { "content-type": "text/event-stream" } });
+}
 
 function sse(content: string): Response {
   const payload =
@@ -288,10 +317,23 @@ describe("D 集成（issue #51）", () => {
 
   test("D3 轮次耗尽 → exit 1，摘要 status=exhausted source=none", async () => {
     const dir = project();
-    const r = await run(dir, ["-p", "永远不达成", "--drive", "false", "--max", "2", "-y"]);
+    // 每轮都有工具调用 → 不会先撞 idle-stop，跑满 --max 2 轮后 exhausted。
+    forceToolCall = true;
+    try {
+      const r = await run(dir, ["-p", "永远不达成", "--drive", "false", "--max", "2", "-y"]);
+      expect(r.code).toBe(1);
+      expect(r.err).toContain("[drive] status=exhausted");
+      expect(r.err).toContain("source=none");
+    } finally {
+      forceToolCall = false;
+    }
+  }, 60_000);
+
+  test("D3b 连续空转 → idle-stop 也停（exit 1，不折算成 exhausted）", async () => {
+    const dir = project();
+    const r = await run(dir, ["-p", "不调工具也不达成", "--drive", "false", "--max", "5", "-y"]);
     expect(r.code).toBe(1);
-    expect(r.err).toContain("[drive] status=exhausted");
-    expect(r.err).toContain("source=none");
+    expect(r.err).toContain("[drive] status=idle-stop");
   }, 60_000);
 
   test("D4 启动时 stderr 警告「无人值守」", async () => {

@@ -83,6 +83,7 @@ import { saveSubagentTranscript, loadSubagentTranscript } from "./tools/transcri
 import type { ToolCtx } from "./tools/types.ts";
 import { backgroundShells } from "./tools/backgroundShell.ts";
 import { cleanupEphemeral } from "./cleanup.ts";
+import { runDriveCheck } from "./driveCheck.ts";
 import { makeAskUserTool } from "./tools/askUser.ts";
 import { registerWikiTools } from "./tools/wiki.ts";
 import { describeShell, getShell, prepareShellInvocation } from "./shell.ts";
@@ -1293,36 +1294,14 @@ async function main(): Promise<number> {
         // 本地 while 循环消费 DriveManager 的 action（不排交互队列）。
         const dm = new DriveManager({
           runCheck: async (cmd) => {
-            // 内联实现：`runDriveCheck` 定义在 `-p` 分支之后（const 暂时性死区），
-            // 这里不能直接引用；逻辑与它一致（同一 shell 解析 + 60s 硬超时）。
             try {
-              const shellSpec = getShell(cfg);
-              const inv = prepareShellInvocation(shellSpec, cmd, {
-                ...process.env,
-                NO_COLOR: process.env.NO_COLOR ?? "1",
-              });
-              const proc = Bun.spawn(inv.argv, {
-                cwd: cfg.cwd,
-                stdout: "pipe",
-                stderr: "pipe",
-                env: inv.env,
-              });
-              const timer = setTimeout(() => proc.kill(9), 60_000);
-              const [out, err, code] = await Promise.all([
-                new Response(proc.stdout).text(),
-                new Response(proc.stderr).text(),
-                proc.exited,
-              ]);
-              clearTimeout(timer);
-              return { ok: code === 0, code, output: `${out}\n${err}`.trim().slice(-800) };
+              return await runDriveCheck(cmd, cfg);
             } catch (e) {
               return { ok: false, code: null, output: `检查命令执行失败：${(e as Error).message}` };
             }
           },
           // -p 没有交互队列：这里恒返回 true，由下面的 while 直接再 send。
           enqueue: () => true,
-          // issue #51：无人值守下关闭防空转（无人可问），轮次耗尽才是终态 exhausted。
-          idleLimit: 0,
           evaluate: makeDriveJudge({
             cfg,
             stream: (c2, messages, tools, opts) =>
@@ -1378,25 +1357,17 @@ async function main(): Promise<number> {
             };
             break;
           }
-          // issue #51：`-p` 的轮次由本循环控制，**不适用**交互模式的防空转语义
-          // （交互下 idle-stop 是「模型原地打转，停下来问人」；-p 无人可问，
-          //  轮次耗尽才是 PRD §2.2 规定的终态 exhausted）。
-          // 因此这里把 idle-stop 折算成 exhausted，只在轮次到顶时停。
+          // 终态：done 已在上方处理；exhausted / idle-stop 都是「未达成」的停止点（PRD §2.2）。
+          // -p 下没有「停下来问人」这回事，所以直接停、由退出码 1 交给 CI。
           if (outcome.action === "exhausted" || outcome.action === "idle-stop") {
-            const rounds = st?.rounds ?? 0;
-            const maxRounds = oneShotDrive.maxRounds;
-            if (rounds >= maxRounds) {
-              final = {
-                status: "exhausted",
-                source: null,
-                rounds,
-                elapsedMs: Date.now() - t0,
-                reason: `已达自动推进上限 ${maxRounds} 轮，条件仍未达成`,
-              };
-              break;
-            }
-            // 未到轮次上限：继续推进（防空转在无人值守下没有意义）。
-            continue;
+            final = {
+              status: outcome.action === "idle-stop" ? "idle-stop" : "exhausted",
+              source: null,
+              rounds: st?.rounds ?? 0,
+              elapsedMs: Date.now() - t0,
+              reason: st?.reason ?? null,
+            };
+            break;
           }
           // 墙钟只在轮间检查（PRD §2.5）：到点就停，不硬杀正在跑的一轮。
           if (dm.expired(maxMs)) {
@@ -1604,28 +1575,10 @@ async function main(): Promise<number> {
    *  - 检查命令：用户显式配置（与 hooks 同口径：不经审批、按配置自动跑）；
    *  - 模型判断：只在用户显式 `--judge` 时启用，一次独立小请求，结果标注为「模型判断」。
    */
-  const runDriveCheck = async (
-    cmd: string,
-  ): Promise<{ ok: boolean; code: number | null; output: string }> => {
-    const shellSpec = getShell(cfg);
-    const inv = prepareShellInvocation(shellSpec, cmd, {
-      ...process.env,
-      NO_COLOR: process.env.NO_COLOR ?? "1",
-    });
-    const proc = Bun.spawn(inv.argv, { cwd: cfg.cwd, stdout: "pipe", stderr: "pipe", env: inv.env });
-    const timer = setTimeout(() => proc.kill(9), 60_000);
-    const [out, err, code] = await Promise.all([
-      new Response(proc.stdout).text(),
-      new Response(proc.stderr).text(),
-      proc.exited,
-    ]);
-    clearTimeout(timer);
-    return { ok: code === 0, code, output: `${out}\n${err}`.trim().slice(-800) };
-  };
   const drive = new DriveManager({
     runCheck: async (cmd) => {
       try {
-        return await runDriveCheck(cmd);
+        return await runDriveCheck(cmd, cfg);
       } catch (e) {
         return { ok: false, code: null, output: `检查命令执行失败：${(e as Error).message}` };
       }

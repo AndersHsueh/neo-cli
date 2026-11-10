@@ -36,6 +36,7 @@ neo -p "<提示>" --drive --judge "<完成标准>" [--max N] [--max-minutes M] -
    - 未过（或没有检查命令）且有 `--judge` → 模型判断；达成 → **模型判断**，停，exit 0；
    - 未达成 → `continue`：再 `agent.send` 同一提示（与 `/drive` 的自动续跑语义一致）。
 2. 停止条件：达成 / 轮次到 `--max`（`exhausted`）/ 连续空转（`idle-stop`）/ 墙钟到 `--max-minutes`（`timeout`）/ SIGINT。
+   其中 `idle-stop` 在 `-p` 下同样生效（无人可问，直接停、exit 1）——不允许「模型原地打转还继续烧轮次」。
 3. **退出码**（CI 可消费）：
    | 情况 | 退出码 |
    |---|---|
