@@ -8,7 +8,7 @@ import { describe, expect, test } from "bun:test";
 
 import { implementedCommandNames, wireCommands } from "../src/cli/commands.ts";
 import { registeredCommandNames } from "../src/cli/command-registry.ts";
-import { COMMANDS } from "../src/input/commands.ts";
+import { COMMANDS, knownSlashCommand } from "../src/input/commands.ts";
 
 wireCommands();
 
@@ -53,5 +53,22 @@ describe("C2a 命令表", () => {
     expect(implementedCommands().length).toBeGreaterThan(25);
     expect(implementedCommands()).toContain("last");
     expect(implementedCommands()).toContain("memory");
+  });
+});
+
+describe("C2b 一次性模式的斜杠命令识别（issue #41）", () => {
+  test("识别已知命令（首行 / 带参数 / 别名 / 前后空白）", () => {
+    expect(knownSlashCommand("/drive bun test -- 修到绿")).toBe("drive");
+    expect(knownSlashCommand("  /help  ")).toBe("help");
+    expect(knownSlashCommand("/?")).toBe("?");
+    expect(knownSlashCommand("/rewind last")).toBe("rewind");
+  });
+
+  test("不是「行首已知命令」一律返回 null（不能误伤普通提问）", () => {
+    expect(knownSlashCommand("请执行 /help")).toBeNull();
+    expect(knownSlashCommand("/notacommand x")).toBeNull();
+    expect(knownSlashCommand("hello")).toBeNull();
+    expect(knownSlashCommand("/")).toBeNull();
+    expect(knownSlashCommand("")).toBeNull();
   });
 });

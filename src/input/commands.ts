@@ -64,3 +64,17 @@ export const COMMANDS: CommandEntry[] = [
   { name: "exit", description: "退出；别名 quit" },
   { name: "quit", description: "别名：/exit" },
 ];
+
+/**
+ * 从一行文本里解析出**行首的已知斜杠命令名**（issue #41）。
+ *
+ * `"/drive bun test"` → `"drive"`；不是行首、或不是已登记命令 → `null`。
+ * 一次性模式（`-p` / 非交互）用它明确提示「斜杠命令不可用」，而不是把整串当 prompt
+ * 静默发给模型 —— 与 `docs/goal-drive-prd[done].md` 的口径对齐。
+ */
+export function knownSlashCommand(line: string): string | null {
+  const trimmed = line.trim();
+  if (!trimmed.startsWith("/")) return null;
+  const name = trimmed.slice(1).split(/\s+/, 1)[0] ?? "";
+  return COMMANDS.some((c) => c.name === name) ? name : null;
+}

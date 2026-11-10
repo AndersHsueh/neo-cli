@@ -49,7 +49,7 @@ import {
   formatCandidateHint,
   triggerAt,
 } from "./input/completion.ts";
-import { COMMANDS } from "./input/commands.ts";
+import { COMMANDS, knownSlashCommand } from "./input/commands.ts";
 import { FileIndex } from "./input/fileIndex.ts";
 import { expandReferences } from "./input/references.ts";
 import {
@@ -1212,6 +1212,16 @@ async function main(): Promise<number> {
       cleanupEphemeralResources();
       return 2;
     }
+    // issue #41：斜杠命令是交互模式的能力。这里必须明确提示，而不是把整串当 prompt
+    // 静默发给模型（PRD 写的是「命令会明确提示不可用」）。
+    const slashCommand = knownSlashCommand(prompt);
+    if (slashCommand) {
+      console.error(
+        c.err(`✖ -p 不解析斜杠命令：/${slashCommand} 只能在交互模式使用（-p 会把内容当成一次任务）`),
+      );
+      cleanupEphemeralResources();
+      return 2;
+    }
     // json 模式把 SIGINT 转成 aborted 统计：Ctrl+C 后仍能输出一行 JSON（exit 130），
     // 而不是被信号直接杀掉、编排器拿到空 stdout。
     const onSigint = (): void => agent.cancel();
@@ -1284,8 +1294,16 @@ async function main(): Promise<number> {
 
   // 也允许 `neo 你的问题` 直接作为首轮输入（非交互）
   if (args.rest.length > 0 && !process.stdin.isTTY) {
+    const restPrompt = args.rest.join(" ");
+    // issue #41：与 -p 同口径，斜杠命令在非交互模式下必须明确拦下。
+    const restSlashCommand = knownSlashCommand(restPrompt);
+    if (restSlashCommand) {
+      console.error(c.err(`✖ 非交互模式不解析斜杠命令：/${restSlashCommand} 只能在交互模式使用`));
+      cleanupEphemeralResources();
+      return 2;
+    }
     try {
-      await agent.send(args.rest.join(" "));
+      await agent.send(restPrompt);
     } finally {
       // 与 -p 同一条一次性进程路径（issue #40）：子进程必须显式收掉，否则留下孤儿。
       cleanupEphemeralResources();
