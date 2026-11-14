@@ -339,3 +339,48 @@ grep -E -A3 "^## \[[0-9-]+\] todo \|" wiki/log.md
 ## [2026-11-08] wiki | 自动记忆：project/测试闸门-豁免盲区审计.md（append）
 ## [2026-11-08] query | 记录维护者三条拍板口径（bot-comments 不入库、提示词断言不开 issue、跨层互链保持现状）与 v0.4.80 双端推送
 ## [2026-11-08] query | 定案：跨层互链保持现状（不做跨层链接解析），该遗留口径问题关闭
+## [2026-11-08] wiki | 自动记忆：project/待办-Issue与发布说明收尾.md（append）
+## [2026-11-08] wiki | 自动记忆：project/neo-开发踩坑-续2.md（append）
+## [2026-11-09] query | #18 关单：启动诊断降噪/启动顺序/占位配色经复核确认 v0.4.65（commit a768c94，tag v0.4.65）已上线，已按 maintenance §11 加证据跟贴（tsc exit 0、boot-noise 27 pass、全量 1704 pass / 0 fail / 0 skip）并关闭；v0.4.65 处于闸门空窗期，未声称当时有 ALL GREEN
+## [2026-11-09] milestone | issue #8 实现完成待审：免费证据入账（默认开）+ 受控主动探测（默认关，probe_max_output_tokens），分支 neo/issue-8-max-output-probe（4020a8d + a909bd6），tsc 0 错 / bun test 1733 pass / 0 skip / PTY 24/24，NEO_STRICT_SKIPS=1 verify.sh ALL GREEN；另修正 tests/README 的 PTY 场景数 27→24（AGENTS.md 的 24/24 一直是对的）
+## [2026-11-09] deliverable | 产出 issue 修复计划 docs/issue-remediation-plan-20261109.md：剩余 11 条按先易后难排序（#17→#30→#25→#31→#29→#16→#28→#15→#27→#24→#23），含规模/风险/发版节奏（每 2–3 条一版，推送单独确认）
+## [2026-11-09] query | #8 合入 main（a909bd6，ff-only）并按 §11 关闭：闸门 tsc 0 错 / bun test 1733 pass / 0 fail / 0 skip（94 文件）/ NEO_STRICT_SKIPS=1 verify.sh ALL GREEN（PTY 24/24）；未发版，版本号与 tag 留到下一批
+## [2026-11-09] milestone | issue #17 路径作用域项目规则实现并合入（2c6f284）关闭：.neo/rules + .claude/rules 递归发现、paths/globs frontmatter、最小 glob（**/*/?/{a,b}/尾/）、每会话规则并入项目记忆、带 paths 规则按「本轮触达路径」以临时 system 消息注入（每次请求前同步/轮末摘除）、/context 展示条数与命中原因；闸门 tsc 0 错 / bun test 1762 pass / 0 skip（96 文件）/ PTY 24/24 ALL GREEN；移除 git worktree neo/issue-17-path-rules
+## [2026-11-09] milestone | issue #30 输入框 ! shell 模式实现并合入（1cdce3d）关闭：composer 新增 shell 输入态（空缓冲 ! 进入、前缀/正文 warn 色、占位切换、空回车不执行、删空/Esc 退出、旧 !cmd 语法保留），提交走独立 onShellCommand → drain 直接 runShellWithTui 避免双重剥前缀；PTY 新增 S23（24→25 场景）；闸门 tsc 0 错 / bun test 1770 pass / 0 skip（97 文件）/ PTY 25/25 ALL GREEN
+## [2026-11-09] todo | 新发现缺陷 #34（未修）：TUI 跑完 shell 命令后输入不生效——按键被终端回显但不进 composer；旧 !cmd 语法同样复现，用 NEO_ENTRY 指向 v0.4.80 主仓 src/index.ts 的 PTY 实测确认；初步方向是 suspend/resume 后按键流未回到 composer，建议先加「resume 后键入」红态场景再排查
+## [2026-11-09] milestone | issue #34 修复并合入（3733987）关闭：真因是 runShellWithTui 先 suspend composer 再在 runShell 里 confirm → 确认框无法渲染 → 死锁（ask 模式下 !cmd 从未真正执行，表面像「输入失效」）；拆出 authorizeShell/executeShell、授权前移到 suspend 之前；PTY S23 升级为「进入 ! 模式 → 确认问句 → y → $ echo 执行 → 之后 /todos 仍生效」；闸门 tsc 0 错 / bun test 1774 pass / 0 skip（98 文件）/ PTY 25/25 ALL GREEN
+## [2026-11-09] todo | 更正本条上一轮的 #34 初诊：不是「跑完 shell 后输入失效」，而是 ask 模式确认框画在 suspended composer 里导致死锁；已在 #30 补记说明
+## [2026-11-09] milestone | issue #25 /loop 定时/自节奏循环提示实现并合入（56af734）关闭：src/loop.ts（间隔解析 30s/2m/1h/纯秒、5s–24h 夹紧；LoopScheduler interval/self；状态文案）、/loop 命令族、默认关 + -p 不可用、忙碌丢拍计 skipped、退出 dispose；循环注入回显 `❯ <提示>`；PTY S24（25→26）；闸门 tsc 0 错 / bun test 1790 pass / 0 skip（99 文件）/ PTY 26/26 ALL GREEN
+## [2026-11-09] milestone | issue #31 / 渐进式命令菜单实现并合入（f4a44e9）关闭：/ 自动开纵向菜单（左名/右短说明，最多 8 行 + 剩余提示）、rankCommands 实时过滤、无匹配空态、↑↓/PageUp/PageDown 导航不进历史、Tab 接受不执行、Enter 接受并执行、Esc 关闭并记住文本（防自动重开）；TUI 命令路径移除旧「N 个命令候选」hint（readline 降级模式保留），@ 文件补全不变；PTY S25（26→27）；闸门 tsc 0 错 / bun test 1798 pass / 0 skip（100 文件）/ PTY 27/27 ALL GREEN
+## [2026-11-09] milestone | issue #29 MCP 远程 HTTP 传输实现并合入（07c202c）关闭：mcpServers 支持 {type|transport:"http", url, headers}（静态 Bearer，首期不做 OAuth）；新增 src/mcp/httpRpc.ts（streamable HTTP：JSON/SSE 双响应、Mcp-Session-Id 回带、202 通知、超时/错误可读），抽 McpRpc 接口让 stdio/http 共用握手/注册/调用/清理；McpServerState.transport + /mcp 显示 [stdio]/[http]；顺序修正「先判传输再看 command」；SSE 旧传输与 OAuth 列入非目标；闸门 tsc 0 错 / bun test 1805 pass / 0 skip（101 文件）/ PTY 27/27 ALL GREEN
+## [2026-11-09] milestone | issue #16 后台子代理实现并合入（841f81c）关闭：task 新增 background:true（立刻返回任务 id、完成结果经 AgentOptions.pollBackground 在下一请求前以 user 消息注入且只注入一次）；新增 src/tools/background.ts（并发上限 3、每任务 AbortController、collectFinished 取走即清、取消不汇报）+ /tasks 列表/cancel；会话退出 cancelAll；ESC 只取消当前 turn（有意偏离草案，PRD 写明）；PTY S26（27→28）；闸门 tsc 0 错 / bun test 1814 pass / 0 skip（102 文件）/ PTY 28/28 ALL GREEN
+## [2026-11-09] milestone | issue #28 后台长驻 shell 实现并合入（0e0ab30）关闭：shell 新增 background:true（立刻返回 sh-N）+ 前台超时转后台不杀（同一进程 adopt）、新增只读 shell_output（id+tail_lines）、/ps 列表与 kill、并发上限 5、会话退出 killAll；审批/plan 复用 gateTool；删死代码 spawnPiped；shell_output 入可见集优先级（32K 档变 11/12，drift 测试按事实更新）；PTY S27（28→29）；闸门 tsc 0 错 / bun test 1824 pass / 0 skip（103 文件）/ PTY 29/29 ALL GREEN
+## [2026-11-09] milestone | issue #15 仓库地图实现并合入（dbef238）关闭：新增 src/prompt/repoMap.ts（按语言行首正则抽导出/定义，跳过依赖/构建目录与 >300KB 文件，单文件 ≤10 符号，按 budget_tokens×4 字符硬截断，20s 缓存）、系统提示词在目录树后注入「## 仓库地图」、config 顶层 repo_map{enabled,budget_tokens,max_files} 默认开 800/1200、/context 增 repo map 行；不引 tree-sitter（引用图排序留 #23）；闸门 tsc 0 错 / bun test 1834 pass / 0 skip（104 文件）/ PTY 29/29 ALL GREEN
+## [2026-11-09] milestone | issue #27 按轮次回滚 /rewind 实现并合入（442a4c1）关闭：checkpoint 抽 undoSeqs(seqs)、src/rewind.ts 轮次表（begin/end、both/code/conversation、50 轮上限、序列化）、每轮 send 前记锚点、session.meta.rewind 持久化（--resume 后可回滚）、/rewind 命令；闸门 tsc 0 错 / bun test 1844 pass / 0 skip（105 文件）/ PTY 30/30 ALL GREEN
+## [2026-11-09] milestone | issue #24 目标驱动续跑 /drive 实现并合入（35977bd）关闭：src/drive.ts 状态机（完成条件只认检查命令 exit 0，模型自述不算；未通过自动续跑、上限/连续 2 轮空转停、忙跳过不计数）、index 用 prepareShellInvocation 跑检查（60s 超时）并复用队列注入、/drive 命令（status/start/stop）；与 /goal 锚点语义分写在 PRD/README/help；闸门 tsc 0 错 / bun test 1852 pass / 0 skip（106 文件）/ PTY 31/31 ALL GREEN
+## [2026-11-09] milestone | issue #23 LSP 代码智能实现并合入（1ab24d3）关闭：src/lsp/client.ts（JSON-RPC over stdio + Content-Length 帧，node:child_process 保证小帧立即出门）+ src/lsp/index.ts（配置驱动启停、按扩展名路由、afterEdit 诊断回灌、definition/references/hover、退出 closeAll）+ 只读工具 lsp + write/edit 钩子 + config lsp 段 + 假 server fixture 测试 6 条；非目标：不捆绑 server/call hierarchy/workspace symbol/completion；闸门 tsc 0 错 / bun test 1858 pass / 0 skip（107 文件）/ PTY 31/31 ALL GREEN。**至此 GitHub 上 open issue = 0**（本批从 14 个降到 0，另新增并修复 #34）
+## [2026-11-09] deliverable | v0.4.81 发版（c1db9ee + 注解 tag v0.4.81）：剩余 11 条增强（#17/#30/#25/#31/#29/#16/#28/#15/#27/#24/#23）与 #34 死锁修复、#8 max_tokens 边界一次交付；12 篇 PRD 改名 [done]；release note docs/release-notes/v0.4.81.md；README/tests-README 基线对齐（1858 pass / 0 fail / 107 文件、PTY 31/31）；闸门 tsc 0 错 + verify.sh ALL GREEN；本地领先远端 16 个提交，等确认后推送 GitHub
+## [2026-11-09] wiki | 自动记忆：project/karpathy-wiki-技能拓扑.md（append）
+## [2026-11-10] wiki | 自动记忆：project/待办-Issue与发布说明收尾.md（append）
+## [2026-11-10] wiki | 自动记忆：project/待办-Issue与发布说明收尾.md（append）
+## [2026-11-10] wiki | 自动记忆：project/规划-MCP-HTTP后续项.md（create）
+## [2026-11-10] wiki | 自动记忆：project/规划-仓库地图与LSP后续.md（create）
+## [2026-11-10] wiki | 自动记忆：project/规划-rewind与drive后续.md（create）
+## [2026-11-10] wiki | 自动记忆：project/规划-后台Shell后续项.md（create）
+## [2026-11-10] wiki | 自动记忆：project/规划-后台子代理后续项.md（create）
+## [2026-11-10] wiki | 自动记忆：project/规划-仓库地图与LSP后续.md（append）
+## [2026-11-10] wiki | 自动记忆：project/修复-issue40-oneshot资源清理.md（create）
+## [2026-11-10] wiki | 自动记忆：project/neo-开发踩坑-续2.md（append）
+## [2026-11-10] wiki | 自动记忆：project/规划-MCP-HTTP后续项.md（append）
+## [2026-11-10] wiki | 自动记忆：project/规划-后台子代理后续项.md（append）
+## [2026-11-10] wiki | 自动记忆：project/规划-rewind与drive后续.md（append）
+## [2026-11-10] wiki | 自动记忆：project/规划-后台子代理后续项.md（append）
+## [2026-11-10] wiki | 自动记忆：project/规划-仓库地图与LSP后续.md（append）
+## [2026-11-10] wiki | 自动记忆：project/规划-rewind与drive后续.md（append）
+## [2026-11-10] wiki | 自动记忆：project/neo-开发踩坑-续2.md（append）
+## [2026-11-10] wiki | 自动记忆：project/neo-开发踩坑-续3.md（create）
+## [2026-11-10] todo | 2026-11-11 开工清单：推送剩余 docs、#37 stream-json 候选、#36/#38 排期
+## [2026-11-10] milestone | v0.4.82–v0.4.84 一日交付：issue #35 七组后续项收口（13 项 + 1 test-only）；1995 pass / PTY 32/32
+## [2026-11-10] deliverable | v0.4.82 发布（#35 第 0/1 批 7 项；1909 pass / 111 文件 / PTY 31/31；tag 已推）
+## [2026-11-10] deliverable | v0.4.83 发布（#35 第 2 批 4 项 + 测试稳定化；1956 pass / 114 文件 / PTY 32/32；tag 已推）
+## [2026-11-10] deliverable | v0.4.84 发布（#50 模型判断 + #51 -p 无人值守；1995 pass / 115 文件 / PTY 32/32；tag 已推）

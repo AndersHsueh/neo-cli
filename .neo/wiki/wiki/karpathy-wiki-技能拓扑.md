@@ -1,6 +1,6 @@
 # karpathy-wiki 技能拓扑
 
-> 最后更新:2026-10-16
+> 最后更新:2026-11-09
 
 ## 摘要
 
@@ -42,3 +42,7 @@ neo/skills/karpathy-wiki-ingest  →  ~/.neo/skills/karpathy-wiki-ingest  (链�
 
 - `raw/2026-10-16_neo-v0.1.1-工作纪要.md` §三
 - `src/skills.ts:59`、`:64`、`:338`
+
+## 推理与依据
+
+- 2026-11-09（session 20261109-214431-n8rocu）：当前 `/init` 的实际行为是：创建 `.neo/wiki/{raw,wiki,outputs}` 目录、写入 `.neo/wiki/raw/tags.md` 占位文件、创建空 `skills/` 目录，并向 `AGENTS.md` 写入带 `neo:wiki-workflow` 标记的 wiki 工作流规则区块。它不会生成 `karpathy-wiki-new` 的完整脚手架（如 `INDEX.md`、`log.md` 和模板文件），也不会自动软链任何 `karpathy-wiki-*` 技能。旧版 `/init` 自动挂载 karpathy 技能的行为已退役；相关能力内化到 `src/wiki/` 与工具层，karpathy-wiki-new/-ingest/-lint/-query 现作为独立技能供用户手动触发。相关代码落点：`src/cli/commands.ts` 的 `/init` 入口、`src/memory/init.ts` 的 `initProjectLevel`、`src/memory/agMd.ts` 与 `src/wiki/templates/agents-wiki-section.md`。

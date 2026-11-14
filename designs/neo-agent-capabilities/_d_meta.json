@@ -1,0 +1,19 @@
+{
+  "type": "design",
+  "designSystems": [],
+  "primaryDesignSystem": null,
+  "assets": {
+    "neo · 能力概要图": {
+      "versions": [
+        {
+          "path": "neo-capability-map.html",
+          "createdAt": "2026-11-09T13:39:54.141Z",
+          "status": "needs-review",
+          "subtitle": "纸感技术手册版 · 一页能力全景"
+        }
+      ]
+    }
+  },
+  "createdAt": "2026-11-09T13:39:54.144Z",
+  "updatedAt": "2026-11-09T13:39:54.144Z"
+}
