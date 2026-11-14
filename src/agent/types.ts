@@ -52,6 +52,8 @@ export interface AgentEvent {
     | "reasoning"
     | "tool_start"
     | "tool_end"
+    /** #37：每次完整模型响应成功后、工具执行前发出（含带 tool_calls 的响应）。 */
+    | "assistant_message"
     | "turn_end"
     | "error"
     | "compact"
@@ -60,6 +62,43 @@ export interface AgentEvent {
     /** 规划态变化（issue #14）：data = PlanSnapshot。 */
     | "plan";
   data?: unknown;
+}
+
+/**
+ * #37：assistant_message 内部事件载荷（组合根据此构造 stream-json 公开事件）。
+ *
+ * 只带公开正文、tool_calls 原序与 finish_reason；不含 reasoning / thinking_blocks /
+ * raw response / 签名思考块。`truncated` 不在这里判定 —— writer 按
+ * `finish_reason === "length"` 强制覆盖。
+ */
+export interface AssistantMessageEventData {
+  content: string;
+  tool_calls: Array<{ call_id: string; name: string; arguments: string }>;
+  finish_reason: string | null;
+}
+
+/** #37：公开工具状态，与 streamJson.StreamToolStatus 同口径。 */
+export type ToolEventStatus = "success" | "failure" | "not_executed";
+
+/** #37：tool_start 的 data。旧字段 name/args 保持不变，只增字段。 */
+export interface ToolStartEventData {
+  name: string;
+  args: string;
+  call_id: string;
+  /** 原始路径值；组合根交给 clipPaths 归一化。没有则为空数组。 */
+  paths: string[];
+}
+
+/** #37：tool_end 的 data。旧字段 name/ok/truncated 保持不变，只增字段。 */
+export interface ToolEndEventData {
+  name: string;
+  ok: boolean;
+  truncated: boolean;
+  call_id: string;
+  output: string;
+  status: ToolEventStatus;
+  /** 原始路径值；组合根交给 clipPaths 归一化。没有则为空数组。 */
+  paths: string[];
 }
 
 export interface AgentOptions {

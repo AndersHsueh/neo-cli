@@ -8,7 +8,7 @@
  * 本文件只负责循环。类型在 types.ts，预算提示在 steer.ts，权限判定在 policy.ts，
  * 压缩切分在 compact.ts。新增一种宿主能力走 AgentOptions 回调，不要把具体模块 import 进来。
  */
-import { chatStream, estimateTokens, contentText, LLMError, type Message, type ToolSpec, type Usage } from "../llm.ts";
+import { chatStream, estimateTokens, contentText, LLMError, type Message, type StreamResult, type ToolSpec, type Usage } from "../llm.ts";
 import type { Classifier } from "../classifier/index.ts";
 import { applyTier, type Config } from "../config.ts";
 import { StreamFormatter } from "../ui/stream.ts";
@@ -33,12 +33,44 @@ import {
 } from "./plan-mode.ts";
 import { previewArgs } from "./render.ts";
 import { budgetMessage as buildBudgetMessage, readGoalSafe } from "./steer.ts";
-import type { AgentIO, AgentOptions, PermissionMode, TurnStats, UsageBucket } from "./types.ts";
+import type {
+  AgentIO,
+  AgentOptions,
+  AssistantMessageEventData,
+  PermissionMode,
+  ToolEndEventData,
+  ToolEventStatus,
+  ToolStartEventData,
+  TurnStats,
+  UsageBucket,
+} from "./types.ts";
 import type { RuleMatch } from "../rules/index.ts";
 import { dispatchHooks, describeOutcome, hasAnyHook, type HookPayload } from "../hooks/index.ts";
 
-export type { AgentEvent, AgentIO, AgentOptions, PermissionMode, TurnStats } from "./types.ts";
+export type {
+  AgentEvent,
+  AgentIO,
+  AgentOptions,
+  AssistantMessageEventData,
+  PermissionMode,
+  ToolEndEventData,
+  ToolEventStatus,
+  ToolStartEventData,
+  TurnStats,
+} from "./types.ts";
 export { renderFinal } from "./render.ts";
+
+/**
+ * #37：把 DispatchResult 映射为公开工具状态。
+ *
+ * `executed === false` 表示工具根本没跑（用户拒绝 / plan 拒绝 / Pre 阻断 /
+ * 参数非法 / 未知工具），必须区别于「跑了但失败」——这也是 `settleToolOutcome`
+ * 保持中性的同一判据。
+ */
+function toolStatusOf(r: { ok: boolean; executed?: boolean }): ToolEventStatus {
+  if (r.executed === false) return "not_executed";
+  return r.ok ? "success" : "failure";
+}
 
 export class Agent {
   messages: Message[] = [];
@@ -781,6 +813,13 @@ export class Agent {
         }
         finishReason = res.finishReason;
 
+        // #37：每次完整模型响应成功后发一条内部 assistant_message 事件。
+        // 位置在 `const calls = res.toolCalls`（工具 dispatch）之前，且早于
+        // 「无工具调用 → 本轮结束」分支，因此最终回答、带 tool_calls 的响应、
+        // 以及同一 send() 内工具循环的每一轮都会各发一条。只带公开正文 /
+        // tool_calls 原序 / finish_reason；truncated 由 writer 判定。
+        this.emitAssistantMessageEvent(res);
+
         // #6：只要这轮被 length 截断就尝试探测写回。真实截断经常带着部分正文或工具调用，
         // 只认「空正文」会在主力模型上打不中。本轮只打一次；回调不得把 completion_tokens
         // 或请求预算当成能力上限（那是组合根的纪律，这里只负责通知）。
@@ -888,12 +927,29 @@ export class Agent {
 
           if (!canParallel) {
             toolCalls++;
-            this.opt.onEvent?.({ type: "tool_start", data: { name: headName, args: head.function.arguments } });
+            const startData: ToolStartEventData = {
+              name: headName,
+              args: head.function.arguments,
+              // #37：call_id 用现成的 tool_call_id（回填 tool 消息用的同一个 id）。
+              call_id: head.id,
+              paths: this.toolPathsFor(headName, head.function.arguments),
+            };
+            this.opt.onEvent?.({ type: "tool_start", data: startData });
             this.opt.console.toolHeader(headName, previewArgs(head.function.arguments));
             const r = await dispatch(headName, head.function.arguments, ctx);
             this.noteToolPaths(headName, head.function.arguments);
             this.opt.console.toolResult(r.output, 2, r.ok);
-            this.opt.onEvent?.({ type: "tool_end", data: { name: headName, ok: r.ok, truncated: r.truncated } });
+            const endData: ToolEndEventData = {
+              name: headName,
+              ok: r.ok,
+              truncated: r.truncated,
+              // #37：新增字段；status 区分「跑了但失败」与「根本没跑」。
+              call_id: head.id,
+              output: r.output,
+              status: toolStatusOf(r),
+              paths: this.toolPathsFor(headName, head.function.arguments),
+            };
+            this.opt.onEvent?.({ type: "tool_end", data: endData });
             this.settleToolOutcome(headName, r.ok, r.executed !== false);
             this.messages.push({ role: "tool", tool_call_id: head.id, name: headName, content: r.output });
             ci++;
@@ -908,10 +964,14 @@ export class Agent {
           // 段内先按序发 start（UI 立刻看到「要做什么」），再并发执行
           for (const call of slice) {
             toolCalls++;
-            this.opt.onEvent?.({
-              type: "tool_start",
-              data: { name: call.function.name, args: call.function.arguments },
-            });
+            // #37：并行段仍按 tool_calls 原序先发全部 start（顺序不变）。
+            const startData: ToolStartEventData = {
+              name: call.function.name,
+              args: call.function.arguments,
+              call_id: call.id,
+              paths: this.toolPathsFor(call.function.name, call.function.arguments),
+            };
+            this.opt.onEvent?.({ type: "tool_start", data: startData });
             this.opt.console.toolHeader(call.function.name, previewArgs(call.function.arguments));
           }
           // dispatch 内部已把 ToolError / 参数错误收敛成 ok:false，不会让 Promise.all 炸掉批次
@@ -923,10 +983,17 @@ export class Agent {
             const r = results[k]!;
             this.opt.console.toolResult(r.output, 2, r.ok);
             this.noteToolPaths(call.function.name, call.function.arguments);
-            this.opt.onEvent?.({
-              type: "tool_end",
-              data: { name: call.function.name, ok: r.ok, truncated: r.truncated },
-            });
+            // #37：并行段结果仍按原序发 end（顺序不变），与 start 用同一 call.id 配对。
+            const endData: ToolEndEventData = {
+              name: call.function.name,
+              ok: r.ok,
+              truncated: r.truncated,
+              call_id: call.id,
+              output: r.output,
+              status: toolStatusOf(r),
+              paths: this.toolPathsFor(call.function.name, call.function.arguments),
+            };
+            this.opt.onEvent?.({ type: "tool_end", data: endData });
             this.settleToolOutcome(call.function.name, r.ok, r.executed !== false);
             this.messages.push({
               role: "tool",
@@ -1220,9 +1287,37 @@ export class Agent {
     }
   }
 
+  /**
+   * #37：取一次工具调用涉及的原始路径值（组合根会交给 clipPaths 归一化）。
+   * 未注入 toolPathsOf 时返回空数组；与 noteToolPaths 共用同一提取器，
+   * 保证事件里的 paths 与 scoped-rules 触达集合来源一致。
+   */
+  private toolPathsFor(name: string, argsJson: string): string[] {
+    return this.opt.toolPathsOf?.(name, argsJson) ?? [];
+  }
+
   private noteToolPaths(name: string, argsJson: string): void {
-    const extract = this.opt.toolPathsOf;
-    if (extract) this.noteTouchedPaths(extract(name, argsJson));
+    this.noteTouchedPaths(this.toolPathsFor(name, argsJson));
+  }
+
+  /**
+   * #37：每次完整模型响应成功后发内部 assistant_message 事件。
+   *
+   * tool_calls 严格按 res.toolCalls 原序，arguments 用原字符串（不解析、不脱敏 ——
+   * 脱敏与 4000 code point 截断是 streamJson 边界的职责）。
+   * 不含 reasoning / thinkingBlocks / raw / 签名思考块。
+   */
+  private emitAssistantMessageEvent(res: StreamResult): void {
+    const data: AssistantMessageEventData = {
+      content: res.content,
+      tool_calls: res.toolCalls.map((call) => ({
+        call_id: call.id,
+        name: call.function.name,
+        arguments: call.function.arguments,
+      })),
+      finish_reason: res.finishReason,
+    };
+    this.opt.onEvent?.({ type: "assistant_message", data });
   }
 
   /** 本轮要注入的 scoped 规则消息；没配置 / 没触达 / 没命中 → null（并清空已加载记录）。 */

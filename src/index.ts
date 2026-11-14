@@ -27,8 +27,23 @@ import {
   type ModelTarget,
 } from "./config.ts";
 import { Classifier, CLASSIFIER_NAMES, isClassifierName, type ClassifierName } from "./classifier/index.ts";
-import { Agent, type PermissionMode } from "./agent.ts";
+import { Agent, type AgentEvent, type PermissionMode } from "./agent.ts";
 import { ModelFallbackController } from "./modelFallback.ts";
+import {
+  JsonlWriter,
+  clipFallbackReason,
+  clipPaths,
+  clipReason,
+  clipToolArguments,
+  clipToolOutput,
+  type StreamResultExitCode,
+  type StreamResultStatus,
+} from "./streamJson.ts";
+import type {
+  AssistantMessageEventData,
+  ToolEndEventData,
+  ToolStartEventData,
+} from "./agent/loop.ts";
 import { dispatchCommand } from "./cli/commands.ts";
 import { helpText } from "./cli/help.ts";
 import { persist, printSessions, replayTranscript, showStats } from "./cli/sessions.ts";
@@ -173,8 +188,8 @@ interface Args {
   continueLast: boolean;
   help: boolean;
   version: boolean;
-  /** -p 输出格式：text（默认）| json（P0-6，供 CI/编排器消费）。 */
-  outputFormat: "text" | "json";
+  /** -p 输出格式：text（默认）| json（P0-6，stdout 单行）| stream-json（#37，stdout JSONL）。 */
+  outputFormat: "text" | "json" | "stream-json";
   /** #59：CLI 有序备用链（可重复 --fallback）；出现即完整替换 settings 链。 */
   fallbackArgs: string[];
   /** #59：本次运行禁用备用链（与 --fallback 互斥）。 */
@@ -219,8 +234,8 @@ function parseArgs(argv: string[]): Args {
     // 等号形式（--output-format=json）也要认，否则编排器写 `--flag=value` 会被静默忽略。
     if (v.startsWith("--output-format=")) {
       const val = v.slice("--output-format=".length).trim();
-      if (val !== "text" && val !== "json") {
-        console.error(`✖ --output-format 只支持 text | json（收到 "${val}"）`);
+      if (val !== "text" && val !== "json" && val !== "stream-json") {
+        console.error(`✖ --output-format 只支持 text | json | stream-json（收到 "${val}"）`);
         a.badArgs = true;
       } else {
         a.outputFormat = val;
@@ -299,8 +314,8 @@ function parseArgs(argv: string[]): Args {
         break;
       case "--output-format": {
         const v = (argv[++i] ?? "").trim();
-        if (v !== "text" && v !== "json") {
-          console.error(`✖ --output-format 只支持 text | json（收到 "${v}"）`);
+        if (v !== "text" && v !== "json" && v !== "stream-json") {
+          console.error(`✖ --output-format 只支持 text | json | stream-json（收到 "${v}"）`);
           a.badArgs = true;
         } else {
           a.outputFormat = v;
@@ -322,6 +337,37 @@ function parseArgs(argv: string[]): Args {
 }
 
 const HELP = helpText();
+
+/**
+ * #37：已明确识别为 stream-json 的用法错误也遵守 JSONL。
+ *
+ * 会话创建前就收口：stdout 为一条 error + 恰好一条 result，session_id=null；
+ * stderr 保留一条可读诊断。退出码固定 2，不引入任何退出码判断逻辑
+ * （#52 的 driveExitCode() 只服务正常路径的 result，属 #17b 接线）。
+ */
+async function streamJsonUsageError(message: string): Promise<number> {
+  const writer = new JsonlWriter({ sessionId: null });
+  writer.emitError({
+    code: "usage_error",
+    message,
+    provider: null,
+    model: null,
+  });
+  writer.emitResult({
+    status: "usage_error",
+    exit_code: 2,
+    provider: null,
+    model: null,
+    usage: { prompt: 0, completion: 0, reasoning: 0, by_model: [] },
+    drive: null,
+    error: message,
+  });
+  console.error(c.err(`✖ ${message}`));
+  await writer.flush();
+  writer.dispose();
+  return 2;
+}
+
 /* ------------------------------------------------------------------ */
 /* 主流程                                                              */
 /* ------------------------------------------------------------------ */
@@ -329,6 +375,20 @@ const HELP = helpText();
 async function main(): Promise<number> {
   const args = parseArgs(process.argv.slice(2));
   if (args.badArgs) return 2;
+  // #37：stream-json 只在 -p/--print 下合法。缺 -p（交互模式或
+  // `neo <prompt>` 非 -p 形式）在会话创建前按 JSONL 收口为用法错误 2，
+  // 此时还没有 SessionMeta.id，信封的 session_id 必须为 null。
+  // --help/--version 是元请求，仍按原语义返回文本与 0，不受此约束。
+  if (
+    args.outputFormat === "stream-json" &&
+    args.print === null &&
+    !args.help &&
+    !args.version
+  ) {
+    return await streamJsonUsageError(
+      "--output-format stream-json 只能与 -p/--print 同用（交互模式与 neo <prompt> 非 -p 形式均不支持）",
+    );
+  }
   if (args.name !== null && (args.name.trim() === "" || args.name.startsWith("-"))) {
     console.error(c.err("✖ --name 需要一个名字（不能为空或以 - 开头）"));
     return 2;
@@ -506,14 +566,18 @@ async function main(): Promise<number> {
   /**
    * -p --output-format json：stdout 只留一行 JSON，所有 UI/工具/流式输出改走 stderr。
    * 这是 P0-6 的关键约束 —— 否则 stdout 不可解析，CI 无法消费。
+   * #37：stream-json 同属结构化模式；Console/重试通知/fallback 人类提示/
+   * drive [drive] 摘要/警告一律走 stderr，stdout 只归 JsonlWriter。
    */
   const jsonMode = args.print !== null && args.outputFormat === "json";
+  const streamJsonMode = args.print !== null && args.outputFormat === "stream-json";
+  const structuredMode = jsonMode || streamJsonMode;
   const ui = new Console(
     cfg.theme === "matrix",
     cfg.toolcallInfoDetails,
     dock
       ? { dock, getTier: () => cfg.modelTier }
-      : jsonMode
+      : structuredMode
         ? {
             stdoutIsTTY: false,
             stdinIsTTY: false,
@@ -747,6 +811,16 @@ async function main(): Promise<number> {
   // --resume：沿用被恢复会话的 id/path（真续接），而不是新开一个 fork。
   const sess = meta ? adoptSession(meta, cfg.model) : createSession(cfg.model, cfg.cwd);
 
+  // #37 stream-json：唯一 writer 只在 streamJsonMode 下创建，session_id 取 sess.meta.id。
+  // stdoutClosed 由 writer 的 onClosed 钩子置位（EPIPE/写失败），是「无 result」的唯一物理例外；
+  // turnNo 供每次 agent.send 前的 turn_started 与全部 onEvent 映射共用。
+  let streamWriter: JsonlWriter | null = null;
+  let stdoutClosed = false;
+  let turnNo = 0;
+  if (streamJsonMode) {
+    streamWriter = new JsonlWriter({ sessionId: sess.meta.id, cwd: cfg.cwd });
+  }
+
   // 写文件检查点（P0-4）：会话级目录，/undo 用它在写盘后恢复本会话的 write/edit。
   // 只覆盖工具写路径（shell 改动不追），只快照工作目录内文件。
   const checkpoints = new CheckpointStore({ cwd: cfg.cwd, sessionId: sess.meta.id });
@@ -929,6 +1003,25 @@ async function main(): Promise<number> {
           fallbacks: effectiveFallbacks,
           onNotice: (m) => ui.warn(m),
           onFallback: (e) => {
+            // #37：备用目标完整响应成功并提交后触发（controller 在 commit(i,target) 之后、
+            // return res 之前调用），因此早于本轮 assistant_message。data 逐字段投影：
+            // FallbackFailure = {target: ModelTarget, code, message} → 展平为 provider/model。
+            if (streamWriter && !stdoutClosed) {
+              streamWriter.emitModelFallback({
+                from: { provider: e.from.provider, model: e.from.model },
+                to: { provider: e.to.provider, model: e.to.model },
+                reason: {
+                  code: e.reason.code,
+                  message: clipFallbackReason(e.reason.message),
+                },
+                attempts: e.attempts.map((a) => ({
+                  provider: a.target.provider,
+                  model: a.target.model,
+                  code: a.code,
+                  message: clipFallbackReason(a.message),
+                })),
+              });
+            }
             ui.warn(
               `[fallback] ${e.from.provider}:${e.from.model} → ${e.to.provider}:${e.to.model}` +
                 `（${e.reason.code}：${e.reason.message}）`,
@@ -1023,7 +1116,7 @@ async function main(): Promise<number> {
     // 交互式规划工作流（issue #14）：模型提交方案（exit_plan_mode）后把「待确认」
     // 摆到用户眼前。绝不在这里自动批准 —— 批准是用户的动作。
     requestPlanApproval: () => {
-      if (jsonMode) return;
+      if (structuredMode) return;
       ui.blank();
       ui.line(`${c.warn("◆")} 方案待确认：${c.dim("/plan approve 开始实施 · /plan revise 修改 · /plan cancel 放弃")}`);
       composerRef?.rerender();
@@ -1058,9 +1151,78 @@ async function main(): Promise<number> {
         }
       : undefined,
     onEvent: (e) => {
+      // #37 stream-json：把 Agent 内部事件投影为公开 JSONL 事件（仅 streamJsonMode）。
+      // 必须置于 tier_switch 早退与 `!mailbox` 早退之前，否则事件会被吞掉。
+      // writer 内部还会做一次白名单投影/限长兜底；这里传入 ClippedText 与 clipPaths 结果
+      // 是为了让公开载荷在组合根这一层就完成脱敏与限长，不把原始值透传到 stdout。
+      if (streamJsonMode && streamWriter && !stdoutClosed) {
+        switch (e.type) {
+          case "assistant_message": {
+            const d = e.data as AssistantMessageEventData;
+            streamWriter.emitAssistantMessage({
+              turn: turnNo,
+              provider: cfg.providerName,
+              model: cfg.model,
+              content: d.content,
+              tool_calls: d.tool_calls.map((call) => ({
+                call_id: call.call_id,
+                name: call.name,
+                arguments: clipToolArguments(call.arguments),
+              })),
+              finish_reason: d.finish_reason,
+              // writer 会按 finish_reason === "length" 强制覆盖 truncated。
+              truncated: false,
+            });
+            break;
+          }
+          case "tool_start": {
+            const d = e.data as ToolStartEventData;
+            streamWriter.emitToolStarted({
+              turn: turnNo,
+              call_id: d.call_id,
+              name: d.name,
+              arguments: clipToolArguments(d.args),
+              paths: clipPaths(d.paths, cfg.cwd),
+            });
+            break;
+          }
+          case "tool_end": {
+            const d = e.data as ToolEndEventData;
+            streamWriter.emitToolFinished({
+              turn: turnNo,
+              call_id: d.call_id,
+              name: d.name,
+              status: d.status,
+              output: clipToolOutput(d.output, d.truncated),
+              paths: clipPaths(d.paths, cfg.cwd),
+            });
+            break;
+          }
+          case "error": {
+            streamWriter.emitError({
+              // 内部 error 事件只带一个消息字符串、无 code 判别器，故统一取一个编码。
+              // 取 model_error：架构组合真值表唯一带 error 的失败行是「所有模型候选失败」，
+              // 该路径经 loop.ts:1104 的 `LLM 请求失败` 到达；且 3 个发点中 :869 空正文、
+              // :1104 LLM 请求失败两处都是模型侧。:1126 迭代上限实为 agent 侧，属已知粗映射。
+              code: "model_error",
+              // clipReason 做尽力脱敏（URL/Bearer/sk-/键值）+ 500 code point 限长，
+              // 对应 §3.8「不记录 LLM error body / API key」。
+              message: clipReason(String(e.data ?? "")),
+              provider: cfg.providerName,
+              model: cfg.model,
+            });
+            break;
+          }
+          // aborted / text / reasoning / turn_end / compact / plan / tier_switch
+          // 均为内部事件，不产生公开 JSONL 事件（aborted 由 result.status 体现）。
+          default:
+            break;
+        }
+      }
+
       // v0.4.2：分类切档发生在请求之前，提示也必须在请求之前出现（不再等 turn 结束）。
       if (e.type === "tier_switch") {
-        if (!jsonMode) {
+        if (!structuredMode) {
           const ts = e.data as {
             from: string;
             to: string;
@@ -1099,6 +1261,16 @@ async function main(): Promise<number> {
       }
     },
   });
+
+  // #37：writer 的 stdout 关闭钩子必须在 agent 构造完成后才能接（要调 agent.cancel()）。
+  // EPIPE/写失败时：置 stdoutClosed 让组合根跳过 result 并强制退出 1，同时取消在跑的 Agent；
+  // stderr 诊断只由 writer 发一条，组合根不再补发。
+  if (streamWriter) {
+    streamWriter.onClosed = () => {
+      stdoutClosed = true;
+      agent.cancel();
+    };
+  }
 
   // 后台子代理任务表（issue #16）：每个任务一个 AbortController；取消走 /tasks cancel
   // 或会话退出，主 turn 的 ESC 不误伤后台任务（见 onCancelTurn 的提示）。
@@ -1363,15 +1535,49 @@ async function main(): Promise<number> {
       console.error(c.warn("无人值守：-y 会自动批准所有操作"));
     }
 
-    // json 模式把 SIGINT 转成 aborted 统计：Ctrl+C 后仍能输出一行 JSON（exit 130），
-    // 而不是被信号直接杀掉、编排器拿到空 stdout。
+    // #37 init：oneShotDrive 确定后、首次 agent.send() 前恰好一次。
+    // 采用「惰性发出」：由 streamBeginTurn 在首次 send 前触发。这样 dm.start() 等
+    // 用法错误提前 return 2 时不会留下「有 init 无 result」的悬空 JSONL
+    // （§3.7 usage error 允许没有先前 init；#17c 会为这些路径补 error+result）。
+    let initEmitted = false;
+    const emitInitOnce = (): void => {
+      if (initEmitted || !streamJsonMode || !streamWriter || stdoutClosed) return;
+      initEmitted = true;
+      streamWriter.emitInit({
+        provider: cfg.providerName,
+        model: cfg.model,
+        model_tier: cfg.modelTier,
+        output_format: "stream-json",
+        drive: oneShotDrive !== null,
+      });
+    };
+
+    // #37 turn_started：每次 agent.send() 前调用一次，drive 循环内每轮自动续跑各算新 turn。
+    // turnNo 是 onEvent 映射与 turn_started 共用的共享计数器；递增放在守卫之外，
+    // 保证语义上始终是「第几次 send」，emit 只在 stream-json 且 stdout 未关闭时进行。
+    const streamBeginTurn = (): void => {
+      emitInitOnce();
+      turnNo += 1;
+      if (streamJsonMode && streamWriter && !stdoutClosed) {
+        streamWriter.emitTurnStarted({
+          turn: turnNo,
+          provider: cfg.providerName,
+          model: cfg.model,
+        });
+      }
+    };
+
+    // 结构化模式（json / stream-json）把 SIGINT 转成 aborted 统计：Ctrl+C 后
+    // 仍能输出一行 JSON / 收口 result（exit 130），而不是被信号直接杀掉、
+    // 编排器拿到空 stdout。
     const onSigint = (): void => agent.cancel();
-    if (jsonMode) process.on("SIGINT", onSigint);
+    if (structuredMode) process.on("SIGINT", onSigint);
     let stats: Awaited<ReturnType<typeof agent.send>>;
     // issue #51：驱动终态（普通 -p 为 null）。
     let driveResult: DriveRunResult | null = null;
     try {
       if (!oneShotDrive) {
+        streamBeginTurn();
         stats = await agent.send(prompt);
       } else {
         // 本地 while 循环消费 DriveManager 的 action（不排交互队列）。
@@ -1413,6 +1619,7 @@ async function main(): Promise<number> {
         let round = 0;
         let final: DriveRunResult;
         for (;;) {
+          streamBeginTurn();
           stats = await agent.send(prompt);
           round += 1;
           const thisTurnToolCalls = stats.toolCalls;
@@ -1484,7 +1691,7 @@ async function main(): Promise<number> {
       cleanupEphemeralResources();
       throw e;
     } finally {
-      if (jsonMode) process.off("SIGINT", onSigint);
+      if (structuredMode) process.off("SIGINT", onSigint);
     }
     // 正常结束（含 hadError / aborted）：先收子进程再落盘退出。
     // -p 是「跑完就退」的一次性进程，子进程没有第二次机会被回收。
@@ -1509,6 +1716,16 @@ async function main(): Promise<number> {
       // PRD §2.4：结束摘要走 stderr（stdout 保持 -p 现有风格）。
       console.error(formatDriveSummary(driveResult));
       if (driveResult.reason) console.error(c.dim(`[drive] ${driveResult.reason}`));
+    }
+
+    // #37 H：EPIPE / stdout 写失败。writer 的 onClosed 已调 agent.cancel() 使
+    // stats.aborted=true，会让上面的两处 exitCode 计算把它抬成 130；契约规定此
+    // 物理例外强制退出 1，并跳过 result（writer 已 closed，不再写 stdout）。
+    // 故覆盖必须放在所有 exitCode 计算之后（否则会被 `let exitCode = ...` 覆写）。
+    // stderr 诊断只由 writer 发一条，组合根不补发第二条；这里仅移除常驻监听。
+    if (stdoutClosed) {
+      exitCode = 1;
+      streamWriter?.dispose();
     }
 
     if (jsonMode) {
@@ -1548,6 +1765,64 @@ async function main(): Promise<number> {
       process.stdout.write(`${JSON.stringify(payload)}\n`);
       return exitCode;
     }
+
+    // ---- #37 stream-json 收口：drive_finished + 恰好一个 result ----
+    if (streamJsonMode && streamWriter && !stdoutClosed) {
+      // F：drive_finished 恰好一次（仅 --drive 且终态已确定），排在 result 之前。
+      if (driveResult) {
+        streamWriter.emitDriveFinished({
+          status: driveResult.status,
+          source: driveResult.source,
+          rounds: driveResult.rounds,
+          // DriveRunResult 用的是 elapsedMs，公开契约字段名是 elapsed_ms。
+          elapsed_ms: driveResult.elapsedMs,
+          reason: driveResult.reason ? clipReason(driveResult.reason) : null,
+        });
+      }
+
+      // G：status 按契约优先级；exit_code 直接复用上面算出的 exitCode 变量
+      // （#52 优先级 abort > hadError > drive 是唯一来源），writer 内不重算。
+      const resultStatus: StreamResultStatus = stats.aborted
+        ? "aborted"
+        : stats.hadError
+          ? "failed"
+          : driveResult && driveResult.source === "model"
+            ? "model_done"
+            : driveResult && driveExitCode(driveResult) !== 0
+              ? "failed"
+              : "completed";
+      streamWriter.emitResult({
+        status: resultStatus,
+        exit_code: exitCode as StreamResultExitCode,
+        provider: cfg.providerName,
+        model: cfg.model,
+        // 整个进程会话累计（含 drive 多轮、辅助请求），而非最后一轮 stats。
+        usage: {
+          prompt: agent.cumulative.prompt,
+          completion: agent.cumulative.completion,
+          reasoning: agent.cumulative.reasoning,
+          by_model: agent.usageByModel(),
+        },
+        drive: driveResult
+          ? {
+              status: driveResult.status,
+              source: driveResult.source,
+              rounds: driveResult.rounds,
+              elapsed_ms: driveResult.elapsedMs,
+            }
+          : null,
+        error: stats.errorMessage,
+      });
+      // 等有界 flush 再从 main() 返回，不用 process.exit() 截断缓冲。
+      await streamWriter.flush();
+      streamWriter.dispose();
+    }
+
+    // #37 H 补充：EPIPE 也可能恰好在最终 result 写入时才到达（下游在收口前关闭）。
+    // 上面的 stdoutClosed override 早于 result 写入，无法覆盖这一物理例外；
+    // 此处再校正一次，保证「stdout 写失败 → 强制 exit 1」对所有写入时点成立。
+    // writer 已 closed，不再写 stdout，也不会产生第二个 result。
+    if (stdoutClosed) exitCode = 1;
 
     return exitCode;
   }

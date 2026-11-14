@@ -21,7 +21,9 @@ ${c.bold("用法")}
 
 ${c.bold("选项")}
   -p, --print <text>    单次模式
-      --output-format <fmt>  -p 输出格式：text（默认）| json（CI 可解析，stdout 单行）
+      --output-format <fmt>  -p 输出格式：text（默认）| json（stdout 单行）| stream-json（stdout JSONL，仅 -p）
+                        stream-json 只能与 -p 同用：stdout 纯 JSONL（每行一个事件信封），
+                        Console/诊断/提示一律走 stderr；缺 -p 为用法错误 2
       --fallback <provider>:<model>  主模型故障时的有序备用链（可重复，出现顺序即优先级）
                         任一项出现即完整替换 settings.model_fallback；最多 8 项
       --no-fallback     本次禁用备用链（与 --fallback 互斥）
@@ -32,7 +34,7 @@ ${c.bold("选项")}
       --judge <标准>     模型判断完成标准（来源标注为「模型判断」，绝不冒充已验证）
       --max <N>          驱动轮次上限，默认 5（夹紧 1–20，与 /drive 同口径）
       --max-minutes <M>  墙钟上限，默认 30 分钟（夹紧 1–240），只在轮间检查
-                        退出码：达成 0 / 未达成 1 / SIGINT 130 / 用法错误 2；
+                        退出码：达成 0 / 未达成 1 / 仅模型判断完成 3 / SIGINT 130 / 用法错误 2；
                         结束时 stderr 打一行 [drive] status=… source=… rounds=… elapsed=…s
   -m, --model <id>      直接指定模型 ID（绕过档位）
   -P, --provider <name> 切换 provider
