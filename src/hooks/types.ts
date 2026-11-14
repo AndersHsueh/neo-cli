@@ -11,10 +11,29 @@
  */
 import type { PermissionMode } from "../agent/types.ts";
 
-/** 三个事件。PreToolUse 可阻断；PostToolUse / TurnEnd 默认不阻断（onFailure 可配）。 */
-export type HookEvent = "PreToolUse" | "PostToolUse" | "TurnEnd";
+/**
+ * 四个事件。PreToolUse 可阻断；PostToolUse / TurnEnd 默认不阻断（onFailure 可配）；
+ * Notification 恒不阻断（issue #56，见下）。
+ */
+export type HookEvent = "PreToolUse" | "PostToolUse" | "TurnEnd" | "Notification";
 
-export const HOOK_EVENTS: readonly HookEvent[] = ["PreToolUse", "PostToolUse", "TurnEnd"];
+export const HOOK_EVENTS: readonly HookEvent[] = [
+  "PreToolUse",
+  "PostToolUse",
+  "TurnEnd",
+  "Notification",
+];
+
+/**
+ * Notification 的触发原因（issue #56）。
+ *
+ *  - `permission_prompt`：主代理即将弹出审批确认框（**审批之前**，用户还没点）；
+ *  - `turn_end`：一轮结束（与 TurnEnd 事件并存且独立 —— TurnEnd 面向模型/统计，
+ *    Notification 面向「人」，用来发系统通知）。
+ */
+export type NotificationReason = "permission_prompt" | "turn_end";
+
+export const NOTIFICATION_REASONS: readonly NotificationReason[] = ["permission_prompt", "turn_end"];
 
 /** 失败策略：continue = 记诊断后继续（默认）；block = 把失败升级为阻断。 */
 export type HookOnFailure = "continue" | "block";
@@ -23,11 +42,20 @@ export interface HookDef {
   event: HookEvent;
   /** shell 命令（经平台 shell 执行，与 shell 工具同一套解析）。 */
   command: string;
-  /** 工具名匹配：精确名、`mcp__*` 这类前缀通配，或 `/regex/`。缺省 = 全部工具。 */
+  /**
+   * 匹配条件。语义随事件而变：
+   *  - PreToolUse / PostToolUse：**工具名**（精确、`mcp__*` 前缀通配、`/regex/`）；
+   *  - Notification：**触发原因**（`permission_prompt` / `turn_end`，同样支持通配与正则）；
+   *  - TurnEnd：无匹配对象（恒匹配）。
+   * 缺省 = 匹配全部。
+   */
   matcher?: string;
   /** 超时秒数（默认 30，上限 600）。 */
   timeout: number;
-  /** 仅 PostToolUse / TurnEnd 有意义；PreToolUse 恒按 block 语义（非 0 即阻断）。 */
+  /**
+   * 仅 PostToolUse / TurnEnd 有意义；PreToolUse 恒按 block 语义（非 0 即阻断）。
+   * Notification 恒不阻断，配了 block 也不生效（见 runner.ts 的 dispatchHooks）。
+   */
   onFailure: HookOnFailure;
   /** 来源标注（`settings.hooks.PreToolUse[2]`），诊断与 /hooks 用。 */
   origin: string;
@@ -51,7 +79,7 @@ export function emptyHooksConfig(): HooksConfig {
   return {
     enabled: false,
     verbose: true,
-    hooks: { PreToolUse: [], PostToolUse: [], TurnEnd: [] },
+    hooks: { PreToolUse: [], PostToolUse: [], TurnEnd: [], Notification: [] },
     warnings: [],
   };
 }
@@ -74,19 +102,36 @@ export function hasAnyHook(cfg: HooksConfig): boolean {
  * 缺省（undefined / 空串）= 匹配全部工具。
  */
 export function matchTool(matcher: string | undefined, tool: string): boolean {
+  return matchPattern(matcher, tool);
+}
+
+/**
+ * Notification 的触发原因匹配（issue #56）。
+ *
+ * 为什么不复用 matchTool：两者**匹配对象不同**（工具名 vs 触发原因），
+ * 共用一个名字会让 `/hooks` 的 matcher 一栏、诊断文案、以及后来读代码的人
+ * 都分不清「这条 Notification 到底在过滤什么」。语法刻意保持一致（精确 / 末尾通配 /
+ * 正则 / 缺省=全部），所以底层共用 matchPattern，语义各自命名。
+ */
+export function matchReason(matcher: string | undefined, reason: NotificationReason): boolean {
+  return matchPattern(matcher, reason);
+}
+
+/** matchTool / matchReason 共用的语法实现（两者语义不同，只有语法相同）。 */
+function matchPattern(matcher: string | undefined, subject: string): boolean {
   if (matcher === undefined) return true;
   const m = matcher.trim();
   if (m === "") return true;
   if (m.length >= 2 && m.startsWith("/") && m.endsWith("/")) {
     try {
-      return new RegExp(m.slice(1, -1)).test(tool);
+      return new RegExp(m.slice(1, -1)).test(subject);
     } catch {
       // 正则写错：按「不匹配」处理，解析期已经给过 warning。
       return false;
     }
   }
-  if (m.endsWith("*")) return tool.startsWith(m.slice(0, -1));
-  return tool === m;
+  if (m.endsWith("*")) return subject.startsWith(m.slice(0, -1));
+  return subject === m;
 }
 
 function asTimeout(raw: unknown, where: string, warnings: string[]): number {
@@ -119,7 +164,8 @@ function asOnFailure(raw: unknown, where: string, warnings: string[]): HookOnFai
  *     "enabled": true,
  *     "PreToolUse":  [ { "command": "...", "matcher": "shell", "timeout": 10 } ],
  *     "PostToolUse": [ { "command": "...", "matcher": "/^(write_file|edit_file)$/", "onFailure": "block" } ],
- *     "TurnEnd":     [ { "command": "..." } ]
+ *     "TurnEnd":     [ { "command": "..." } ],
+ *     "Notification":[ { "command": "notify-send ...", "matcher": "permission_prompt" } ]
  *   }
  *
  * 容错原则：**单条写错只丢这一条 + 一条可读 warning，绝不让 CLI 起不来**。
@@ -169,7 +215,7 @@ export function parseHooksConfig(raw: unknown): HooksConfig {
         }
         matcher = m === "" ? undefined : m;
       } else if (matcherRaw !== undefined && matcherRaw !== null) {
-        cfg.warnings.push(`${where}.matcher 必须是字符串，已按「匹配全部工具」处理。`);
+        cfg.warnings.push(`${where}.matcher 必须是字符串，已按「匹配全部」处理。`);
       }
       cfg.hooks[event].push({
         event,
@@ -240,7 +286,30 @@ export interface TurnEndPayload extends HookPayloadBase {
   };
 }
 
-export type HookPayload = PreToolUsePayload | PostToolUsePayload | TurnEndPayload;
+/**
+ * Notification 载荷（issue #56）。
+ *
+ * 与 TurnEnd 的区别：TurnEnd 是「给模型/统计看的回合收尾」，Notification 是
+ * 「给人看的提醒信号」。两者在同一时刻可能都触发，但用途不同，不要合并。
+ *
+ * `tool_name` / `tool_input` 只在 `reason=permission_prompt` 时出现 ——
+ * 通知文案需要知道「在等你批什么」。
+ */
+export interface NotificationPayload extends HookPayloadBase {
+  event: "Notification";
+  /** 触发原因，也是 matcher 的匹配对象。 */
+  reason: NotificationReason;
+  /** 仅在 permission_prompt 时出现：等待审批的工具名。 */
+  tool_name?: string;
+  /** 仅在 permission_prompt 时出现：已解析的工具参数。 */
+  tool_input?: unknown;
+}
+
+export type HookPayload =
+  | PreToolUsePayload
+  | PostToolUsePayload
+  | TurnEndPayload
+  | NotificationPayload;
 
 /* ------------------------------------------------------------------ */
 /* 执行结果                                                            */
@@ -274,7 +343,10 @@ export interface HookOutcome {
 
 /** 一次事件分发的汇总。 */
 export interface HookDispatchResult {
-  /** 是否被阻断（PreToolUse 的 block，或 Post/TurnEnd 上 onFailure=block 的失败）。 */
+  /**
+   * 是否被阻断（PreToolUse 的 block，或 Post/TurnEnd 上 onFailure=block 的失败）。
+   * Notification 恒为 false —— 没有模型要喂回原因，通知失败不该阻断任何东西。
+   */
   blocked: boolean;
   /** 阻断原因（回给模型/用户）。 */
   reason: string;

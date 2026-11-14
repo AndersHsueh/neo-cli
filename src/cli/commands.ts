@@ -729,7 +729,7 @@ export async function handleCommand(line: string, ctx: CommandContext): Promise<
       // hooks 不是权限系统 —— 这里刻意不展示任何「放行/拒绝」策略，
       // 免得用户误以为它是 #4 那种 allow/deny 规则表。
       const h = cfg.hooks;
-      const total = h.hooks.PreToolUse.length + h.hooks.PostToolUse.length + h.hooks.TurnEnd.length;
+      const total = HOOK_EVENTS.reduce((n, ev) => n + h.hooks[ev].length, 0);
       ui.blank();
       ui.kv("hooks", h.enabled ? c.ok("已启用") : c.dim("未启用"));
       ui.kv("来源", "settings.json 顶层 hooks 段（会话启动时加载，改配置需重启）");
@@ -742,10 +742,12 @@ export async function handleCommand(line: string, ctx: CommandContext): Promise<
           ui.line(`  ${c.accent(ev)} ${c.dim(`${list.length} 条`)}`);
           for (const hook of list) {
             ui.line(`    ${c.dim("·")} ${hook.command}`);
+            // 与 describeHook 同口径：Notification 那栏是 reason=，且不显示 onFailure。
+            const matcherLabel = ev === "Notification" ? "reason" : "matcher";
+            const onFailure = ev === "PreToolUse" || ev === "Notification" ? "" : ` · onFailure=${hook.onFailure}`;
             ui.line(
               `      ${c.dim(
-                `matcher=${hook.matcher ?? "*"} · timeout=${hook.timeout}s` +
-                  (ev === "PreToolUse" ? "" : ` · onFailure=${hook.onFailure}`),
+                `${matcherLabel}=${hook.matcher ?? "*"} · timeout=${hook.timeout}s${onFailure}`,
               )}`,
             );
           }
@@ -760,7 +762,8 @@ export async function handleCommand(line: string, ctx: CommandContext): Promise<
       ui.line(
         c.dim(
           "  plan 模式下 hook 一律不执行（只读承诺优先）；子代理的工具调用同样触发 Pre/PostToolUse，" +
-            "TurnEnd 只在主代理回合结束触发。",
+            "TurnEnd 只在主代理回合结束触发。Notification 按 reason 过滤（permission_prompt / turn_end），" +
+            "在弹审批框之前与轮末触发，恒不阻断。",
         ),
       );
       ui.blank();

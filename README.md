@@ -112,12 +112,12 @@ Windows 启动用 `neo.cmd`（需要 Bun 在 PATH）；Linux/macOS 用 `neo.sh` 
 | `shell` | 跨平台 shell 覆盖（`path` / `login` / `args`），见下 |
 | `env` | 环境探测与注入（`enabled` / `probe_ttl_hours` / `prompt` / `wiki_page`），见下 |
 | `mcpServers` | 外部 MCP server（stdio），工具动态注册为 `mcp__<server>__<tool>`，见下 |
-| `hooks` | 生命周期 hooks（PreToolUse / PostToolUse / TurnEnd），见下 |
+| `hooks` | 生命周期 hooks（PreToolUse / PostToolUse / TurnEnd / Notification），见下 |
 
-### hooks —— 生命周期脚本（issue #3）
+### hooks —— 生命周期脚本（issue #3 / #56）
 
 **先说定位：hooks 不是权限系统。** 它不定义 allow/deny 规则、不做命令策略表、不提供沙箱。
-它只是「在三个固定时机，跑你自己写的脚本」。权限判定（`ask` / `auto-edit` / `auto-all` / `plan`）
+它只是「在几个固定时机，跑你自己写的脚本」。权限判定（`ask` / `auto-edit` / `auto-all` / `plan`）
 完全不变：hook **只能阻断**（或放行到既有审批流程），**永远不能把调用升级为免审批**，
 也不能绕过 plan 拒绝。
 
@@ -130,7 +130,8 @@ Windows 启动用 `neo.cmd`（需要 Bun 在 PATH）；Linux/macOS 用 `neo.sh` 
   "PreToolUse":  [ { "command": "sh .neo/hooks/guard.sh",  "matcher": "shell", "timeout": 10 } ],
   "PostToolUse": [ { "command": "sh .neo/hooks/format.sh", "matcher": "/^(write_file|edit_file)$/",
                      "timeout": 30, "onFailure": "continue" } ],
-  "TurnEnd":     [ { "command": "sh .neo/hooks/turn-end.sh", "timeout": 10, "onFailure": "continue" } ]
+  "TurnEnd":     [ { "command": "sh .neo/hooks/turn-end.sh", "timeout": 10, "onFailure": "continue" } ],
+  "Notification":[ { "command": "sh .neo/hooks/notify.sh", "matcher": "permission_prompt", "timeout": 5 } ]
 }
 ```
 
@@ -138,11 +139,11 @@ Windows 启动用 `neo.cmd`（需要 Bun 在 PATH）；Linux/macOS 用 `neo.sh` 
 | --- | --- | --- |
 | `enabled` | 否 | 缺省 `false` —— 不配就是零开销，也不会有人被意外阻断 |
 | `verbose` | 否 | 缺省 `true`：阻断/失败/超时都打到 UI；`false` 只保留阻断提示 |
-| `PreToolUse` / `PostToolUse` / `TurnEnd` | — | 每个事件一个数组，按配置顺序执行 |
+| `PreToolUse` / `PostToolUse` / `TurnEnd` / `Notification` | — | 每个事件一个数组，按配置顺序执行 |
 | `command` | 是 | shell 命令，经与 `shell` 工具同一套平台解析执行（`shell` 段配置同样生效） |
-| `matcher` | 否 | 工具名匹配，见下。缺省 = 全部工具（`TurnEnd` 无工具名，恒匹配） |
+| `matcher` | 否 | 工具名匹配（`Notification` 是**触发原因**匹配），见下。缺省 = 全部（`TurnEnd` 无匹配对象，恒匹配） |
 | `timeout` | 否 | 秒，缺省 30，上限 600（超上限截断并 warning） |
-| `onFailure` | 否 | `continue`（缺省）/ `block`，仅 PostToolUse / TurnEnd 有意义 |
+| `onFailure` | 否 | `continue`（缺省）/ `block`，仅 PostToolUse / TurnEnd 有意义（Notification 恒不阻断） |
 
 `matcher` 三种写法：精确名（`shell`、`write_file`）、末尾通配（`mcp__*`、`mcp__fs__*`）、
 正则（`/^mcp__/`）。注意**不支持** `write_file|edit_file` 这种竖线写法 —— 那是正则语法的一部分，
@@ -158,11 +159,43 @@ Windows 启动用 `neo.cmd`（需要 Bun 在 PATH）；Linux/macOS 用 `neo.sh` 
 | `PreToolUse` | 工具执行前，**审批通过之后** | 能（退出码 2） |
 | `PostToolUse` | 工具执行完成后（成功与失败都触发） | 不能撤销，只能把失败原因交给模型 |
 | `TurnEnd` | 一轮 agent 回合结束（模型给出最终答复，含 `-p` 单次模式） | 能让该轮以出错结束 |
+| `Notification` | ① 主代理**弹审批框之前**（`permission_prompt`）② 一轮结束（`turn_end`） | **不能**（恒不阻断） |
 
 **为什么 PreToolUse 在审批之后**：如果 hook 跑在审批之前，用户点「拒绝」时 hook 已经执行过
 （副作用不可撤回），而且 hook 的「放行」会变成权限旁路。所以顺序被固化成
 `审批 → PreToolUse → 执行`：被用户拒绝、被 plan 拒绝的调用**根本走不到 hook**。
 hook 说放行，也只是「回到原本该有的审批流程」，不会让 `ask` 模式下的写操作免确认。
+
+**为什么 Notification 在审批之前**：它存在的意义就是「我切到别的窗口了，回来看看」。
+如果等审批通过之后才发，用户已经在点确认了，通知就没意义了。所以 `permission_prompt`
+挂在 `ui.confirm` **之前**，与 PreToolUse 的顺序相反 —— 两者服务的目的不同，不要合并。
+
+#### Notification（issue #56）—— 「在等你」与「跑完了」
+
+`Notification` 是**面向人**的提醒信号，与 `TurnEnd`（面向模型/统计）并存且独立：两者都配时
+同一时刻各跑各的。它**恒不阻断** —— 没有模型要喂回原因，退出码 2 与 `onFailure: "block"`
+在这里都不生效，失败只进可读诊断。
+
+| `reason` | 时机 | 额外字段 |
+| --- | --- | --- |
+| `permission_prompt` | 主代理即将弹出审批确认框（**审批之前**） | `tool_name`、`tool_input` |
+| `turn_end` | 一轮结束（与 TurnEnd 同口径：只在主代理回合结束触发） | — |
+
+`matcher` 在 Notification 上匹配的是 **`reason`** 而不是工具名（`/hooks` 里那一栏显示为
+`reason=`）。缺省 = 全部原因。所以「只在跑完时提醒」写 `"matcher": "turn_end"`。
+
+`tool_input` 是**审批框上那句人话描述**（如 `write_file — /path/x.ts`），不是原始参数 JSON：
+通知文案要的是「在等你批什么」，原始 JSON 又长又可能带密钥。
+
+neo **不做内置 OS 通知**（不弹桌面通知、不发终端 OSC）。要系统通知自己接：
+
+```json
+"Notification": [
+  { "command": "osascript -e 'display notification \"neo 在等你确认\" with title \"neo\"'",
+    "matcher": "permission_prompt", "timeout": 5 },
+  { "command": "notify-send 'neo' '这一轮跑完了'", "matcher": "turn_end", "timeout": 5 }
+]
+```
 
 #### 输入输出协议
 
@@ -184,11 +217,14 @@ hook 从 **stdin** 收一行 JSON，字段：
 - `PostToolUse` 额外带 `ok`（bool）、`result`（结果摘要，截断到 2000 字符）、`truncated`；
 - `TurnEnd` 带 `turn_stats`：`finish_reason` / `tool_calls` / `iterations` / `aborted` /
   `had_error` / `error_message`；
+- `Notification` 带 `reason`（`permission_prompt` / `turn_end`）；`permission_prompt` 时另有
+  `tool_name` 与 `tool_input`（审批框上那句人话描述，不是原始参数 JSON）；
 - `mode` 是当前生效权限模式（`ask` / `auto-edit` / `auto-all` / `plan`）；
 - `subagent` 标明这次调用是否来自 `task` 子代理。
 
 环境变量（可选，便于脚本直接取）：`NEO_HOOK_EVENT`、`NEO_HOOK_SESSION`、`NEO_HOOK_MODE`、
-`NEO_HOOK_TOOL`（TurnEnd 无）。cwd 是 neo 的工作目录。
+`NEO_HOOK_TOOL`（TurnEnd 无；Notification 仅在 `permission_prompt` 时有）、
+`NEO_HOOK_REASON`（仅 Notification：触发原因）。cwd 是 neo 的工作目录。
 
 **退出码约定**：
 
@@ -214,6 +250,10 @@ PostToolUse / TurnEnd 的 hook 失败（超时、崩溃、非 0 非 2）默认**
 
 另外，退出码 `2` 在 PostToolUse / TurnEnd 上同样视为「明确要求阻断」，与 `onFailure` 无关。
 
+**Notification 不适用上面两条**：它恒不阻断，退出码 `2` 与 `onFailure: "block"` 都不生效，
+失败（非 0 / 超时 / 命令不存在）只给一条可读诊断（`Notification hook（settings.hooks.Notification[0]）失败：…`），
+审批照常弹出、本轮不算出错。
+
 #### 超时与失败隔离
 
 每条 hook 独立起进程，超时用 `SIGKILL` 打**整个进程组**（`detached` 起的 shell 是组长），
@@ -228,7 +268,9 @@ PostToolUse / TurnEnd 的 hook 失败（超时、崩溃、非 0 非 2）默认**
 宁可少跑一次 hook，也不能让「只读审查」留下副作用。连带效果：
 
 - plan 下被拒绝的工具调用不会触发 `PostToolUse`（它压根没执行）；
-- `TurnEnd` 在 plan 下也不跑，因此也不会因为 hook 失败把一轮只读问答标成出错。
+- `TurnEnd` 在 plan 下也不跑，因此也不会因为 hook 失败把一轮只读问答标成出错；
+- `Notification` 同口径也不跑。plan 下工具被 `decidePermission` 直接拒绝、**根本不会弹审批框**，
+  所以 `permission_prompt` 天然不触发；受影响的只有 `turn_end`，而 plan 通常是短会话。
 
 #### 子代理语义
 
@@ -237,6 +279,7 @@ PostToolUse / TurnEnd 的 hook 失败（超时、崩溃、非 0 非 2）默认**
 （危险命令派给子代理跑就躲过了拦截）。
 
 `TurnEnd` **只在主代理回合结束触发**：子代理的回合不是用户眼里的回合，一次请求触发 N+1 次没有意义。
+`Notification` 的 `turn_end` 同口径；`permission_prompt` 则照常（子代理也要审批）。
 
 #### 生效时机
 

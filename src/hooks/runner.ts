@@ -4,8 +4,10 @@
  * 契约（写进 README 的同一套）：
  *  - stdin 收一行 JSON（事件名 / session id / cwd / 工具名 / 参数 / 结果摘要 / 权限模式）；
  *  - 环境变量 NEO_HOOK_EVENT / NEO_HOOK_TOOL / NEO_HOOK_SESSION / NEO_HOOK_MODE 可选使用；
+ *    Notification 另有 NEO_HOOK_REASON（触发原因）；
  *  - 退出码 0 = 放行；2 = 阻断（stdout/stderr 或 JSON 的 reason 作为原因回给模型）；
  *    其它非 0 = hook 自身出错，按 onFailure 处理（默认 continue + 可读诊断）。
+ *    Notification 不适用阻断语义：它只发通知，失败只进诊断（issue #56）。
  *
  * 失败隔离是这一层的核心职责：超时、崩溃、命令不存在都必须变成**可读诊断**，
  * 绝不允许拖垮主循环或挂死会话。所以：
@@ -17,6 +19,7 @@ import { spawn } from "node:child_process";
 import { getShell, prepareShellInvocation } from "../shell.ts";
 import type { Config } from "../config.ts";
 import {
+  matchReason,
   matchTool,
   type HookDef,
   type HookDispatchResult,
@@ -24,6 +27,7 @@ import {
   type HookOutcome,
   type HookPayload,
   type HooksConfig,
+  type NotificationReason,
 } from "./types.ts";
 
 /** 诊断里保留的 stdout/stderr 尾部长度。 */
@@ -60,11 +64,25 @@ export function extractReason(stdout: string, stderr: string, fallback: string):
   return fallback;
 }
 
-/** 该事件下这一条 hook 是否匹配本次工具调用（TurnEnd 无工具名，恒匹配）。 */
-export function hookMatches(hook: HookDef, tool: string | null): boolean {
-  if (hook.event === "TurnEnd") return true;
-  if (tool === null) return true;
-  return matchTool(hook.matcher, tool);
+/**
+ * 该事件下这一条 hook 是否匹配本次调用。
+ *
+ * 三种匹配对象，刻意分开写（见 types.ts 的 matchReason 注释）：
+ *  - PreToolUse / PostToolUse：工具名；
+ *  - Notification：触发原因（`reason`，缺省 = 全部原因）；
+ *  - TurnEnd：无匹配对象，恒匹配。
+ */
+export function hookMatches(hook: HookDef, tool: string | null, reason: NotificationReason | null = null): boolean {
+  switch (hook.event) {
+    case "Notification":
+      // 没给原因（不该发生）时按不匹配处理：宁可少发一条通知，也不误发。
+      return reason !== null && matchReason(hook.matcher, reason);
+    case "TurnEnd":
+      return true;
+    default:
+      if (tool === null) return true;
+      return matchTool(hook.matcher, tool);
+  }
 }
 
 export interface RunHookOptions {
@@ -111,7 +129,13 @@ export async function runHook(
   env["NEO_HOOK_EVENT"] = payload.event;
   env["NEO_HOOK_SESSION"] = payload.session_id;
   env["NEO_HOOK_MODE"] = payload.mode;
-  if (payload.event !== "TurnEnd") env["NEO_HOOK_TOOL"] = payload.tool_name;
+  if (payload.event === "Notification") {
+    // 通知脚本最常按原因分流，单独给一个环境变量，省得每次解析 stdin。
+    env["NEO_HOOK_REASON"] = payload.reason;
+    if (payload.tool_name !== undefined) env["NEO_HOOK_TOOL"] = payload.tool_name;
+  } else if (payload.event !== "TurnEnd") {
+    env["NEO_HOOK_TOOL"] = payload.tool_name;
+  }
 
   const spawnFn = opts.spawnFn ?? spawn;
 
@@ -229,9 +253,14 @@ export async function runHook(
 }
 
 /** 该事件下所有匹配的 hook（保持配置顺序）。 */
-export function hooksFor(cfg: HooksConfig, event: HookEvent, tool: string | null): HookDef[] {
+export function hooksFor(
+  cfg: HooksConfig,
+  event: HookEvent,
+  tool: string | null,
+  reason: NotificationReason | null = null,
+): HookDef[] {
   if (!cfg.enabled) return [];
-  return cfg.hooks[event].filter((h) => hookMatches(h, tool));
+  return cfg.hooks[event].filter((h) => hookMatches(h, tool, reason));
 }
 
 /**
@@ -242,6 +271,8 @@ export function hooksFor(cfg: HooksConfig, event: HookEvent, tool: string | null
  *  - PostToolUse / TurnEnd：只有 `onFailure: "block"` 的 hook 在**失败**（超时/崩溃/
  *    非 0 非 2）时阻断；退出码 2 在这两个事件上同样视为「明确要求阻断」。
  *    默认 continue 时失败只进诊断，不阻断 —— 但绝不静默：outcomes 会带 reason。
+ *  - Notification（issue #56）：**恒不阻断**。它是给人看的通知，没有模型要喂回原因；
+ *    退出码 2 与 onFailure=block 在这里都不生效，失败只进诊断（outcomes）。
  */
 export async function dispatchHooks(
   cfg: HooksConfig,
@@ -250,8 +281,9 @@ export async function dispatchHooks(
   tool: string | null,
   runtime: Config,
   opts: RunHookOptions = {},
+  reason: NotificationReason | null = null,
 ): Promise<HookDispatchResult> {
-  const list = hooksFor(cfg, event, tool);
+  const list = hooksFor(cfg, event, tool, reason);
   const outcomes: HookOutcome[] = [];
   if (list.length === 0) return { blocked: false, reason: "", outcomes };
 
@@ -259,6 +291,8 @@ export async function dispatchHooks(
     const r = await runHook(hook, payload, runtime, opts);
     outcomes.push(r);
     if (r.kind === "aborted") break;
+    // 通知永不阻断：退出码 2 与 onFailure=block 都不生效，失败只留给调用方做诊断。
+    if (event === "Notification") continue;
     if (r.kind === "block") {
       return { blocked: true, reason: r.reason, outcomes };
     }
@@ -277,11 +311,16 @@ export async function dispatchHooks(
   return { blocked: false, reason: "", outcomes };
 }
 
-/** 一条 hook 的可读描述（/hooks 列表用）。 */
+/**
+ * 一条 hook 的可读描述（/hooks 列表用）。
+ *
+ * Notification 的 matcher 匹配的是**触发原因**而不是工具名（issue #56），
+ * 所以那一栏写 `reason=`；它恒不阻断，也不显示 onFailure。
+ */
 export function describeHook(hook: HookDef): string {
-  const matcher = hook.matcher ?? "*";
-  const extra = hook.event === "PreToolUse" ? "" : ` · onFailure=${hook.onFailure}`;
-  return `${hook.event} · matcher=${matcher} · timeout=${hook.timeout}s${extra} · ${hook.command}`;
+  const label = hook.event === "Notification" ? "reason" : "matcher";
+  const extra = hook.event === "PreToolUse" || hook.event === "Notification" ? "" : ` · onFailure=${hook.onFailure}`;
+  return `${hook.event} · ${label}=${hook.matcher ?? "*"} · timeout=${hook.timeout}s${extra} · ${hook.command}`;
 }
 
 /** 诊断行：把一次 outcome 转成给人看的一句话。 */

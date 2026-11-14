@@ -45,7 +45,14 @@ import type {
   UsageBucket,
 } from "./types.ts";
 import type { RuleMatch } from "../rules/index.ts";
-import { dispatchHooks, describeOutcome, hasAnyHook, type HookPayload } from "../hooks/index.ts";
+import {
+  dispatchHooks,
+  describeOutcome,
+  hasAnyHook,
+  type HookEvent,
+  type HookPayload,
+  type NotificationReason,
+} from "../hooks/index.ts";
 
 export type {
   AgentEvent,
@@ -1420,6 +1427,17 @@ export class Agent {
           ui.warn(`plan 模式禁止 ${tool}：${detail}`);
           return false;
         }
+        // Notification（issue #56）：在**弹审批框之前**发通知。
+        // 顺序是硬约束 —— 用户已经在点确认时通知才来就没有意义了；
+        // 也正因为 PreToolUse 在审批之后，通知只能挂在这里，不能挂 hook 链上。
+        // 通知失败只进诊断，绝不阻断审批（见 runHooks 的 Notification 分支）。
+        await this.runHooks(
+          "Notification",
+          tool,
+          { reason: "permission_prompt", tool_name: tool, tool_input: detail },
+          signal,
+          "permission_prompt",
+        );
         return ui.confirm(`${tool} — ${detail}`);
       },
       onNotice: (m) => ui.info(m),
@@ -1483,14 +1501,19 @@ export class Agent {
    *  1. **plan 只读**：生效模式为 plan 时一律不执行 —— hook 是用户脚本，
    *     我们无法保证它不写盘，而 plan 是对用户的只读承诺。宁可少跑一次 hook，
    *     也不能让「只读审查」留下副作用。被拒绝的工具调用因此也不会触发 PostToolUse。
+   *     Notification 与其它事件同口径：plan 下不跑（plan 下工具被直接拒绝、
+   *     根本不会弹审批框，permission_prompt 天然不触发）。
    *  2. **永不抛错**：hook 失败/超时只进诊断，不拖垮主循环。
    *  3. **可读诊断**：阻断原因、失败、超时都经 console.warn 让人看见（verbose 可关）。
+   *
+   * `reason` 只对 Notification 有意义（matcher 的匹配对象），其它事件传 null。
    */
   private async runHooks(
-    event: "PreToolUse" | "PostToolUse" | "TurnEnd",
+    event: HookEvent,
     tool: string | null,
     extra: Record<string, unknown>,
     signal?: AbortSignal,
+    reason: NotificationReason | null = null,
   ): Promise<{ blocked: boolean; reason: string }> {
     const cfg = this.opt.hooks;
     if (!cfg || !hasAnyHook(cfg)) return { blocked: false, reason: "" };
@@ -1507,7 +1530,7 @@ export class Agent {
 
     let r;
     try {
-      r = await dispatchHooks(cfg, event, payload, tool, this.opt.cfg, signal ? { signal } : {});
+      r = await dispatchHooks(cfg, event, payload, tool, this.opt.cfg, signal ? { signal } : {}, reason);
     } catch (e) {
       // dispatchHooks 内部已收敛，这里只是最后一道保险。
       this.opt.console.warn(`${event} hook 分发异常（已忽略）：${(e as Error).message}`);
@@ -1537,8 +1560,24 @@ export class Agent {
    * 返回非 null = 有 onFailure=block 的 TurnEnd hook 失败，字符串是给用户/模型的
    * 诊断（调用方会把它并进 errorMessage 并标 hadError）。
    */
+  /**
+   * 轮末 TurnEnd（issue #3）+ Notification 的 turn_end（issue #56）。
+   *
+   * 只在**主代理**的回合结束时触发：子代理的 send() 也会走到这里，
+   * 但子代理的「回合」不是用户眼里的回合 —— 让它们在子代理里也跑，
+   * 一次用户请求会触发 N+1 次，且子代理的统计会污染用户的 hook 逻辑。
+   * Pre/PostToolUse 则相反：子代理的工具调用同样触发（见 makeCtx）。
+   *
+   * 两个事件并存且独立：TurnEnd 面向模型/统计（可 onFailure=block），
+   * Notification 面向「人」（恒不阻断）。通知先发 —— 它是给人看的提醒，
+   * 不该被 TurnEnd hook 的失败拖住。
+   *
+   * 返回非 null = 有 onFailure=block 的 TurnEnd hook 失败，字符串是给用户/模型的
+   * 诊断（调用方会把它并进 errorMessage 并标 hadError）。
+   */
   private async emitTurnEndHooks(stats: TurnStats): Promise<string | null> {
     if (this.opt.isSubagent) return null;
+    await this.runHooks("Notification", null, { reason: "turn_end" }, undefined, "turn_end");
     const r = await this.runHooks("TurnEnd", null, {
       turn_stats: {
         finish_reason: stats.finishReason,
