@@ -1,0 +1,1186 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark light">
+  <meta name="theme-color" content="#07110d">
+  <meta name="description" content="查阅 neo-agent 当前版本、近期发布节点、验证记录、事实来源与已知边界。当前已发布版本为 v0.4.84。">
+  <meta property="og:type" content="website">
+  <meta property="og:locale" content="zh_CN">
+  <meta property="og:site_name" content="neo-agent">
+  <meta property="og:title" content="版本演进｜neo-agent">
+  <meta property="og:description" content="查阅 neo-agent 当前版本、近期发布节点、验证记录、事实来源与已知边界。当前已发布版本为 v0.4.84。">
+  <meta name="twitter:card" content="summary">
+  <title>版本演进｜neo-agent</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='12' fill='%2307110d'/%3E%3Crect x='5' y='5' width='54' height='54' rx='8' fill='none' stroke='%2366f2a3' stroke-width='3'/%3E%3Ctext x='32' y='40' text-anchor='middle' font-family='monospace' font-size='24' fill='%2366f2a3'%3Eneo%3C/text%3E%3C/svg%3E">
+  <style>
+    :root {
+      color-scheme: dark;
+
+      --color-bg: #07110d;
+      --color-bg-deep: #030806;
+      --color-surface: #0d1a14;
+      --color-surface-raised: #12241b;
+      --color-text: #f0f7f2;
+      --color-text-muted: #a9bab0;
+      --color-border: #355044;
+      --color-border-strong: #708b7b;
+
+      --color-accent: #66f2a3;
+      --color-accent-strong: #8affba;
+      --color-accent-ink: #04130b;
+
+      --color-released: #66f2a3;
+      --color-unreleased: #ffd166;
+      --color-planned: #c4b5fd;
+      --color-info: #8fdcff;
+      --color-warning: #ffd166;
+      --color-danger: #ff8a8a;
+      --color-focus: #ffd166;
+
+      --color-print-bg: #ffffff;
+      --color-print-text: #111411;
+      --color-print-muted: #3f4741;
+      --color-print-border: #747d76;
+
+      --font-sans: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI",
+        "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei",
+        "Noto Sans CJK SC", sans-serif;
+      --font-mono: ui-monospace, "SFMono-Regular", "Cascadia Code",
+        "Cascadia Mono", Consolas, "Liberation Mono", "Noto Sans Mono CJK SC",
+        monospace;
+
+      --text-xs: 0.75rem;
+      --text-sm: 0.875rem;
+      --text-base: 1rem;
+      --text-md: 1.125rem;
+      --text-lg: 1.25rem;
+      --text-xl: 1.5rem;
+      --text-2xl: 1.875rem;
+      --text-3xl: 2.375rem;
+      --text-4xl: 3rem;
+
+      --leading-tight: 1.2;
+      --leading-heading: 1.3;
+      --leading-body: 1.75;
+      --leading-code: 1.6;
+
+      --tracking-label: 0.08em;
+
+      --space-1: 0.25rem;
+      --space-2: 0.5rem;
+      --space-3: 0.75rem;
+      --space-4: 1rem;
+      --space-5: 1.5rem;
+      --space-6: 2rem;
+      --space-7: 3rem;
+      --space-8: 4rem;
+      --space-9: 5rem;
+      --space-10: 6rem;
+
+      --radius-sm: 0.25rem;
+      --radius-md: 0.5rem;
+      --radius-lg: 0.75rem;
+      --radius-pill: 999px;
+
+      --shadow-card: 0 12px 32px rgb(0 0 0 / 0.24);
+      --shadow-focus: 0 0 0 4px rgb(255 209 102 / 0.2);
+
+      --container: 75rem;
+      --measure: 47.5rem;
+      --header-height: 4.5rem;
+      --target-min: 2.75rem;
+      --duration-fast: 120ms;
+      --duration-normal: 180ms;
+    }
+
+    *, *::before, *::after { box-sizing: border-box; }
+
+    html {
+      font-size: 100%;
+      scroll-behavior: smooth;
+      background: var(--color-bg);
+    }
+
+    body {
+      margin: 0;
+      min-width: 0;
+      background: var(--color-bg);
+      color: var(--color-text);
+      font-family: var(--font-sans);
+      font-size: var(--text-base);
+      line-height: var(--leading-body);
+      text-rendering: optimizeLegibility;
+    }
+
+    h1, h2, h3, p, dl, dd, figure, blockquote { margin-top: 0; }
+    h1, h2, h3 { color: var(--color-text); font-weight: 700; }
+    .title-brand, .title-phrase { white-space: nowrap; }
+    h1 {
+      margin-bottom: var(--space-5);
+      font-size: clamp(2.25rem, 6vw, var(--text-4xl));
+      line-height: var(--leading-tight);
+      letter-spacing: -0.025em;
+    }
+    h2 {
+      margin-bottom: var(--space-3);
+      font-size: clamp(1.75rem, 3vw, var(--text-3xl));
+      line-height: var(--leading-heading);
+    }
+    h3 {
+      margin-bottom: var(--space-3);
+      font-size: var(--text-lg);
+      line-height: var(--leading-heading);
+    }
+    p { margin-bottom: var(--space-4); }
+    ul, ol { margin-top: 0; }
+    a {
+      color: var(--color-accent);
+      text-decoration: underline;
+      text-decoration-thickness: 1px;
+      text-underline-offset: 0.2em;
+    }
+    a:hover { color: var(--color-accent-strong); }
+    code, time, .mono {
+      font-family: var(--font-mono);
+      font-variant-numeric: tabular-nums;
+    }
+    code { font-size: 0.95em; }
+    svg { display: block; flex: none; }
+
+    .container {
+      width: min(calc(100% - 2rem), var(--container));
+      margin-inline: auto;
+    }
+    .reading {
+      width: 100%;
+      max-width: var(--measure);
+      margin-inline: auto;
+    }
+    .current-container {
+      width: 100%;
+      max-width: 57.5rem;
+      margin-inline: auto;
+    }
+
+    :where(a, button, [tabindex]):focus-visible {
+      outline: 3px solid var(--color-focus);
+      outline-offset: 3px;
+      box-shadow: var(--shadow-focus);
+    }
+    :where(section, h1, h2, h3)[id] { scroll-margin-top: 6rem; }
+
+    .skip-link {
+      position: fixed;
+      top: -8rem;
+      left: var(--space-4);
+      z-index: 100;
+      min-height: var(--target-min);
+      padding: var(--space-2) var(--space-4);
+      display: inline-flex;
+      align-items: center;
+      background: var(--color-surface-raised);
+      color: var(--color-text);
+      border: 3px solid var(--color-focus);
+      border-radius: var(--radius-md);
+      text-decoration: none;
+      font-weight: 600;
+    }
+    .skip-link:focus { top: var(--space-4); }
+
+    .site-header {
+      position: relative;
+      z-index: 10;
+      background: var(--color-bg-deep);
+      border-bottom: 1px solid var(--color-border);
+    }
+    .header-inner {
+      min-height: var(--header-height);
+      padding-block: var(--space-3);
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: var(--space-2) var(--space-5);
+    }
+    .brand {
+      min-height: var(--target-min);
+      display: inline-flex;
+      align-items: center;
+      gap: var(--space-3);
+      color: var(--color-text);
+      text-decoration: none;
+      flex: none;
+    }
+    .brand__mark {
+      width: 2.25rem;
+      height: 2.25rem;
+      display: grid;
+      place-items: center;
+      border: 1px solid var(--color-accent);
+      border-radius: var(--radius-sm);
+      color: var(--color-accent);
+      font-family: var(--font-mono);
+      font-size: var(--text-sm);
+      font-weight: 700;
+      line-height: 1;
+    }
+    .brand__name { font-weight: 700; line-height: var(--leading-tight); }
+    .brand__section {
+      display: block;
+      margin-top: var(--space-1);
+      color: var(--color-text-muted);
+      font-family: var(--font-mono);
+      font-size: var(--text-sm);
+      font-weight: 400;
+    }
+    .site-nav { margin-left: auto; min-width: 0; }
+    .site-nav ul {
+      margin: 0;
+      padding: 0;
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: var(--space-1);
+      list-style: none;
+    }
+    .site-nav a {
+      min-height: var(--target-min);
+      padding: var(--space-2);
+      display: inline-flex;
+      align-items: center;
+      border-radius: var(--radius-md);
+      color: var(--color-text);
+      font-size: var(--text-sm);
+      font-weight: 600;
+      text-decoration: none;
+    }
+    .site-nav a:hover { background: var(--color-surface-raised); color: var(--color-accent-strong); }
+
+    .page-intro {
+      position: relative;
+      isolation: isolate;
+      overflow: hidden;
+      padding-block: var(--space-8) var(--space-7);
+      background: var(--color-bg-deep);
+      border-bottom: 1px solid var(--color-border);
+    }
+    .page-intro > .container { position: relative; z-index: 1; }
+    .matrix-atmosphere {
+      position: absolute;
+      inset: 0;
+      z-index: 0;
+      pointer-events: none;
+      opacity: 0.08;
+      background-image:
+        radial-gradient(circle at 78% 20%, var(--color-accent), transparent 34%),
+        linear-gradient(var(--color-border) 1px, transparent 1px),
+        linear-gradient(90deg, var(--color-border) 1px, transparent 1px);
+      background-size: auto, 3rem 3rem, 3rem 3rem;
+    }
+    .eyebrow {
+      margin-bottom: var(--space-3);
+      color: var(--color-accent);
+      font-family: var(--font-mono);
+      font-size: var(--text-sm);
+      font-weight: 600;
+      letter-spacing: var(--tracking-label);
+      line-height: var(--leading-code);
+      text-transform: uppercase;
+    }
+    .page-intro__lede {
+      max-width: 43rem;
+      margin-bottom: var(--space-5);
+      color: var(--color-text-muted);
+      font-size: var(--text-md);
+      line-height: 1.7;
+    }
+    .snapshot-line {
+      margin-bottom: 0;
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: var(--space-2) var(--space-3);
+      color: var(--color-text-muted);
+      font-size: var(--text-sm);
+    }
+    .snapshot-line__label {
+      padding: var(--space-1) var(--space-2);
+      border: 1px solid var(--color-border-strong);
+      border-radius: var(--radius-sm);
+      color: var(--color-info);
+      font-family: var(--font-mono);
+      letter-spacing: var(--tracking-label);
+    }
+
+    .section { padding-block: var(--space-8); }
+    .section + .section { border-top: 1px solid var(--color-border); }
+    .section-heading { margin-bottom: var(--space-6); }
+    .section-heading p {
+      max-width: var(--measure);
+      margin-bottom: 0;
+      color: var(--color-text-muted);
+    }
+    .section-kicker {
+      display: block;
+      margin-bottom: var(--space-2);
+      color: var(--color-text-muted);
+      font-family: var(--font-mono);
+      font-size: var(--text-sm);
+      letter-spacing: var(--tracking-label);
+    }
+
+    .card {
+      min-width: 0;
+      padding: var(--space-5);
+      background: var(--color-surface);
+      border: 1px solid var(--color-border);
+      border-radius: var(--radius-lg);
+    }
+    .card--current {
+      background: var(--color-surface-raised);
+      border-left: 4px solid var(--color-accent);
+      box-shadow: var(--shadow-card);
+    }
+    .card--planned { border-left: 4px solid var(--color-planned); }
+    .card--unreleased { border-left: 4px solid var(--color-unreleased); }
+
+    .current-card__header {
+      margin-bottom: var(--space-4);
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: var(--space-3) var(--space-4);
+    }
+    .current-card__header h3 {
+      margin: 0;
+      font-family: var(--font-mono);
+      font-size: clamp(2rem, 6vw, var(--text-4xl));
+      line-height: var(--leading-tight);
+      letter-spacing: -0.04em;
+      white-space: nowrap;
+    }
+    .current-card__summary { max-width: var(--measure); color: var(--color-text-muted); }
+    .fact-list {
+      margin-block: var(--space-5);
+      display: grid;
+      gap: var(--space-4);
+    }
+    .fact-list > div {
+      min-width: 0;
+      padding-top: var(--space-3);
+      border-top: 1px solid var(--color-border);
+    }
+    .fact-list dt {
+      margin-bottom: var(--space-1);
+      color: var(--color-text-muted);
+      font-size: var(--text-sm);
+    }
+    .fact-list dd {
+      min-width: 0;
+      margin: 0;
+      overflow-wrap: anywhere;
+    }
+    .fact-list dd > a, .fact-list dd > code { font-family: var(--font-mono); }
+    .actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: var(--space-3);
+    }
+    .button {
+      min-height: var(--target-min);
+      padding: var(--space-2) var(--space-5);
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: var(--space-2);
+      border: 1px solid transparent;
+      border-radius: var(--radius-md);
+      font-size: var(--text-base);
+      font-weight: 600;
+      line-height: var(--leading-heading);
+      text-decoration: none;
+      transition: background-color var(--duration-fast), border-color var(--duration-fast);
+    }
+    .button:active { transform: translateY(1px); }
+    .button--primary { background: var(--color-accent); color: var(--color-accent-ink); }
+    .button--primary:hover { background: var(--color-accent-strong); color: var(--color-accent-ink); }
+    .button--secondary {
+      background: var(--color-bg-deep);
+      border-color: var(--color-border-strong);
+      color: var(--color-accent);
+    }
+    .button--secondary:hover { background: var(--color-surface); color: var(--color-accent-strong); }
+
+    .status-badge {
+      width: fit-content;
+      min-height: 1.75rem;
+      padding: var(--space-1) var(--space-3);
+      display: inline-flex;
+      align-items: center;
+      gap: var(--space-2);
+      border: 1px solid currentColor;
+      border-radius: var(--radius-pill);
+      background: var(--color-surface);
+      font-size: var(--text-sm);
+      font-weight: 600;
+      line-height: var(--leading-tight);
+      white-space: nowrap;
+    }
+    .status-badge svg { width: 1rem; height: 1rem; }
+    .status-badge--released { color: var(--color-released); }
+    .status-badge--unreleased { color: var(--color-unreleased); }
+    .status-badge--planned { color: var(--color-planned); }
+
+    .evidence-note {
+      margin-top: var(--space-4);
+      padding: var(--space-5);
+      background: var(--color-bg-deep);
+      border: 1px solid var(--color-border-strong);
+      border-radius: var(--radius-lg);
+    }
+    .evidence-note__label {
+      margin-bottom: var(--space-2);
+      color: var(--color-info);
+      font-family: var(--font-mono);
+      font-size: var(--text-sm);
+    }
+    .evidence-note p { max-width: var(--measure); color: var(--color-text-muted); }
+    .evidence-grid {
+      margin-block: var(--space-5);
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: var(--space-4);
+    }
+    .evidence-grid > div {
+      min-width: 0;
+      padding: var(--space-3);
+      background: var(--color-surface);
+      border: 1px solid var(--color-border);
+      border-radius: var(--radius-md);
+    }
+    .evidence-grid dt { color: var(--color-text-muted); font-size: var(--text-sm); }
+    .evidence-grid dd {
+      margin: var(--space-1) 0 0;
+      color: var(--color-accent);
+      font-family: var(--font-mono);
+      font-size: var(--text-lg);
+      font-weight: 700;
+      line-height: var(--leading-heading);
+      overflow-wrap: anywhere;
+    }
+    .evidence-note__source { margin-bottom: 0; font-size: var(--text-sm); }
+
+    .timeline {
+      margin: 0;
+      padding: 0;
+      list-style: none;
+    }
+    .timeline > li {
+      position: relative;
+      min-width: 0;
+      padding: 0 0 var(--space-5) var(--space-6);
+    }
+    .timeline > li::after {
+      content: "";
+      position: absolute;
+      top: 0;
+      bottom: 0;
+      left: 0.3125rem;
+      width: 2px;
+      background: var(--color-border);
+    }
+    .timeline > li:last-child::after { bottom: calc(100% - 2.5rem); }
+    .timeline > li::before {
+      content: "";
+      position: absolute;
+      top: 2rem;
+      left: 0;
+      z-index: 1;
+      width: 0.75rem;
+      height: 0.75rem;
+      background: var(--color-surface);
+      border: 2px solid var(--color-border-strong);
+      border-radius: 50%;
+    }
+    .timeline > li.timeline__current::before {
+      background: var(--color-accent);
+      border-color: var(--color-accent);
+    }
+    .timeline > li.timeline__current > article { border-color: var(--color-border-strong); }
+    .timeline__heading {
+      margin-bottom: var(--space-3);
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: var(--space-3);
+    }
+    .timeline__heading h3 {
+      margin: 0;
+      font-family: var(--font-mono);
+      font-size: var(--text-xl);
+      white-space: nowrap;
+    }
+    .timeline__date {
+      display: block;
+      margin-bottom: var(--space-4);
+      color: var(--color-text-muted);
+      font-size: var(--text-sm);
+    }
+    .timeline__summary { margin-bottom: var(--space-4); }
+    .tag-list {
+      margin: 0 0 var(--space-4);
+      padding: 0;
+      display: flex;
+      flex-wrap: wrap;
+      gap: var(--space-2);
+      list-style: none;
+    }
+    .tag-list li {
+      padding: var(--space-1) var(--space-2);
+      background: var(--color-bg-deep);
+      border: 1px solid var(--color-border);
+      border-radius: var(--radius-sm);
+      color: var(--color-text-muted);
+      font-size: var(--text-sm);
+      line-height: var(--leading-code);
+    }
+    .release-record {
+      padding-left: var(--space-3);
+      border-left: 2px solid var(--color-info);
+      color: var(--color-text-muted);
+      font-size: var(--text-sm);
+    }
+    .timeline__source {
+      margin: var(--space-4) 0 0;
+      padding-top: var(--space-4);
+      border-top: 1px solid var(--color-border);
+      color: var(--color-text-muted);
+      font-size: var(--text-sm);
+    }
+
+    .capability-grid {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr);
+      gap: var(--space-4);
+    }
+    .card--fact { display: flex; flex-direction: column; }
+    .card__index {
+      margin-bottom: var(--space-3);
+      color: var(--color-accent);
+      font-family: var(--font-mono);
+      font-size: var(--text-sm);
+      letter-spacing: var(--tracking-label);
+    }
+    .card--fact p { color: var(--color-text-muted); }
+    .card__source {
+      margin: auto 0 0;
+      padding-top: var(--space-3);
+      border-top: 1px solid var(--color-border);
+      color: var(--color-text-muted);
+      font-size: var(--text-sm);
+    }
+
+    .planned-list {
+      display: grid;
+      gap: var(--space-4);
+    }
+    .planned-card__header {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: var(--space-3);
+    }
+    .planned-card__header h3 { margin-bottom: var(--space-2); }
+    .planned-card__header h3 a { color: var(--color-text); text-underline-offset: 0.25em; }
+    .planned-card p:last-child { margin-bottom: 0; color: var(--color-text-muted); }
+    .planning-note {
+      margin-bottom: var(--space-5);
+      padding: var(--space-4);
+      border: 1px solid var(--color-planned);
+      border-radius: var(--radius-md);
+      color: var(--color-text);
+      background: var(--color-surface);
+    }
+    .planning-note strong { color: var(--color-unreleased); }
+
+    .boundary-list {
+      margin: 0;
+      padding: 0;
+      display: grid;
+      gap: var(--space-4);
+      list-style: none;
+    }
+    .boundary-item {
+      padding: var(--space-5);
+      display: grid;
+      grid-template-columns: 1.5rem minmax(0, 1fr);
+      gap: var(--space-4);
+      background: var(--color-surface);
+      border: 1px solid var(--color-border);
+      border-radius: var(--radius-lg);
+    }
+    .boundary-item > svg {
+      width: 1.5rem;
+      height: 1.5rem;
+      margin-top: var(--space-1);
+      color: var(--color-warning);
+    }
+    .boundary-item h3 { margin-bottom: var(--space-2); }
+    .boundary-item p { margin-bottom: 0; color: var(--color-text-muted); }
+
+    .source-groups {
+      display: grid;
+      gap: var(--space-6);
+    }
+    .source-group h3 { margin-bottom: var(--space-3); }
+    .source-list {
+      margin: 0;
+      padding-left: 1.4rem;
+      color: var(--color-text-muted);
+    }
+    .source-list li { padding-left: var(--space-1); margin-bottom: var(--space-2); }
+    .source-list li::marker { color: var(--color-accent); }
+    .source-list a { overflow-wrap: anywhere; }
+    .status-definitions {
+      margin: var(--space-6) 0 0;
+      display: grid;
+      gap: var(--space-4);
+    }
+    .status-definitions > div {
+      padding-top: var(--space-4);
+      border-top: 1px solid var(--color-border);
+    }
+    .status-definitions dt { margin-bottom: var(--space-2); }
+    .status-definitions dd { margin: 0; color: var(--color-text-muted); }
+    .update-policy {
+      margin-top: var(--space-6);
+      padding: var(--space-5);
+      background: var(--color-bg-deep);
+      border: 1px solid var(--color-border);
+      border-radius: var(--radius-lg);
+    }
+    .update-policy h3 { color: var(--color-info); }
+    .update-policy p:last-child { margin-bottom: 0; }
+
+    .site-footer {
+      padding-block: var(--space-6) var(--space-8);
+      background: var(--color-bg-deep);
+      border-top: 1px solid var(--color-border);
+      color: var(--color-text-muted);
+      font-size: var(--text-sm);
+    }
+    .footer-grid { display: grid; gap: var(--space-5); }
+    .footer-grid p { margin-bottom: var(--space-2); }
+    .footer-grid p:last-child { margin-bottom: 0; }
+    .footer-links {
+      margin: 0;
+      padding: 0;
+      display: flex;
+      flex-wrap: wrap;
+      gap: var(--space-2) var(--space-4);
+      list-style: none;
+    }
+    .footer-links a {
+      min-height: var(--target-min);
+      display: inline-flex;
+      align-items: center;
+    }
+
+    @media (max-width: 47.99rem) {
+      .site-nav { flex-basis: 100%; margin-left: 0; }
+      .site-nav ul { gap: var(--space-1); }
+      .site-nav a { min-width: var(--target-min); justify-content: center; padding-inline: 0; }
+      .actions .button { width: 100%; }
+      .current-card__header { align-items: flex-start; }
+      .evidence-grid dd { font-size: var(--text-base); }
+    }
+
+    @media (min-width: 48rem) {
+      .container { width: min(calc(100% - 4rem), var(--container)); }
+      .page-intro { padding-block: var(--space-9) var(--space-8); }
+      .fact-list { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--space-4) var(--space-5); }
+      .fact-list > div { display: grid; grid-template-columns: minmax(5.5rem, 0.45fr) minmax(0, 1fr); gap: var(--space-3); }
+      .fact-list dt { margin-bottom: 0; }
+      .evidence-grid { grid-template-columns: repeat(5, minmax(0, 1fr)); }
+      .capability-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .footer-grid { grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr); align-items: start; }
+      .footer-links { justify-content: flex-end; }
+    }
+
+    @media (min-width: 64rem) {
+      .capability-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+    }
+
+    @media (min-width: 80rem) {
+      .container { width: min(calc(100% - 6rem), var(--container)); }
+      .section { padding-block: var(--space-9); }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      html { scroll-behavior: auto; }
+      *, *::before, *::after {
+        animation: none !important;
+        transition: none !important;
+      }
+      .button:active { transform: none; }
+    }
+
+    @media print {
+      @page { size: A4; margin: 16mm; }
+      :root {
+        color-scheme: light;
+        --color-bg: #ffffff;
+        --color-bg-deep: #ffffff;
+        --color-surface: #ffffff;
+        --color-surface-raised: #ffffff;
+        --color-text: #111411;
+        --color-text-muted: #3f4741;
+        --color-border: #747d76;
+        --color-border-strong: #3f4741;
+        --color-accent: #075f32;
+        --color-accent-ink: #111411;
+        --color-released: #111411;
+        --color-unreleased: #111411;
+        --color-planned: #111411;
+        --color-info: #111411;
+        --color-warning: #111411;
+        --color-danger: #111411;
+      }
+      html, body {
+        background: var(--color-print-bg) !important;
+        color: var(--color-print-text) !important;
+      }
+      .site-header, .skip-link, .matrix-rain, .matrix-atmosphere,
+      .button--copy, .screen-only { display: none !important; }
+      .container { width: 100%; max-width: none; }
+      .reading, .current-container { max-width: none; }
+      .page-intro { padding-block: 0 1.5rem; background: transparent; }
+      .section { padding-block: 1.5rem; }
+      .card, .code-block, .timeline > li, .evidence-note, .boundary-item, .update-policy {
+        background: transparent !important;
+        color: var(--color-print-text) !important;
+        border-color: var(--color-print-border) !important;
+        box-shadow: none !important;
+        break-inside: avoid;
+      }
+      .evidence-grid > div, .tag-list li { background: transparent !important; }
+      h2, h3 { break-after: avoid; }
+      a { color: var(--color-print-text) !important; text-decoration: underline; }
+      a[href^="http"]::after {
+        content: " (" attr(href) ")";
+        font-family: var(--font-mono);
+        font-size: var(--text-xs);
+        font-weight: 400;
+        overflow-wrap: anywhere;
+      }
+      .button { min-height: 0; padding: 0; display: inline; border: 0; background: transparent; }
+      .actions { display: block; }
+      .actions .button { width: auto; margin-right: 1rem; }
+      pre { white-space: pre-wrap; overflow-wrap: anywhere; overflow: visible; }
+      .capability-grid, .fact-list, .evidence-grid, .footer-grid { display: block; }
+      .capability-grid > *, .fact-list > *, .evidence-grid > * { margin-bottom: 0.75rem; }
+      .footer-links { justify-content: flex-start; }
+    }
+  </style>
+</head>
+<body>
+  <a class="skip-link" href="#main-content">跳至正文</a>
+
+  <header class="site-header">
+    <div class="container header-inner">
+      <a class="brand" href="#main-content" aria-label="neo-agent 版本演进页首">
+        <span class="brand__mark" aria-hidden="true">neo</span>
+        <span class="brand__name">neo-agent<span class="brand__section">版本演进 / RELEASE LEDGER</span></span>
+      </a>
+      <nav class="site-nav" aria-label="主导航">
+        <ul>
+          <li><a href="portal/index.html">产品门户</a></li>
+          <li><a href="#current-version">当前版本</a></li>
+          <li><a href="#timeline">演进时间线</a></li>
+          <li><a href="#boundaries">已知边界</a></li>
+          <li><a href="https://github.com/AndersHsueh/neo-cli">GitHub</a></li>
+        </ul>
+      </nav>
+    </div>
+  </header>
+
+  <main id="main-content" tabindex="-1">
+    <section class="page-intro" aria-labelledby="page-title">
+      <div class="matrix-atmosphere" aria-hidden="true"></div>
+      <div class="container">
+        <div class="reading">
+          <p class="eyebrow" lang="en">RELEASE LEDGER <span lang="zh-CN">/ 版本事实</span></p>
+          <h1 id="page-title"><span class="title-brand" lang="en">neo-agent</span> <span class="title-phrase">版本演进</span></h1>
+          <p class="page-intro__lede">一份可核查的发布档案：从当前基线出发，回看近期能力如何落到终端交互、模型接入、长任务与质量闸门；同时保留限制、规划和每个判断的来源。</p>
+          <p class="snapshot-line"><span class="snapshot-line__label" lang="en">FACT SNAPSHOT</span><span>事实盘点基线：<time datetime="2026-11-14">2026-11-14</time> · 当前发布基线：<a href="#current-version">v0.4.84</a></span></p>
+        </div>
+      </div>
+    </section>
+
+    <section class="section" id="current-version" aria-labelledby="current-version-title">
+      <div class="container current-container">
+        <div class="section-heading">
+          <span class="section-kicker" lang="en">01 / CURRENT RELEASE</span>
+          <h2 id="current-version-title">当前版本</h2>
+          <p>版本号、发布日期、提交与发布记录共同构成当前事实基线；功能合入与正式发布分开记录。</p>
+        </div>
+
+        <article class="card card--current" aria-labelledby="current-release-version">
+          <div class="current-card__header">
+            <h3 id="current-release-version">v0.4.84</h3>
+            <span class="status-badge status-badge--released">
+              <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="m5 12 4 4L19 6"/></svg>
+              <span>已发布</span>
+            </span>
+          </div>
+          <p class="current-card__summary">目标驱动补齐两端：<code>/drive --judge</code> 将模型判断与检查验证分来源标注；<code>-p --drive</code> 面向 CI 与编排提供无人值守长跑，并明确轮次、工具迭代与墙钟三层上限。</p>
+          <dl class="fact-list">
+            <div>
+              <dt>发布日期</dt>
+              <dd><time datetime="2026-11-10">2026-11-10</time></dd>
+            </div>
+            <div>
+              <dt>基线 commit</dt>
+              <dd><a href="https://github.com/AndersHsueh/neo-cli/commit/a2858ae">a2858ae</a></dd>
+            </div>
+            <div>
+              <dt>发布 tag</dt>
+              <dd><a href="https://github.com/AndersHsueh/neo-cli/releases/tag/v0.4.84">v0.4.84</a></dd>
+            </div>
+            <div>
+              <dt>命令入口</dt>
+              <dd><code>neo</code>（package/bin 名称）</dd>
+            </div>
+            <div>
+              <dt>运行要求</dt>
+              <dd><code>Bun &gt;=1.1.0</code></dd>
+            </div>
+            <div>
+              <dt>package 状态</dt>
+              <dd><code>private: true</code>；无公开 npm 包事实</dd>
+            </div>
+          </dl>
+          <div class="actions">
+            <a class="button button--primary" href="https://github.com/AndersHsueh/neo-cli/blob/v0.4.84/docs/release-notes/v0.4.84.md">查看 v0.4.84 发布记录</a>
+            <a class="button button--secondary" href="https://github.com/AndersHsueh/neo-cli/blob/v0.4.84/README.md">阅读该版本 README</a>
+          </div>
+        </article>
+
+        <aside class="evidence-note" aria-labelledby="evidence-title">
+          <p class="evidence-note__label" lang="en">HISTORICAL RELEASE EVIDENCE</p>
+          <h3 id="evidence-title">v0.4.84 发布时验证记录</h3>
+          <p>以下是<strong>该版本发布记录</strong>，不是当前工作区或本页面制作时的复测结果。数字取自随 tag 归档的 release note；本地证据文件不作为公开资源展示。</p>
+          <dl class="evidence-grid">
+            <div><dt>测试通过</dt><dd>1995 pass</dd></div>
+            <div><dt>失败 / 跳过</dt><dd>0 / 0</dd></div>
+            <div><dt>测试文件</dt><dd>115</dd></div>
+            <div><dt>真 PTY E2E</dt><dd>32/32</dd></div>
+            <div><dt>全量闸门</dt><dd>ALL GREEN</dd></div>
+          </dl>
+          <p class="evidence-note__source">来源：<a href="https://github.com/AndersHsueh/neo-cli/blob/v0.4.84/docs/release-notes/v0.4.84.md">v0.4.84 release note「验证」段</a>；另记录 <code>bun x tsc --noEmit</code> 零错误。</p>
+        </aside>
+      </div>
+    </section>
+
+    <section class="section" id="timeline" aria-labelledby="timeline-title">
+      <div class="container reading">
+        <div class="section-heading">
+          <span class="section-kicker" lang="en">02 / RECENT RELEASES</span>
+          <h2 id="timeline-title">近期演进时间线</h2>
+          <p>聚焦 v0.4.80–v0.4.84，按最新到最早排列。摘要、日期与验证口径均回到对应 tag 下的 release note。</p>
+        </div>
+
+        <ol class="timeline">
+          <li class="timeline__current">
+            <article class="card" aria-labelledby="release-0484">
+              <div class="timeline__heading">
+                <h3 id="release-0484">v0.4.84</h3>
+                <span class="status-badge status-badge--released">
+                  <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="m5 12 4 4L19 6"/></svg>
+                  <span>已发布</span>
+                </span>
+              </div>
+              <time class="timeline__date" datetime="2026-11-10">2026-11-10</time>
+              <p class="timeline__summary"><code>/drive --judge</code> 接受模型判断完成条件，同时把「已验证 / 模型判断」严格分来源；<code>-p</code> 获得无人值守长跑能力，沿用资源清理并设置轮次、工具迭代与墙钟上限。</p>
+              <ul class="tag-list" aria-label="v0.4.84 能力轴"><li>目标驱动</li><li>非交互模式</li><li>来源标注</li></ul>
+              <p class="timeline__source">来源：<a href="https://github.com/AndersHsueh/neo-cli/blob/v0.4.84/docs/release-notes/v0.4.84.md">v0.4.84 release note</a> · <a href="https://github.com/AndersHsueh/neo-cli/releases/tag/v0.4.84">发布 tag</a></p>
+            </article>
+          </li>
+
+          <li>
+            <article class="card" aria-labelledby="release-0483">
+              <div class="timeline__heading">
+                <h3 id="release-0483">v0.4.83</h3>
+                <span class="status-badge status-badge--released">
+                  <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="m5 12 4 4L19 6"/></svg>
+                  <span>已发布</span>
+                </span>
+              </div>
+              <time class="timeline__date" datetime="2026-11-10">2026-11-10</time>
+              <p class="timeline__summary">补齐长会话与协作细节：<code>/compact --from</code> 定点压缩、Esc Esc 交互式 rewind 菜单、子代理对话落盘与续聊，以及仓库地图按 import 引用图排序。</p>
+              <ul class="tag-list" aria-label="v0.4.83 能力轴"><li>上下文</li><li>会话恢复</li><li>仓库地图</li></ul>
+              <p class="timeline__source">来源：<a href="https://github.com/AndersHsueh/neo-cli/blob/v0.4.83/docs/release-notes/v0.4.83.md">v0.4.83 release note</a> · <a href="https://github.com/AndersHsueh/neo-cli/releases/tag/v0.4.83">发布 tag</a></p>
+            </article>
+          </li>
+
+          <li>
+            <article class="card" aria-labelledby="release-0482">
+              <div class="timeline__heading">
+                <h3 id="release-0482">v0.4.82</h3>
+                <span class="status-badge status-badge--released">
+                  <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="m5 12 4 4L19 6"/></svg>
+                  <span>已发布</span>
+                </span>
+              </div>
+              <time class="timeline__date" datetime="2026-11-10">2026-11-10</time>
+              <p class="timeline__summary">Issue #35 第 0/1 批先修正确性：修正 rewind 与 compact 的衔接、回收 <code>-p</code> 临时资源、明确斜杠命令口径；随后扩展 LSP、MCP 旧式 SSE 与后台子代理任务落盘。</p>
+              <ul class="tag-list" aria-label="v0.4.82 能力轴"><li>正确性</li><li>资源回收</li><li>工具协议</li></ul>
+              <p class="timeline__source">来源：<a href="https://github.com/AndersHsueh/neo-cli/blob/v0.4.82/docs/release-notes/v0.4.82.md">v0.4.82 release note</a> · <a href="https://github.com/AndersHsueh/neo-cli/releases/tag/v0.4.82">发布 tag</a></p>
+            </article>
+          </li>
+
+          <li>
+            <article class="card" aria-labelledby="release-0481">
+              <div class="timeline__heading">
+                <h3 id="release-0481">v0.4.81</h3>
+                <span class="status-badge status-badge--released">
+                  <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="m5 12 4 4L19 6"/></svg>
+                  <span>已发布</span>
+                </span>
+              </div>
+              <time class="timeline__date" datetime="2026-11-09">2026-11-09</time>
+              <p class="timeline__summary">一次交付当时剩余 11 项增强与 2 处修复：路径作用域规则、<code>!</code> 输入模式、<code>/loop</code>、命令菜单、MCP HTTP、后台任务与 shell、仓库地图、rewind、drive、LSP 等能力集中落地。</p>
+              <ul class="tag-list" aria-label="v0.4.81 能力轴"><li>终端交互</li><li>编程工具</li><li>后台协作</li></ul>
+              <p class="timeline__source">来源：<a href="https://github.com/AndersHsueh/neo-cli/blob/v0.4.81/docs/release-notes/v0.4.81.md">v0.4.81 release note</a> · <a href="https://github.com/AndersHsueh/neo-cli/releases/tag/v0.4.81">发布 tag</a></p>
+            </article>
+          </li>
+
+          <li>
+            <article class="card" aria-labelledby="release-0480">
+              <div class="timeline__heading">
+                <h3 id="release-0480">v0.4.80</h3>
+                <span class="status-badge status-badge--released">
+                  <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="m5 12 4 4L19 6"/></svg>
+                  <span>已发布</span>
+                </span>
+              </div>
+              <time class="timeline__date" datetime="2026-11-08">2026-11-08</time>
+              <p class="timeline__summary">把「绿灯意味着什么」纳入闸门：全量验证增加 skip 数守卫，静默通过改为显式跳过；同时补齐 README 的平台与验证口径，以及 <code>.gitignore</code> 的密钥载体遗漏。</p>
+              <p class="release-record">该版本发布记录：1704 pass / 0 fail / 0 skip · PTY 24/24 · ALL GREEN。</p>
+              <ul class="tag-list" aria-label="v0.4.80 能力轴"><li>质量闸门</li><li>豁免可见性</li><li>文档补真</li></ul>
+              <p class="timeline__source">来源：<a href="https://github.com/AndersHsueh/neo-cli/blob/v0.4.80/docs/release-notes/v0.4.80.md">v0.4.80 release note</a> · <a href="https://github.com/AndersHsueh/neo-cli/releases/tag/v0.4.80">发布 tag</a></p>
+            </article>
+          </li>
+        </ol>
+      </div>
+    </section>
+
+    <section class="section" id="capabilities" aria-labelledby="capabilities-title">
+      <div class="container">
+        <div class="reading section-heading">
+          <span class="section-kicker" lang="en">03 / CAPABILITY AXES</span>
+          <h2 id="capabilities-title">六条关键能力轴</h2>
+          <p>下列能力均有当前已发布基线支撑。这里按演进方向归纳，不再复制一套时间线；版本链接指向对应历史快照。</p>
+        </div>
+        <div class="capability-grid">
+          <article class="card card--fact">
+            <p class="card__index" lang="en">AXIS 01 / TERMINAL</p>
+            <h3>终端交互</h3>
+            <p>v0.4.81 落地 <code>!</code> 输入模式、<code>/loop</code> 与渐进式命令菜单；v0.4.83 增加 Esc Esc rewind 菜单，让回滚从命令参数扩展为可选择轮的交互。</p>
+            <p class="card__source">来源：<a href="https://github.com/AndersHsueh/neo-cli/blob/v0.4.81/docs/release-notes/v0.4.81.md">v0.4.81</a>、<a href="https://github.com/AndersHsueh/neo-cli/blob/v0.4.83/docs/release-notes/v0.4.83.md">v0.4.83 release notes</a></p>
+          </article>
+          <article class="card card--fact">
+            <p class="card__index" lang="en">AXIS 02 / MODELS</p>
+            <h3>模型与协议</h3>
+            <p>当前 README 记录 OpenAI 兼容与 Anthropic Messages 两类网关协议，以及 provider / tier / model 路由；v0.4.81 补上 <code>max_tokens</code> 的边界发现与写回。</p>
+            <p class="card__source">来源：<a href="https://github.com/AndersHsueh/neo-cli/blob/v0.4.84/README.md">v0.4.84 README</a>、<a href="https://github.com/AndersHsueh/neo-cli/blob/v0.4.81/docs/release-notes/v0.4.81.md">v0.4.81 release note</a></p>
+          </article>
+          <article class="card card--fact">
+            <p class="card__index" lang="en">AXIS 03 / CONTEXT</p>
+            <h3>上下文与记忆</h3>
+            <p>v0.4.82 修正压缩后的 rewind 下标；v0.4.83 增加按轮次定点压缩和子代理续聊。README 另记录会话恢复、双作用域记忆 wiki 与跨会话任务状态。</p>
+            <p class="card__source">来源：<a href="https://github.com/AndersHsueh/neo-cli/blob/v0.4.82/docs/release-notes/v0.4.82.md">v0.4.82</a>、<a href="https://github.com/AndersHsueh/neo-cli/blob/v0.4.83/docs/release-notes/v0.4.83.md">v0.4.83 release notes</a>、<a href="https://github.com/AndersHsueh/neo-cli/blob/v0.4.84/README.md">README</a></p>
+          </article>
+          <article class="card card--fact">
+            <p class="card__index" lang="en">AXIS 04 / TOOLS</p>
+            <h3>工具与协作</h3>
+            <p>v0.4.81 集中加入 LSP、MCP HTTP、仓库地图与后台任务；v0.4.82 增加 MCP SSE 和任务落盘；v0.4.83 用 import 引用图改善仓库地图排序。</p>
+            <p class="card__source">来源：<a href="https://github.com/AndersHsueh/neo-cli/blob/v0.4.81/docs/release-notes/v0.4.81.md">v0.4.81</a>–<a href="https://github.com/AndersHsueh/neo-cli/blob/v0.4.83/docs/release-notes/v0.4.83.md">v0.4.83 release notes</a></p>
+          </article>
+          <article class="card card--fact">
+            <p class="card__index" lang="en">AXIS 05 / DRIVE</p>
+            <h3>目标驱动</h3>
+            <p>v0.4.81 的 <code>/drive</code> 只认可检查命令；v0.4.84 增加来源独立的模型判断，并把驱动接入 <code>-p</code> 无人值守场景。模型判断仍不等于验证。</p>
+            <p class="card__source">来源：<a href="https://github.com/AndersHsueh/neo-cli/blob/v0.4.81/docs/release-notes/v0.4.81.md">v0.4.81</a>、<a href="https://github.com/AndersHsueh/neo-cli/blob/v0.4.84/docs/release-notes/v0.4.84.md">v0.4.84 release notes</a></p>
+          </article>
+          <article class="card card--fact">
+            <p class="card__index" lang="en">AXIS 06 / QUALITY</p>
+            <h3>质量闸门</h3>
+            <p>v0.4.80 让 skip 从盲区变成可见信号，并可用严格模式将其转为失败；v0.4.84 留下 115 文件、PTY 32/32 与 ALL GREEN 的历史发布记录。</p>
+            <p class="card__source">来源：<a href="https://github.com/AndersHsueh/neo-cli/blob/v0.4.80/docs/release-notes/v0.4.80.md">v0.4.80</a>、<a href="https://github.com/AndersHsueh/neo-cli/blob/v0.4.84/docs/release-notes/v0.4.84.md">v0.4.84 release notes</a></p>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <section class="section" id="planned" aria-labelledby="planned-title">
+      <div class="container reading">
+        <div class="section-heading">
+          <span class="section-kicker" lang="en">04 / IMPLEMENTED, NOT RELEASED</span>
+          <h2 id="planned-title">本轮实现（已实现，未发布）</h2>
+          <p>以下三项已在本轮实现并通过定向验证，代码已合入并推送至 GitHub <code>main</code>（<code>22fbd4b</code>），但尚未打 tag、未发版；此处不预设下一版本号、日期或发布时测试数字。</p>
+        </div>
+        <p class="planning-note"><strong>状态边界：</strong>#52、#59、#37 已从「本轮规划」推进为「已实现，未发布」，对应 Issue 已跟贴说明并关闭；当前已发布版本仍为 <code>v0.4.84</code>。既有 <code>model_routes.fallback_allowed</code> 不是 #59 的有序模型备用链。提交已推送至 GitHub <code>main</code>（<code>22fbd4b</code>）、未打 tag、未发布 release note；下方哈希为真实提交记录，本页不直接外链 commit 页面。</p>
+        <div class="planned-list">
+          <article class="card card--unreleased">
+            <div class="planned-card__header">
+              <h3><a href="https://github.com/AndersHsueh/neo-cli/issues/52">#52 · 默认能力收口与 drive 退出码</a></h3>
+              <span class="status-badge status-badge--unreleased">
+                <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="m12 4 8 8-8 8-8-8Z"/></svg>
+                <span>已实现，未发布</span>
+              </span>
+            </div>
+            <p>已实现：未显式配置时 LSP 与仓库地图默认关闭；<code>-p --drive</code> 退出码按「中断 130 &gt; 错误 1 &gt; 驱动终态」排序，检查验证完成记 <code>0</code>、仅模型判断完成记 <code>3</code>，其余未达成记 <code>1</code>。stderr 的 <code>[drive]</code> 摘要格式不变，交互式 <code>/drive</code> 流程未改写。提交 <code>879dee2</code>（已推送至 main）。</p>
+          </article>
+          <article class="card card--unreleased">
+            <div class="planned-card__header">
+              <h3><a href="https://github.com/AndersHsueh/neo-cli/issues/59">#59 · 有序模型备用链</a></h3>
+              <span class="status-badge status-badge--unreleased">
+                <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="m12 4 8 8-8 8-8-8Z"/></svg>
+                <span>已实现，未发布</span>
+              </span>
+            </div>
+            <p>已实现：顶层 <code>model_fallback</code> 有序备用链与 <code>--fallback</code> / <code>--no-fallback</code> 参数，最多 8 项。只对主 Agent 请求生效：同模型重试耗尽后有界切换、已发出流式增量后禁止切换、成功才提交目标、会话内保持且不写回 settings，用量按实际 provider/model 分桶。提交 <code>0b128ce</code>（已推送至 main）。它提高恢复机会，但不保证任务成功。</p>
+          </article>
+          <article class="card card--unreleased">
+            <div class="planned-card__header">
+              <h3><a href="https://github.com/AndersHsueh/neo-cli/issues/37">#37 · stream-json 事件流</a></h3>
+              <span class="status-badge status-badge--unreleased">
+                <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="m12 4 8 8-8 8-8-8Z"/></svg>
+                <span>已实现，未发布</span>
+              </span>
+            </div>
+            <p>已实现：<code>-p --output-format stream-json</code> 输出逐行 JSONL 统一信封，覆盖 <code>init</code> / <code>turn_started</code> / <code>assistant_message</code> / <code>tool_started</code> / <code>tool_finished</code> / <code>model_fallback</code> / <code>drive_finished</code> / <code>error</code> / <code>result</code> 九类事件，正常或已捕获失败恰好一个 <code>result</code>，EPIPE 是唯一物理例外。提交 <code>8691c52</code> / <code>236a4f2</code>（已推送至 main）。不承诺 token 级文本流或 Claude / Codex schema 兼容。</p>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <section class="section" id="boundaries" aria-labelledby="boundaries-title">
+      <div class="container reading">
+        <div class="section-heading">
+          <span class="section-kicker" lang="en">05 / KNOWN BOUNDARIES</span>
+          <h2 id="boundaries-title">已知边界</h2>
+          <p>限制与能力同属发布事实。以下条件不应被「终端自动化」或「长任务」的表述掩盖。</p>
+        </div>
+        <ul class="boundary-list">
+          <li class="boundary-item">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M12 9v4"/><path d="M12 17h.01"/><path d="M10.3 3.7 2.6 17a2 2 0 0 0 1.7 3h15.4a2 2 0 0 0 1.7-3L13.7 3.7a2 2 0 0 0-3.4 0Z"/></svg>
+            <div><h3>运行前提与分发</h3><p>需要自备 Bun &gt;=1.1、兼容的 LLM 网关与 API key。package 当前为 <code>private: true</code>，没有公开 npm 包事实；使用入口是仓库源码与 <code>neo</code> 命令。</p></div>
+          </li>
+          <li class="boundary-item">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M12 9v4"/><path d="M12 17h.01"/><path d="M10.3 3.7 2.6 17a2 2 0 0 0 1.7 3h15.4a2 2 0 0 0 1.7-3L13.7 3.7a2 2 0 0 0-3.4 0Z"/></svg>
+            <div><h3>平台验证不对等</h3><p>README 记录 macOS、Ubuntu / Debian 有实测；Windows 11 为<strong>实验性，未实机验证</strong>，不能据此宣称正式支持或全平台一致。</p></div>
+          </li>
+          <li class="boundary-item">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M12 9v4"/><path d="M12 17h.01"/><path d="M10.3 3.7 2.6 17a2 2 0 0 0 1.7 3h15.4a2 2 0 0 0 1.7-3L13.7 3.7a2 2 0 0 0-3.4 0Z"/></svg>
+            <div><h3>worktree 只隔离文件</h3><p>托管 worktree 提供独立 git 检出，减少并行会话互相覆盖文件的机会；它不是安全沙箱，也不是权限边界。</p></div>
+          </li>
+          <li class="boundary-item">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M12 9v4"/><path d="M12 17h.01"/><path d="M10.3 3.7 2.6 17a2 2 0 0 0 1.7 3h15.4a2 2 0 0 0 1.7-3L13.7 3.7a2 2 0 0 0-3.4 0Z"/></svg>
+            <div><h3>hooks 不是权限系统</h3><p>hooks 只能在既定时机阻断调用或回到既有审批，不能把调用升级为免审批；它不提供沙箱，权限仍由模式与审批闸门负责。</p></div>
+          </li>
+          <li class="boundary-item">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M12 9v4"/><path d="M12 17h.01"/><path d="M10.3 3.7 2.6 17a2 2 0 0 0 1.7 3h15.4a2 2 0 0 0 1.7-3L13.7 3.7a2 2 0 0 0-3.4 0Z"/></svg>
+            <div><h3>模型判断不等于验证</h3><p>v0.4.84 会区分 <code>source=verified|model</code>，但该版本 <code>-p --drive</code> 对两种 done 均记录退出码 0。#52 已实现该退出码修正并推送至 main（检查验证 <code>0</code> / 仅模型判断 <code>3</code>），但尚未发版；不能把它当作已发布 v0.4.84 的能力。</p></div>
+          </li>
+          <li class="boundary-item">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M12 9v4"/><path d="M12 17h.01"/><path d="M10.3 3.7 2.6 17a2 2 0 0 0 1.7 3h15.4a2 2 0 0 0 1.7-3L13.7 3.7a2 2 0 0 0-3.4 0Z"/></svg>
+            <div><h3>暂停项没有随新版解锁</h3><p>v0.4.84 明确记录 #28 的交互式 PTY / attach、Ctrl+B 与跨会话后台进程暂停，#29 OAuth 浏览器登录同样暂停；已有 MCP HTTP / SSE 不等于已有 OAuth。</p></div>
+          </li>
+        </ul>
+      </div>
+    </section>
+
+    <section class="section" id="sources" aria-labelledby="sources-title">
+      <div class="container reading">
+        <div class="section-heading">
+          <span class="section-kicker" lang="en">06 / SOURCES &amp; UPDATE POLICY</span>
+          <h2 id="sources-title">事实来源与更新口径</h2>
+          <p>优先链接到对应 tag 的不可漂移快照。发布记录中的测试数字属于历史证据，不能复制成新一轮验收结果。</p>
+        </div>
+        <div class="source-groups">
+          <section class="source-group" aria-labelledby="source-baseline">
+            <h3 id="source-baseline">当前基线</h3>
+            <ul class="source-list">
+              <li><a href="https://github.com/AndersHsueh/neo-cli">GitHub 仓库 AndersHsueh/neo-cli</a></li>
+              <li><a href="https://github.com/AndersHsueh/neo-cli/blob/v0.4.84/README.md">v0.4.84 README：能力、平台、权限与运行前提</a></li>
+              <li><a href="https://github.com/AndersHsueh/neo-cli/blob/v0.4.84/package.json">v0.4.84 package.json：name / version / private / bin / Bun engines</a></li>
+              <li><a href="https://github.com/AndersHsueh/neo-cli/releases/tag/v0.4.84">annotated tag v0.4.84</a> 与 <a href="https://github.com/AndersHsueh/neo-cli/commit/a2858ae">基线 commit a2858ae</a></li>
+            </ul>
+          </section>
+          <section class="source-group" aria-labelledby="source-releases">
+            <h3 id="source-releases">近期发布记录</h3>
+            <ul class="source-list">
+              <li><a href="https://github.com/AndersHsueh/neo-cli/blob/v0.4.84/docs/release-notes/v0.4.84.md">v0.4.84 release note — 模型判断与 -p 无人值守</a></li>
+              <li><a href="https://github.com/AndersHsueh/neo-cli/blob/v0.4.83/docs/release-notes/v0.4.83.md">v0.4.83 release note — 定点压缩、rewind、续聊与引用图</a></li>
+              <li><a href="https://github.com/AndersHsueh/neo-cli/blob/v0.4.82/docs/release-notes/v0.4.82.md">v0.4.82 release note — 正确性修复与工具增强</a></li>
+              <li><a href="https://github.com/AndersHsueh/neo-cli/blob/v0.4.81/docs/release-notes/v0.4.81.md">v0.4.81 release note — 11 项增强与 2 处修复</a></li>
+              <li><a href="https://github.com/AndersHsueh/neo-cli/blob/v0.4.80/docs/release-notes/v0.4.80.md">v0.4.80 release note — skip 守卫与文档补真</a></li>
+            </ul>
+          </section>
+          <section class="source-group" aria-labelledby="source-planning">
+            <h3 id="source-planning">规划与边界</h3>
+            <ul class="source-list">
+              <li><span>本轮迭代盘点与增量 PRD（仓库规划文档，不随静态站点发布）</span>：状态纪律、#52 / #59 / #37 范围与 Web 禁区</li>
+              <li><a href="https://github.com/AndersHsueh/neo-cli/issues/52">Issue #52</a>、<a href="https://github.com/AndersHsueh/neo-cli/issues/59">Issue #59</a>、<a href="https://github.com/AndersHsueh/neo-cli/issues/37">Issue #37</a>：本轮三项实现入口（Issue 已跟贴说明并关闭）</li>
+              <li><a href="https://github.com/AndersHsueh/neo-cli/blob/v0.4.84/docs/release-notes/v0.4.84.md">v0.4.84 release note「已知未做」</a>：#28 / #29 暂停口径</li>
+            </ul>
+          </section>
+        </div>
+
+        <dl class="status-definitions" aria-label="发布状态定义">
+          <div>
+            <dt><span class="status-badge status-badge--released"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="m5 12 4 4L19 6"/></svg><span>已发布</span></span></dt>
+            <dd>有已发布 tag、release note 或对应 README 事实支撑。</dd>
+          </div>
+          <div>
+            <dt><span class="status-badge status-badge--unreleased"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="m12 4 8 8-8 8-8-8Z"/></svg><span>已实现，未发布</span></span></dt>
+            <dd>已合入并验证但尚未发版，且能指向实际提交与证据；本页初版没有此状态的功能项。</dd>
+          </div>
+          <div>
+            <dt><span class="status-badge status-badge--planned"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="7"/></svg><span>本轮规划</span></span></dt>
+            <dd>仅在本轮 PRD 或开放 Issue 中，不暗示已合入、已验证或已发布。</dd>
+          </div>
+        </dl>
+
+        <aside class="update-policy" aria-labelledby="update-policy-title">
+          <h3 id="update-policy-title">功能合入不等于发布</h3>
+          <p>核心 Issue 合入并验证后，只把对应条目更新为「已实现，未发布」并补真实提交与证据；只有实际发版后，才同步当前版本号、tag、发布日期、commit、release note、README 与发布时验证记录。本轮三项已按此规则更新，发布基线仍为 v0.4.84。</p>
+          <p>本页事实盘点日期为 <time datetime="2026-11-14">2026-11-14</time>。不猜下一版本号，不回写历史 release note 来迎合后续行为变化。</p>
+        </aside>
+      </div>
+    </section>
+  </main>
+
+  <footer class="site-footer">
+    <div class="container footer-grid">
+      <div>
+        <p><strong>neo-agent</strong> 是产品称谓；<strong>neo-cli</strong> 是 GitHub 仓库；<strong>neo</strong> 是实际命令入口。</p>
+        <p>事实基线：2026-11-14 · 当前已发布：v0.4.84 / 2026-11-10 / a2858ae · 本轮三项已实现，未发布。</p>
+        <p>本地静态页面，无追踪脚本；全部核心内容默认展开，无 JavaScript 依赖。</p>
+      </div>
+      <nav aria-label="页脚导航">
+        <ul class="footer-links">
+          <li><a href="portal/index.html">产品门户</a></li>
+          <li><a href="https://github.com/AndersHsueh/neo-cli">GitHub 仓库</a></li>
+          <li><a href="#sources">事实来源</a></li>
+          <li><a href="#main-content">返回页首</a></li>
+        </ul>
+      </nav>
+    </div>
+  </footer>
+</body>
+</html>

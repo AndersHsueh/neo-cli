@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <title>neo-agent</title>
+  <rect width="64" height="64" rx="10" fill="#07110d"/>
+  <rect x="3" y="3" width="58" height="58" rx="8" fill="none" stroke="#66f2a3" stroke-width="2"/>
+  <text x="32" y="38" fill="#66f2a3" font-family="ui-monospace, monospace" font-size="20" font-weight="700" text-anchor="middle">neo</text>
+</svg>

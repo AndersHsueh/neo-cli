@@ -1,0 +1,486 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark light">
+  <meta name="theme-color" content="#07110d">
+  <meta name="description" content="neo-agent 是 neo-cli 仓库中的终端编程助手，通过 Bun 运行，支持 OpenAI 兼容与 Anthropic Messages 协议；了解真实工作流、源码运行方式与使用边界。">
+  <meta property="og:type" content="website">
+  <meta property="og:locale" content="zh_CN">
+  <meta property="og:site_name" content="neo-agent">
+  <meta property="og:title" content="neo-agent｜Matrix 风格的终端编程助手">
+  <meta property="og:description" content="neo-agent 是 neo-cli 仓库中的终端编程助手，通过 Bun 运行，支持 OpenAI 兼容与 Anthropic Messages 协议；了解真实工作流、源码运行方式与使用边界。">
+  <meta name="twitter:card" content="summary">
+  <title>neo-agent｜Matrix 风格的终端编程助手</title>
+  <link rel="icon" href="favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="styles.css">
+  <script src="script.js" defer></script>
+</head>
+<body>
+  <a class="skip-link" href="#main-content">跳至正文</a>
+
+  <header class="site-header">
+    <div class="container header-inner">
+      <a class="brand" href="index.html" aria-label="neo-agent 首页" aria-current="page">
+        <span class="brand-mark" aria-hidden="true">neo</span>
+        <span class="brand-name">neo-agent</span>
+        <span class="brand-descriptor">终端编程助手</span>
+      </a>
+      <nav aria-label="主导航">
+        <ul class="nav-list">
+          <li><a href="#capabilities">核心能力</a></li>
+          <li><a href="#workflows">真实工作流</a></li>
+          <li><a href="#versions">版本演进</a></li>
+          <li><a href="#boundaries">使用边界</a></li>
+          <li><a href="https://github.com/AndersHsueh/neo-cli">GitHub</a></li>
+        </ul>
+      </nav>
+    </div>
+  </header>
+
+  <main id="main-content" tabindex="-1">
+    <section class="hero" aria-labelledby="hero-title">
+      <canvas class="matrix-rain" aria-hidden="true"></canvas>
+      <div class="matrix-atmosphere" aria-hidden="true"></div>
+      <div class="container hero-layout">
+        <div class="hero-copy">
+          <p class="eyebrow" lang="en">TERMINAL CODING ASSISTANT</p>
+          <div class="release-line">
+            <span class="status-badge status-badge--released">
+              <svg aria-hidden="true" focusable="false" viewBox="0 0 16 16"><path d="m3.5 8.2 2.8 2.8 6.2-6.2"/></svg>
+              <span>已发布</span>
+            </span>
+            <span class="version-label"><code>v0.4.84</code><span aria-hidden="true"> · </span><time datetime="2026-11-10">2026-11-10</time></span>
+          </div>
+          <h1 id="hero-title">Matrix 风格的<br>终端编程助手</h1>
+          <p class="hero-intro"><strong>neo-agent</strong> 是 <strong>neo-cli</strong> 仓库中的 Matrix 风格终端编程助手，命令行入口为 <code>neo</code>。它通过 Bun 运行，可连接 OpenAI 兼容或 Anthropic Messages 协议的 LLM 网关。</p>
+          <p class="hero-slogan">把终端编程、长任务验证与多会话协作放进同一个 CLI。</p>
+          <div class="button-row">
+            <a class="button button--primary" href="https://github.com/AndersHsueh/neo-cli">
+              查看 GitHub 仓库
+              <svg class="icon" aria-hidden="true" focusable="false" viewBox="0 0 24 24"><path d="M7 17 17 7M8 7h9v9"/></svg>
+            </a>
+            <a class="button button--secondary" href="#quick-start">阅读快速开始</a>
+          </div>
+          <a class="text-link hero-version-link" href="../neo-agent-version-evolution.html">查看版本演进与事实来源</a>
+          <ul class="hero-facts" aria-label="运行事实">
+            <li><code>Bun &gt;= 1.1</code></li>
+            <li>运行时零第三方依赖</li>
+            <li>自有网关与 API key</li>
+          </ul>
+        </div>
+
+        <article class="terminal-panel" aria-labelledby="terminal-title">
+          <header class="terminal-panel__header">
+            <div class="terminal-panel__title">
+              <span class="terminal-prompt" aria-hidden="true">&gt;_</span>
+              <h2 id="terminal-title">从源码进入终端</h2>
+            </div>
+            <span class="terminal-label" lang="en">SOURCE / CLI</span>
+          </header>
+          <div class="terminal-panel__body">
+            <p class="terminal-kicker">一条真实的单次模式命令</p>
+            <figure class="code-block code-block--hero">
+              <figcaption class="code-block__header">
+                <span>单次模式 · Bash</span>
+                <span class="code-block__actions">
+                  <span class="copy-feedback" data-copy-feedback aria-live="polite"></span>
+                  <button class="button button--ghost button--copy" type="button" data-copy-target="hero-command" hidden>复制命令</button>
+                </span>
+              </figcaption>
+              <pre tabindex="0" aria-label="单次模式命令，可横向滚动"><code id="hero-command">bun run src/index.ts -p "用 glob 找出所有 .ts 文件"</code></pre>
+            </figure>
+            <dl class="terminal-facts">
+              <div><dt>协议</dt><dd>OpenAI 兼容 / Anthropic Messages</dd></div>
+              <div><dt>模式</dt><dd>交互 / <code>-p</code> / <code>--drive</code></dd></div>
+              <div><dt>前提</dt><dd>Bun &gt;= 1.1、自有兼容 LLM 网关与 API key</dd></div>
+            </dl>
+            <p class="terminal-note">静态命令示例，不是运行结果截图。实际结果取决于你的仓库、配置与模型响应。</p>
+          </div>
+        </article>
+      </div>
+    </section>
+
+    <section class="section section--bordered" id="capabilities" aria-labelledby="capabilities-title">
+      <div class="container">
+        <div class="section-heading">
+          <p class="eyebrow" lang="en">CAPABILITIES / 事实分层</p>
+          <h2 id="capabilities-title">为真实终端工作流而生</h2>
+          <p>从模型路由到文件工具，再到无人值守长跑：已发布能力与本轮实现分别标注，不把未发布能力写成已发布功能。</p>
+        </div>
+
+        <div class="card-grid capability-grid">
+          <article class="card card--fact">
+            <div class="card-topline">
+              <span class="card-label" lang="en">01 / ROUTING</span>
+              <span class="status-badge status-badge--released">
+                <svg aria-hidden="true" focusable="false" viewBox="0 0 16 16"><path d="m3.5 8.2 2.8 2.8 6.2-6.2"/></svg>
+                <span>已发布</span>
+              </span>
+            </div>
+            <h3>多协议与可控模型路由</h3>
+            <p>连接你已有的 OpenAI 兼容或 Anthropic Messages 网关，用 provider / tier / model 路由明确每一次请求的去向。</p>
+            <ul class="feature-list">
+              <li>规则或 LLM 分类器，支持显式切档</li>
+              <li>上下文探测、压缩与输出预算防护</li>
+              <li>跨协议保留会话、工具与用量语义</li>
+            </ul>
+            <p class="card-note">现有 <code>fallback_allowed</code> 是档位目标不可用时向 default 档降级，不是 #59 的有序模型备用链。</p>
+          </article>
+
+          <article class="card card--fact">
+            <div class="card-topline">
+              <span class="card-label" lang="en">02 / WORKSPACE</span>
+              <span class="status-badge status-badge--released">
+                <svg aria-hidden="true" focusable="false" viewBox="0 0 16 16"><path d="m3.5 8.2 2.8 2.8 6.2-6.2"/></svg>
+                <span>已发布</span>
+              </span>
+            </div>
+            <h3>终端内编程、协作与记忆</h3>
+            <p>把读改文件、搜索、shell、审批与会话恢复留在同一个 CLI，并按需接入 MCP、LSP 和仓库地图。</p>
+            <ul class="feature-list">
+              <li>前台跨会话消息与后台子代理</li>
+              <li>托管 worktree、后台 shell 与任务续聊</li>
+              <li>双作用域记忆 wiki、按轮回滚与定点压缩</li>
+            </ul>
+            <p class="card-note">权限模式与审批仍然生效；worktree 和 hooks 都不是安全沙箱。</p>
+          </article>
+
+          <article class="card card--fact card--execution">
+            <div class="card-topline">
+              <span class="card-label" lang="en">03 / UNATTENDED</span>
+            </div>
+            <h3>面向无人值守的可信执行</h3>
+            <p>现有长跑提供检查与来源标记；恢复、结构化事件和退出码修正逐项列出真实状态。</p>
+            <div class="capability-subitem">
+              <span class="status-badge status-badge--released">
+                <svg aria-hidden="true" focusable="false" viewBox="0 0 16 16"><path d="m3.5 8.2 2.8 2.8 6.2-6.2"/></svg>
+                <span>已发布</span>
+              </span>
+              <h4><code>-p --drive</code> 目标驱动长跑</h4>
+              <p>每轮结束执行检查命令，提供轮次、工具迭代和墙钟上限，并区分 verified / model 来源。模型判断不等于验证。</p>
+            </div>
+            <div class="capability-subitem capability-subitem--unreleased">
+              <span class="status-badge status-badge--unreleased">
+                <svg aria-hidden="true" focusable="false" viewBox="0 0 16 16"><path d="m8 2 6 6-6 6-6-6Z"/></svg>
+                <span>已实现，未发布</span>
+              </span>
+              <h4>#52 · 退出码正确性修正</h4>
+              <p>已实现把 verified / model 来源落实到进程退出码：检查验证 <code>0</code>、仅模型判断 <code>3</code>，避免 CI 把模型自判当作检查通过。尚未发版。</p>
+            </div>
+            <div class="capability-subitem capability-subitem--unreleased">
+              <span class="status-badge status-badge--unreleased">
+                <svg aria-hidden="true" focusable="false" viewBox="0 0 16 16"><path d="m8 2 6 6-6 6-6-6Z"/></svg>
+                <span>已实现，未发布</span>
+              </span>
+              <h4>#59 · 有序模型备用链</h4>
+              <p>已实现主 Agent 按用户配置的 provider + model 顺序有界切换；成功才提交目标、会话内保持，用量按实际模型分桶。提高恢复机会，不保证任务成功。</p>
+            </div>
+            <div class="capability-subitem capability-subitem--unreleased">
+              <span class="status-badge status-badge--unreleased">
+                <svg aria-hidden="true" focusable="false" viewBox="0 0 16 16"><path d="m8 2 6 6-6 6-6-6Z"/></svg>
+                <span>已实现，未发布</span>
+              </span>
+              <h4>#37 · <code>stream-json</code> 事件流</h4>
+              <p>已实现以 JSONL 逐行输出九类事件与恰好一个最终结果，stdout 纯 JSONL、诊断走 stderr；提高可观测性，不替代测试。</p>
+            </div>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <section class="section" id="workflows" aria-labelledby="workflows-title">
+      <div class="container">
+        <div class="section-heading">
+          <p class="eyebrow" lang="en">WORKFLOWS / 可复制命令</p>
+          <h2 id="workflows-title">四种进入仓库的方式</h2>
+          <p>命令直接来自 README。交互模式保留人工审批，非交互与无人值守场景则明确使用 <code>-y</code>。</p>
+        </div>
+
+        <div class="card-grid workflow-grid">
+          <article class="card workflow-card">
+            <span class="workflow-number" aria-hidden="true">01</span>
+            <h3>交互开发</h3>
+            <p>在仓库中读文件、编辑、跑命令，通过 <code>ask</code>、<code>auto-edit</code>、<code>auto-all</code> 或 <code>plan</code> 控制权限。</p>
+            <figure class="code-block">
+              <figcaption class="code-block__header">
+                <span>交互模式 · Bash</span>
+                <span class="code-block__actions">
+                  <span class="copy-feedback" data-copy-feedback aria-live="polite"></span>
+                  <button class="button button--ghost button--copy" type="button" data-copy-target="interactive-command" hidden>复制命令</button>
+                </span>
+              </figcaption>
+              <pre tabindex="0" aria-label="交互模式命令，可横向滚动"><code id="interactive-command">bun run src/index.ts</code></pre>
+            </figure>
+          </article>
+
+          <article class="card workflow-card">
+            <span class="workflow-number" aria-hidden="true">02</span>
+            <h3><code>-p</code> 单次执行</h3>
+            <p>给脚本或自动化一个明确任务，一轮结束后退出；已有 text 与结束时单行 json 输出，尚无 stream-json。</p>
+            <figure class="code-block">
+              <figcaption class="code-block__header">
+                <span>单次模式 · Bash</span>
+                <span class="code-block__actions">
+                  <span class="copy-feedback" data-copy-feedback aria-live="polite"></span>
+                  <button class="button button--ghost button--copy" type="button" data-copy-target="print-command" hidden>复制命令</button>
+                </span>
+              </figcaption>
+              <pre tabindex="0" aria-label="单次执行命令，可横向滚动"><code id="print-command">bun run src/index.ts -p "用 glob 找出所有 .ts 文件"</code></pre>
+            </figure>
+          </article>
+
+          <article class="card workflow-card">
+            <span class="workflow-number" aria-hidden="true">03</span>
+            <h3><code>--drive</code> 无人值守长跑</h3>
+            <p>以真实检查命令作为验证信号，并限制轮次与墙钟时间。无人值守必须显式 <code>-y</code>。</p>
+            <figure class="code-block">
+              <figcaption class="code-block__header">
+                <span>目标驱动 · Bash</span>
+                <span class="code-block__actions">
+                  <span class="copy-feedback" data-copy-feedback aria-live="polite"></span>
+                  <button class="button button--ghost button--copy" type="button" data-copy-target="drive-command" hidden>复制命令</button>
+                </span>
+              </figcaption>
+              <pre tabindex="0" aria-label="无人值守长跑命令，可横向滚动"><code id="drive-command">bun run src/index.ts -p "修到测试全绿" --drive "bun test" --max 5 --max-minutes 30 -y</code></pre>
+            </figure>
+          </article>
+
+          <article class="card workflow-card">
+            <span class="workflow-number" aria-hidden="true">04</span>
+            <h3>worktree + 跨会话协作</h3>
+            <p>在三个前台终端分别启动编排者与两个 worker；文件隔离由 worktree 负责，会话寻址由名称负责。</p>
+            <figure class="code-block">
+              <figcaption class="code-block__header">
+                <span>三个前台终端 · Bash</span>
+                <span class="code-block__actions">
+                  <span class="copy-feedback" data-copy-feedback aria-live="polite"></span>
+                  <button class="button button--ghost button--copy" type="button" data-copy-target="worktree-command" hidden>复制命令</button>
+                </span>
+              </figcaption>
+              <pre tabindex="0" aria-label="跨会话与 worktree 命令，可横向滚动"><code id="worktree-command">neo --name lead
+neo --name worker-a --worktree feat-a
+neo --name worker-b --worktree feat-b</code></pre>
+            </figure>
+          </article>
+        </div>
+        <p class="section-footnote">跨会话消息只覆盖存活的前台交互会话，不是持久 supervisor；worktree 只隔离文件。</p>
+      </div>
+    </section>
+
+    <div class="section section--bordered section-pair">
+      <div class="container pair-grid">
+        <section id="quick-start" aria-labelledby="quick-start-title">
+          <div class="section-heading">
+            <p class="eyebrow" lang="en">QUICK START / 从源码运行</p>
+            <h2 id="quick-start-title">带上你的网关，从源码开始</h2>
+            <p>没有公开 npm 包或托管服务。你需要 Bun、自有兼容 LLM 网关与 API key。</p>
+          </div>
+          <ol class="steps-list">
+            <li>
+              <span class="step-number" aria-hidden="true">1</span>
+              <div>
+                <h3>准备运行条件</h3>
+                <p>安装 Bun &gt;= 1.1，准备 OpenAI 兼容或 Anthropic Messages 协议的网关、模型和密钥。</p>
+              </div>
+            </li>
+            <li>
+              <span class="step-number" aria-hidden="true">2</span>
+              <div>
+                <h3>获取 neo-cli 源码</h3>
+                <figure class="code-block">
+                  <figcaption class="code-block__header">
+                    <span>克隆源码 · Bash</span>
+                    <span class="code-block__actions">
+                      <span class="copy-feedback" data-copy-feedback aria-live="polite"></span>
+                      <button class="button button--ghost button--copy" type="button" data-copy-target="clone-command" hidden>复制命令</button>
+                    </span>
+                  </figcaption>
+                  <pre tabindex="0" aria-label="克隆源码命令，可横向滚动"><code id="clone-command">git clone https://github.com/AndersHsueh/neo-cli.git
+cd neo-cli</code></pre>
+                </figure>
+              </div>
+            </li>
+            <li>
+              <span class="step-number" aria-hidden="true">3</span>
+              <div>
+                <h3>配置并启动</h3>
+                <p>复制配置模板，在本地 <code>settings.json</code> 填入自己的 provider、网关地址、API key 与模型，再进入交互模式。</p>
+                <figure class="code-block">
+                  <figcaption class="code-block__header">
+                    <span>源码运行 · Bash</span>
+                    <span class="code-block__actions">
+                      <span class="copy-feedback" data-copy-feedback aria-live="polite"></span>
+                      <button class="button button--ghost button--copy" type="button" data-copy-target="start-command" hidden>复制命令</button>
+                    </span>
+                  </figcaption>
+                  <pre tabindex="0" aria-label="配置并启动命令，可横向滚动"><code id="start-command">cp settings.example.json settings.json
+bun run src/index.ts</code></pre>
+                </figure>
+              </div>
+            </li>
+          </ol>
+          <p class="section-footnote">示例使用 POSIX shell；Windows 11 为实验性且未实机验证。不要把真实密钥写入公开配置或提交到仓库。</p>
+          <a class="text-link" href="https://github.com/AndersHsueh/neo-cli/blob/v0.4.84/README.md">阅读 README 的完整配置与命令说明</a>
+        </section>
+
+        <section id="versions" aria-labelledby="versions-title">
+          <div class="section-heading">
+            <p class="eyebrow" lang="en">RELEASES / 可核查演进</p>
+            <h2 id="versions-title">当前基线与最近节点</h2>
+          </div>
+          <article class="card card--current">
+            <div class="card-topline">
+              <h3><code>v0.4.84</code></h3>
+              <span class="status-badge status-badge--released">
+                <svg aria-hidden="true" focusable="false" viewBox="0 0 16 16"><path d="m3.5 8.2 2.8 2.8 6.2-6.2"/></svg>
+                <span>已发布</span>
+              </span>
+            </div>
+            <dl class="release-facts">
+              <div><dt>发布日期</dt><dd><time datetime="2026-11-10">2026-11-10</time></dd></div>
+              <div><dt>基线 commit</dt><dd><a href="https://github.com/AndersHsueh/neo-cli/commit/a2858ae"><code>a2858ae</code></a></dd></div>
+              <div><dt>发布说明</dt><dd><a href="https://github.com/AndersHsueh/neo-cli/blob/v0.4.84/docs/release-notes/v0.4.84.md">v0.4.84 release note</a></dd></div>
+            </dl>
+          </article>
+          <aside class="evidence-note" aria-labelledby="evidence-title">
+            <h3 id="evidence-title">v0.4.84 发布时验证记录</h3>
+            <p>该版本发布记录为 <strong>1995 pass / 0 fail / 0 skip</strong>（115 文件）、<strong>PTY 32/32</strong>、<strong>ALL GREEN</strong>。这是历史发布证据，不是当前工作区复测结果。</p>
+          </aside>
+          <ol class="release-list">
+            <li>
+              <div><code>v0.4.84</code><time datetime="2026-11-10">2026-11-10</time></div>
+              <p><code>/drive --judge</code> 与 <code>-p</code> 无人值守长跑。</p>
+              <a href="https://github.com/AndersHsueh/neo-cli/blob/v0.4.84/docs/release-notes/v0.4.84.md">v0.4.84 发布说明</a>
+            </li>
+            <li>
+              <div><code>v0.4.83</code><time datetime="2026-11-10">2026-11-10</time></div>
+              <p>定点压缩、Esc Esc rewind 菜单、子代理续聊与仓库地图引用图排序。</p>
+              <a href="https://github.com/AndersHsueh/neo-cli/blob/v0.4.83/docs/release-notes/v0.4.83.md">v0.4.83 发布说明</a>
+            </li>
+            <li>
+              <div><code>v0.4.82</code><time datetime="2026-11-10">2026-11-10</time></div>
+              <p>rewind / compact 修正、<code>-p</code> 资源回收、LSP 扩展、MCP SSE 与后台子代理落盘。</p>
+              <a href="https://github.com/AndersHsueh/neo-cli/blob/v0.4.82/docs/release-notes/v0.4.82.md">v0.4.82 发布说明</a>
+            </li>
+            <li>
+              <div><code>v0.4.81</code><time datetime="2026-11-09">2026-11-09</time></div>
+              <p>路径规则、<code>!</code> 模式、<code>/loop</code>、MCP HTTP、后台任务、仓库地图、rewind、drive 与 LSP 等。</p>
+              <a href="https://github.com/AndersHsueh/neo-cli/blob/v0.4.81/docs/release-notes/v0.4.81.md">v0.4.81 发布说明</a>
+            </li>
+            <li>
+              <div><code>v0.4.80</code><time datetime="2026-11-08">2026-11-08</time></div>
+              <p>全量闸门补 skip 守卫，README 与 gitignore 补真。</p>
+              <a href="https://github.com/AndersHsueh/neo-cli/blob/v0.4.80/docs/release-notes/v0.4.80.md">v0.4.80 发布说明</a>
+            </li>
+          </ol>
+          <a class="button button--secondary" href="../neo-agent-version-evolution.html">查看完整版本演进</a>
+        </section>
+      </div>
+    </div>
+
+    <section class="section" id="boundaries" aria-labelledby="boundaries-title">
+      <div class="container">
+        <div class="section-heading">
+          <p class="eyebrow" lang="en">BOUNDARIES / 先说明限制</p>
+          <h2 id="boundaries-title">平台、权限与验证边界</h2>
+          <p>终端工具可以执行真实操作。了解前提与限制，再决定哪些任务适合交给它。</p>
+        </div>
+        <ul class="boundary-list">
+          <li>
+            <article class="card card--boundary">
+              <svg class="boundary-icon" aria-hidden="true" focusable="false" viewBox="0 0 24 24"><path d="M12 4 21 20H3L12 4Z"/><path d="M12 9v5M12 17.5v.1"/></svg>
+              <div><h3>平台支持并不等同</h3><p>macOS、Ubuntu / Debian 有实测；其它 POSIX shell 有解析器支持。Windows 11 为实验性，尚未实机验证，不宣称正式支持。</p></div>
+            </article>
+          </li>
+          <li>
+            <article class="card card--boundary">
+              <svg class="boundary-icon" aria-hidden="true" focusable="false" viewBox="0 0 24 24"><path d="M12 4 21 20H3L12 4Z"/><path d="M12 9v5M12 17.5v.1"/></svg>
+              <div><h3>文件隔离不是安全沙箱</h3><p>worktree 只隔离文件，hooks 不是权限系统，两者都不是安全沙箱。shell、MCP 与用户脚本仍可能产生真实副作用。</p></div>
+            </article>
+          </li>
+          <li>
+            <article class="card card--boundary">
+              <svg class="boundary-icon" aria-hidden="true" focusable="false" viewBox="0 0 24 24"><path d="M12 4 21 20H3L12 4Z"/><path d="M12 9v5M12 17.5v.1"/></svg>
+              <div><h3>模型判断不等于验证</h3><p>v0.4.84 已标注 verified / model 来源，但进程退出码尚未按该来源拆分。#52 已实现该修正并推送至 main（验证 <code>0</code> / 模型判断 <code>3</code>），但尚未发版，不能当作已发布版本已具备的能力。</p></div>
+            </article>
+          </li>
+          <li>
+            <article class="card card--boundary">
+              <svg class="boundary-icon" aria-hidden="true" focusable="false" viewBox="0 0 24 24"><path d="M12 4 21 20H3L12 4Z"/><path d="M12 9v5M12 17.5v.1"/></svg>
+              <div><h3>无人值守仍有明确前提</h3><p>需要自备 Bun、兼容网关与 API key；<code>-p --drive</code> 必须显式 <code>-y</code>。轮次、工具迭代和墙钟上限用于约束任务，不保证检查最终通过。</p></div>
+            </article>
+          </li>
+          <li>
+            <article class="card card--boundary">
+              <svg class="boundary-icon" aria-hidden="true" focusable="false" viewBox="0 0 24 24"><path d="M12 4 21 20H3L12 4Z"/><path d="M12 9v5M12 17.5v.1"/></svg>
+              <div><h3>本轮实现尚未发版</h3><p>#52 默认能力收口与退出码、#59 有序备用链、#37 stream-json 已实现、验证并推送至 GitHub main，但没有新 tag、release note 或发布日期，不属于当前已发布能力。持久 supervisor / attach、OAuth 与 ACP 仍不在范围内。</p></div>
+            </article>
+          </li>
+        </ul>
+      </div>
+    </section>
+
+    <section class="section section--bordered" id="sources" aria-labelledby="sources-title">
+      <div class="container reading-column">
+        <div class="section-heading">
+          <p class="eyebrow" lang="en">SOURCES / 事实可回溯</p>
+          <h2 id="sources-title">每个结论都有入口</h2>
+          <p>事实基线为 2026-11-14。当前发布基线是 v0.4.84 / 2026-11-10 / a2858ae；功能合入不等于发布。</p>
+        </div>
+        <ul class="source-list">
+          <li><a href="https://github.com/AndersHsueh/neo-cli/blob/v0.4.84/README.md">README v0.4.84</a>：产品形态、真实命令、配置、平台与权限边界。</li>
+          <li><a href="https://github.com/AndersHsueh/neo-cli/blob/v0.4.84/package.json">package.json v0.4.84</a>：package/bin 名称、版本、private 状态与 Bun 要求。</li>
+          <li><a href="https://github.com/AndersHsueh/neo-cli/blob/v0.4.84/docs/release-notes/v0.4.84.md">v0.4.84 release note</a>：当前版本能力与该版本发布时验证记录。</li>
+          <li><a href="https://github.com/AndersHsueh/neo-cli/issues/52">Issue #52</a>：默认能力收口与无人值守退出码修正，本轮已实现、未发版（Issue 已跟贴说明并关闭）。</li>
+          <li><a href="https://github.com/AndersHsueh/neo-cli/issues/59">Issue #59</a>：有序模型备用链，本轮已实现、未发版（Issue 已跟贴说明并关闭）。</li>
+          <li><a href="https://github.com/AndersHsueh/neo-cli/issues/37">Issue #37</a>：<code>-p</code> stream-json 事件流，本轮已实现、未发版（Issue 已跟贴说明并关闭）。</li>
+        </ul>
+        <div class="status-explainer">
+          <h3>发布状态口径</h3>
+          <p><strong>已发布</strong>：有 tag、release note 或 README 事实支撑；<strong>已实现，未发布</strong>：已合入并推送至 GitHub <code>main</code>（<code>22fbd4b</code>）、通过定向验证，但未打 tag、未发版；<strong>本轮规划</strong>：仅在 PRD 或开放 Issue 中。</p>
+        </div>
+      </div>
+    </section>
+
+    <section class="section final-cta" aria-labelledby="final-cta-title">
+      <div class="container final-cta__inner">
+        <div>
+          <p class="eyebrow" lang="en">READ THE SOURCE</p>
+          <h2 id="final-cta-title">从源码了解并运行 neo-agent</h2>
+          <p>先读命令与边界，再接入自己的模型网关。通过仓库与本地配置评估，不提供托管服务或账号体系。</p>
+        </div>
+        <div class="button-row">
+          <a class="button button--primary" href="https://github.com/AndersHsueh/neo-cli">查看 GitHub 仓库</a>
+          <a class="button button--secondary" href="https://github.com/AndersHsueh/neo-cli/blob/v0.4.84/README.md">阅读 README</a>
+          <a class="button button--ghost" href="../neo-agent-version-evolution.html">查看版本演进</a>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer class="site-footer">
+    <div class="container footer-grid">
+      <div>
+        <a class="brand footer-brand" href="index.html" aria-label="neo-agent 首页">
+          <span class="brand-mark" aria-hidden="true">neo</span>
+          <span class="brand-name">neo-agent</span>
+        </a>
+        <p><strong>neo-agent</strong> 是产品称谓，<strong>neo-cli</strong> 是仓库名，<code>neo</code> 是实际命令入口。</p>
+      </div>
+      <nav aria-label="页脚导航">
+        <ul class="footer-links">
+          <li><a href="https://github.com/AndersHsueh/neo-cli">GitHub 仓库</a></li>
+          <li><a href="../neo-agent-version-evolution.html">版本演进页</a></li>
+          <li><a href="#sources">事实来源</a></li>
+        </ul>
+      </nav>
+      <div class="footer-meta">
+        <p>事实基线：2026-11-14 · 当前已发布 v0.4.84 · 本轮三项已实现，未发布</p>
+        <p>本地静态页面，无追踪脚本，不自动请求第三方资源。</p>
+      </div>
+    </div>
+  </footer>
+</body>
+</html>
