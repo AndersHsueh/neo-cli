@@ -283,3 +283,13 @@ describe("K1i 连按两下 Esc（issue #47）", () => {
     expect(mapKey({ name: "escape" })).toEqual({ type: "escape" });
   });
 });
+
+describe("E8 Ctrl+G（issue #62：外部编辑器）", () => {
+  test("E8a Ctrl+G → ctrl-g 动作（不是插入文本）", () => {
+    expect(mapKey({ name: "g", ctrl: true, sequence: "\x07" })).toEqual({ type: "ctrl-g" });
+  });
+
+  test("E8b 普通 g 仍是插入文本（不被 Ctrl 规则误伤）", () => {
+    expect(mapKey({ ch: "g", name: "g" })).toEqual({ type: "insert", text: "g" });
+  });
+});

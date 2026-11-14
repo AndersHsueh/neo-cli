@@ -48,6 +48,7 @@ export type KeyAction =
   | { type: "ctrl-d" }
   | { type: "ctrl-o" }
   | { type: "ctrl-v" }
+  | { type: "ctrl-g" }
   | { type: "page-up" }
   | { type: "page-down" }
   | { type: "paste-start" }
@@ -100,6 +101,8 @@ export function mapKey(k: RawKey): KeyAction | null {
       case "c": return { type: "ctrl-c" };
       case "d": return { type: "ctrl-d" };
       case "v": return { type: "ctrl-v" };
+      // issue #62：Ctrl+G 调起外部编辑器撰写提示词（与 Ctrl+V 贴图同级的独立动作）。
+      case "g": return { type: "ctrl-g" };
       case "j": return { type: "newline" };
       case "a": return { type: "home" };
       case "e": return { type: "end" };

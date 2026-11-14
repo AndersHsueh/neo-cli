@@ -510,3 +510,62 @@ describe("C5 askUser 模态", () => {
     h.composer.stop();
   });
 });
+
+describe("E9/E10 Ctrl+G 外部编辑器（issue #62）", () => {
+  test("E9 Ctrl+G → 调起编辑器，内容回填输入框、光标在末尾", async () => {
+    let seen = "";
+    const h = makeHarness({
+      editInEditor: async (current: string) => {
+        seen = current;
+        return { ok: true as const, text: "编辑器里写的内容" };
+      },
+    });
+    typeText(h, "原来的草稿");
+    special(h, { name: "g", ctrl: true });
+    await new Promise((r) => setTimeout(r, 0));
+    expect(seen).toBe("原来的草稿");
+    expect(h.composer.text).toBe("编辑器里写的内容");
+    h.composer.stop();
+  });
+
+  test("E9b 编辑器运行期间输入框处于挂起态（按键不响应），退出后恢复", async () => {
+    let suspendedDuring = false;
+    let h!: Harness;
+    h = makeHarness({
+      editInEditor: async () => {
+        suspendedDuring = h.composer.isSuspended;
+        return { ok: true as const, text: "x" };
+      },
+    });
+    special(h, { name: "g", ctrl: true });
+    await new Promise((r) => setTimeout(r, 0));
+    expect(suspendedDuring).toBe(true);
+    expect(h.composer.isSuspended).toBe(false);
+    h.composer.stop();
+  });
+
+  test("E10 编辑器失败（没配 $EDITOR）→ 输入框内容不变，给可读提示", async () => {
+    const h = makeHarness({
+      editInEditor: async () => ({
+        ok: false as const,
+        error: "未设置 $VISUAL / $EDITOR，无法调起外部编辑器",
+      }),
+    });
+    typeText(h, "别丢了我");
+    special(h, { name: "g", ctrl: true });
+    await new Promise((r) => setTimeout(r, 0));
+    expect(h.composer.text).toBe("别丢了我");
+    expect(h.composer.compose().rows.join("\n")).toContain("$EDITOR");
+    h.composer.stop();
+  });
+
+  test("E10b 宿主没提供编辑器能力 → 输入框不变，给一句提示", async () => {
+    const h = makeHarness();
+    typeText(h, "原稿");
+    special(h, { name: "g", ctrl: true });
+    await new Promise((r) => setTimeout(r, 0));
+    expect(h.composer.text).toBe("原稿");
+    expect(h.composer.compose().rows.join("\n")).toContain("外部编辑器");
+    h.composer.stop();
+  });
+});

@@ -45,6 +45,7 @@ import type {
   ToolStartEventData,
 } from "./agent/loop.ts";
 import { dispatchCommand } from "./cli/commands.ts";
+import { editInEditor } from "./editor.ts";
 import { helpText } from "./cli/help.ts";
 import { persist, printSessions, replayTranscript, showStats } from "./cli/sessions.ts";
 import { authorizeShell, executeShell, runShell } from "./cli/shell.ts";
@@ -2530,6 +2531,13 @@ async function main(): Promise<number> {
         const att = makeImageAttachment(pasteImageCounter, img.data);
         return { chip: att.chip, attachment: att };
       },
+      // issue #62：Ctrl+G 用外部编辑器撰写提示词。
+      // 输入框负责挂起/恢复 TUI；这里只提供「跑编辑器」这一件事。
+      editInEditor: async (current: string) =>
+        editInEditor({
+          initial: current,
+          env: { VISUAL: process.env.VISUAL, EDITOR: process.env.EDITOR },
+        }),
       paste: { foldLines: cfg.paste.foldLines, foldChars: cfg.paste.foldChars },
       beforeUserCommit: () => dock?.flushPending(),
       onResize: () => dock?.resize(),

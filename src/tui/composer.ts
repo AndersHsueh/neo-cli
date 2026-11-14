@@ -91,6 +91,15 @@ export interface ComposerDeps {
   pasteText?: (text: string) => { chip: string; attachment: unknown };
   /** Ctrl+V 贴图；返回 null 表示剪贴板无图。 */
   pasteImage?: () => Promise<{ chip: string; attachment: unknown } | null>;
+  /**
+   * Ctrl+G：用外部编辑器撰写提示词（issue #62）。
+   *
+   * 传当前输入框内容进去，返回回填文本；失败时给可读原因，**原输入保持不变**。
+   * 输入框负责挂起/恢复 TUI（编辑器要接管终端），这里只管「跑编辑器」这件事。
+   */
+  editInEditor?: (
+    current: string,
+  ) => Promise<{ ok: true; text: string } | { ok: false; error: string }>;
   paste?: ComposerPasteConfig;
   /** bracketed paste 丢包时的 idle 兜底（默认 1000ms）；测试可调小。 */
   pasteIdleMs?: number;
@@ -1097,6 +1106,9 @@ export class Composer {
       case "ctrl-v":
         void this.pasteImage();
         return;
+      case "ctrl-g":
+        void this.editInExternal();
+        return;
       case "up":
       case "down":
         if (this.moveLineOrHistory(action.type)) return;
@@ -1413,6 +1425,37 @@ export class Composer {
     }
     this.attachments.push(r.attachment);
     this.buf.insert(r.chip);
+    this.scheduleRender();
+  }
+
+  /**
+   * Ctrl+G：用外部编辑器撰写提示词（issue #62）。
+   *
+   * 顺序是硬约束：编辑器要接管终端，所以先 suspend（让出 tty：停按键监听、
+   * 恢复 cooked mode、显示光标、擦掉帧），编辑器退出后再 resume（回 raw + 重画）。
+   * 编辑器失败 / 取消 → 原输入原样保留，只给一句可读提示。
+   */
+  private async editInExternal(): Promise<void> {
+    if (!this.deps.editInEditor) {
+      this.notice("当前环境不支持外部编辑器");
+      return;
+    }
+    const current = this.buf.text;
+    this.suspend();
+    let r: { ok: true; text: string } | { ok: false; error: string };
+    try {
+      r = await this.deps.editInEditor(current);
+    } catch (e) {
+      r = { ok: false, error: `外部编辑器失败：${(e as Error).message}` };
+    } finally {
+      this.resume();
+    }
+    if (!r.ok) {
+      this.notice(r.error);
+      return;
+    }
+    // 光标落在末尾：编辑器里写的内容通常是「写完就发」，末尾最顺手。
+    this.buf.setText(r.text, r.text.length);
     this.scheduleRender();
   }
 
