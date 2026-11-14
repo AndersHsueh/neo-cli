@@ -15,7 +15,7 @@
 import { afterAll, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { isAbsolute, join } from "node:path";
 
 import { dispatchCommand, type CommandContext } from "../src/cli/commands.ts";
 import { loadConfig, type Config } from "../src/config.ts";
@@ -169,9 +169,10 @@ describe("S2 tryLoadSkillForSlash", () => {
     expect(r.ok).toBe(true);
     if (!r.ok) return;
     expect(r.body).toContain(BODY_MARKER);
-    expect(r.files.some((f) => f.endsWith("references/detail.md"))).toBe(true);
+    // 产品返回平台原生绝对路径附件（src/skills.ts:641-645），Windows 上带盘符和反斜杠。
+    expect(r.files.some((f) => f.endsWith(join("references", "detail.md")))).toBe(true);
     // 绝对路径（slash 路径不建软链，相对路径在项目区可能不可达）
-    expect(r.files.every((f) => f.startsWith("/"))).toBe(true);
+    expect(r.files.every((f) => isAbsolute(f))).toBe(true);
   });
 
   test("S2.2 不建软链（人发起的入口只读，与约束 16 同一职责边界）", () => {

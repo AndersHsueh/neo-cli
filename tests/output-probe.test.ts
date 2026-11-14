@@ -10,7 +10,7 @@
 import { afterAll, afterEach, beforeAll, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { arch, hostname, platform, tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 
 import { loadConfig, type Config, type ProviderConfig } from "../src/config.ts";
 import {
@@ -202,7 +202,7 @@ describe("C1 配置解析：非法形状回落默认关闭，不抛错", () => {
     // loadConfig 只从 cwd / 包根 / ~/.neo 搜 settings.json，所以用临时 cwd（既有测试同款做法）。
     const load = (entry: Record<string, unknown>) => {
       const path = writeSettings([entry]);
-      const dir = path.slice(0, path.lastIndexOf("/"));
+      const dir = dirname(path);
       const prev = process.cwd();
       try {
         process.chdir(dir);

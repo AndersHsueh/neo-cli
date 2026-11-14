@@ -141,9 +141,14 @@ describe("K. .gitignore 约束（PRD §6.5）", () => {
 
   test("K3 决策 4：项目私有技能目录未被忽略（不能写裸 `skills/`）", () => {
     assertWorktreeHealthy();
+    // git 2.55.0.windows.3 对「带尾斜杠且未匹配到具体 .gitignore 规则的目录 pathspec」
+    // 存在 check-ignore 假阳性（实测 web/ docs/ src/ tests/ foo/ nonexistent/ 全部误报，
+    // 见 docs/neo-agent-baseline-k3-gitignore-verdict-2026-11-14.md P7 控制组）。
+    // 故此处用不带尾斜杠的 pathspec 表达「目录本身 / 软链位置」：期望值仍是 =false、
+    // 断言结构不变；决策 4 由下面 K4 的文本守卫独立钉住，不得删除或放宽。
     for (const p of [
-      "skills/", // 目录本身
-      "skills/pdf/", // 软链位置的目录形态
+      "skills", // 目录本身（不带尾斜杠，避开 Windows git 假阳性）
+      "skills/pdf", // 软链位置
       "skills/project-private/SKILL.md", // 项目私有技能的真实文件
       "skills/team-skill/references/detail.md",
     ]) {

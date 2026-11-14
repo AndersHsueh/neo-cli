@@ -11,16 +11,22 @@ import { join } from "node:path";
 
 import { expandReferences, parseReferences } from "../src/input/references.ts";
 
-// 注入的 IO 收到的是**绝对路径**（相对 opts.cwd 解析后的结果）
+// 注入的 IO 收到的是**绝对路径**（相对 opts.cwd 解析后的结果）。
+// 产品用 join(opts.cwd, relative) 解析（src/input/references.ts:141），因此 cwd 与桩键
+// 必须同口径：硬编码 "/repo/a.ts" 这类 POSIX 字符串，在 Windows 上会与 join 产出的
+// 反斜杠路径精确匹配失配，导致 C3b 整组在 setup 阶段就被挡住、从未测到展开逻辑。
+const REPO = join(tmpdir(), "neo-refs-fixture-repo");
+const abs = (relative: string): string => join(REPO, relative);
+
 const files: Record<string, string> = {
-  "/repo/a.ts": "const a = 1;\n",
-  "/repo/src/b.ts": Array.from({ length: 500 }, (_, i) => `line${i}`).join("\n"),
-  "/repo/bin.dat": "abc\u0000def",
-  "/repo/big.txt": "x".repeat(1_000),
+  [abs("a.ts")]: "const a = 1;\n",
+  [abs("src/b.ts")]: Array.from({ length: 500 }, (_, i) => `line${i}`).join("\n"),
+  [abs("bin.dat")]: "abc\u0000def",
+  [abs("big.txt")]: "x".repeat(1_000),
 };
 
 const deps = {
-  cwd: "/repo",
+  cwd: REPO,
   exists: (p: string): boolean => p in files,
   readFile: (p: string): string => files[p]!,
   statSize: (p: string): number => Buffer.byteLength(files[p] ?? "", "utf8"),
@@ -118,11 +124,11 @@ describe("C3b 展开", () => {
 
   test("最多 5 个文件：多余的报「未展开」", () => {
     const many: Record<string, string> = {};
-    for (let i = 0; i < 7; i++) many[`/repo/f${i}.ts`] = "x";
+    for (let i = 0; i < 7; i++) many[abs(`f${i}.ts`)] = "x";
     const r = expandReferences(
       Array.from({ length: 7 }, (_, i) => `@f${i}.ts`).join(" "),
       {
-        cwd: "/repo",
+        cwd: REPO,
         exists: (p) => p in many,
         readFile: (p) => many[p]!,
         statSize: (p) => Buffer.byteLength(many[p] ?? "", "utf8"),
@@ -161,20 +167,24 @@ describe("C3b 展开", () => {
 
 describe("C3c 路径解析相对 cfg.cwd（-C 场景）", () => {
   test("相对路径按 opts.cwd 解析，而不是 process.cwd()", () => {
+    // #52：产品返回 join(opts.cwd, "a.ts")，Windows 上带盘符和反斜杠；
+    // 期望值用 join 表达同一契约，而不是硬编码 "/work/proj/a.ts"。
+    const WORK = join(tmpdir(), "neo-refs-fixture-work");
+    const expected = join(WORK, "a.ts");
     const seen: string[] = [];
     const r = expandReferences("@a.ts", {
-      cwd: "/work/proj",
+      cwd: WORK,
       exists: (p) => {
         seen.push(p);
-        return p === "/work/proj/a.ts";
+        return p === expected;
       },
       statSize: () => 7,
       readFile: (p) => {
-        expect(p).toBe("/work/proj/a.ts");
+        expect(p).toBe(expected);
         return "content";
       },
     });
-    expect(seen[0]).toBe("/work/proj/a.ts");
+    expect(seen[0]).toBe(expected);
     expect(r.refs[0]!.path).toBe("a.ts"); // 展示仍是相对路径
   });
 

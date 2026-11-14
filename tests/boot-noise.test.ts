@@ -149,7 +149,9 @@ describe("issue #18-1/3 诊断只写日志", () => {
     expect(tui).not.toContain("未探测到");
     expect(tui).toContain("已补进 settings.json");
 
-    const logged = readFileSync(join(root, "boot", `${bootLogFile(new Date(), root).split("/").pop()}`), "utf8");
+    // bootLogFile() 返回的是完整绝对路径（src/bootDiagnostics.ts:49-50），
+    // Windows 路径用反斜杠，split("/") 取不到文件名，直接读该路径即可。
+    const logged = readFileSync(bootLogFile(new Date(), root), "utf8");
     expect(logged).toContain("将探测");
     expect(logged).toContain("未探测到");
   });
