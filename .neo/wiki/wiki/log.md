@@ -384,3 +384,48 @@ grep -E -A3 "^## \[[0-9-]+\] todo \|" wiki/log.md
 ## [2026-11-10] deliverable | v0.4.82 发布（#35 第 0/1 批 7 项；1909 pass / 111 文件 / PTY 31/31；tag 已推）
 ## [2026-11-10] deliverable | v0.4.83 发布（#35 第 2 批 4 项 + 测试稳定化；1956 pass / 114 文件 / PTY 32/32；tag 已推）
 ## [2026-11-10] deliverable | v0.4.84 发布（#50 模型判断 + #51 -p 无人值守；1995 pass / 115 文件 / PTY 32/32；tag 已推）
+## [2026-11-14] wiki | 自动记忆：project/规划-仓库地图与LSP后续.md（append）
+## [2026-11-14] wiki | 自动记忆：project/盘点-2026-11-14-交付与Wiki缺口.md（create）
+## [2026-11-14] wiki | 自动记忆：project/待办-Issue与发布说明收尾.md（append）
+## [2026-11-14] wiki | 自动记忆：project/ai-info-工作目录.md（create）
+## [2026-11-14] wiki | 自动记忆：project/家庭网络-设备状态.md（create）
+## [2026-11-14] wiki | 自动记忆：project/家庭网络-设备状态.md（append）
+## [2026-11-14] wiki | 自动记忆：project/家庭网络-设备状态.md（append）
+## [2026-11-14] wiki | 自动记忆：project/家庭网络-设备状态.md（append）
+## [2026-11-14] wiki | 自动记忆：project/家庭网络-设备状态.md（append）
+## [2026-11-14] wiki | 自动记忆：project/家庭网络-设备状态.md（append）
+## [2026-11-14] wiki | 自动记忆：project/家庭网络-设备状态.md（append）
+## [2026-11-15] wiki | 自动记忆：project/家庭网络-设备状态.md（append）
+## [2026-11-15] wiki | 自动记忆：project/家庭网络-设备状态.md（append）
+## [2026-11-15] wiki | 自动记忆：project/家庭网络-设备状态.md（append）
+## [2026-11-15] wiki | 自动记忆：project/待办-Issue与发布说明收尾.md（append）
+## [2026-11-15] wiki | 自动记忆：project/家庭网络-设备状态.md（append）
+## [2026-11-15] wiki | 自动记忆：project/家庭网络-设备状态.md（append）
+## [2026-11-15] wiki | 自动记忆：project/盘点-2026-11-14-交付与Wiki缺口.md（append）
+## [2026-11-15] wiki | 自动记忆：project/盘点-2026-11-14-交付与Wiki缺口.md（append）
+## [2026-11-15] wiki | 自动记忆：project/家庭网络-设备状态.md（append）
+## [2026-11-15] wiki | 自动记忆：project/跨平台不可移植-shell解释器写死.md（append）
+## [2026-11-15] wiki | 新建 [[待澄清-v0.1.0未决观察]]：v0.1.0 §五 5 项未决观察首次登记（raw/2026-10-16_neo-v0.0.x-早期历史.md §四）
+## [2026-11-15] wiki | 新建 [[素材源层约定]]：raw 只读源层的放什么/命名/剪藏/约束规范 + README 失效引用与空 tags.md 两处待澄清（raw/README.md、raw/tags.md）
+## [2026-11-15] wiki | 补记 [[待澄清-neo]]：2026-11-15 全量 ingest 后开放问题迁至 [[待澄清-v0.1.0未决观察]]，本页「无开放问题」仅指 2026-10-16 首批 4 项
+## [2026-11-15] wiki | 补记 [[工具调用预算-v0.1.2+]]：2026-10-18 实战实证——用户实测见到「第 2 次 / 上限 80」，且旧配置实例曾撞 40 上限（raw/2026-10-18_neo-v0.1.2-双功能.md）
+## [2026-11-15] wiki | 补记 [[neo-多角色协作流程]]：补上 2026-10-18 的「单用户 + neo 结对」协作形态（与六角色历史表并列，非取代）
+## [2026-11-15] wiki | 补记 [[素材源层约定]]：区分 .neo/wiki/raw 素材层与 ~/.neo/memorys/raw 记忆条目层；登记两份 raw 对 AGENTS.md 入库方向相反（按用户拍板为准）
+## [2026-11-15] todo | todo 登记：v0.1.0 §五 5 项未决观察的待办清单（第 3 项可因 v0.1.12 删除关闭；第 4 项 owner、第 1/2/5 项待用户拍板）
+## [2026-11-15] wiki | 补记 [[neo-版本时间线]]：全量 ingest 后 raw/2026-10-16_neo-v0.0.x-早期历史.md 五节的落点索引（§四此前缺失，已建 [[待澄清-v0.1.0未决观察]]）
+## [2026-11-15] wiki | 补记 [[neo-v0.1.1]]：登记 raw 工作纪要 §五 与早期历史 §五 对 AGENTS.md 入库方向相反（按用户拍板为准）及「wiki 未编译」的时效性说明
+## [2026-11-15] wiki | 补记 [[热键系统-v0.1.2+]]：raw/2026-10-18 双功能 §遗留 逐项闭合情况（tag/release note 已随 v0.1.3 闭合，escapeCodeTimeout 仍开放）
+## [2026-11-15] wiki | 补记 [[neo-开发踩坑]]：全量 ingest 逐条来源补齐表（十条教训对应 raw 出处）
+## [2026-11-15] todo | todo 登记：raw/README.md 失效的工作流页引用与空占位 tags.md 两项源层待办（需用户拍板）
+## [2026-11-15] ingest | full 编译 5 份 raw
+## [2026-11-15] wiki | 自动记忆：project/规划-Issue难度排序-2026-11-14.md（create）
+## [2026-11-15] wiki | 自动记忆：project/neo-版本时间线.md（append）
+## [2026-11-15] wiki | 自动记忆：project/修复-1104-verify证据前缀取版本.md（append）
+## [2026-11-15] wiki | 自动记忆：project/规划-Issue难度排序-2026-11-14.md（append）
+## [2026-11-15] wiki | 自动记忆：project/规划-Issue难度排序-2026-11-14.md（append）
+## [2026-11-15] query | macOS 侧 0x104 深查:根因是 TCC 授权记录失效,非网络问题;tccutil reset LocalNetwork 是无效服务名,须用 reset All
+## [2026-11-15] milestone | 发版 v0.4.86：#35 收口关闭 + #62 外部编辑器 + #56 Notification hook
+## [2026-11-15] wiki | 自动记忆：project/发版-1115.md（append）
+## [2026-11-15] wiki | 自动记忆：project/排查-Mac-Windows-App本地网络授权.md（create）
+## [2026-11-15] wiki | 自动记忆：project/规划-后台Shell后续项.md（append）
+## [2026-11-15] milestone | v0.4.86 三条并成一版：#62 / #56 / #61 全部交付
