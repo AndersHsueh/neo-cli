@@ -19,6 +19,7 @@ import { ToolError, type ToolCtx } from "../tools/types.ts";
 import { appendTurnLog } from "../turnDiagnostics.ts";
 import { isContextOverflowError, parseContextLimitFromError } from "../contextWindow.ts";
 import { formatModelLine } from "../prompt/modelLine.ts";
+import { isRecallMessage } from "../memory/port.ts";
 import { applyCompaction, planCompaction } from "./compact.ts";
 import { decidePermission } from "./policy.ts";
 import {
@@ -302,6 +303,33 @@ export class Agent {
   get historyLength(): number {
     // 不含 system
     return Math.max(0, this.messages.length - 1);
+  }
+
+  /**
+   * 旁支提问（issue #61）：基于当前上下文回答一个独立问题，**不入历史、不调工具**。
+   *
+   * 三条硬约束：
+   *  - **不入历史**：请求走 `this.messages` 的**快照**（`[...this.messages]`），
+   *    绝不 push 回主 messages —— 它是活引用（工具循环/失败重试/降级重发都复用同一份），
+   *    push 会污染主上下文，并随 session 落盘。
+   *  - **不调工具**：`tools` 传空数组，模型只能纯文本回答。
+   *  - **不打断主轮次**：独立的一次请求，不碰主循环的在途状态。
+   */
+  async askSide(question: string): Promise<{ ok: true; answer: string } | { ok: false; error: string }> {
+    // 召回注入的临时 system 消息只对主循环有效，不带进旁支快照。
+    const snapshot = [...this.messages].filter((m) => !isRecallMessage(m));
+    snapshot.push({ role: "user", content: question });
+    try {
+      const res = await this.streamFn(this.opt.cfg, snapshot, [], {});
+      // 记账：旁支请求不经过主循环的 usage 结算，不显式记则 /cost 会少算。
+      if (res.usage) this.recordUsage(res.usage);
+      const answer = (res.content ?? "").trim();
+      if (answer === "") return { ok: false, error: "模型返回了空回答" };
+      return { ok: true, answer };
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      return { ok: false, error: msg || "模型调用失败" };
+    }
   }
 
   /** 最近一次压缩的前后 token（/context 展示用）。 */

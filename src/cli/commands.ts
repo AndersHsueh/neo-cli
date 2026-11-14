@@ -62,6 +62,7 @@ import { mailboxRoot, type Envelope } from "../mailbox/types.ts";
 import type { Mailbox } from "../mailbox/store.ts";
 import { chooseSessionName } from "../sessionName.ts";
 import { HOOK_EVENTS } from "../hooks/index.ts";
+import { renderMarkdown } from "../ui/render.ts";
 import {
   buildReviewPrompt,
   collectReviewDiff,
@@ -1154,6 +1155,29 @@ export async function handleCommand(line: string, ctx: CommandContext): Promise<
         break;
       }
       for (const line of formatShellJobs(shells.list())) ui.line(line);
+      break;
+    }
+
+    // 旁支提问（issue #61）：基于当前上下文回答一个独立问题，**不入历史、不调工具**。
+    case "btw": {
+      const question = arg.trim();
+      if (!question) {
+        ui.warn("用法：/btw <问题>（基于当前上下文回答，不写入对话历史）");
+        break;
+      }
+      // -p 一次性模式没有「当前会话上下文」可言，也不该在无人值守时发旁支请求。
+      if (memoryMode === "oneshot") {
+        ui.warn("/btw 仅交互会话可用（-p 单次模式没有可持续的会话上下文）。");
+        break;
+      }
+      const r = await agent.askSide(question);
+      if (!r.ok) {
+        ui.warn(`/btw 失败：${r.error}`);
+        break;
+      }
+      ui.blank();
+      ui.line(renderMarkdown(r.answer, Number.isFinite(ui.width) ? ui.width : 100));
+      ui.blank();
       break;
     }
 
