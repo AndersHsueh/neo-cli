@@ -99,6 +99,13 @@ export interface AgentOptions {
    */
   chatStream?: typeof chatStream;
   /**
+   * #59：仅主 Agent 的单次模型请求使用（组合根注入 ModelFallbackController.stream）。
+   * compact / judge / classifier / memory / subagent 继续走 chatStream，不自动获得各自备用链。
+   */
+  mainChatStream?: typeof chatStream;
+  /** #59：备用链保持期间为 true —— 自动分类不得把模型切走。 */
+  isFallbackActive?: () => boolean;
+  /**
    * 记忆端口（v0.2 记忆激活 §7.8.1）。不传 = 无记忆（子代理/task 默认如此）。
    * 记忆是增强项：任何调用失败都不得影响主流程。
    */
@@ -194,6 +201,15 @@ export interface AgentOptions {
   hooks?: HooksConfig;
 }
 
+/** #59：按实际提供响应的 provider|model 分桶的用量。 */
+export interface UsageBucket {
+  provider: string;
+  model: string;
+  prompt: number;
+  completion: number;
+  reasoning: number;
+}
+
 export interface TurnStats {
   durationMs: number;
   promptTokens: number;
@@ -229,6 +245,7 @@ export interface AgentHost {
   readonly stats: TurnStats | null;
   readonly toolFailureStreak: number;
   readonly cumulative: { prompt: number; completion: number; reasoning: number };
+  usageByModel(): UsageBucket[];
   readonly historyLength: number;
   readonly lastCompactionInfo: { beforeTokens: number; afterTokens: number } | null;
   toolSpecsFor(): ToolSpec[];

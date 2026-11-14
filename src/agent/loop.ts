@@ -33,7 +33,7 @@ import {
 } from "./plan-mode.ts";
 import { previewArgs } from "./render.ts";
 import { budgetMessage as buildBudgetMessage, readGoalSafe } from "./steer.ts";
-import type { AgentIO, AgentOptions, PermissionMode, TurnStats } from "./types.ts";
+import type { AgentIO, AgentOptions, PermissionMode, TurnStats, UsageBucket } from "./types.ts";
 import type { RuleMatch } from "../rules/index.ts";
 import { dispatchHooks, describeOutcome, hasAnyHook, type HookPayload } from "../hooks/index.ts";
 
@@ -66,6 +66,8 @@ export class Agent {
   private totalPrompt = 0;
   private totalCompletion = 0;
   private totalReasoning = 0;
+  /** #59：按实际提供响应的 provider|model 分桶（累计总量仍用上面三个字段）。 */
+  private usageBuckets: UsageBucket[] = [];
   private lastStats: TurnStats | null = null;
   /** 轮次序号：记忆捕获的审计键（会话内递增，不跨会话）。 */
   private turnSeq = 0;
@@ -188,6 +190,14 @@ export class Agent {
     return this.opt.chatStream ?? chatStream;
   }
 
+  /**
+   * #59：主 Agent 请求专用入口。组合根注入 ModelFallbackController.stream；
+   * 未注入时与 streamFn 完全一致（子代理、测试、compact/judge 不受影响）。
+   */
+  private get mainStreamFn(): typeof chatStream {
+    return this.opt.mainChatStream ?? this.streamFn;
+  }
+
   get classifier(): Classifier | undefined {
     return this.opt.classifier;
   }
@@ -219,16 +229,35 @@ export class Agent {
     return { prompt: this.totalPrompt, completion: this.totalCompletion, reasoning: this.totalReasoning };
   }
 
+  /** #59：逐 provider|model 的用量分桶，按实际提供响应的目标记账。 */
+  usageByModel(): UsageBucket[] {
+    return this.usageBuckets.map((b) => ({ ...b }));
+  }
+
+  /** 只更新分桶，不动累计总量（主循环在 send() 末尾统一累加总量）。 */
+  private addToBucket(usage: Usage, provider: string, model: string): void {
+    let bucket = this.usageBuckets.find((b) => b.provider === provider && b.model === model);
+    if (!bucket) {
+      bucket = { provider, model, prompt: 0, completion: 0, reasoning: 0 };
+      this.usageBuckets.push(bucket);
+    }
+    bucket.prompt += usage.prompt_tokens ?? 0;
+    bucket.completion += usage.completion_tokens ?? 0;
+    bucket.reasoning += usage.completion_tokens_details?.reasoning_tokens ?? 0;
+  }
+
   /**
    * 把一次**外部单次请求**的 usage 计入本会话累计（issue #50）。
    *
    * `/drive` 的模型判断、压缩摘要这类请求不经过主循环的 `res.usage` 记账路径，
    * 由调用方显式回报；否则 `/cost` 会少算这部分成本。
+   * #59：同时按调用时的实际 provider|model 记分桶。
    */
   recordUsage(usage: Usage): void {
     this.totalPrompt += usage.prompt_tokens ?? 0;
     this.totalCompletion += usage.completion_tokens ?? 0;
     this.totalReasoning += usage.completion_tokens_details?.reasoning_tokens ?? 0;
+    this.addToBucket(usage, this.opt.cfg.providerName, this.opt.cfg.model);
   }
 
   get historyLength(): number {
@@ -375,6 +404,7 @@ export class Agent {
       this.totalPrompt += res.usage.prompt_tokens ?? 0;
       this.totalCompletion += res.usage.completion_tokens ?? 0;
       this.totalReasoning += res.usage.completion_tokens_details?.reasoning_tokens ?? 0;
+      this.addToBucket(res.usage, this.opt.cfg.providerName, this.opt.cfg.model);
     }
 
     // v0.2 记忆激活 §7.6.1 T2：压缩前捕获摘要 —— 历史即将被替换，
@@ -437,6 +467,8 @@ export class Agent {
   ): Promise<TurnStats["tierSwitch"]> {
     const cls = this.opt.classifier;
     if (!cls) return null;
+    // #59：备用链保持期间自动分类不得把模型切走（会话内保持）。
+    if (this.opt.isFallbackActive?.()) return null;
 
     const cfg = this.opt.cfg;
     const before = cfg.modelTier;
@@ -660,7 +692,8 @@ export class Agent {
           retryMaxTokens !== null ? { ...this.opt.cfg, maxTokens: retryMaxTokens } : this.opt.cfg;
         // 在途标记：请求发出到返回之间，messages[0] 不许被改写。
         this.requestInFlight = true;
-        const res = await this.streamFn(
+        const identityBefore = `${this.opt.cfg.providerName}|${this.opt.cfg.model}`;
+        const res = await this.mainStreamFn(
           reqCfg,
           this.messages,
           specs,
@@ -705,6 +738,10 @@ export class Agent {
           signal,
         );
         this.requestInFlight = false;
+        // #59：fallback 成功后共享 cfg 已切到实际响应目标；在安全边界刷新系统提示词。
+        if (`${this.opt.cfg.providerName}|${this.opt.cfg.model}` !== identityBefore) {
+          this.noteModelChange(this.opt.cfg);
+        }
 
         // 预算提示只服务于这一次请求，立刻摘掉，避免污染对话历史
         this.dropTransientMessage(budgetMsg);
@@ -739,6 +776,8 @@ export class Agent {
           promptTokens += res.usage.prompt_tokens ?? 0;
           completionTokens += res.usage.completion_tokens ?? 0;
           reasoningTokens += res.usage.completion_tokens_details?.reasoning_tokens ?? 0;
+          // #59：按实际提供响应的目标记分桶（总量在 send 末尾统一累加）。
+          this.addToBucket(res.usage, this.opt.cfg.providerName, this.opt.cfg.model);
         }
         finishReason = res.finishReason;
 

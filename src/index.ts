@@ -18,13 +18,17 @@ import {
   isImplemented,
   IMPLEMENTED_PROVIDER_TYPES,
   ConfigError,
+  parseFallbackTarget,
+  MAX_MODEL_FALLBACKS,
   normalizeTierName,
   tierDisplayName,
   tierChoiceLabel,
   type Config,
+  type ModelTarget,
 } from "./config.ts";
 import { Classifier, CLASSIFIER_NAMES, isClassifierName, type ClassifierName } from "./classifier/index.ts";
 import { Agent, type PermissionMode } from "./agent.ts";
+import { ModelFallbackController } from "./modelFallback.ts";
 import { dispatchCommand } from "./cli/commands.ts";
 import { helpText } from "./cli/help.ts";
 import { persist, printSessions, replayTranscript, showStats } from "./cli/sessions.ts";
@@ -171,6 +175,10 @@ interface Args {
   version: boolean;
   /** -p 输出格式：text（默认）| json（P0-6，供 CI/编排器消费）。 */
   outputFormat: "text" | "json";
+  /** #59：CLI 有序备用链（可重复 --fallback）；出现即完整替换 settings 链。 */
+  fallbackArgs: string[];
+  /** #59：本次运行禁用备用链（与 --fallback 互斥）。 */
+  noFallback: boolean;
   /** --worktree <name>：在托管 worktree 里开会话（issue #9）。 */
   worktree: string | null;
   /** 参数值非法（如 --output-format bogus）：main 直接返回 2。 */
@@ -195,12 +203,19 @@ function parseArgs(argv: string[]): Args {
     help: false,
     version: false,
     outputFormat: "text",
+    fallbackArgs: [],
+    noFallback: false,
     worktree: null,
     badArgs: false,
     rest: [],
   };
   for (let i = 0; i < argv.length; i++) {
     const v = argv[i] ?? "";
+    // #59：--fallback=<provider>:<model> 与空格形式等价，可重复，出现顺序即优先级。
+    if (v.startsWith("--fallback=")) {
+      a.fallbackArgs.push(v.slice("--fallback=".length).trim());
+      continue;
+    }
     // 等号形式（--output-format=json）也要认，否则编排器写 `--flag=value` 会被静默忽略。
     if (v.startsWith("--output-format=")) {
       const val = v.slice("--output-format=".length).trim();
@@ -292,6 +307,13 @@ function parseArgs(argv: string[]): Args {
         }
         break;
       }
+      case "--fallback": {
+        a.fallbackArgs.push((argv[++i] ?? "").trim());
+        break;
+      }
+      case "--no-fallback":
+        a.noFallback = true;
+        break;
       default:
         a.rest.push(v);
     }
@@ -421,6 +443,38 @@ async function main(): Promise<number> {
         c.dim("\n  请在 settings.json 的 providers 中填写，或设置环境变量 NEO_API_KEY。"),
     );
     return 2;
+  }
+
+  // #59：CLI 备用链在发任何模型请求之前解析校验；非法配置退出 2，零模型请求。
+  let effectiveFallbacks: ModelTarget[] = cfg.modelFallback;
+  if (args.noFallback && args.fallbackArgs.length > 0) {
+    console.error(c.err("✖ --no-fallback 与 --fallback 不能同时使用"));
+    return 2;
+  }
+  if (args.noFallback) {
+    effectiveFallbacks = [];
+  } else if (args.fallbackArgs.length > 0) {
+    if (args.fallbackArgs.length > MAX_MODEL_FALLBACKS) {
+      console.error(
+        c.err(`✖ --fallback 最多 ${MAX_MODEL_FALLBACKS} 项（收到 ${args.fallbackArgs.length} 项）`),
+      );
+      return 2;
+    }
+    try {
+      const parsed = args.fallbackArgs.map((s) => parseFallbackTarget(s, cfg.providers));
+      const seen = new Set<string>();
+      for (const t of parsed) {
+        const key = `${t.provider}\u0000${t.model}`;
+        if (seen.has(key)) {
+          throw new ConfigError(`--fallback 重复项：${t.provider}:${t.model}`);
+        }
+        seen.add(key);
+      }
+      effectiveFallbacks = parsed; // CLI 完整替换 settings 链，不 append / merge
+    } catch (e) {
+      console.error(c.err(`✖ ${(e as Error).message}`));
+      return 2;
+    }
   }
 
   // ---- v0.3.0 底部 live 帧：TTY 才启用 composer/dock，非 TTY 走 v0.2.4 readline 路径 ----
@@ -867,10 +921,39 @@ async function main(): Promise<number> {
   /** 后台子代理任务表（issue #16）：Agent 构造时要注入轮询闭包，实例在 Agent 之后创建。 */
   let backgroundTasks: BackgroundTasks | null = null;
 
+  // #59：会话级备用链只接主 Agent 请求；交互与 -p（含 --drive）共用同一 controller。
+  const fallbackController =
+    effectiveFallbacks.length > 0
+      ? new ModelFallbackController({
+          cfg,
+          fallbacks: effectiveFallbacks,
+          onNotice: (m) => ui.warn(m),
+          onFallback: (e) => {
+            ui.warn(
+              `[fallback] ${e.from.provider}:${e.from.model} → ${e.to.provider}:${e.to.model}` +
+                `（${e.reason.code}：${e.reason.message}）`,
+            );
+          },
+        })
+      : null;
+
   const agent = new Agent({
     cfg,
     console: ui,
     mode: args.mode,
+    // #59：只有主 Agent 请求经过备用链；compact / judge / classifier / subagent 走既有路径。
+    ...(fallbackController
+      ? {
+          mainChatStream: (
+            c2: Config,
+            m: Parameters<typeof chatStream>[1],
+            t: Parameters<typeof chatStream>[2],
+            h?: Parameters<typeof chatStream>[3],
+            s?: AbortSignal,
+          ) => fallbackController.stream(c2, m, t, h, s),
+          isFallbackActive: () => fallbackController.isActive,
+        }
+      : {}),
     systemPrompt: promptManager.render(cfg).text,
     renderSystemPrompt: () => promptManager.render(cfg).text,
     getSessionName: () => sessionLabel,

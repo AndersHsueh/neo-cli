@@ -22,6 +22,11 @@ ${c.bold("用法")}
 ${c.bold("选项")}
   -p, --print <text>    单次模式
       --output-format <fmt>  -p 输出格式：text（默认）| json（CI 可解析，stdout 单行）
+      --fallback <provider>:<model>  主模型故障时的有序备用链（可重复，出现顺序即优先级）
+                        任一项出现即完整替换 settings.model_fallback；最多 8 项
+      --no-fallback     本次禁用备用链（与 --fallback 互斥）
+                        同模型重试耗尽后才切换；会话内保持目标，不自动回切、不改写 settings
+                        仅主 Agent 请求生效；提高可恢复性，但不保证任务成功
       --drive <检查命令>  -p 无人值守长跑：每轮结束跑检查命令，exit 0 = 达成（已验证）。
                         未达成自动再发同一提示。必须配 -y（无人值守无人类确认）
       --judge <标准>     模型判断完成标准（来源标注为「模型判断」，绝不冒充已验证）

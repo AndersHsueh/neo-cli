@@ -428,6 +428,16 @@ export async function handleCommand(line: string, ctx: CommandContext): Promise<
       ui.kv("thinking", `${cum.reasoning} tokens`);
       ui.kv("context", `${(agent.contextUsage() * 100).toFixed(1)}% of ${cfg.contextWindow}`);
       ui.kv("messages", String(agent.messages.length));
+      const buckets = agent.usageByModel();
+      if (buckets.length > 1) {
+        ui.blank();
+        ui.line(c.dim("按实际响应模型分桶（#59）："));
+        for (const b of buckets) {
+          ui.line(
+            `  ${c.accent(b.provider)}/${b.model}: ${b.prompt} prompt / ${b.completion} completion / ${b.reasoning} thinking`,
+          );
+        }
+      }
       ui.blank();
       break;
     }

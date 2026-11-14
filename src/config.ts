@@ -262,6 +262,121 @@ export function resolveOutputProbe(raw: unknown): OutputProbeSettings | undefine
   return { enabled, maxAttempts, start, cap: Math.max(capRaw, start) };
 }
 
+/* ------------------------------------------------------------------ */
+/* #59 有序模型备用链                                                  */
+/* ------------------------------------------------------------------ */
+
+/**
+ * 备用链单项：明确的 provider + model。
+ *
+ * 与 `model_routes.<tier>.fallback_allowed`（档位目标协议不可用时向 default 降级）
+ * 不是一回事：那是路由降级，这里是主模型请求失败后的有序备用链。
+ */
+export interface ModelTarget {
+  provider: string;
+  model: string;
+}
+
+/** 备用项上限：把「有界」变成可测试的配置约束，不是运行时自动截断。 */
+export const MAX_MODEL_FALLBACKS = 8;
+
+/** 校验一个 target：provider 必须存在且协议已接入，model 非空。 */
+function assertModelTarget(target: ModelTarget, providers: ProviderConfig[], where: string): void {
+  if (!target.provider || !target.model) {
+    throw new ConfigError(`${where} 需要非空的 provider 与 model。`);
+  }
+  const p = providers.find((x) => x.name === target.provider);
+  if (!p) {
+    throw new ConfigError(
+      `${where} 的 provider "${target.provider}" 不在 providers 列表中。` +
+        `已配置：${providers.map((x) => x.name).join(", ") || "（无）"}`,
+    );
+  }
+  if (!isImplemented(p.type)) {
+    throw new ConfigError(
+      `${where} 的 provider "${target.provider}" 声明为 ${p.type} 协议，但请求层尚未接入。` +
+        `已实现：${IMPLEMENTED_PROVIDER_TYPES.join(", ")}。`,
+    );
+  }
+}
+
+/**
+ * 严格解析 settings.model_fallback：只接受对象数组，不接受字符串简写、对象 map 或旧字段别名。
+ * 缺省 / [] = 禁用；任何非法形状、未知 provider、空字段、重复项或超过 8 项都在模型请求前报错。
+ */
+export function resolveModelFallback(raw: unknown, providers: ProviderConfig[]): ModelTarget[] {
+  if (raw === undefined || raw === null) return [];
+  if (!Array.isArray(raw)) {
+    throw new ConfigError("settings.model_fallback 必须是对象数组（[{provider, model}, ...]）。");
+  }
+  if (raw.length > MAX_MODEL_FALLBACKS) {
+    throw new ConfigError(`settings.model_fallback 最多 ${MAX_MODEL_FALLBACKS} 项（收到 ${raw.length} 项）。`);
+  }
+  const seen = new Set<string>();
+  return raw.map((item, i) => {
+    const where = `model_fallback[${i}]`;
+    if (typeof item !== "object" || item === null || Array.isArray(item)) {
+      throw new ConfigError(`${where} 必须是 {provider, model} 对象。`);
+    }
+    const rec = item as Record<string, unknown>;
+    const target: ModelTarget = {
+      provider: typeof rec["provider"] === "string" ? rec["provider"].trim() : "",
+      model: typeof rec["model"] === "string" ? rec["model"].trim() : "",
+    };
+    assertModelTarget(target, providers, where);
+    const key = `${target.provider}\u0000${target.model}`;
+    if (seen.has(key)) {
+      throw new ConfigError(`${where} 与前面的备用项重复：${target.provider}:${target.model}。`);
+    }
+    seen.add(key);
+    return target;
+  });
+}
+
+/**
+ * 解析 CLI --fallback <provider>:<model>：在第一个冒号分割，两侧 trim 后必须非空。
+ * provider 名本身含冒号不支持，避免二义。
+ */
+export function parseFallbackTarget(text: string, providers: ProviderConfig[]): ModelTarget {
+  const at = text.indexOf(":");
+  if (at <= 0 || at === text.length - 1) {
+    throw new ConfigError(`--fallback 需要 <provider>:<model>（收到 "${text}"）。`);
+  }
+  const target: ModelTarget = {
+    provider: text.slice(0, at).trim(),
+    model: text.slice(at + 1).trim(),
+  };
+  assertModelTarget(target, providers, "--fallback");
+  return target;
+}
+
+/**
+ * 把会话共享 cfg 切到目标 provider+model（#59）。
+ *
+ * 重新赋 provider/协议/key/baseUrl/model、输出预算、温度与窗口事实；
+ * 不复制来源模型的 maxTokens / 窗口 / baseUrl / key / 协议，也不写 settings。
+ * modelTier 保留当前展示档位，但 fallback 身份优先于档位路由。
+ */
+export function applyModelTarget(cfg: Config, target: ModelTarget): void {
+  const p = cfg.providers.find((x) => x.name === target.provider);
+  if (!p) throw new ConfigError(`备用目标 provider "${target.provider}" 不存在。`);
+  if (!isImplemented(p.type)) {
+    throw new ConfigError(`备用目标 provider "${target.provider}" 的 ${p.type} 协议未接入。`);
+  }
+  const g = cfg.globalDefaults;
+  cfg.providerName = p.name;
+  cfg.providerType = p.type;
+  cfg.apiKey = p.apiKey;
+  cfg.baseUrl = p.baseUrl;
+  cfg.model = target.model;
+  cfg.maxTokens = p.maxTokens ?? g.maxTokens;
+  cfg.temperature = p.temperature ?? g.temperature;
+  cfg.contextWindow = p.contextWindow ?? g.contextWindow;
+  cfg.configuredContextWindow = cfg.contextWindow;
+  cfg.contextWindowSource = windowSourceFor(cfg, p.contextWindow);
+  cfg.configuredContextWindowExplicit = cfg.contextWindowSource === "config";
+}
+
 export interface Config {
   /** 当前选中的 provider（已解析为具体值）。 */
   providerName: string;
@@ -381,6 +496,8 @@ export interface Config {
   lsp: LspConfig;
   /** lsp 配置告警（启动时打印一次）。 */
   lspWarnings: string[];
+  /** #59 有序模型备用链；缺省空数组 = 禁用。与 model_routes.*.fallback_allowed 无关。 */
+  modelFallback: ModelTarget[];
 }
 
 /**
@@ -1245,6 +1362,7 @@ export function loadConfig(overrides: Partial<Config> = {}): Config {
     repoMap: resolveRepoMapConfig(raw["repo_map"]),
     lsp: resolveLspConfig(raw["lsp"]).config,
     lspWarnings: resolveLspConfig(raw["lsp"]).warnings,
+    modelFallback: resolveModelFallback(raw["model_fallback"], providers),
     mailbox: resolveMailboxSettings(raw),
     crossSessionInbound: resolveInboundPolicy(raw["cross_session_inbound"]),
     ...overrides,
