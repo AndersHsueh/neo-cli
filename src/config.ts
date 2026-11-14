@@ -511,7 +511,7 @@ export interface LspConfig {
   diagnosticsTimeoutMs: number;
 }
 
-export const DEFAULT_LSP: LspConfig = { enabled: true, servers: [], diagnosticsTimeoutMs: 1_500 };
+export const DEFAULT_LSP: LspConfig = { enabled: false, servers: [], diagnosticsTimeoutMs: 1_500 };
 
 /** 常见 server 的扩展名推断（用户没写 extensions 时兜底）。 */
 function inferLspExtensions(name: string, command: string): string[] {
@@ -590,7 +590,7 @@ export interface RepoMapConfig {
 }
 
 export const DEFAULT_REPO_MAP: RepoMapConfig = {
-  enabled: true,
+  enabled: false,
   budgetTokens: 800,
   maxFiles: 1_200,
 };

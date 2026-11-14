@@ -9,10 +9,10 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import type { Config } from "../src/config.ts";
+import { DEFAULT_LSP, resolveLspConfig, type Config } from "../src/config.ts";
 import { encodeLspMessage, LspFramer, normalizeDiagnostics } from "../src/lsp/client.ts";
 import { formatNavigation, lspServers, resetLspServers } from "../src/lsp/index.ts";
-import { TOOLS } from "../src/tools/index.ts";
+import { mainToolNames, TOOLS, toolSpecs } from "../src/tools/index.ts";
 
 const FIXTURE = join(import.meta.dir, "fixtures", "fake-lsp.ts");
 const BUN = Bun.which("bun") ?? "bun";
@@ -55,6 +55,20 @@ function ctx(cwd: string) {
 }
 
 describe("issue #23 LSP", () => {
+  test("52-A/B 默认关闭且 schema/名称不可见；显式 true 保留，false 关闭", () => {
+    expect(DEFAULT_LSP.enabled).toBe(false);
+    expect(resolveLspConfig(undefined).config.enabled).toBe(false);
+    expect(resolveLspConfig({ enabled: true }).config.enabled).toBe(true);
+    expect(resolveLspConfig({ enabled: false }).config.enabled).toBe(false);
+    const base = cfgFor(sandbox(), { servers: [] }) as Config;
+    for (const enabled of [false, true]) {
+      base.lsp = { ...base.lsp, enabled };
+      expect(mainToolNames(base).includes("lsp")).toBe(enabled);
+      expect(toolSpecs(base).some((s) => s.function.name === "lsp")).toBe(enabled);
+    }
+    expect(TOOLS.some((t) => t.spec.function.name === "lsp")).toBe(true);
+  });
+
   test("帧编解码与诊断归一化（纯函数）", () => {
     const enc = encodeLspMessage({ jsonrpc: "2.0", id: 1, result: { ok: true } });
     const framer = new LspFramer();

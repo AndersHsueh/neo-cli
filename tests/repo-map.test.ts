@@ -37,7 +37,9 @@ function write(root: string, rel: string, content: string): void {
   writeFileSync(abs, content, "utf8");
 }
 
-function cfgFor(cwd: string, repoMap = { ...DEFAULT_REPO_MAP }): Config {
+// #52 起默认关闭；本文件旧用例验证的是「能力开启时」的行为，故显式开启。
+// 52-A/B 用例显式传入 enabled，不受这个测试默认值影响。
+function cfgFor(cwd: string, repoMap = { ...DEFAULT_REPO_MAP, enabled: true }): Config {
   return {
     cwd,
     skillsStore: join(cwd, "no-skills"),
@@ -143,13 +145,18 @@ describe("B buildRepoMap", () => {
     expect(map.text.length).toBeLessThan(100 * 4 + 400);
   });
 
-  test("关闭 → 空图；空仓 → 空图但 enabled", () => {
+  test("52-B 默认/显式关闭 → 空图且 files=0；显式开启保留扫描", () => {
     const cwd = tmpdir_("neo-rm-off-");
     write(cwd, "src/a.ts", "export function a() {}\n");
-    expect(buildRepoMap(cfgFor(cwd, { enabled: false, budgetTokens: 800, maxFiles: 100 })).text).toBe("");
+    for (const enabled of [false, true]) {
+      resetRepoMapCache();
+      const map = buildRepoMap(cfgFor(cwd, { enabled, budgetTokens: 800, maxFiles: 100 }));
+      expect(map.text.includes("src/a.ts")).toBe(enabled);
+      expect(map.stats.files === 0).toBe(!enabled);
+    }
     resetRepoMapCache();
     const emptyDir = tmpdir_("neo-rm-empty-");
-    const empty = buildRepoMap(cfgFor(emptyDir));
+    const empty = buildRepoMap(cfgFor(emptyDir, { ...DEFAULT_REPO_MAP, enabled: true }));
     expect(empty.text).toBe("");
     expect(empty.stats.enabled).toBe(true);
   });
@@ -189,8 +196,11 @@ describe("C 系统提示词注入", () => {
 /* ------------------------------------------------------------------ */
 
 describe("D 配置解析与 /context 摘要", () => {
-  test("默认开启 800 tokens / 1200 文件；覆盖与夹紧", () => {
+  test("52-A 默认关闭 800 tokens / 1200 文件；显式 true/false 覆盖与夹紧", () => {
+    expect(DEFAULT_REPO_MAP.enabled).toBe(false);
     expect(resolveRepoMapConfig(undefined)).toEqual(DEFAULT_REPO_MAP);
+    expect(resolveRepoMapConfig({ enabled: true }).enabled).toBe(true);
+    expect(resolveRepoMapConfig({ enabled: false }).enabled).toBe(false);
     expect(resolveRepoMapConfig({ enabled: false, budget_tokens: 2_000, max_files: 50 })).toEqual({
       enabled: false,
       budgetTokens: 2_000,

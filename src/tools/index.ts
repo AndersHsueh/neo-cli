@@ -1219,12 +1219,28 @@ export const TOOL_NAMES_EXCLUDED_FOR_SUBAGENT: readonly string[] = [
   "exit_plan_mode",
 ];
 
-export function toolSpecs(): ToolSpec[] {
-  return TOOLS.map((t) => t.spec);
+/**
+ * LSP 是否面向模型/用户可见（#52）。
+ *
+ * 未传 cfg 时表示「注册表原始视图」，仅供已有内部调用和测试检视；生产路径必须传 cfg。
+ * 显式 `enabled:true` 才可见，缺省或显式 false 都隐藏。
+ */
+export function lspVisible(cfg?: Config): boolean {
+  return cfg === undefined || cfg.lsp?.enabled === true;
 }
 
-export function toolNames(): string[] {
-  return TOOLS.map((t) => t.spec.function.name);
+/** 按配置过滤后的工具 schema；cfg 缺省返回注册表原始集合。 */
+export function toolSpecs(cfg?: Config): ToolSpec[] {
+  return TOOLS
+    .filter((t) => lspVisible(cfg) || t.spec.function.name !== "lsp")
+    .map((t) => t.spec);
+}
+
+/** 按配置过滤后的工具名；cfg 缺省返回注册表原始集合。 */
+export function toolNames(cfg?: Config): string[] {
+  return TOOLS
+    .filter((t) => lspVisible(cfg) || t.spec.function.name !== "lsp")
+    .map((t) => t.spec.function.name);
 }
 
 /**
@@ -1234,8 +1250,8 @@ export function toolNames(): string[] {
  * 但它们在注册表里是常驻的 —— 系统提示与 banner 用它，避免把两个
  * 平时调不通的工具名教给模型。
  */
-export function mainToolNames(): string[] {
-  return toolNames().filter((n) => !PLAN_ONLY_TOOL_NAMES.includes(n));
+export function mainToolNames(cfg?: Config): string[] {
+  return toolNames(cfg).filter((n) => !PLAN_ONLY_TOOL_NAMES.includes(n));
 }
 
 /** 只在规划态可见的工具（与 agent/plan-mode.ts 的 PLAN_CONTROL_TOOLS 同口径）。 */
@@ -1250,7 +1266,7 @@ export async function dispatch(
   if (!impl) {
     return {
       ok: false,
-      output: `未知工具: ${name}。可用工具: ${toolNames().join(", ")}`,
+      output: `未知工具: ${name}。可用工具: ${toolNames(ctx.cfg).join(", ")}`,
       truncated: false,
       executed: false,
     };

@@ -246,7 +246,7 @@ export async function runSubagent(
     }
   }
   // 子代理实际可见的工具 schema 计入预算（排除表与 Agent.toolSpecsFor 一致）。
-  const subTools = toolSpecs().filter(
+  const subTools = toolSpecs(subCfg).filter(
     (t) => !TOOL_NAMES_EXCLUDED_FOR_SUBAGENT.includes(t.function.name) && !PLAN_ONLY_TOOL_NAMES.includes(t.function.name),
   );
   const subPrompt = renderSubagentPrompt({

@@ -140,6 +140,25 @@ describe("按窗口重选档位", () => {
   });
 });
 
+describe("52-B LSP 与提示词可见性", () => {
+  test("默认无 lsp 名称/说明；显式开启后名称、schema 与说明一致；缓存随开关失效", () => {
+    const cfg = makeCfg({
+      lsp: { enabled: false, servers: [], diagnosticsTimeoutMs: 1_500 },
+      repoMap: { enabled: false, budgetTokens: 800, maxFiles: 1_200 },
+    });
+    const m = mgr("a");
+    const off = m.render(cfg).text;
+    expect(off).not.toContain("lsp");
+    expect(off).not.toContain("- lsp：");
+    cfg.lsp.enabled = true;
+    const on = m.render(cfg).text;
+    expect(on).toContain("lsp");
+    expect(on).toContain("- lsp：");
+    expect(m.currentVisibility(cfg).names).toContain("lsp");
+    rmSync(cfg.cwd, { recursive: true, force: true });
+  });
+});
+
 describe("缓存", () => {
   test("输入不变时复用同一结果，变化后重算", () => {
     const cfg = makeCfg();

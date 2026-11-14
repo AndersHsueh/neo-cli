@@ -163,13 +163,17 @@ export interface DriveRunResult {
 }
 
 /**
- * 终态 → 退出码（PRD §2.3）。
+ * 终态 → 退出码（#52 冻结契约）。
  *
- * 达成 0 / 未达成 1。SIGINT 130 与用法错误 2 由调用方在各自路径处理，
+ * 检查命令成功（verified done）= 0；仅模型判断达成（model done）= 3；
+ * 其它终态与没有来源的防御性 done = 1。SIGINT 130 与用法错误 2 由调用方在各自路径处理，
  * 不经过这里 —— 它们不是「驱动跑完」的结果。
  */
 export function driveExitCode(result: DriveRunResult): number {
-  return result.status === "done" ? 0 : 1;
+  if (result.status !== "done") return 1;
+  if (result.source === "verified") return 0;
+  if (result.source === "model") return 3;
+  return 1;
 }
 
 /**

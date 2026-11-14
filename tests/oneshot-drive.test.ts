@@ -120,9 +120,10 @@ describe("B 退出码与摘要（issue #51）", () => {
     };
   }
 
-  test("B1 达成（verified / model）→ 0", () => {
+  test("52-C/D/E verified done=0；model done=3；无来源 done 防御性=1", () => {
     expect(driveExitCode(res({ status: "done", source: "verified" }))).toBe(0);
-    expect(driveExitCode(res({ status: "done", source: "model" }))).toBe(0);
+    expect(driveExitCode(res({ status: "done", source: "model" }))).toBe(3);
+    expect(driveExitCode(res({ status: "done", source: null }))).toBe(1);
   });
 
   test("B2 未达成（exhausted / idle-stop / timeout）→ 1", () => {
@@ -180,6 +181,8 @@ let seq = 0;
 let hits = 0;
 /** 打开后每轮都先回一次工具调用（给「轮次耗尽」用例：否则会先撞 idle-stop）。 */
 let forceToolCall = false;
+/** #52：judge 判 done，用于验证 model done 绝不能冒充检查成功。 */
+let judgeDone = false;
 
 const server = Bun.serve({
   port: 0,
@@ -192,7 +195,7 @@ const server = Bun.serve({
       const text = JSON.stringify(body.messages ?? []);
       // judge 请求（system 里带「完成条件判定器」）→ 一律判未达成，避免干扰轮次场景。
       if (text.includes("完成条件判定器")) {
-        return sse('{"done": false, "reason": "还没好"}');
+        return sse(judgeDone ? '{"done": true, "reason": "模型认为完成"}' : '{"done": false, "reason": "还没好"}');
       }
       // 「轮次耗尽」用例：每轮先来个无害工具调用（shell true），保证 toolCalls>0。
       const last = body.messages?.[body.messages.length - 1];
@@ -245,6 +248,7 @@ afterAll(() => {
 
 beforeEach(() => {
   hits = 0;
+  judgeDone = false;
 });
 
 function project(): string {
@@ -341,6 +345,23 @@ describe("D 集成（issue #51）", () => {
     const r = await run(dir, ["-p", "x", "--drive", "true", "-y"]);
     expect(r.err).toContain("无人值守");
   }, 30_000);
+
+  test("52-D 无检查命令、judge 判 done → exit 3，摘要 source=model", async () => {
+    const dir = project();
+    judgeDone = true;
+    const r = await run(dir, ["-p", "看起来完成了", "--judge", "模型说了算", "--max", "1", "-y"]);
+    expect(r.code).toBe(3);
+    expect(r.err).toContain("[drive] status=done source=model");
+  }, 60_000);
+
+  test("52-E 检查失败但 judge 判 done → 仍 exit 3，绝不返回 0", async () => {
+    const dir = project();
+    judgeDone = true;
+    const r = await run(dir, ["-p", "检查仍失败", "--drive", "false", "--judge", "模型说了算", "--max", "1", "-y"]);
+    expect(r.code).toBe(3);
+    expect(r.err).toContain("[drive] status=done source=model");
+    expect(r.err).not.toContain("source=verified");
+  }, 60_000);
 
   test("D5 不带 --drive 的普通 -p 行为不变（无 [drive] 摘要）", async () => {
     const dir = project();

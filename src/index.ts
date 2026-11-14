@@ -1419,7 +1419,9 @@ async function main(): Promise<number> {
     // 但 SIGINT 仍优先 130、LLM 硬错误仍 1（驱动跑完但模型报错不能报成功）。
     let exitCode = stats.aborted ? 130 : stats.hadError ? 1 : 0;
     if (driveResult) {
+      // #52 固定优先级：abort > hadError > drive。检查碰巧通过也不能覆盖 LLM/Agent 硬错误。
       if (stats.aborted) exitCode = 130;
+      else if (stats.hadError) exitCode = 1;
       else exitCode = driveExitCode(driveResult);
       // PRD §2.4：结束摘要走 stderr（stdout 保持 -p 现有风格）。
       console.error(formatDriveSummary(driveResult));
@@ -1495,7 +1497,7 @@ async function main(): Promise<number> {
     // 再看到「带了哪份项目记忆」），所以注入留在上面、提示行挪到这里，且只打一次。
     // shell 解析告警（如 settings shell.path 不可执行而回退）仍然可见，但排在记忆提示之后：
     // 它插在中间会打断「shell 行 → 记忆提示」的紧邻关系（#18 独立验收 MUST FIX 1）。
-    ui.line(banner(cfg.model, cfg.baseUrl, cfg.providerName, tierDisplayName(cfg.modelTier), toolNames().join(" ")));
+    ui.line(banner(cfg.model, cfg.baseUrl, cfg.providerName, tierDisplayName(cfg.modelTier), toolNames(cfg).join(" ")));
     // v0.4.0 平台适配层：一眼可见实际使用的 shell，解析告警不静默。
     const bootShell = getShell(cfg);
     const overBudgetNotice = overBudget.takePending();

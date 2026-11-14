@@ -701,7 +701,7 @@ export async function handleCommand(line: string, ctx: CommandContext): Promise<
     case "tools": {
       // 规划态控制工具只在规划态可见（issue #14），平时不列出来 ——
       // 否则用户会以为现在就能调 submit_plan。
-      const names = agent.planning ? toolNames() : mainToolNames();
+      const names = agent.planning ? toolNames(cfg) : mainToolNames(cfg);
       ui.blank();
       ui.kv("可用工具", String(names.length));
       for (const t of names) ui.line(`  ${c.tool("⚡")} ${c.text(t)}`);

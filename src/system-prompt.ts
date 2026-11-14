@@ -76,7 +76,10 @@ export function buildSystemPrompt(cfg: Config, opts: { mailbox?: boolean; askUse
     repoMapText = "";
   }
 
-  const tools = mainToolNames().join(", ");
+  const tools = mainToolNames(cfg).join(", ");
+  const lspToolLine = cfg.lsp?.enabled === true
+    ? "- lsp：只读符号导航（definition / references / hover），需在 settings.lsp.servers 配好语言服务器；比全文 grep 准且省 token。\n"
+    : "";
   const mailboxText = opts.mailbox ? buildMailboxSection() : "";
   const askUserRule = opts.askUser
     ? "遇到只有用户能拍板的分叉（模板分组/业务口径/删除或覆盖交付物/不可逆操作），先用 ask_user 问清楚，不要替用户猜；能自己查证的事实不要问。交付物默认保留旧版本，不主动建议删除。"
@@ -122,8 +125,7 @@ ${askUserRule}
 - list_dir / glob / grep：探索代码库。找东西用 grep，找文件用 glob。
 - shell：执行命令。安装依赖、跑测试、git 操作走这里。长跑命令（dev server / watch / 长测试）传 background:true，立刻返回 id，不阻塞会话；前台命令超时也会自动转后台而不是被杀。
 - shell_output：按 id（sh-N）读后台命令的状态与输出尾部（/ps 可列出，/ps kill 停止）。
-- lsp：只读符号导航（definition / references / hover），需在 settings.lsp.servers 配好语言服务器；比全文 grep 准且省 token。
-- web_fetch：抓网页转纯文本，查文档用。
+${lspToolLine}- web_fetch：抓网页转纯文本，查文档用。
 - web_search：用 cn.bing.com RSS 搜全网（无需 API key），返回标题/URL/摘要；搜索优先用它，再对结果 web_fetch。
 - use_skill：按需加载技能正文（技能索引见下方「技能」节）。
 - task：派生隔离子代理跑探索/多文件改动，返回结论与用量；子代理不能用 task 递归派生。

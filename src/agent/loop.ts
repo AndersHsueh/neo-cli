@@ -251,7 +251,7 @@ export class Agent {
    * 注册的工具（task/wiki/remember/send_message/list_peers）从未出现在模型工具清单里。
    */
   toolSpecsFor(): ToolSpec[] {
-    const all = toolSpecs();
+    const all = toolSpecs(this.opt.cfg);
     // 规划态（issue #14）：只给只读工具 + 提交/退出方案两个控制工具。
     // 写盘/执行类工具从清单里摘掉，模型不会「先试着调一下再被拒」。
     if (this.planning) return filterPlanTools(all);
@@ -421,7 +421,7 @@ export class Agent {
 
   /** 上下文使用率 0..1。 */
   contextUsage(): number {
-    const used = estimateTokens(this.messages, toolSpecs());
+    const used = estimateTokens(this.messages, toolSpecs(this.opt.cfg));
     return used / this.opt.cfg.contextWindow;
   }
 

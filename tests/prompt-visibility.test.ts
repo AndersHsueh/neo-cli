@@ -209,7 +209,7 @@ describe("受控环境：各窗口的期望可见集", () => {
     const cfg = controlledCfg();
     cfg.contextWindow = cw;
     const m = new PromptManager({ mailbox: false, askUser: false, sessionName: "a" });
-    return { v: m.currentVisibility(cfg), m };
+    return { v: m.currentVisibility(cfg), m, cfg };
   }
 
   test("16K：底线三件 read_file / edit_file / shell 一定在里", () => {
@@ -231,9 +231,8 @@ describe("受控环境：各窗口的期望可见集", () => {
     expect(v.total).toBeGreaterThan(0);
   });
 
-  test("48K / 64K / 200K：受控环境下全部候选都放得下；32K 会裁到 11/13", () => {
-    // issue #28 加了 shell_output、#23 加了 lsp 工具：32K 档放不下全部候选，
-    // 可见集会收窄到 11/13（按优先级裁掉 use_skill / lsp；收窄尚未启用，这里只是 dry-run 预期）。
+  test("48K / 64K / 200K：受控环境下全部候选都放得下；32K 收窄", () => {
+    // #52 默认隐藏 lsp：32K 档的候选集少一项，仍按优先级前缀收窄（dry-run 预期）。
     for (const cw of [49_152, 65_536, 200_000]) {
       const { v } = visAt(cw);
       expect(v.fits).toBe(true);
@@ -242,12 +241,24 @@ describe("受控环境：各窗口的期望可见集", () => {
     }
     const tight = visAt(32_768).v;
     expect(tight.fits).toBe(true);
-    expect(tight.names.length).toBe(tight.total - 2);
+    expect(tight.names.length).toBeLessThan(tight.total);
+    expect(tight.hidden.length).toBeGreaterThan(0);
+    expect(tight.hidden).not.toContain("lsp");
+  });
+
+  test("52-B 默认候选集不含 lsp；显式开启后重新进入同一套可见性预算", () => {
+    const off = visAt(200_000);
+    expect(off.v.names).not.toContain("lsp");
+    expect(off.v.total).toBe(mainToolNames(off.cfg).length);
+    off.cfg.lsp = { enabled: true, servers: [], diagnosticsTimeoutMs: 1_500 };
+    const on = off.m.currentVisibility(off.cfg);
+    expect(on.names).toContain("lsp");
+    expect(on.total).toBe(off.v.total + 1);
   });
 
   test("候选集 = 正常模式实际暴露的工具（plan-only 不在内）", () => {
-    const { v } = visAt(32_768);
-    expect(v.total).toBe(mainToolNames().length);
+    const { v, cfg } = visAt(32_768);
+    expect(v.total).toBe(mainToolNames(cfg).length);
     expect(v.names).not.toContain("submit_plan");
     expect(v.names).not.toContain("exit_plan_mode");
   });
@@ -300,9 +311,11 @@ describe("成本模型保真度", () => {
     const cfg = richCfg();
     const m = new PromptManager({ mailbox: false, askUser: false, sessionName: "a" });
     const text = m.render(cfg).text;
-    const names = mainToolNames();
-    const specs = toolSpecs().filter((s) => names.includes(s.function.name));
-    const out = captureText(text, specs, new Set(names), knownToolNames(toolNames()), false);
+    // #52：dry-run 成本模型必须与 m.render(cfg) 使用同一份 cfg 过滤后的可见工具集，
+    // 否则注册表原始集里多出的 lsp 会让合成文本与真实渲染不一致。
+    const names = mainToolNames(cfg);
+    const specs = toolSpecs(cfg).filter((s) => names.includes(s.function.name));
+    const out = captureText(text, specs, new Set(names), knownToolNames(toolNames(cfg)), false);
     // 期望独立算出来（不依赖实现里的归属判定）：未注册的工具说明行被去掉。
     const dropped = TOOL_VISIBILITY_PRIORITY.filter((n) => !names.includes(n));
     const expected = text
@@ -324,8 +337,8 @@ describe("成本模型保真度", () => {
     expect(text).toContain("工作目录结构");
     expect(text).toContain("## 跨会话消息");
 
-    const names = knownToolNames(toolNames());
-    const specs = toolSpecs().filter((s) => names.includes(s.function.name));
+    const names = knownToolNames(toolNames(cfg));
+    const specs = toolSpecs(cfg).filter((s) => names.includes(s.function.name));
     const out = captureText(text, specs, new Set(names), names, true);
     expect(out).not.toContain("## 技能");
     expect(out).not.toContain("## 记忆库");
@@ -338,11 +351,11 @@ describe("成本模型保真度", () => {
     const cfg = richCfg();
     const m = new PromptManager({ mailbox: false, askUser: false, sessionName: "a" });
     const text = m.render(cfg).text;
-    const names = knownToolNames(toolNames());
+    const names = knownToolNames(toolNames(cfg));
     const keep = new Set(["read_file", "edit_file"]);
     const out = captureText(
       text,
-      toolSpecs().filter((s) => keep.has(s.function.name)),
+      toolSpecs(cfg).filter((s) => keep.has(s.function.name)),
       keep,
       names,
       false,
