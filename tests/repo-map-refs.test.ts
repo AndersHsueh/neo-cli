@@ -44,7 +44,9 @@ function write(root: string, rel: string, content: string): void {
   writeFileSync(abs, content, "utf8");
 }
 
-function cfgFor(cwd: string, repoMap = { ...DEFAULT_REPO_MAP }): Config {
+// #52 把 repo_map.enabled 默认改为 false；本文件测的是「已开启时的引用图/缓存行为」，
+// 必须显式开启，不能继承新默认值。与 tests/repo-map.test.ts 的 cfgFor 保持同一口径。
+function cfgFor(cwd: string, repoMap = { ...DEFAULT_REPO_MAP, enabled: true }): Config {
   return {
     cwd,
     skillsStore: join(cwd, "no-skills"),
