@@ -73,6 +73,11 @@
     }
   },
 
+  "model_fallback": [
+    { "provider": "example", "model": "your-model-id" }
+  ],
+  "_model_fallback_note": "顶层有序模型备用链（#59）：数组顺序即优先级，最多 8 项，每项必须引用已存在的 provider_name；缺省或 [] = 禁用。CLI --fallback <provider>:<model> 可重复，任一项出现即整体替换本链；--no-fallback 本次禁用，二者互斥。只对主 Agent 请求生效：同模型重试耗尽后有界切换，已发出流式增量后禁止切换，只有完整成功才提交目标，会话内保持、不自动回切、不改写 settings；用量按实际 provider/model 分桶。与 model_routes.*.fallback_allowed（档位目标不可用时降级到 default 档）不同义。",
+
   "compact_threshold": 0.75,
   "max_tool_iterations": 80,
   "tool_output_limit": 30000,

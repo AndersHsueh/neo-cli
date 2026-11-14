@@ -544,6 +544,40 @@ Anthropic 路径的差异处理：`system` 提到顶层字段，连续 `tool` �
 | `--sessions` | 列出历史会话 |
 | `--no-reasoning` | 不显示思维链 |
 | `--name <n>` | 设置本会话名字（跨会话寻址用） |
+| `--output-format <fmt>` | 仅 `-p`：`text`（默认）/ `json`（结束时单行）/ `stream-json`（stdout JSONL） |
+| `--fallback <provider>:<model>` | 有序模型备用链，可重复；任一项出现即整体替换 `settings.model_fallback`，最多 8 项 |
+| `--no-fallback` | 本次禁用备用链，与 `--fallback` 互斥 |
+
+## 本轮实现（已实现，尚未发版）：#52 / #59 / #37
+
+> **状态边界**：当前已发布版本仍为 **v0.4.84**（2026-11-10 / `a2858ae`）。本节描述的是本地已实现并通过定向验证、但**尚未发版**的能力；不改写上文 v0.4.84 的历史描述，也不改 `docs/release-notes/`。没有新 tag、新 release note 或新发布日期。
+
+### #52 默认能力收口与 `-p --drive` 退出码
+
+- 未显式配置时 `lsp.enabled` 与 `repo_map.enabled` 默认为 `false`；显式布尔值优先。
+- 退出码优先级固定为 `abort = 130 > hadError = 1 > drive`；drive 终态 `done + verified → 0`、`done + model → 3`，`exhausted` / `idle-stop` / `timeout` 一律 `→ 1`；用法错误 `2`。stderr 的 `[drive]` 摘要格式不变。
+
+### #59 有序模型备用链
+
+顶层配置 `model_fallback: [{ "provider": "...", "model": "..." }]`，数组顺序即优先级、最多 8 项，缺省或 `[]` 禁用。CLI `--fallback <provider>:<model>` 可重复（任一项出现即整体替换配置链），`--no-fallback` 本次禁用，二者互斥。只有主 Agent 请求走备用链：同模型重试耗尽后有界切换、任何流式增量已发出后禁止切换、只有完整成功才提交目标、会话内保持且不自动回切、不写回 settings；用量按实际 provider/model 分桶。工具、检查、中断、上下文与普通参数错误不触发切换。
+
+> `model_routes.*.fallback_allowed` 是「档位目标不可用时降级到 default 档」，与 #59 的有序备用链**不同义**，两处说明互不替代。
+
+### #37 `-p --output-format stream-json`
+
+只能与 `-p/--print` 同用；交互模式、`neo <prompt>` 非 `-p` 形式或缺 `-p` 都是用法错误 `2`（此时 stdout 仍输出 `error` + 一个 `result` 两行 JSONL，`session_id` 为 `null`）。stdout 是纯 JSONL，每行恰好一个信封：
+
+```json
+{"schema_version":"1.0","type":"init","session_id":"<会话 ID>","seq":1,"timestamp":"2026-11-14T09:01:23.827Z","data":{"provider":"example","model":"your-model-id","model_tier":"default","output_format":"stream-json","drive":false}}
+```
+
+信封固定六字段：`schema_version`（字符串 `"1.0"`）、`type`、`session_id`、`seq`（单 writer 从 1 严格递增）、`timestamp`（UTC ISO 8601）、`data`（恒为 JSON object）。事件共 9 类：`init`、`turn_started`、`assistant_message`、`tool_started`、`tool_finished`、`model_fallback`、`drive_finished`、`error`、`result`。
+
+- 正常或已捕获失败**恰好一个 `result`**；`result.data` 为 `{ status, exit_code, provider, model, usage: { prompt, completion, reasoning, by_model }, drive, error }`。其中 `usage.reasoning` 是合法用量字段，不是思考链泄漏。
+- 结构化模式（`json` 或 `stream-json`）下 Console、诊断、fallback 人类提示、drive `[drive]` 摘要与警告一律写 **stderr**；stdout 只归 JSONL writer。既有 `text` 与结束时单行 `json` 的 stdout 形状不变。
+- `assistant_message` 不含 `reasoning` / `thinking_blocks` / 原始响应或签名思考块；工具参数与输出按 4000 Unicode code point 截断，敏感键（`api_key` / `authorization` / `token` / `secret` / `password` / `cookie` / `credential` 等）递归替换为 `"[REDACTED]"`。
+- **EPIPE / stdout 写失败是「恰好一个 result」的唯一物理例外**：writer 立即关闭并触发 `agent.cancel()`，不再写任何 stdout（含 result），stderr 只发一条 `[stream-json] stdout closed; aborting`，退出 `1`。
+- v1 schema 不承诺 Claude / Codex 兼容，不承诺 token 级文本流；破坏性变更会提升 `schema_version`。
 
 ## 交互命令
 
