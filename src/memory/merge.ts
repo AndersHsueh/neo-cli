@@ -10,7 +10,7 @@
  *  6. 落页统一走 wiki 的校验/INDEX/log（append 也同步 INDEX）。
  */
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import type { WikiLayout } from "../wiki/paths.ts";
 import {
   appendLog,
@@ -236,6 +236,9 @@ export interface MergeApplied {
 export interface MergeDropped {
   index: number;
   reason: string;
+  /** 触发丢弃的 op 上下文，便于审计定位；布局不可用等早期丢弃可能没有。 */
+  page?: string;
+  scope?: "project" | "user";
 }
 
 export interface MergeResult {
@@ -306,10 +309,10 @@ export function applyOps(ops: DistillOp[], ctx: MergeContext): MergeResult {
           op.scope === "user" ? userCreateContent(op, ctx) : projectCreateContent(op, ctx);
         writeBack(layout, {
           action: "create",
-          page: split ? target.split("/").pop() ?? op.page : op.page,
+          page: split ? basename(target) : op.page,
           content,
           logType: "wiki",
-          logTitle: `自动记忆：${op.scope}/${split ? target.split("/").pop() : op.page}（create）`,
+          logTitle: `自动记忆：${op.scope}/${split ? basename(target) : op.page}（create）`,
           // 跨层判定用另一层布局（issue #22）：自动沉淀的正文也可能带 [[引用]]。
           otherLayout: op.scope === "user" ? ctx.project : ctx.user,
         });
@@ -317,7 +320,7 @@ export function applyOps(ops: DistillOp[], ctx: MergeContext): MergeResult {
           index,
           scope: op.scope,
           action: "create",
-          page: split ? target.split("/").pop() ?? op.page : op.page,
+          page: split ? basename(target) : op.page,
           status: split ? "split" : "created",
         });
       } else {
@@ -347,7 +350,7 @@ export function applyOps(ops: DistillOp[], ctx: MergeContext): MergeResult {
       }
       newHashes.push(hash);
     } catch (e) {
-      dropped.push({ index, reason: (e as Error).message });
+      dropped.push({ index, reason: (e as Error).message, page: op.page, scope: op.scope });
     }
   }
 
