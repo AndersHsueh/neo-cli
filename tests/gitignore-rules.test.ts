@@ -32,7 +32,7 @@ import { describe, expect, test } from "bun:test";
 import { execFileSync } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync, readFileSync, mkdirSync, realpathSync, symlinkSync, lstatSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, basename } from "node:path";
 
 /** 仓库根（本测试文件位于 <root>/tests/）。 */
 const ROOT = join(import.meta.dir, "..");
@@ -107,7 +107,7 @@ describe("K. .gitignore 约束（PRD §6.5）", () => {
     expect(wt.ok).toBe(true);
     // 不绑具体 worktree 名字：工作区要么是主仓自身（git worktree list 含主仓），
     // 要么是某个 worktree（worktree 列表非空）。只要含 ROOT 的 basename 即可。
-    expect(wt.out).toContain(ROOT.split("/").pop() ?? "");
+    expect(wt.out).toContain(basename(ROOT));
     expect(git(["rev-parse", "--is-inside-work-tree"]).out.trim()).toBe("true");
     // check-ignore 必须真的可用。历史上出现过 git 环境损坏导致它静默失效，
     // 所以拿一个**本仓库确实存在**的已跟踪文件做反向锚点：
