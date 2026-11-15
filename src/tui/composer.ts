@@ -56,6 +56,37 @@ import {
 } from "./rewindMenu.ts";
 import type { RewindMode, RewindResult, RewindTurn } from "../rewind.ts";
 
+import {
+  handleKey,
+  handleSelectKey,
+  openRewindMenu,
+  finishSelect,
+  handleAskUserKey,
+  selectedAskLabels,
+  finishAskUser,
+  handleAskKey,
+  finishAsk,
+  handleNormalAction,
+  moveLineOrHistory,
+  applyEditAction,
+  resetTabIfEdited,
+  submit,
+  enterShellMode,
+  exitShellMode,
+  submitShellCommand,
+  commitUserInput,
+  handleCtrlC,
+  syncCommandMenu,
+  menuRows,
+  handleMenuKey,
+  acceptMenuCommand,
+  tabComplete,
+  pasteImage,
+  editInExternal,
+  armPasteTimer,
+  finishPaste
+} from "./composerInput.ts";
+
 /** 状态行数据源（index.ts 提供闭包；width/queueCount 由 Composer 补）。 */
 export type ComposerStatus = Omit<StatusSnapshot, "width" | "queueCount">;
 
@@ -118,7 +149,7 @@ export interface ComposerDeps {
   now?: () => number;
 }
 
-interface SelectSession {
+export interface SelectSession {
   question: string;
   options: SelectOption<unknown>[];
   state: SelectState;
@@ -126,14 +157,14 @@ interface SelectSession {
   resolve: (v: unknown) => void;
 }
 
-interface AskState {
+export interface AskState {
   question: string;
   buf: TextBuffer;
   resolve: (v: string) => void;
 }
 
 /** askUser 模态（v0.4.1 B2）：选项/多选/自由输入三合一。 */
-interface AskUserSession {
+export interface AskUserSession {
   req: AskUserRequest;
   options: AskUserOptionView[];
   state: AskUserState;
@@ -144,7 +175,7 @@ interface AskUserSession {
   resolve: (a: AskUserAnswer) => void;
 }
 
-interface TabCycle {
+export interface TabCycle {
   start: number;
   matches: string[];
   index: number;
@@ -158,69 +189,69 @@ export interface ComposedFrame {
   cursorCol: number;
 }
 
-const INPUT_VIEWPORT = 8;
-const DOUBLE_CTRL_C_MS = 2000;
-const NOTICE_DEFAULT_MS = 1800;
+export const INPUT_VIEWPORT = 8;
+export const DOUBLE_CTRL_C_MS = 2000;
+export const NOTICE_DEFAULT_MS = 1800;
 
-const identityPaint = (_role: StatusSegment["role"], text: string): string => text;
+export const identityPaint = (_role: StatusSegment["role"], text: string): string => text;
 
 export class Composer {
-  private readonly buf = new TextBuffer();
-  private readonly history = new InputHistory();
-  private readonly frame: FrameRenderer;
-  private readonly now: () => number;
-  private readonly fold: ComposerPasteConfig;
-  private readonly paste = new PasteMachine();
-  private pasteChunks: string[] = [];
-  private pasteTimer: Timer | null = null;
-  private readonly pasteIdleMs: number;
-  private attachments: unknown[] = [];
-  private mode: "normal" | "ask" | "select" | "ask_user" = "normal";
+  readonly buf = new TextBuffer();
+  readonly history = new InputHistory();
+  readonly frame: FrameRenderer;
+  readonly now: () => number;
+  readonly fold: ComposerPasteConfig;
+  readonly paste = new PasteMachine();
+  pasteChunks: string[] = [];
+  pasteTimer: Timer | null = null;
+  readonly pasteIdleMs: number;
+  attachments: unknown[] = [];
+  mode: "normal" | "ask" | "select" | "ask_user" = "normal";
   /** shell 输入模式（issue #30）：空缓冲区键入 `!` 进入，提交/删空/Esc 退出。 */
-  private shellMode = false;
+  shellMode = false;
   /** Esc Esc 双击判定（issue #47）：只在「Esc 本来无事可做」时武装。 */
-  private readonly escDouble = new EscDoublePress();
+  readonly escDouble = new EscDoublePress();
   /** rewind 菜单是否正在打开中（防重入：两次 Esc 之间可能夹着异步）。 */
-  private rewindMenuOpen = false;
+  rewindMenuOpen = false;
   /** `/` 渐进式命令菜单（issue #31）：null = 菜单未打开。 */
-  private menu: { query: string; items: CommandEntry[]; index: number } | null = null;
+  menu: { query: string; items: CommandEntry[]; index: number } | null = null;
   /**
    * Esc 关掉菜单时记下当时的缓冲区文本：菜单是「由 `/` 自动推导」的状态，
    * 不记住这一点的话下一次 compose 会立刻把它重新打开，Esc 等于无效。
    * 缓冲区一变（继续打字/删字）就清空，菜单恢复自动打开。
    */
-  private menuDismissedFor: string | null = null;
-  private select: SelectSession | null = null;
-  private askState: AskState | null = null;
-  private askUserState: AskUserSession | null = null;
-  private hint: string | null = null;
-  private tabCycle: TabCycle | null = null;
-  private noticeText: string | null = null;
-  private noticeUntil = 0;
-  private activity: string | null = null;
-  private pendingRows: string[] = [];
-  private inputScroll = 0;
-  private titleAnimator: TitleAnimator | null = null;
+  menuDismissedFor: string | null = null;
+  select: SelectSession | null = null;
+  askState: AskState | null = null;
+  askUserState: AskUserSession | null = null;
+  hint: string | null = null;
+  tabCycle: TabCycle | null = null;
+  noticeText: string | null = null;
+  noticeUntil = 0;
+  activity: string | null = null;
+  pendingRows: string[] = [];
+  inputScroll = 0;
+  titleAnimator: TitleAnimator | null = null;
   /** 输入布局缓存：文本/光标/宽度没变时，流式每帧不重算整份 layout（效率审查）。 */
-  private layoutCache: { text: string; cursor: number; width: number; layout: ReturnType<typeof layoutBuffer> } | null =
+  layoutCache: { text: string; cursor: number; width: number; layout: ReturnType<typeof layoutBuffer> } | null =
     null;
-  private queueCount = 0;
-  private busy = false;
-  private started = false;
-  private stopped = false;
-  private suspended = false;
-  private lastCtrlCAt = 0;
-  private armedExit = false;
-  private renderTimer: Timer | null = null;
-  private tickTimer: Timer | null = null;
-  private noticeTimer: Timer | null = null;
-  private keypressHandler: ((ch: string | undefined, key: RawKey) => void) | null = null;
-  private resizeHandler: (() => void) | null = null;
-  private closedResolve: (() => void) | null = null;
-  private wasRaw = false;
-  private readonly closedPromise: Promise<void>;
+  queueCount = 0;
+  busy = false;
+  started = false;
+  stopped = false;
+  suspended = false;
+  lastCtrlCAt = 0;
+  armedExit = false;
+  renderTimer: Timer | null = null;
+  tickTimer: Timer | null = null;
+  noticeTimer: Timer | null = null;
+  keypressHandler: ((ch: string | undefined, key: RawKey) => void) | null = null;
+  resizeHandler: (() => void) | null = null;
+  closedResolve: (() => void) | null = null;
+  wasRaw = false;
+  readonly closedPromise: Promise<void>;
 
-  constructor(private readonly deps: ComposerDeps) {
+  constructor(readonly deps: ComposerDeps) {
     this.now = deps.now ?? (() => Date.now());
     this.fold = deps.paste ?? { foldLines: 3, foldChars: 300 };
     this.pasteIdleMs = Math.max(20, deps.pasteIdleMs ?? 1000);
@@ -272,7 +303,7 @@ export class Composer {
   }
 
   /** exit 事件里只能同步写，不碰定时器/异步。 */
-  private readonly restoreOnExit = (): void => {
+  readonly restoreOnExit = (): void => {
     try {
       const stdin = this.deps.stdin as unknown as { setRawMode?: (v: boolean) => void };
       this.deps.stdout.write("\x1b[?25h\x1b[?2004l");
@@ -308,7 +339,7 @@ export class Composer {
     this.closedResolve = null;
   }
 
-  private tick(): void {
+  tick(): void {
     if (this.stopped) return;
     // 通知到期 / 状态行时钟 / spinner 由 Console 自己的 timer 驱动
     if (this.noticeText && this.now() >= this.noticeUntil) {
@@ -319,7 +350,7 @@ export class Composer {
     if (this.busy || this.activity !== null || this.noticeText) this.scheduleRender();
   }
 
-  private onResize(): void {
+  onResize(): void {
     // resize 后上一帧的行宽已失效：先按旧帧坐标尽力擦掉，再放弃坐标整帧重画。
     // 只 invalidate 不擦会把旧顶线留在 scrollback（S15 实测的残影）。
     this.frame.erase();
@@ -383,7 +414,7 @@ export class Composer {
   // ---------------------------------------------------------------- 尺寸
 
   /** 输入区可用列数：留 1 列给行尾反显光标，避免「行满即触发终端 auto-wrap」。 */
-  private layoutFor(text: string, cursor: number, width: number): ReturnType<typeof layoutBuffer> {
+  layoutFor(text: string, cursor: number, width: number): ReturnType<typeof layoutBuffer> {
     const c = this.layoutCache;
     if (c && c.text === text && c.cursor === cursor && c.width === width) return c.layout;
     const layout = layoutBuffer(text, cursor, width);
@@ -391,22 +422,22 @@ export class Composer {
     return layout;
   }
 
-  private contentWidth(): number {
+  contentWidth(): number {
     return Math.max(4, this.cols() - 3);
   }
 
-  private cols(): number {
+  cols(): number {
     const n = this.deps.columns ? this.deps.columns() : (this.deps.stdout.columns ?? process.stdout.columns);
     return typeof n === "number" && n > 20 ? n : 80;
   }
 
-  private rowsCount(): number {
+  rowsCount(): number {
     const n = this.deps.rows ? this.deps.rows() : (this.deps.stdout.rows ?? process.stdout.rows);
     return typeof n === "number" && n > 0 ? n : 24;
   }
 
   /** 帧最多占几行（永远给屏幕顶留 1 行；极小的 tmux 分屏下也夹住）。 */
-  private maxFrameRows(): number {
+  maxFrameRows(): number {
     return Math.max(4, this.rowsCount() - 1);
   }
 
@@ -481,7 +512,7 @@ export class Composer {
     this.renderTimer.unref?.();
   }
 
-  private render(): void {
+  render(): void {
     if (this.stopped) return;
     const f = this.compose();
     this.frame.render(f);
@@ -548,7 +579,7 @@ export class Composer {
     return { rows, cursorRow, cursorCol };
   }
 
-  private buildStatus(width: number): StatusSnapshot {
+  buildStatus(width: number): StatusSnapshot {
     return {
       ...this.deps.getStatus(),
       width,
@@ -556,7 +587,7 @@ export class Composer {
     };
   }
 
-  private composeInput(
+  composeInput(
     width: number,
     buf: TextBuffer,
     kind: "normal" | "ask" | "shell",
@@ -629,7 +660,7 @@ export class Composer {
   }
 
   /** 单行输入渲染 + 光标反显（layout 已给出码点下标，不再二次换算显示列）。 */
-  private paintInputLine(
+  paintInputLine(
     line: VisualLine,
     cursorIdx: number | null,
     _contentW: number,
@@ -646,7 +677,7 @@ export class Composer {
   }
 
   /** 顶线：横线 + 右侧 label；支持旧的 string 与结构化 TitleView。 */
-  private topRule(
+  topRule(
     width: number,
     label: string | TitleView | null,
     busy = false,
@@ -677,14 +708,14 @@ export class Composer {
   }
 
   /** 纯文本 label（全 dim）的顶线，旧行为与极窄兜底共用。 */
-  private ruleWithPlainLabel(width: number, text: string): string {
+  ruleWithPlainLabel(width: number, text: string): string {
     const label = ` ${truncate(text, Math.max(4, width - 8))} `;
     const dashes = Math.max(1, width - displayWidth(label) - 2);
     return c.dim("─".repeat(dashes)) + c.dim(label) + c.dim("──");
   }
 
   /** 当前标题视图：优先动画器，其次旧的 string/TitleView 注入点（测试/宿主兼容）。 */
-  private titleView(): string | TitleView | null {
+  titleView(): string | TitleView | null {
     const anim = this.titleAnimator?.getView();
     if (anim) return anim.text === "" ? null : anim;
     const raw = this.deps.getTitle?.();
@@ -696,7 +727,7 @@ export class Composer {
     return raw.text.trim() === "" ? null : raw;
   }
 
-  private composeSelect(
+  composeSelect(
     width: number,
     sel: SelectSession,
   ): { rows: string[]; cursorRow: number; cursorCol: number } {
@@ -719,7 +750,7 @@ export class Composer {
     return { rows, cursorRow: 2 + Math.max(0, sel.state.cursor - scroll), cursorCol: 0 };
   }
 
-  private composeAskUser(
+  composeAskUser(
     width: number,
     s: AskUserSession,
   ): { rows: string[]; cursorRow: number; cursorCol: number } {
@@ -762,748 +793,34 @@ export class Composer {
     return { rows, cursorRow: base + Math.max(0, s.state.cursor - s.state.scroll), cursorCol: 0 };
   }
 
-  // ---------------------------------------------------------------- 按键
-
-  /** 入口：由 stdin keypress 调用；测试也可直接调。 */
-  handleKey(ch: string | undefined, key: RawKey): void {
-    if (this.stopped || this.suspended) return;
-    const raw: RawKey = { ...key, ch: key.ch ?? ch };
-
-    // 粘贴态优先：Ctrl+C 先救场，其余全部按字面文本收（含 \r\n）。
-    // 状态机用 keys.ts 的 PasteMachine，composer 只做「收文本 / idle 兜底 / 折叠」的 IO 层。
-    if (this.paste.active) {
-      if (raw.ctrl && raw.name === "c") {
-        this.finishPaste(false);
-        this.handleCtrlC();
-        return;
-      }
-      const r = this.paste.feed(raw);
-      if (r.kind === "end") {
-        this.finishPaste(true);
-        return;
-      }
-      if (r.kind === "text") {
-        this.pasteChunks.push(r.text);
-        this.armPasteTimer();
-      }
-      return;
-    }
-
-    const action = mapKey(raw);
-    if (!action) return;
-    // issue #47：Esc 之外的任何键都复位双击窗口（Esc → 打字 → Esc 不算双击）。
-    if (action.type !== "escape" && action.type !== "escape-escape") this.escDouble.reset();
-
-    // 粘贴边界必须先于模态分发：否则审批/选择态里 paste-start 被当普通键吃掉，
-    // 粘贴内容会逐字符走 mapKey（审批可能被 "y\r" 代答）。
-    if (action.type === "paste-start") {
-      this.paste.start();
-      this.pasteChunks = [];
-      this.hint = "粘贴中…";
-      this.armPasteTimer();
-      this.scheduleRender();
-      return;
-    }
-    if (action.type === "paste-end") return; // 不在粘贴态：忽略迟到边界
-
-    if (this.mode === "select" && this.select) {
-      this.handleSelectKey(action);
-      return;
-    }
-    if (this.mode === "ask_user" && this.askUserState) {
-      this.handleAskUserKey(action);
-      return;
-    }
-    if (this.mode === "ask" && this.askState) {
-      this.handleAskKey(action);
-      return;
-    }
-    this.handleNormalAction(action);
-  }
-
-  private handleSelectKey(action: KeyAction): void {
-    const sel = this.select;
-    if (!sel) return;
-    if (action.type === "up" || action.type === "down") {
-      sel.state = reduceSelect(sel.state, { type: action.type }, sel.options.length, sel.viewport);
-      this.scheduleRender();
-      return;
-    }
-    if (action.type === "submit") {
-      const v = sel.options[sel.state.cursor]?.value ?? null;
-      this.finishSelect();
-      sel.resolve(v);
-      return;
-    }
-    if (action.type === "escape" || action.type === "ctrl-c") {
-      this.finishSelect();
-      sel.resolve(null);
-      return;
-    }
-  }
-
-  /**
-   * 交互式 rewind 菜单（issue #47）：选轮次 → 选模式 → 交给宿主执行。
-   *
-   * 复用 `choose()`（select 模态）而不是新造一套：Esc 取消、↑↓ 移动、状态行保持
-   * 都由现有实现保证。菜单存续期间 `rewindMenuOpen` 挡住重复打开。
-   */
-  private async openRewindMenu(): Promise<void> {
-    const rewind = this.deps.rewind;
-    if (!rewind || this.rewindMenuOpen) return;
-    this.rewindMenuOpen = true;
-    try {
-      const turns = rewind.list();
-      if (turns.length === 0) {
-        this.notice("还没有可回滚的轮次（只算用户轮次）");
-        return;
-      }
-      const target = await this.choose<number>(REWIND_TURN_QUESTION, turnMenuItems(turns), turns.length - 1);
-      if (target === null) {
-        this.notice("已取消");
-        return;
-      }
-      const mode = await this.choose<RewindMode>(REWIND_MODE_QUESTION, modeMenuItems(), 0);
-      if (mode === null) {
-        this.notice("已取消");
-        return;
-      }
-      const r = rewind.apply(target, mode);
-      if (r.turnsRemoved === 0) {
-        for (const note of r.notes) this.notice(note);
-        return;
-      }
-      // 结果进 scrollback（与 /rewind 命令同口径），note 用 dim 行补在后面。
-      const rows = [c.ok(`✓ ${rewindSummary(r)}`)];
-      for (const note of r.notes) rows.push(c.dim(`  ${note}`));
-      this.frame.commitAboveAndRender(rows, this.compose());
-    } finally {
-      this.rewindMenuOpen = false;
-    }
-  }
-
-  private finishSelect(): void {
-    this.mode = "normal";
-    this.select = null;
-    this.scheduleRender();
-  }
-
-  private handleAskUserKey(action: KeyAction): void {
-    const s = this.askUserState;
-    if (!s) return;
-
-    if (s.phase === "custom") {
-      if (action.type === "submit") {
-        const text = s.customBuf.text.trim();
-        if (text === "") {
-          this.notice("自定义回答不能为空");
-          return;
-        }
-        this.finishAskUser(s, {
-          status: "answered",
-          selected: this.selectedAskLabels(s),
-          custom: text,
-        });
-        return;
-      }
-      if (action.type === "escape" || action.type === "ctrl-c") {
-        this.finishAskUser(s, { status: "canceled" });
-        if (action.type === "ctrl-c") this.handleCtrlC();
-        return;
-      }
-      if (action.type === "insert") s.customBuf.insert(action.text);
-      else this.applyEditAction(action, s.customBuf);
-      this.scheduleRender();
-      return;
-    }
-
-    if (action.type === "up" || action.type === "down") {
-      s.state = reduceAskUser(s.state, action.type, s.options.length, s.viewport);
-      this.scheduleRender();
-      return;
-    }
-    // 多选：空格切换；只在普通选项上生效（「其他」由 Enter 进入输入态）。
-    if (action.type === "insert" && action.text === " " && s.req.multiSelect) {
-      const o = s.options[s.state.cursor];
-      if (o && !o.custom) s.selected = toggleSelected(s.selected, s.state.cursor);
-      this.scheduleRender();
-      return;
-    }
-    if (action.type === "submit") {
-      const o = s.options[s.state.cursor];
-      if (!o) return;
-      if (o.custom) {
-        s.phase = "custom";
-        s.customBuf = new TextBuffer();
-        this.scheduleRender();
-        return;
-      }
-      if (s.req.multiSelect && s.selected.size === 0) {
-        this.notice("请至少选择一项（Space 勾选）");
-        this.scheduleRender();
-        return;
-      }
-      const selected = s.req.multiSelect
-        ? this.selectedAskLabels(s)
-        : [o.label];
-      this.finishAskUser(s, { status: "answered", selected, custom: null });
-      return;
-    }
-    if (action.type === "escape" || action.type === "ctrl-c") {
-      this.finishAskUser(s, { status: "canceled" });
-      if (action.type === "ctrl-c") this.handleCtrlC();
-    }
-  }
-
-  private selectedAskLabels(s: AskUserSession): string[] {
-    return [...s.selected]
-      .sort((a, b) => a - b)
-      .map((i) => s.options[i]?.label)
-      .filter((x): x is string => typeof x === "string");
-  }
-
-  /** 结束 askUser 模态：先把「提问/回答」提交进 scrollback，再 resolve。 */
-  private finishAskUser(s: AskUserSession, answer: AskUserAnswer): void {
-    if (this.askUserState !== s) return;
-    this.mode = "normal";
-    this.askUserState = null;
-    this.hint = null;
-    const width = this.cols();
-    const rows = [
-      ...wrapAnsi(c.bold(`提问：${s.req.question}`), Math.max(4, width - 2)),
-      ...wrapAnsi(c.dim(`回答：${askAnswerText(answer)}`), Math.max(4, width - 2)),
-    ];
-    this.frame.commitAboveAndRender(rows, this.compose());
-    s.resolve(answer);
-  }
-
-  private handleAskKey(action: KeyAction): void {
-    const ask = this.askState;
-    if (!ask) return;
-    if (action.type === "submit") {
-      const text = ask.buf.text;
-      this.finishAsk();
-      ask.resolve(text);
-      return;
-    }
-    if (action.type === "escape") {
-      this.finishAsk();
-      ask.resolve("");
-      return;
-    }
-    if (action.type === "ctrl-c") {
-      // 审批中 Ctrl+C = 拒绝 + 恢复「取消本轮 / 双击退出」语义（v0.2.4 的 SIGINT 行为）。
-      this.finishAsk();
-      ask.resolve("");
-      this.handleCtrlC();
-      return;
-    }
-    if (action.type === "insert") ask.buf.insert(action.text);
-    else this.applyEditAction(action, ask.buf);
-    this.scheduleRender();
-  }
-
-  private finishAsk(): void {
-    this.mode = "normal";
-    this.askState = null;
-    this.scheduleRender();
-  }
-
-  private handleNormalAction(action: KeyAction): void {
-    // issue #31：先按当前缓冲区同步菜单状态，菜单打开时优先吃掉它的导航/接受键。
-    this.syncCommandMenu();
-    if (this.menu && this.handleMenuKey(action)) return;
-    // issue #30：shell 模式下空缓冲区再删 = 退出模式（不执行、不残留）。
-    if (
-      (action.type === "backspace" || action.type === "delete") &&
-      this.shellMode &&
-      this.buf.text === ""
-    ) {
-      this.exitShellMode();
-      return;
-    }
-    switch (action.type) {
-      case "insert":
-        // issue #30：空缓冲区键入 `!` = 进入 shell 模式；`!` 是模式开关，不进正文。
-        // 缓冲区非空时按字面插入（避免把普通句子误切成 shell 命令）。
-        if (!this.shellMode && this.buf.text === "" && action.text === "!") {
-          this.enterShellMode();
-          return;
-        }
-        this.buf.insert(action.text);
-        this.resetTabIfEdited();
-        this.scheduleRender();
-        return;
-      case "submit":
-        this.submit();
-        return;
-      case "newline":
-        this.buf.newline();
-        this.resetTabIfEdited();
-        this.scheduleRender();
-        return;
-      case "tab":
-        // issue #30：shell 命令是外部语法，不套用 neo 的命令/文件补全。
-        if (this.shellMode) {
-          this.hint = null;
-          this.scheduleRender();
-          return;
-        }
-        this.tabComplete();
-        return;
-      case "escape":
-      case "escape-escape": {
-        const doubleEsc = action.type === "escape-escape";
-        // issue #47：终端/readline 会把连按两下 Esc 合并成一个事件（sequence 是两个 ESC 字节）
-        // → keys.ts 映射成 escape-escape。只在「Esc 本来无事可做」（空闲 + 空缓冲 + 非 shell 模式）
-        // 才打开 rewind 菜单；其它状态退回单 Esc 语义（不多做任何事）。
-        if (
-          doubleEsc &&
-          !this.busy &&
-          !this.shellMode &&
-          this.buf.text === "" &&
-          this.deps.rewind &&
-          !this.rewindMenuOpen
-        ) {
-          void this.openRewindMenu();
-          return;
-        }
-        if (this.busy) {
-          this.deps.onCancelTurn?.();
-          this.notice("已请求取消本轮");
-        } else if (this.shellMode) {
-          this.exitShellMode();
-          this.buf.clear();
-          this.history.reset();
-          this.tabCycle = null;
-          this.hint = null;
-        } else if (this.buf.text !== "") {
-          this.buf.clear();
-          this.history.reset(); // 清空后 ↓ 不能把 ↑ 之前的草稿复活
-          this.tabCycle = null;
-          this.hint = null;
-        } else if (!doubleEsc && this.deps.rewind && !this.rewindMenuOpen) {
-          // issue #47：只有「Esc 本来无事可做」（空闲 + 空缓冲 + 无 shell 模式）才武装双击。
-          // 上面三条分支各自 return 前都不武装 —— 单 Esc 的 5 种语义一律不变。
-          if (this.escDouble.arm(this.now())) {
-            void this.openRewindMenu();
-            return;
-          }
-        }
-        this.scheduleRender();
-        return;
-      }
-      case "ctrl-c":
-        this.handleCtrlC();
-        return;
-      case "ctrl-d":
-        if (this.buf.text === "") this.deps.onExit();
-        else { this.buf.delete(); this.scheduleRender(); }
-        return;
-      case "ctrl-o":
-        this.notice("transcript 视图将在 v0.3.1 提供");
-        return;
-      case "ctrl-v":
-        void this.pasteImage();
-        return;
-      case "ctrl-g":
-        void this.editInExternal();
-        return;
-      case "up":
-      case "down":
-        if (this.moveLineOrHistory(action.type)) return;
-        return;
-      default:
-        this.applyEditAction(action, this.buf);
-        this.resetTabIfEdited();
-        this.scheduleRender();
-    }
-  }
-
-  /** ↑↓：在视觉行内移动；到首/末行时走历史。 */
-  private moveLineOrHistory(dir: "up" | "down"): boolean {
-    const width = this.contentWidth();
-    const layout = this.layoutFor(this.buf.text, this.buf.cursor, width);
-    if (dir === "up" && layout.cursorRow === 0) {
-      const entry = this.history.up(this.buf.text);
-      if (entry !== null) {
-        this.buf.setText(entry, entry.length);
-        this.scheduleRender();
-      }
-      return true;
-    }
-    if (dir === "down" && layout.cursorRow === layout.lines.length - 1) {
-      const entry = this.history.down(this.buf.text);
-      if (entry !== null) {
-        this.buf.setText(entry, entry.length);
-        this.scheduleRender();
-      }
-      return true;
-    }
-    this.applyEditAction({ type: dir }, this.buf);
-    this.resetTabIfEdited();
-    this.scheduleRender();
-    return true;
-  }
-
-  private applyEditAction(action: KeyAction, buf: TextBuffer): void {
-    const width = this.contentWidth();
-    switch (action.type) {
-      case "backspace": buf.backspace(); return;
-      case "delete": buf.delete(); return;
-      case "left": buf.move("left", width); return;
-      case "right": buf.move("right", width); return;
-      case "up": buf.move("up", width); return;
-      case "down": buf.move("down", width); return;
-      case "home": buf.move("home", width); return;
-      case "end": buf.move("end", width); return;
-      case "word-left": buf.move("word-left", width); return;
-      case "word-right": buf.move("word-right", width); return;
-      case "kill-end": buf.killToEnd(); return;
-      case "kill-start": buf.killToStart(); return;
-      case "kill-word": buf.deleteWordLeft(); return;
-      default: return;
-    }
-  }
-
-  private resetTabIfEdited(): void {
-    this.tabCycle = null;
-  }
-
-  private submit(): void {
-    this.menu = null;
-    // issue #30：shell 模式下走独立路径（命令原文交给 onShellCommand，不经过 `!` 前缀剥离）。
-    if (this.shellMode) {
-      this.submitShellCommand();
-      return;
-    }
-    let text = this.buf.text;
-    if (text.trim() === "") return;
-    // 行尾反斜杠 = 续行（与 v0.2.4 兼容）
-    if (text.endsWith("\\") && !text.endsWith("\\\\")) {
-      this.buf.setText(`${text.slice(0, -1)}\n`, text.length);
-      this.scheduleRender();
-      return;
-    }
-    const attachments = this.attachments;
-    this.history.push(text);
-    // 先把流式未完成行落定，再提交用户行，保证 scrollback 顺序。
-    this.deps.beforeUserCommit?.();
-    // 输入框提交后清空：用户消息必须落进上方 scrollback（否则历史里只剩助手输出）。
-    this.commitUserInput(text);
-    this.buf.clear();
-    this.attachments = [];
-    this.tabCycle = null;
-    this.hint = null;
-    this.inputScroll = 0;
-    // 注意：onSubmit 里可能同步触发新一轮（命令），先把状态清理干净再回调。
-    this.deps.onSubmit(text, attachments);
-    this.scheduleRender();
-  }
-
-  /** 进入 shell 输入模式（issue #30）：清掉补全 hint，按 shell 前缀重画。 */
-  private enterShellMode(): void {
-    this.shellMode = true;
-    this.hint = null;
-    this.tabCycle = null;
-    this.scheduleRender();
-  }
-
-  /** 退出 shell 输入模式（不执行）。 */
-  private exitShellMode(): void {
-    this.shellMode = false;
-    this.scheduleRender();
-  }
-
-  /**
-   * shell 模式提交：命令原文交给宿主（`onShellCommand`），提交后回普通态。
-   * 空命令不执行，直接回普通态；宿主没接回调时退回旧语法 `!${cmd}` 交给 onSubmit。
-   */
-  private submitShellCommand(): void {
-    const command = this.buf.text.trim();
-    if (command === "") {
-      this.shellMode = false;
-      this.buf.clear();
-      this.scheduleRender();
-      return;
-    }
-    const attachments = this.attachments;
-    this.history.push(`!${command}`);
-    this.deps.beforeUserCommit?.();
-    this.commitUserInput(command, c.warn("! "));
-    this.buf.clear();
-    this.attachments = [];
-    this.tabCycle = null;
-    this.hint = null;
-    this.inputScroll = 0;
-    this.shellMode = false;
-    // 先清干净状态再回调：回调里可能同步触发 shell 执行 / 新一轮。
-    this.scheduleRender();
-    if (this.deps.onShellCommand) this.deps.onShellCommand(command);
-    else this.deps.onSubmit(`!${command}`, attachments);
-  }
-
-  /** 用户消息进 scrollback：首行 `❯ `、续行两空格；折行与输入框共用 layoutBuffer。 */
-  private commitUserInput(text: string, firstPrefix = c.accent("❯ ")): void {
-    const contentW = this.contentWidth();
-    const rows: string[] = [];
-    text.split("\n").forEach((line, i) => {
-      const prefix = i === 0 ? firstPrefix : "  ";
-      const layout = layoutBuffer(line, line.length, contentW);
-      for (const vl of layout.lines) rows.push(prefix + c.text(vl.text));
-    });
-    this.frame.commitAboveAndRender(rows, this.compose());
-  }
-
-  private handleCtrlC(): void {
-    if (this.busy) this.deps.onCancelTurn?.();
-    const now = this.now();
-    if (this.armedExit && now - this.lastCtrlCAt <= DOUBLE_CTRL_C_MS) {
-      this.deps.onExit();
-      return;
-    }
-    this.armedExit = true;
-    this.lastCtrlCAt = now;
-    this.notice("再按 Ctrl+C 退出", DOUBLE_CTRL_C_MS);
-  }
-
-  // ---------------------------------------------------------------- 命令菜单（issue #31）
-
-  /** 按当前缓冲区同步 `/` 命令菜单；不在命令上下文（如已敲空格/非行首）就关闭。 */
-  private syncCommandMenu(): void {
-    if (this.mode !== "normal") {
-      this.menu = null;
-      return;
-    }
-    if (this.menuDismissedFor !== null && this.menuDismissedFor === this.buf.text) {
-      this.menu = null;
-      return;
-    }
-    this.menuDismissedFor = null;
-    const ctx = triggerAt(this.buf.text, this.buf.cursor);
-    if (!ctx || ctx.kind !== "command") {
-      this.menu = null;
-      return;
-    }
-    const items = rankCommands(ctx.query, this.deps.commands, 50);
-    if (items.length === 0) {
-      this.menu = { query: ctx.query, items, index: 0 };
-      return;
-    }
-    const keep = this.menu && this.menu.query === ctx.query ? this.menu.index : 0;
-    this.menu = { query: ctx.query, items, index: Math.min(keep, items.length - 1) };
-  }
-
-  /** 菜单行：左 `/name`、右短说明；超过 8 行滚动并提示剩余。 */
-  private menuRows(width: number): string[] {
-    const menu = this.menu;
-    if (!menu) return [];
-    if (menu.items.length === 0) {
-      return [truncateAnsi(`${c.warn("  无匹配")} ${c.dim(`"/${menu.query}"`)}`, width)];
-    }
-    const max = 8;
-    const total = menu.items.length;
-    const start = Math.max(0, Math.min(menu.index - Math.floor(max / 2), total - max));
-    const visible = menu.items.slice(start, start + max);
-    const nameW = Math.min(
-      26,
-      Math.max(...menu.items.map((it) => displayWidth(`/${it.name}`))) + 1,
-    );
-    const rows = visible.map((item, i) => {
-      const selected = start + i === menu.index;
-      const marker = selected ? c.accent("❯ ") : "  ";
-      const name = `/${item.name}`;
-      const pad = " ".repeat(Math.max(1, nameW - displayWidth(name)));
-      const desc = truncate(item.description, Math.max(4, width - 2 - nameW - 1));
-      return `${marker}${selected ? c.accent(name) : c.text(name)}${pad}${c.dim(desc)}`;
-    });
-    const hidden = total - visible.length;
-    if (hidden > 0) rows.push(c.dim(`   … 还有 ${hidden} 项（继续输入过滤）`));
-    return rows.map((r) => truncateAnsi(r, width));
-  }
-
-  /** 菜单打开时的按键：↑↓ 移动、Tab 接受不执行、Enter 接受并执行、Esc 关闭。 */
-  private handleMenuKey(action: KeyAction): boolean {
-    const menu = this.menu;
-    if (!menu) return false;
-    if (action.type === "up" || action.type === "down" || action.type === "page-up" || action.type === "page-down") {
-      // 空态也吃掉，避免 ↑ 误翻出历史。
-      if (menu.items.length === 0) return true;
-      const n = menu.items.length;
-      const step =
-        action.type === "up" ? -1 : action.type === "down" ? 1 : action.type === "page-up" ? -5 : 5;
-      menu.index = (menu.index + step + n * 100) % n;
-      this.scheduleRender();
-      return true;
-    }
-    if (action.type === "tab") {
-      this.acceptMenuCommand(false);
-      return true;
-    }
-    if (action.type === "submit") {
-      this.acceptMenuCommand(true);
-      return true;
-    }
-    if (action.type === "escape") {
-      this.menu = null;
-      this.menuDismissedFor = this.buf.text;
-      this.scheduleRender();
-      return true;
-    }
-    return false;
-  }
-
-  /** 接受高亮项：写进缓冲区；execute=true 时立即提交（Enter）。 */
-  private acceptMenuCommand(execute: boolean): void {
-    const menu = this.menu;
-    if (!menu || menu.items.length === 0) return;
-    const item = menu.items[menu.index];
-    if (!item) return;
-    const text = `/${item.name}`;
-    this.menu = null;
-    this.hint = null;
-    this.tabCycle = null;
-    this.buf.setText(text, text.length);
-    this.resetTabIfEdited();
-    if (execute) this.submit();
-    else this.scheduleRender();
-  }
-
-  private tabComplete(): void {
-    const line = this.buf.text;
-    const cursor = this.buf.cursor;
-    if (this.tabCycle && line === this.tabCycle.applied && cursor === this.tabCycle.cursorAfter) {
-      const cyc = this.tabCycle;
-      const index = (cyc.index + 1) % cyc.matches.length;
-      const applied = applyMatch(line, cursor, cyc.start, cyc.matches[index] as string);
-      this.buf.setText(applied.line, applied.cursor);
-      this.tabCycle = { ...cyc, index, applied: applied.line, cursorAfter: applied.cursor };
-      this.hint = formatCandidateHint("file", cyc.matches);
-      this.scheduleRender();
-      return;
-    }
-    const ctx = triggerAt(line, cursor);
-    // issue #31：命令补全改走菜单（Tab 只接受高亮项），这里只剩文件补全。
-    if (!ctx || ctx.kind === "command") return;
-    if (line.trimStart().startsWith("/")) return;
-    const result = completeLine(line, {
-      files: ctx.kind === "file" ? this.deps.files() : [],
-      commands: this.deps.commands,
-      cursor,
-    });
-    if (!result || result.matches.length === 0) {
-      this.hint = "无候选";
-      this.tabCycle = null;
-      this.scheduleRender();
-      return;
-    }
-    const applied = applyMatch(line, cursor, result.start, result.matches[0] as string);
-    this.buf.setText(applied.line, applied.cursor);
-    this.tabCycle = {
-      start: result.start,
-      matches: result.matches,
-      index: 0,
-      applied: applied.line,
-      cursorAfter: applied.cursor,
-    };
-    this.hint = result.matches.length > 1 ? formatCandidateHint("file", result.matches) : null;
-    this.scheduleRender();
-  }
-
-  private async pasteImage(): Promise<void> {
-    if (!this.deps.pasteImage) return;
-    let r: { chip: string; attachment: unknown } | null = null;
-    try {
-      r = await this.deps.pasteImage();
-    } catch (e) {
-      this.notice((e as Error).message);
-      return;
-    }
-    if (!r) {
-      this.notice("剪贴板里没有图片");
-      return;
-    }
-    this.attachments.push(r.attachment);
-    this.buf.insert(r.chip);
-    this.scheduleRender();
-  }
-
-  /**
-   * Ctrl+G：用外部编辑器撰写提示词（issue #62）。
-   *
-   * 顺序是硬约束：编辑器要接管终端，所以先 suspend（让出 tty：停按键监听、
-   * 恢复 cooked mode、显示光标、擦掉帧），编辑器退出后再 resume（回 raw + 重画）。
-   * 编辑器失败 / 取消 → 原输入原样保留，只给一句可读提示。
-   */
-  private async editInExternal(): Promise<void> {
-    if (!this.deps.editInEditor) {
-      this.notice("当前环境不支持外部编辑器");
-      return;
-    }
-    const current = this.buf.text;
-    this.suspend();
-    let r: { ok: true; text: string } | { ok: false; error: string };
-    try {
-      r = await this.deps.editInEditor(current);
-    } catch (e) {
-      r = { ok: false, error: `外部编辑器失败：${(e as Error).message}` };
-    } finally {
-      this.resume();
-    }
-    if (!r.ok) {
-      this.notice(r.error);
-      return;
-    }
-    // 光标落在末尾：编辑器里写的内容通常是「写完就发」，末尾最顺手。
-    this.buf.setText(r.text, r.text.length);
-    this.scheduleRender();
-  }
-
-  /** paste-end 丢包保护：idle 超时按「粘贴已结束」收尾，避免之后所有按键被吞。 */
-  private armPasteTimer(): void {
-    if (this.pasteTimer) clearTimeout(this.pasteTimer);
-    this.pasteTimer = setTimeout(() => {
-      this.pasteTimer = null;
-      if (this.paste.active) this.finishPaste(true);
-    }, this.pasteIdleMs);
-    this.pasteTimer.unref?.();
-  }
-
-  private finishPaste(commit: boolean): void {
-    if (this.pasteTimer) { clearTimeout(this.pasteTimer); this.pasteTimer = null; }
-    this.paste.reset();
-    const text = this.pasteChunks.join("");
-    this.pasteChunks = [];
-    this.hint = null;
-    if (!commit) { this.scheduleRender(); return; }
-    if (text === "") { this.scheduleRender(); return; }
-    const normalized = text.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
-    // 模态：审批答案进 ask buffer；选择菜单直接丢弃（避免 "y" 代答 / 残留污染主缓冲）。
-    if (this.mode === "select") { this.scheduleRender(); return; }
-    if (this.mode === "ask_user" && this.askUserState) {
-      if (this.askUserState.phase === "custom") {
-        this.askUserState.customBuf.insert(normalized);
-        this.scheduleRender();
-      }
-      return;
-    }
-    if (this.mode === "ask" && this.askState) {
-      this.askState.buf.insert(normalized);
-      this.scheduleRender();
-      return;
-    }
-    // 自绘输入框允许小段多行直接插入；只有超过阈值才折叠为 chip。
-    const fold = shouldFold(text, this.fold, { allowMultiline: true });
-    if (fold && this.deps.pasteText) {
-      const r = this.deps.pasteText(text);
-      this.attachments.push(r.attachment);
-      this.buf.insert(r.chip);
-    } else {
-      this.buf.insert(normalized);
-    }
-    this.scheduleRender();
-  }
-
+  handleKey = handleKey;
+  handleSelectKey = handleSelectKey;
+  openRewindMenu = openRewindMenu;
+  finishSelect = finishSelect;
+  handleAskUserKey = handleAskUserKey;
+  selectedAskLabels = selectedAskLabels;
+  finishAskUser = finishAskUser;
+  handleAskKey = handleAskKey;
+  finishAsk = finishAsk;
+  handleNormalAction = handleNormalAction;
+  moveLineOrHistory = moveLineOrHistory;
+  applyEditAction = applyEditAction;
+  resetTabIfEdited = resetTabIfEdited;
+  submit = submit;
+  enterShellMode = enterShellMode;
+  exitShellMode = exitShellMode;
+  submitShellCommand = submitShellCommand;
+  commitUserInput = commitUserInput;
+  handleCtrlC = handleCtrlC;
+  syncCommandMenu = syncCommandMenu;
+  menuRows = menuRows;
+  handleMenuKey = handleMenuKey;
+  acceptMenuCommand = acceptMenuCommand;
+  tabComplete = tabComplete;
+  pasteImage = pasteImage;
+  editInExternal = editInExternal;
+  armPasteTimer = armPasteTimer;
+  finishPaste = finishPaste;
   // ---------------------------------------------------------------- 模态
 
   /** 审批问句：在帧里显示问题，Enter 返回输入内容、Esc 返回空串。 */

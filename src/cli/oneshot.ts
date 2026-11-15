@@ -1,0 +1,571 @@
+import { createInterface } from "node:readline";
+import { existsSync, readFileSync } from "node:fs";
+import { resolve, join } from "node:path";
+import { homedir } from "node:os";
+
+import {
+  loadConfig,
+  switchProvider,
+  applyTier,
+  isImplemented,
+  IMPLEMENTED_PROVIDER_TYPES,
+  ConfigError,
+  parseFallbackTarget,
+  MAX_MODEL_FALLBACKS,
+  normalizeTierName,
+  tierDisplayName,
+  tierChoiceLabel,
+  type Config,
+  type ModelTarget,
+} from "../config.ts";
+import { Classifier, CLASSIFIER_NAMES, isClassifierName, type ClassifierName } from "../classifier/index.ts";
+import { Agent, type AgentEvent, type PermissionMode } from "../agent.ts";
+import { ModelFallbackController } from "../modelFallback.ts";
+import {
+  JsonlWriter,
+  clipFallbackReason,
+  clipPaths,
+  clipReason,
+  clipToolArguments,
+  clipToolOutput,
+  type StreamResultExitCode,
+  type StreamResultStatus,
+} from "../streamJson.ts";
+import type {
+  AssistantMessageEventData,
+  ToolEndEventData,
+  ToolStartEventData,
+} from "../agent/loop.ts";
+import { dispatchCommand } from "./commands.ts";
+import { editInEditor } from "../editor.ts";
+import { helpText } from "./help.ts";
+import { persist, printSessions, replayTranscript, showStats } from "./sessions.ts";
+import { authorizeShell, executeShell, runShell } from "./shell.ts";
+import { VERSION } from "./version.ts";
+import { detectRepo, ensureWorktree } from "../worktree.ts";
+import { HotkeyRouter, doubleStrike } from "../hotkeys.ts";
+import { PasteCollector, shouldFold, assemblePaste } from "../paste.ts";
+import { makeTextAttachment, makeImageAttachment, bindAttachments, resolveLine, type Attachment, type QueuedLine } from "../attachments.ts";
+import { clipboardImagePlatform, readClipboardImage } from "../clipboard.ts";
+import { select, type SelectDeps } from "../ui/select.ts";
+import { Console } from "../ui/console.ts";
+import { Composer, type ComposerStatus } from "../tui/composer.ts";
+import { TranscriptDock, type DockHost } from "../tui/dock.ts";
+import { getBranch } from "../git.ts";
+import { chooseSessionName } from "../sessionName.ts";
+import { TitleAnimator } from "../tui/title.ts";
+import { banner, c, rule } from "../ui/theme.ts";
+import {
+  applyMatch,
+  completeLine,
+  formatCandidateHint,
+  triggerAt,
+} from "../input/completion.ts";
+import { COMMANDS, knownSlashCommand } from "../input/commands.ts";
+import { FileIndex } from "../input/fileIndex.ts";
+import { expandReferences } from "../input/references.ts";
+import {
+  discoverProjectRules,
+  extractTouchedPaths,
+  formatAlwaysOnRules,
+  formatScopedRulesBlock,
+  normalizeRelPath,
+  selectScopedRules,
+} from "../rules/index.ts";
+import {
+  appendContinuation,
+  continuationPrompt,
+  emptyContinuation,
+  finishContinuation,
+  isActiveContinuation,
+  newlineKindsFromBytes,
+  stripContinuationMarker,
+  type Continuation,
+} from "../input/multiline.ts";
+import { PromptManager } from "../prompt/manager.ts";
+import { createMemoryBridge, type MemoryBridge } from "../memory/bridge.ts";
+import { makeRememberTool } from "../tools/memory.ts";
+import { makeTodoWriteTool, todosSummary, type TodoItem } from "../tools/todo.ts";
+import { chatStream, contentText, setMaxTokensLimitLearnedHandler, type Message } from "../llm.ts";
+import { toolNames, registerTool } from "../tools/index.ts";
+import { McpManager, type McpServerState } from "../mcp/index.ts";
+import { makeTaskTool, runSubagent } from "../tools/task.ts";
+import { BackgroundTasks, serializeJobs, restoreJobs } from "../tools/background.ts";
+import { saveSubagentTranscript, loadSubagentTranscript } from "../tools/transcript.ts";
+import type { ToolCtx } from "../tools/types.ts";
+import { backgroundShells } from "../tools/backgroundShell.ts";
+import { cleanupEphemeral } from "../cleanup.ts";
+import { runDriveCheck } from "../driveCheck.ts";
+import { makeAskUserTool } from "../tools/askUser.ts";
+import { registerWikiTools } from "../tools/wiki.ts";
+import { describeShell, getShell, prepareShellInvocation } from "../shell.ts";
+import { loadEnv } from "../env/probe.ts";
+import {
+  detectAndRecordModelWindow,
+  formatCapabilityGapHint,
+  recordModelContext,
+  resolveAndApplyModelWindow,
+} from "../env/modelWindows.ts";
+import {
+  currentProviderConfig,
+  probeCapabilitiesOnFirstUse,
+  undeclaredCapabilityFields,
+  writeBackContextLimit,
+  writeBackOutputLimit,
+} from "../env/modelCaps.ts";
+import {
+  describeProbeOutcome,
+  persistLearnedOutputLimit,
+  probeOutputLimitForConfig,
+  readOutputProbeMemo,
+  shouldRunOutputProbe,
+} from "../env/outputProbe.ts";
+import { syncEnvPage } from "../env/wiki.ts";
+import { ensureScopeLayout } from "../memory/layout.ts";
+import { adoptSession, applyRestored, createSession, listSessions, loadSession, type SessionMeta } from "../session.ts";
+import { Mailbox } from "../mailbox/store.ts";
+import {
+  createIdentity,
+  readProfile,
+  releaseAlive,
+  sessionLiveness,
+  sweepSessions,
+  takenAliveNames,
+} from "../mailbox/identity.ts";
+import * as mailboxState from "../mailbox/state.ts";
+import { decideInbound, formatIncomingFrame, formatNotice, formatNoticePreview, formatPreview } from "../mailbox/inbound.ts";
+import { makeListPeersTool, makeSendMessageTool } from "../tools/mailbox.ts";
+import { mailboxRoot, type Envelope } from "../mailbox/types.ts";
+import { cleanupRuntime } from "../maintenance.ts";
+import { LoopScheduler, formatLoopStatus } from "../loop.ts";
+import { RewindLog, type RewindMode } from "../rewind.ts";
+import { DriveManager, formatDriveState } from "../drive.ts";
+import { makeDriveJudge } from "../driveJudge.ts";
+import {
+  parseDriveArgs,
+  driveExitCode,
+  formatDriveSummary,
+  type DriveRunResult,
+} from "../oneshotDrive.ts";
+import { lspServers } from "../lsp/index.ts";
+import { CheckpointStore } from "../checkpoint.ts";
+import { formatResumeWarning, outcomeOf, type LastTurnMeta } from "../turnDiagnostics.ts";
+import {
+  bootLines,
+  formatGapLogLine,
+  formatOverBudgetNotice,
+  formatProbeIntent,
+  makeOverBudgetReporter,
+  formatWindowNotice,
+  formatWritebackNotice,
+  logBootDiagnostic,
+} from "../bootDiagnostics.ts";
+import type { PromptSelection } from "../prompt/select.ts";
+import type { AppSession } from "./sessionStart.ts";
+
+/**
+ * -p / 非交互 `neo <prompt>` 路径。若不是这些模式，返回 null，交给交互 REPL。
+ */
+export async function runOneshotOrPiped(s: AppSession): Promise<number | null> {
+  const {
+    args,
+    requestedTier,
+    overrides,
+    worktreeInfo,
+    cfg,
+    effectiveFallbacks,
+    interactiveTTY,
+    preComposerRows,
+    dockHost,
+    dock,
+    jsonMode,
+    streamJsonMode,
+    structuredMode,
+    ui,
+    maybeProbeOutputLimit,
+    announcedCapabilityGap,
+    announceCapabilityGap,
+    restored,
+    meta,
+    resumeRoot,
+    isRunningSession,
+    resumePreviousName,
+    classifier,
+    sess,
+    streamWriter,
+    checkpoints,
+    rewindLog,
+    memoryMode,
+    memory,
+    mailboxEnabled,
+    mailbox,
+    inboundRefs,
+    heartbeatTick,
+    mailboxClosed,
+    closeMailbox,
+    collectInbound,
+    overBudget,
+    onPromptSelection,
+    promptManager,
+    projectRules,
+    scopedRuleList,
+    alwaysOnRules,
+    fallbackController,
+    agent,
+    persistBackgroundJobs,
+    restoredJobs,
+    syncBackgroundJobs,
+    sessionTodos,
+    mcpManager,
+    memoryFile,
+    alwaysOnText
+  } = s;
+  // ---- 单次模式 ----
+  if (args.print !== null) {
+    const prompt = args.print || args.rest.join(" ");
+    if (!prompt.trim()) {
+      console.error(c.err("✖ -p 需要提供内容"));
+      // 此时 MCP server 可能已经连上（连接发生在 -p 分支之前），必须收掉。
+      s.cleanupEphemeralResources();
+      return 2;
+    }
+    // issue #41：斜杠命令是交互模式的能力。这里必须明确提示，而不是把整串当 prompt
+    // 静默发给模型（PRD 写的是「命令会明确提示不可用」）。
+    const slashCommand = knownSlashCommand(prompt);
+    if (slashCommand) {
+      console.error(
+        c.err(`✖ -p 不解析斜杠命令：/${slashCommand} 只能在交互模式使用（-p 会把内容当成一次任务）`),
+      );
+      s.cleanupEphemeralResources();
+      return 2;
+    }
+    // issue #51：`-p --drive` 无人值守长跑。参数在进入单次模式前就解析好，
+    // 用法错误在这里直接 exit 2（一次模型请求都不发）。
+    const driveArgs = parseDriveArgs(process.argv.slice(2));
+    if (driveArgs !== null && !driveArgs.ok) {
+      console.error(c.err(`✖ ${driveArgs.error}`));
+      s.cleanupEphemeralResources();
+      return 2;
+    }
+    const oneShotDrive = driveArgs?.ok ? driveArgs.spec : null;
+    if (oneShotDrive) {
+      // PRD §5：-y 全自动在 CI 上可能执行危险命令，这是用户显式选择 —— 但必须让日志看得见。
+      console.error(c.warn("无人值守：-y 会自动批准所有操作"));
+    }
+
+    // #37 init：oneShotDrive 确定后、首次 agent.send() 前恰好一次。
+    // 采用「惰性发出」：由 streamBeginTurn 在首次 send 前触发。这样 dm.start() 等
+    // 用法错误提前 return 2 时不会留下「有 init 无 result」的悬空 JSONL
+    // （§3.7 usage error 允许没有先前 init；#17c 会为这些路径补 error+result）。
+    let initEmitted = false;
+    const emitInitOnce = (): void => {
+      if (initEmitted || !streamJsonMode || !streamWriter || s.stdoutClosed) return;
+      initEmitted = true;
+      streamWriter.emitInit({
+        provider: cfg.providerName,
+        model: cfg.model,
+        model_tier: cfg.modelTier,
+        output_format: "stream-json",
+        drive: oneShotDrive !== null,
+      });
+    };
+
+    // #37 turn_started：每次 agent.send() 前调用一次，drive 循环内每轮自动续跑各算新 turn。
+    // turnNo 是 onEvent 映射与 turn_started 共用的共享计数器；递增放在守卫之外，
+    // 保证语义上始终是「第几次 send」，emit 只在 stream-json 且 stdout 未关闭时进行。
+    const streamBeginTurn = (): void => {
+      emitInitOnce();
+      s.turnNo += 1;
+      if (streamJsonMode && streamWriter && !s.stdoutClosed) {
+        streamWriter.emitTurnStarted({
+          turn: s.turnNo,
+          provider: cfg.providerName,
+          model: cfg.model,
+        });
+      }
+    };
+
+    // 结构化模式（json / stream-json）把 SIGINT 转成 aborted 统计：Ctrl+C 后
+    // 仍能输出一行 JSON / 收口 result（exit 130），而不是被信号直接杀掉、
+    // 编排器拿到空 stdout。
+    const onSigint = (): void => agent.cancel();
+    if (structuredMode) process.on("SIGINT", onSigint);
+    let stats: Awaited<ReturnType<typeof agent.send>>;
+    // issue #51：驱动终态（普通 -p 为 null）。
+    let driveResult: DriveRunResult | null = null;
+    try {
+      if (!oneShotDrive) {
+        streamBeginTurn();
+        stats = await agent.send(prompt);
+      } else {
+        // 本地 while 循环消费 DriveManager 的 action（不排交互队列）。
+        const dm = new DriveManager({
+          runCheck: async (cmd) => {
+            try {
+              return await runDriveCheck(cmd, cfg);
+            } catch (e) {
+              return { ok: false, code: null, output: `检查命令执行失败：${(e as Error).message}` };
+            }
+          },
+          // -p 没有交互队列：这里恒返回 true，由下面的 while 直接再 send。
+          enqueue: () => true,
+          evaluate: makeDriveJudge({
+            cfg,
+            stream: (c2, messages, tools, opts) =>
+              (agent.injectedStreamFn ?? chatStream)(
+                c2,
+                messages as Parameters<typeof chatStream>[1],
+                tools as Parameters<typeof chatStream>[2],
+                opts,
+              ),
+            recordUsage: (usage) => agent.recordUsage(usage),
+          }),
+        });
+        const started = dm.start({
+          check: oneShotDrive.check,
+          ...(oneShotDrive.judge ? { judge: oneShotDrive.judge } : {}),
+          prompt,
+          maxRounds: oneShotDrive.maxRounds,
+        });
+        if (!started.ok) {
+          console.error(c.err(`✖ ${started.error}`));
+          s.cleanupEphemeralResources();
+          return 2;
+        }
+        const maxMs = oneShotDrive.maxMinutes * 60_000;
+        const t0 = Date.now();
+        let round = 0;
+        let final: DriveRunResult;
+        for (;;) {
+          streamBeginTurn();
+          stats = await agent.send(prompt);
+          round += 1;
+          const thisTurnToolCalls = stats.toolCalls;
+          const recentToolOutput =
+            thisTurnToolCalls > 0
+              ? agent.messages
+                  .filter((m) => m.role === "tool")
+                  .slice(-thisTurnToolCalls)
+                  .map((m) => `tool(${m.name ?? ""}): ${contentText(m.content) ?? ""}`)
+                  .join("\n")
+              : "";
+          const clipped =
+            recentToolOutput.length > 2_000
+              ? `${recentToolOutput.slice(-2_000)}\n…[已截断，只保留最近 2000 字符]`
+              : recentToolOutput;
+          const outcome = await dm.onTurnEnd({ toolCalls: thisTurnToolCalls, recentOutput: clipped });
+          const st = outcome.state;
+          if (outcome.action === "done") {
+            final = {
+              status: "done",
+              source: st?.source ?? null,
+              rounds: st?.rounds ?? 0,
+              elapsedMs: Date.now() - t0,
+              reason: st?.reason ?? null,
+            };
+            break;
+          }
+          // 终态：done 已在上方处理；exhausted / idle-stop 都是「未达成」的停止点（PRD §2.2）。
+          // -p 下没有「停下来问人」这回事，所以直接停、由退出码 1 交给 CI。
+          if (outcome.action === "exhausted" || outcome.action === "idle-stop") {
+            final = {
+              status: outcome.action === "idle-stop" ? "idle-stop" : "exhausted",
+              source: null,
+              rounds: st?.rounds ?? 0,
+              elapsedMs: Date.now() - t0,
+              reason: st?.reason ?? null,
+            };
+            break;
+          }
+          // 墙钟只在轮间检查（PRD §2.5）：到点就停，不硬杀正在跑的一轮。
+          if (dm.expired(maxMs)) {
+            dm.timeout(`已达墙钟上限 ${oneShotDrive.maxMinutes} 分钟，条件仍未达成`);
+            final = {
+              status: "timeout",
+              source: null,
+              rounds: st?.rounds ?? 0,
+              elapsedMs: Date.now() - t0,
+              reason: `已达墙钟上限 ${oneShotDrive.maxMinutes} 分钟`,
+            };
+            break;
+          }
+          // 防御：action=skipped/none 在 -p 下不该出现（enqueue 恒 true）；出现即停，避免死循环。
+          if (outcome.action !== "continue") {
+            final = {
+              status: "idle-stop",
+              source: null,
+              rounds: st?.rounds ?? 0,
+              elapsedMs: Date.now() - t0,
+              reason: st?.reason ?? `驱动未推进（action=${outcome.action}）`,
+            };
+            break;
+          }
+        }
+        driveResult = final;
+      }
+    } catch (e) {
+      // 异常退出路径：agent.send 抛错时不能把 MCP 子进程留在后面当孤儿。
+      // 收完再原样抛出，让外层（main 的 catch / 进程退出）按原语义处理。
+      s.cleanupEphemeralResources();
+      throw e;
+    } finally {
+      if (structuredMode) process.off("SIGINT", onSigint);
+    }
+    // 正常结束（含 hadError / aborted）：先收子进程再落盘退出。
+    // -p 是「跑完就退」的一次性进程，子进程没有第二次机会被回收。
+    // 顺序执行而非 finally：json 输出分支与 return 都在其后，清理必须在
+    // persist 之前完成（persist 之后还有 await memory.flush，进程仍活着）。
+    // issue #40：清理清单与 shutdown() 共用 cleanupEphemeral —— 旧实现只收 MCP，
+    // 于是模型在 -p 里起的后台 shell / 后台子代理 / 语言服务器全成了孤儿。
+    s.cleanupEphemeralResources();
+    persist(agent.messages, sess.meta);
+    // 单次模式：把记忆写队列在退出前冲刷掉（仅项目级；带超时，不阻塞关闭）
+    await memory.flush();
+
+    // 退出码约定（P0-6）：0 成功 / 1 LLM 或 agent 失败 / 2 用法错误 / 130 用户中断
+    // issue #51：`-p --drive` 时退出码由驱动终态决定（达成 0 / 未达成 1），
+    // 但 SIGINT 仍优先 130、LLM 硬错误仍 1（驱动跑完但模型报错不能报成功）。
+    let exitCode = stats.aborted ? 130 : stats.hadError ? 1 : 0;
+    if (driveResult) {
+      // #52 固定优先级：abort > hadError > drive。检查碰巧通过也不能覆盖 LLM/Agent 硬错误。
+      if (stats.aborted) exitCode = 130;
+      else if (stats.hadError) exitCode = 1;
+      else exitCode = driveExitCode(driveResult);
+      // PRD §2.4：结束摘要走 stderr（stdout 保持 -p 现有风格）。
+      console.error(formatDriveSummary(driveResult));
+      if (driveResult.reason) console.error(c.dim(`[drive] ${driveResult.reason}`));
+    }
+
+    // #37 H：EPIPE / stdout 写失败。writer 的 onClosed 已调 agent.cancel() 使
+    // stats.aborted=true，会让上面的两处 exitCode 计算把它抬成 130；契约规定此
+    // 物理例外强制退出 1，并跳过 result（writer 已 closed，不再写 stdout）。
+    // 故覆盖必须放在所有 exitCode 计算之后（否则会被 `let exitCode = ...` 覆写）。
+    // stderr 诊断只由 writer 发一条，组合根不补发第二条；这里仅移除常驻监听。
+    if (s.stdoutClosed) {
+      exitCode = 1;
+      streamWriter?.dispose();
+    }
+
+    if (jsonMode) {
+      // 失败/中断时不要回填历史里的旧 assistant（--resume 场景会误导编排器）。
+      const answer =
+        stats.hadError || stats.aborted
+          ? null
+          : [...agent.messages]
+              .reverse()
+              .find(
+                (m) =>
+                  m.role === "assistant" &&
+                  !m.tool_calls &&
+                  (contentText(m.content) ?? "").trim() !== "",
+              ) ?? null;
+      const payload = {
+        v: 1,
+        ok: exitCode === 0,
+        exit_code: exitCode,
+        answer: answer ? contentText(answer.content) : null,
+        error: stats.errorMessage,
+        finish_reason: stats.finishReason,
+        aborted: stats.aborted,
+        duration_ms: stats.durationMs,
+        usage: {
+          prompt: stats.promptTokens,
+          completion: stats.completionTokens,
+          reasoning: stats.reasoningTokens,
+        },
+        tool_calls: stats.toolCalls,
+        iterations: stats.iterations,
+        model: cfg.model,
+        provider: cfg.providerName,
+        session_id: sess.meta.id,
+        tier_switch: stats.tierSwitch,
+      };
+      process.stdout.write(`${JSON.stringify(payload)}\n`);
+      return exitCode;
+    }
+
+    // ---- #37 stream-json 收口：drive_finished + 恰好一个 result ----
+    if (streamJsonMode && streamWriter && !s.stdoutClosed) {
+      // F：drive_finished 恰好一次（仅 --drive 且终态已确定），排在 result 之前。
+      if (driveResult) {
+        streamWriter.emitDriveFinished({
+          status: driveResult.status,
+          source: driveResult.source,
+          rounds: driveResult.rounds,
+          // DriveRunResult 用的是 elapsedMs，公开契约字段名是 elapsed_ms。
+          elapsed_ms: driveResult.elapsedMs,
+          reason: driveResult.reason ? clipReason(driveResult.reason) : null,
+        });
+      }
+
+      // G：status 按契约优先级；exit_code 直接复用上面算出的 exitCode 变量
+      // （#52 优先级 abort > hadError > drive 是唯一来源），writer 内不重算。
+      const resultStatus: StreamResultStatus = stats.aborted
+        ? "aborted"
+        : stats.hadError
+          ? "failed"
+          : driveResult && driveResult.source === "model"
+            ? "model_done"
+            : driveResult && driveExitCode(driveResult) !== 0
+              ? "failed"
+              : "completed";
+      streamWriter.emitResult({
+        status: resultStatus,
+        exit_code: exitCode as StreamResultExitCode,
+        provider: cfg.providerName,
+        model: cfg.model,
+        // 整个进程会话累计（含 drive 多轮、辅助请求），而非最后一轮 stats。
+        usage: {
+          prompt: agent.cumulative.prompt,
+          completion: agent.cumulative.completion,
+          reasoning: agent.cumulative.reasoning,
+          by_model: agent.usageByModel(),
+        },
+        drive: driveResult
+          ? {
+              status: driveResult.status,
+              source: driveResult.source,
+              rounds: driveResult.rounds,
+              elapsed_ms: driveResult.elapsedMs,
+            }
+          : null,
+        error: stats.errorMessage,
+      });
+      // 等有界 flush 再从 main() 返回，不用 process.exit() 截断缓冲。
+      await streamWriter.flush();
+      streamWriter.dispose();
+    }
+
+    // #37 H 补充：EPIPE 也可能恰好在最终 result 写入时才到达（下游在收口前关闭）。
+    // 上面的 stdoutClosed override 早于 result 写入，无法覆盖这一物理例外；
+    // 此处再校正一次，保证「stdout 写失败 → 强制 exit 1」对所有写入时点成立。
+    // writer 已 closed，不再写 stdout，也不会产生第二个 result。
+    if (s.stdoutClosed) exitCode = 1;
+
+    return exitCode;
+  }
+
+  // 也允许 `neo 你的问题` 直接作为首轮输入（非交互）
+  if (args.rest.length > 0 && !process.stdin.isTTY) {
+    const restPrompt = args.rest.join(" ");
+    // issue #41：与 -p 同口径，斜杠命令在非交互模式下必须明确拦下。
+    const restSlashCommand = knownSlashCommand(restPrompt);
+    if (restSlashCommand) {
+      console.error(c.err(`✖ 非交互模式不解析斜杠命令：/${restSlashCommand} 只能在交互模式使用`));
+      s.cleanupEphemeralResources();
+      return 2;
+    }
+    try {
+      await agent.send(restPrompt);
+    } finally {
+      // 与 -p 同一条一次性进程路径（issue #40）：子进程必须显式收掉，否则留下孤儿。
+      s.cleanupEphemeralResources();
+    }
+    persist(agent.messages, sess.meta);
+    await memory.flush();
+    return 0;
+  }
+
+
+  return null;
+}

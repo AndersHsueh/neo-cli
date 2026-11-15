@@ -1,0 +1,879 @@
+import { createInterface } from "node:readline";
+import { existsSync, readFileSync } from "node:fs";
+import { resolve, join } from "node:path";
+import { homedir } from "node:os";
+
+import {
+  loadConfig,
+  switchProvider,
+  applyTier,
+  isImplemented,
+  IMPLEMENTED_PROVIDER_TYPES,
+  ConfigError,
+  parseFallbackTarget,
+  MAX_MODEL_FALLBACKS,
+  normalizeTierName,
+  tierDisplayName,
+  tierChoiceLabel,
+  type Config,
+  type ModelTarget,
+} from "../config.ts";
+import { Classifier, CLASSIFIER_NAMES, isClassifierName, type ClassifierName } from "../classifier/index.ts";
+import { Agent, type AgentEvent, type PermissionMode } from "../agent.ts";
+import { ModelFallbackController } from "../modelFallback.ts";
+import {
+  JsonlWriter,
+  clipFallbackReason,
+  clipPaths,
+  clipReason,
+  clipToolArguments,
+  clipToolOutput,
+  type StreamResultExitCode,
+  type StreamResultStatus,
+} from "../streamJson.ts";
+import type {
+  AssistantMessageEventData,
+  ToolEndEventData,
+  ToolStartEventData,
+} from "../agent/loop.ts";
+import { dispatchCommand } from "./commands.ts";
+import { editInEditor } from "../editor.ts";
+import { helpText } from "./help.ts";
+import { persist, printSessions, replayTranscript, showStats } from "./sessions.ts";
+import { authorizeShell, executeShell, runShell } from "./shell.ts";
+import { VERSION } from "./version.ts";
+import { detectRepo, ensureWorktree } from "../worktree.ts";
+import { HotkeyRouter, doubleStrike } from "../hotkeys.ts";
+import { PasteCollector, shouldFold, assemblePaste } from "../paste.ts";
+import { makeTextAttachment, makeImageAttachment, bindAttachments, resolveLine, type Attachment, type QueuedLine } from "../attachments.ts";
+import { clipboardImagePlatform, readClipboardImage } from "../clipboard.ts";
+import { select, type SelectDeps } from "../ui/select.ts";
+import { Console } from "../ui/console.ts";
+import { Composer, type ComposerStatus } from "../tui/composer.ts";
+import { TranscriptDock, type DockHost } from "../tui/dock.ts";
+import { getBranch } from "../git.ts";
+import { chooseSessionName } from "../sessionName.ts";
+import { TitleAnimator } from "../tui/title.ts";
+import { banner, c, rule } from "../ui/theme.ts";
+import {
+  applyMatch,
+  completeLine,
+  formatCandidateHint,
+  triggerAt,
+} from "../input/completion.ts";
+import { COMMANDS, knownSlashCommand } from "../input/commands.ts";
+import { FileIndex } from "../input/fileIndex.ts";
+import { expandReferences } from "../input/references.ts";
+import {
+  discoverProjectRules,
+  extractTouchedPaths,
+  formatAlwaysOnRules,
+  formatScopedRulesBlock,
+  normalizeRelPath,
+  selectScopedRules,
+} from "../rules/index.ts";
+import {
+  appendContinuation,
+  continuationPrompt,
+  emptyContinuation,
+  finishContinuation,
+  isActiveContinuation,
+  newlineKindsFromBytes,
+  stripContinuationMarker,
+  type Continuation,
+} from "../input/multiline.ts";
+import { PromptManager } from "../prompt/manager.ts";
+import { createMemoryBridge, type MemoryBridge } from "../memory/bridge.ts";
+import { makeRememberTool } from "../tools/memory.ts";
+import { makeTodoWriteTool, todosSummary, type TodoItem } from "../tools/todo.ts";
+import { chatStream, contentText, setMaxTokensLimitLearnedHandler, type Message } from "../llm.ts";
+import { toolNames, registerTool } from "../tools/index.ts";
+import { McpManager, type McpServerState } from "../mcp/index.ts";
+import { makeTaskTool, runSubagent } from "../tools/task.ts";
+import { BackgroundTasks, serializeJobs, restoreJobs } from "../tools/background.ts";
+import { saveSubagentTranscript, loadSubagentTranscript } from "../tools/transcript.ts";
+import type { ToolCtx } from "../tools/types.ts";
+import { backgroundShells } from "../tools/backgroundShell.ts";
+import { cleanupEphemeral } from "../cleanup.ts";
+import { runDriveCheck } from "../driveCheck.ts";
+import { makeAskUserTool } from "../tools/askUser.ts";
+import { registerWikiTools } from "../tools/wiki.ts";
+import { describeShell, getShell, prepareShellInvocation } from "../shell.ts";
+import { loadEnv } from "../env/probe.ts";
+import {
+  detectAndRecordModelWindow,
+  formatCapabilityGapHint,
+  recordModelContext,
+  resolveAndApplyModelWindow,
+} from "../env/modelWindows.ts";
+import {
+  currentProviderConfig,
+  probeCapabilitiesOnFirstUse,
+  undeclaredCapabilityFields,
+  writeBackContextLimit,
+  writeBackOutputLimit,
+} from "../env/modelCaps.ts";
+import {
+  describeProbeOutcome,
+  persistLearnedOutputLimit,
+  probeOutputLimitForConfig,
+  readOutputProbeMemo,
+  shouldRunOutputProbe,
+} from "../env/outputProbe.ts";
+import { syncEnvPage } from "../env/wiki.ts";
+import { ensureScopeLayout } from "../memory/layout.ts";
+import { adoptSession, applyRestored, createSession, listSessions, loadSession, type SessionMeta } from "../session.ts";
+import { Mailbox } from "../mailbox/store.ts";
+import {
+  createIdentity,
+  readProfile,
+  releaseAlive,
+  sessionLiveness,
+  sweepSessions,
+  takenAliveNames,
+} from "../mailbox/identity.ts";
+import * as mailboxState from "../mailbox/state.ts";
+import { decideInbound, formatIncomingFrame, formatNotice, formatNoticePreview, formatPreview } from "../mailbox/inbound.ts";
+import { makeListPeersTool, makeSendMessageTool } from "../tools/mailbox.ts";
+import { mailboxRoot, type Envelope } from "../mailbox/types.ts";
+import { cleanupRuntime } from "../maintenance.ts";
+import { LoopScheduler, formatLoopStatus } from "../loop.ts";
+import { RewindLog, type RewindMode } from "../rewind.ts";
+import { DriveManager, formatDriveState } from "../drive.ts";
+import { makeDriveJudge } from "../driveJudge.ts";
+import {
+  parseDriveArgs,
+  driveExitCode,
+  formatDriveSummary,
+  type DriveRunResult,
+} from "../oneshotDrive.ts";
+import { lspServers } from "../lsp/index.ts";
+import { CheckpointStore } from "../checkpoint.ts";
+import { formatResumeWarning, outcomeOf, type LastTurnMeta } from "../turnDiagnostics.ts";
+import {
+  bootLines,
+  formatGapLogLine,
+  formatOverBudgetNotice,
+  formatProbeIntent,
+  makeOverBudgetReporter,
+  formatWindowNotice,
+  formatWritebackNotice,
+  logBootDiagnostic,
+} from "../bootDiagnostics.ts";
+import type { PromptSelection } from "../prompt/select.ts";
+import { parseArgs, HELP, streamJsonUsageError, type Args } from "./args.ts";
+import type { SharedMut } from "./session.ts";
+
+/**
+ * 参数校验、worktree、配置、UI、会话恢复、信箱与提示装配。
+ * 成功返回会话袋；用法/帮助/版本等早退返回退出码。
+ */
+export async function bootstrap() {
+  const s: SharedMut = {
+    composerRef: null,
+    sessionLabel: null,
+    stdoutClosed: false,
+    turnNo: 0,
+    mailboxTick: null,
+    lastWatchdogAt: Date.now(),
+    lastStreamProgressAt: 0,
+    bootBlockPrinted: false,
+    backgroundTasks: null,
+    activeTurnFrom: null,
+    agent: null,
+  };
+  const args = parseArgs(process.argv.slice(2));
+  if (args.badArgs) return 2;
+  // #37：stream-json 只在 -p/--print 下合法。缺 -p（交互模式或
+  // `neo <prompt>` 非 -p 形式）在会话创建前按 JSONL 收口为用法错误 2，
+  // 此时还没有 SessionMeta.id，信封的 session_id 必须为 null。
+  // --help/--version 是元请求，仍按原语义返回文本与 0，不受此约束。
+  if (
+    args.outputFormat === "stream-json" &&
+    args.print === null &&
+    !args.help &&
+    !args.version
+  ) {
+    return await streamJsonUsageError(
+      "--output-format stream-json 只能与 -p/--print 同用（交互模式与 neo <prompt> 非 -p 形式均不支持）",
+    );
+  }
+  if (args.name !== null && (args.name.trim() === "" || args.name.startsWith("-"))) {
+    console.error(c.err("✖ --name 需要一个名字（不能为空或以 - 开头）"));
+    return 2;
+  }
+  // --worktree 的取值校验放在这里：早于配置载入，也早于任何目录副作用。
+  if (args.worktree !== null && (args.worktree.trim() === "" || args.worktree.startsWith("-"))) {
+    console.error(c.err("✖ --worktree 需要一个名字（不能为空或以 - 开头）"));
+    return 2;
+  }
+
+  // 参数合法性先于 --help/--version 校验。
+  // 否则 `--auto bogus --version` 会打印版本后返回 0，
+  // 把一个拼写错误静默放过 —— 下次真正跑起来才报错，更难查。
+  if (args.auto && !isClassifierName(args.auto)) {
+    console.error(c.err(`✖ 未知分类器 "${args.auto}"。可选：${CLASSIFIER_NAMES.join(", ")}`));
+    return 2;
+  }
+  // --tier 接受简写（deep/bal/fast/auto），内部仍落到规范 ModelTier。
+  const requestedTier = args.tier ? normalizeTierName(args.tier) : null;
+  if (args.tier && !requestedTier) {
+    console.error(
+      c.err(
+        `✖ 未知档位 "${args.tier}"。可选：deep (deep_reasoning) / balanced / fast / default；` +
+          `简写 deep / d / bal / b / f / auto 也可`,
+      ),
+    );
+    return 2;
+  }
+
+  if (args.help) {
+    console.log(HELP);
+    return 0;
+  }
+  if (args.version) {
+    console.log(c.accent(`neo v${VERSION}`));
+    return 0;
+  }
+
+  const overrides: Partial<Config> = {};
+  if (args.model) overrides.model = args.model;
+  if (args.cwd) overrides.cwd = args.cwd;
+  if (args.noReasoning) overrides.showReasoning = false;
+
+  // ---- issue #9：整会话进托管 worktree ----
+  // 必须在 loadConfig 之前把 cwd 换成 worktree 目录：配置、会话/记忆/信箱路径、
+  // 检查点、工具沙箱全部以 cfg.cwd 为根，晚一步就会有一半逻辑指着主仓库。
+  // 与 --resume 的兼容：会话仍按 id 恢复（会话文件在 ~/.neo 下，与 cwd 无关），
+  // 恢复后只提示「原目录 ≠ 本次目录」，不偷偷切回去（沿用既有裁决）。
+  let worktreeInfo: { name: string; path: string; branch: string; created: boolean; repoRoot: string } | null =
+    null;
+  if (args.worktree !== null) {
+    const name = args.worktree.trim();
+    const probeFrom = args.cwd ? resolve(process.cwd(), args.cwd) : process.cwd();
+    const repo = detectRepo(probeFrom);
+    if (!repo.ok) {
+      console.error(c.err(`✖ ${repo.message}`));
+      return 2;
+    }
+    const ensured = ensureWorktree(repo.mainRoot, name);
+    if (!ensured.ok) {
+      console.error(c.err(`✖ ${ensured.message}`));
+      return 2;
+    }
+    worktreeInfo = {
+      name,
+      path: ensured.path,
+      branch: ensured.branch,
+      created: ensured.created,
+      repoRoot: ensured.repoRoot,
+    };
+    // 显式 -C 与 --worktree 同时给：worktree 是更具体的意图，以它为准并说明。
+    if (args.cwd) {
+      console.error(
+        c.dim(`  --worktree 覆盖 -C：工作目录改为 ${ensured.path}`),
+      );
+    }
+    overrides.cwd = ensured.path;
+  }
+
+  // provider 与档位要在配置载入后处理：它们决定 model 的解析方式
+  let cfg: Config;
+  try {
+    cfg = loadConfig(overrides);
+
+    if (requestedTier) {
+      const r = applyTier(cfg, requestedTier);
+      if (!r.ok) {
+        console.error(c.err(`✖ ${r.error}`));
+        return 2;
+      }
+    }
+    if (args.provider) {
+      const r = switchProvider(cfg, args.provider);
+      if (!r.ok) {
+        console.error(c.err(`✖ ${r.error}`));
+        return 2;
+      }
+    }
+    // A2：启动时用 env 事实校正窗口（配置可能配错，/model、/tier 也可能换模型）。
+    resolveAndApplyModelWindow(cfg);
+  } catch (e) {
+    if (e instanceof ConfigError) {
+      console.error(c.err(`✖ 配置错误：${e.message}`));
+      return 2;
+    }
+    throw e;
+  }
+
+  if (!cfg.apiKey) {
+    console.error(
+      c.err(`✖ provider "${cfg.providerName}" 没有配置 api_key。`) +
+        c.dim("\n  请在 settings.json 的 providers 中填写，或设置环境变量 NEO_API_KEY。"),
+    );
+    return 2;
+  }
+
+  // #59：CLI 备用链在发任何模型请求之前解析校验；非法配置退出 2，零模型请求。
+  let effectiveFallbacks: ModelTarget[] = cfg.modelFallback;
+  if (args.noFallback && args.fallbackArgs.length > 0) {
+    console.error(c.err("✖ --no-fallback 与 --fallback 不能同时使用"));
+    return 2;
+  }
+  if (args.noFallback) {
+    effectiveFallbacks = [];
+  } else if (args.fallbackArgs.length > 0) {
+    if (args.fallbackArgs.length > MAX_MODEL_FALLBACKS) {
+      console.error(
+        c.err(`✖ --fallback 最多 ${MAX_MODEL_FALLBACKS} 项（收到 ${args.fallbackArgs.length} 项）`),
+      );
+      return 2;
+    }
+    try {
+      const parsed = args.fallbackArgs.map((s) => parseFallbackTarget(s, cfg.providers));
+      const seen = new Set<string>();
+      for (const t of parsed) {
+        const key = `${t.provider}\u0000${t.model}`;
+        if (seen.has(key)) {
+          throw new ConfigError(`--fallback 重复项：${t.provider}:${t.model}`);
+        }
+        seen.add(key);
+      }
+      effectiveFallbacks = parsed; // CLI 完整替换 settings 链，不 append / merge
+    } catch (e) {
+      console.error(c.err(`✖ ${(e as Error).message}`));
+      return 2;
+    }
+  }
+
+  // ---- v0.3.0 底部 live 帧：TTY 才启用 composer/dock，非 TTY 走 v0.2.4 readline 路径 ----
+  // -p 是单次模式：即使 stdout 是 TTY 也不要起 composer/dock ——
+  // dock 的 preComposerRows 只有 composer 启动时才会 flush，-p 下永不启动，
+  // 会导致「真终端里 neo -p 零输出」。这里直接走 no-dock 的直写路径。
+  const interactiveTTY =
+    args.print === null && process.stdin.isTTY === true && process.stdout.isTTY === true;
+  s.composerRef = null;  /** composer 启动前的输出（banner / 记忆提示 / --resume 回放）先缓存，启动后一次性落到上方。 */
+  const preComposerRows: string[] = [];
+  const dockHost: DockHost = {
+    width: () => {
+      const w = s.composerRef?.width() ?? process.stdout.columns;
+      return typeof w === "number" && w > 20 ? w : 80;
+    },
+    commitAbove: (rows) => {
+      if (s.composerRef) s.composerRef.commitAbove(rows);
+      else preComposerRows.push(...rows);
+    },
+    setPending: (rows) => s.composerRef?.setPending(rows),
+    setActivity: (text, persist) => s.composerRef?.setActivity(text, persist),
+    commitActivity: () => s.composerRef?.commitActivity(),
+    clearActivity: () => s.composerRef?.clearActivity(),
+    notice: (text, ms) => s.composerRef?.notice(text, ms),
+    rerender: () => s.composerRef?.rerender(),
+  };
+  const dock = interactiveTTY ? new TranscriptDock(dockHost) : null;
+  /**
+   * -p --output-format json：stdout 只留一行 JSON，所有 UI/工具/流式输出改走 stderr。
+   * 这是 P0-6 的关键约束 —— 否则 stdout 不可解析，CI 无法消费。
+   * #37：stream-json 同属结构化模式；Console/重试通知/fallback 人类提示/
+   * drive [drive] 摘要/警告一律走 stderr，stdout 只归 JsonlWriter。
+   */
+  const jsonMode = args.print !== null && args.outputFormat === "json";
+  const streamJsonMode = args.print !== null && args.outputFormat === "stream-json";
+  const structuredMode = jsonMode || streamJsonMode;
+  const ui = new Console(
+    cfg.theme === "matrix",
+    cfg.toolcallInfoDetails,
+    dock
+      ? { dock, getTier: () => cfg.modelTier }
+      : structuredMode
+        ? {
+            stdoutIsTTY: false,
+            stdinIsTTY: false,
+            getTier: () => cfg.modelTier,
+            write: (s: string) => {
+              process.stderr.write(s);
+            },
+          }
+        : { getTier: () => cfg.modelTier },
+  );
+
+  /**
+   * issue #8 B：输出上限的**受控主动探测**（默认关，见 settings 的
+   * `probe_max_output_tokens`）。只在「交互 + 开关开 + 手写为空 + `/models` 没给 +
+   * 7 天内没探过」时才会真的发请求；结论见 `src/env/outputProbe.ts`。
+   */
+  const maybeProbeOutputLimit = (): void => {
+    const settings = currentProviderConfig(cfg)?.outputProbe;
+    if (!settings) return;
+    const declared = !undeclaredCapabilityFields(cfg).includes("max_output_tokens");
+    const decision = shouldRunOutputProbe({
+      settings,
+      outputLimitDeclared: declared,
+      memo: readOutputProbeMemo(cfg),
+    });
+    logBootDiagnostic({
+      kind: "output-probe",
+      message: `输出上限探测决策：${decision.run ? "将探测" : `跳过（${decision.reason}）`}`,
+    });
+    if (!decision.run) return;
+    void probeOutputLimitForConfig(cfg, settings)
+      .then(({ outcome, written }) => {
+        if (written.length > 0) {
+          // TUI 只留「改了什么」（#18 口径）；诊断进日志。
+          const line = formatWritebackNotice(written);
+          ui.info(line);
+          logBootDiagnostic({ kind: "output-probe", message: line });
+        }
+        logBootDiagnostic({ kind: "output-probe", message: describeProbeOutcome(outcome) });
+      })
+      .catch(() => {
+        /* 探测失败不影响会话 */
+      });
+  };
+
+  // issue #8 A：请求层从 400/422 文案学到精确输出上限时，把这份「免费证据」入账 ——
+  // 只填空字段（手写优先）、永远不改 max_tokens；证据写进 env 事实。
+  setMaxTokensLimitLearnedHandler((ev) => {
+    const r = persistLearnedOutputLimit(ev.cfg, ev.limit, ev.evidence);
+    if (r.written.length === 0) return;
+    const line = formatWritebackNotice(r.written);
+    ui.info(line);
+    logBootDiagnostic({ kind: "output-limit-learned", message: line });
+  });
+
+  // A2：交互模式下异步探测当前模型窗口（/models 元数据）；失败静默。
+  // 探测成功会写入 env 事实文件，后续启动/切模型直接命中。
+  // 同一 provider|model 的「网关没给能力」提示只说一次，避免每轮撞墙都刷屏；
+  // /context 与 /env 仍每次都展示。
+  // issue #18：能力诊断只写日志，不进 TUI。TUI 只留「改了什么」（写回字段、生效窗口）。
+  const announcedCapabilityGap = new Set<string>();
+  const announceCapabilityGap = (): void => {
+    const key = `${cfg.providerName}|${cfg.model}`;
+    if (announcedCapabilityGap.has(key)) return;
+    const hint = formatCapabilityGapHint(cfg);
+    if (!hint) return;
+    announcedCapabilityGap.add(key);
+    logBootDiagnostic({ kind: "capability-gap", message: formatGapLogLine(hint) });
+  };
+  if (interactiveTTY) {
+    // #6：按字段补空缺。五项全空才说「首次使用」；只填了窗口时也要探测其余项。
+    // 判定必须在探测之前做 —— 探测会写 env 事实，但手写值（含 false）不会被改掉。
+    const missingCaps = undeclaredCapabilityFields(cfg);
+    if (missingCaps.length > 0) {
+      logBootDiagnostic({
+        kind: "probe-intent",
+        message: formatProbeIntent(cfg.providerName, cfg.model, missingCaps),
+      });
+      void probeCapabilitiesOnFirstUse(cfg)
+        .then((r) => {
+          if (r.written.length > 0) {
+            ui.info(formatWritebackNotice(r.written));
+            logBootDiagnostic({ kind: "probe-writeback", message: formatWritebackNotice(r.written) });
+          }
+          // 瘦网关补不出上限时说清楚，避免「探测跑过了」被当成已经学会。
+          // issue #18：这句是诊断，只进日志（异步回调里也绝不回流 TUI）。
+          announceCapabilityGap();
+          if (r.contextWindow) {
+            const applied = resolveAndApplyModelWindow(cfg);
+            if (applied.source !== "config") {
+              ui.info(formatWindowNotice(applied.tokens, applied.source));
+              logBootDiagnostic({
+                kind: "model-window",
+                message: formatWindowNotice(applied.tokens, applied.source),
+              });
+            }
+          }
+          // issue #8：/models 给不出上限时，才轮到主动探测（显式开启时才跑）。
+          maybeProbeOutputLimit();
+        })
+        .catch(() => {
+          /* 探测失败不影响会话 */
+        });
+    } else {
+      void detectAndRecordModelWindow(cfg)
+        .then((info) => {
+          if (!info?.contextWindow) return;
+          const r = resolveAndApplyModelWindow(cfg);
+          if (r.source !== "config") {
+            ui.info(formatWindowNotice(r.tokens, r.source));
+          }
+        })
+        .catch(() => {
+          /* 探测失败不影响会话 */
+        });
+    }
+
+    // B5：清理过期工具输出与已死 mailbox 会话目录（默认 7 天）。
+    try {
+      const cleaned = cleanupRuntime(cfg.cwd, mailboxRoot());
+      if (cleaned.removedTmpFiles + cleaned.removedMailboxDirs.length > 0) {
+        ui.info(
+          `已清理过期文件：tmp ${cleaned.removedTmpFiles} 个、mailbox ${cleaned.removedMailboxDirs.length} 个` +
+            `（释放 ${Math.round(cleaned.freedBytes / 1024)} KB）`,
+        );
+      }
+    } catch {
+      /* 清理失败不影响启动 */
+    }
+  }
+
+  // default_provider 指向未接入的协议时，必须在启动就拦下。
+  // 放过的话会一路走到 fetch，得到的错误跟配置问题无关，排查方向完全被带偏。
+  if (!isImplemented(cfg.providerType)) {
+    const pending = cfg.providers.filter((p) => !isImplemented(p.type)).map((p) => p.name);
+    console.error(
+      c.err(`✖ default_provider "${cfg.providerName}" 使用 ${cfg.providerType} 协议，请求层尚未接入。`) +
+        c.dim(`\n  已实现的协议：${IMPLEMENTED_PROVIDER_TYPES.join(", ")}。`) +
+        c.dim("\n  可用 -P 指定其他 provider，或改 settings.json 的 default_provider。") +
+        c.dim(`\n  已配置但未接入：${pending.join(", ") || "无"}`),
+    );
+    return 2;
+  }
+
+  if (cfg.legacyFormat) {
+    ui.warn("检测到旧版扁平配置（api-key / OpenAI / model_name），已自动折算为 provider \"legacy\"。");
+    ui.line(c.dim("  新格式见 settings.example.json。"));
+  }
+
+  // issue #21 A：max_tokens 配置体检。加载时已逐 provider 判定，这里逐条摆出来 ——
+  // 输出预算 ≥ 上下文窗口这类配置几乎必然 400，启动时说清楚，别让用户对着不透明报错猜。
+  for (const w of cfg.maxTokensWarnings) ui.warn(w);
+  for (const w of cfg.lspWarnings) ui.warn(w);
+
+  // issue #9：让用户一眼看出「这次会话在 worktree 里」，而不是在主仓库里改文件。
+  if (worktreeInfo) {
+    ui.info(
+      `${worktreeInfo.created ? "已创建" : "已复用"} worktree ${worktreeInfo.name} ` +
+        `→ ${worktreeInfo.path}（分支 ${worktreeInfo.branch}）`,
+    );
+    ui.line(
+      c.dim(
+        `  隔离的是文件，不是权限：/mode 与审批照旧。退出后可用 /worktree list 查看、` +
+          `/worktree remove ${worktreeInfo.name} 清理。`,
+      ),
+    );
+  }
+
+  if (args.listSessions) {
+    printSessions(ui, { root: mailboxRoot(), deadAfterMs: cfg.mailbox.deadAfterMs });
+    return 0;
+  }
+
+  // ---- 恢复会话（真续接：沿用原 session-id / 文件 / 信箱身份）----
+  // 活/死判定（2026-10-26 用户裁决）：running = .alive + pid 存活 + 心跳 <= deadAfterMs；
+  // pid 已死或心跳超时（事件循环卡死/休眠）→ 视为已死，允许恢复并回收残留锁。
+  let restored: Message[] | null = null;
+  let meta: SessionMeta | null = null;
+  const resumeRoot = mailboxRoot();
+  s.sessionLabel = null;  const isRunningSession = (id: string): boolean =>
+    sessionLiveness(resumeRoot, id, { deadAfterMs: cfg.mailbox.deadAfterMs }) === "running";
+  if (args.resume !== null || args.continueLast) {
+    const target = args.resume ?? "last";
+    if (target === "last") {
+      // 跳过运行中的会话：取最近一个「可恢复」的，而不是先取最近再报错。
+      const available = listSessions(50).find((x) => !isRunningSession(x.id));
+      if (!available) {
+        console.error(c.err("✖ 没有可恢复的会话（运行中的会话不列出）。"));
+        return 2;
+      }
+      const full = loadSession(available.id);
+      if (!full) {
+        console.error(c.err(`✖ 会话 ${available.id} 读取失败，无法恢复。`));
+        return 2;
+      }
+      restored = full.messages;
+      meta = full.meta;
+    } else {
+      const full = loadSession(target);
+      if (!full) {
+        console.error(c.err(`✖ 未找到会话 ${target}`));
+        return 2;
+      }
+      if (isRunningSession(full.meta.id)) {
+        console.error(
+          c.err(`✖ 会话 ${full.meta.id} 正在另一个进程中运行，不能恢复。`) +
+            c.dim("\n  请先退出那个进程；/peers 可查看存活会话（v0.3.x 才会提供 attach）。"),
+        );
+        return 2;
+      }
+      restored = full.messages;
+      meta = full.meta;
+    }
+  }
+
+  // resume 命中时：读旧信箱 profile 的名字（真续接保证 id 一致；读不到则当无旧名）。
+  let resumePreviousName: string | null = null;
+  if (meta) {
+    try {
+      resumePreviousName = readProfile(resumeRoot, meta.id)?.name ?? null;
+    } catch {
+      resumePreviousName = null;
+    }
+  }
+
+  // 分类器。默认规则版；用 --auto 可换成 off 或 llm。
+  const classifier = new Classifier(cfg, (args.auto ?? "rule") as ClassifierName);
+
+  // 会话文件先建：记忆桥需要 sessionId 作为审计键，必须在 Agent 构造前就位。
+  // --resume：沿用被恢复会话的 id/path（真续接），而不是新开一个 fork。
+  const sess = meta ? adoptSession(meta, cfg.model) : createSession(cfg.model, cfg.cwd);
+
+  // #37 stream-json：唯一 writer 只在 streamJsonMode 下创建，session_id 取 sess.meta.id。
+  // stdoutClosed 由 writer 的 onClosed 钩子置位（EPIPE/写失败），是「无 result」的唯一物理例外；
+  // turnNo 供每次 agent.send 前的 turn_started 与全部 onEvent 映射共用。
+  let streamWriter: JsonlWriter | null = null;
+  s.stdoutClosed = false;  s.turnNo = 0;  if (streamJsonMode) {
+    streamWriter = new JsonlWriter({ sessionId: sess.meta.id, cwd: cfg.cwd });
+  }
+
+  // 写文件检查点（P0-4）：会话级目录，/undo 用它在写盘后恢复本会话的 write/edit。
+  // 只覆盖工具写路径（shell 改动不追），只快照工作目录内文件。
+  const checkpoints = new CheckpointStore({ cwd: cfg.cwd, sessionId: sess.meta.id });
+  /** 按轮次回滚（issue #27）：轮次表从 session meta 恢复，回滚后写回。 */
+  const rewindLog = new RewindLog({ records: sess.meta.rewind });
+
+  // issue #23：语言服务器（编辑后诊断 + 只读符号导航）。零配置 = 不 spawn。
+  void lspServers
+    .configure(cfg)
+    .then((problems) => {
+      if (!interactiveTTY) return;
+      for (const p of problems) ui.warn(`LSP: ${p}`);
+      const st = lspServers.states();
+      if (st.length > 0) {
+        const ok = st.filter((x) => x.status === "connected").map((x) => x.name).join(", ");
+        ui.line(
+          c.dim(
+            `LSP：${st.length} 个 server（已连接 ${st.filter((x) => x.status === "connected").length}${ok ? `: ${ok}` : ""}）`,
+          ),
+        );
+      }
+    })
+    .catch(() => {
+      /* 语言服务器是增强项，失败不影响会话 */
+    });
+
+  // 记忆桥（v0.2 记忆激活）：
+  //  - -p / 非交互 = oneshot：只用项目级记忆（服务器脚本场景，不混入操作员个人记忆）；
+  //  - plan 模式禁写（captureEnabled=false），召回仍可用。
+  const memoryMode: "interactive" | "oneshot" =
+    args.print !== null || (args.rest.length > 0 && !process.stdin.isTTY) ? "oneshot" : "interactive";
+  // -p / 非交互：全局作用域降为 project（工具、系统提示、捕获都遵守）
+  if (memoryMode === "oneshot") cfg.memory.scopeMode = "project";
+  const memory: MemoryBridge = createMemoryBridge({
+    cfg,
+    cwd: cfg.cwd,
+    sessionId: sess.meta.id,
+    mode: memoryMode,
+    captureEnabled: args.mode !== "plan",
+    onNotice: (m) => ui.info(m),
+  });
+
+  // ---- 跨会话信箱（PRD v1.2）----
+  // -p / 非交互模式不启用（D7 裁决）：不建目录、不注册工具、不跑 tick / watchdog。
+  const mailboxEnabled = memoryMode === "interactive";
+  let mailbox: Mailbox | null = null;
+  if (mailboxEnabled) {
+    try {
+      mailbox = new Mailbox({ sessionId: sess.meta.id, config: cfg.mailbox });
+      const chosen = chooseSessionName({
+        explicit: args.name,
+        previous: resumePreviousName,
+        taken: takenAliveNames(mailbox.root, { deadAfterMs: cfg.mailbox.deadAfterMs }),
+      });
+      const ident = createIdentity({
+        root: mailbox.root,
+        sessionId: sess.meta.id,
+        cwd: cfg.cwd,
+        mode: args.mode,
+        name: chosen?.name ?? null,
+        deadAfterMs: cfg.mailbox.deadAfterMs,
+      });
+      s.sessionLabel = ident.profile.name;
+      if (chosen && ident.profile.name && chosen.name !== ident.profile.name) {
+        ui.info(`代号 ${chosen.name} 已被占用，本会话使用 ${ident.profile.name}`);
+      }
+      sweepSessions(mailbox.root, { ttlMs: cfg.mailbox.sessionTtlMs });
+    } catch (e) {
+      // resume 命中时失败 = 不能安全接手该会话（通常另一个进程刚抢到锁）：
+      // sess 已 adopt 原 session-id，继续跑会双写同一会话文件，必须致命退出。
+      if (meta) {
+        console.error(
+          c.err(`✖ 无法恢复会话 ${sess.meta.id}：${(e as Error).message}`) +
+            c.dim("\n  另一个进程可能正在恢复/运行该会话；请稍后重试或先退出那个进程。"),
+        );
+        return 2;
+      }
+      // 新建会话：信箱是增强项，初始化失败只降级，不阻塞启动
+      ui.warn(`跨会话信箱未启用：${(e as Error).message}`);
+      mailbox = null;
+    }
+  }
+
+  // 信箱不可用：本地仍选一个池内名，仅用于标题显示（不落盘、不参与寻址）。
+  if (mailboxEnabled && s.sessionLabel === null) {
+    const local = chooseSessionName({
+      explicit: args.name,
+      previous: resumePreviousName,
+      taken: new Set(),
+    });
+    s.sessionLabel = local?.name ?? "neo";
+  }
+
+  /** 最近一次入站：对端 session → 消息 id；send_message 缺省 reply_to 时自动补任务号。 */
+  const inboundRefs = new Map<string, string>();
+
+  s.mailboxTick = null;  let heartbeatTick: ReturnType<typeof setInterval> | null = null;
+  let mailboxClosed = false;
+  /** 上次 watchdog 检查时间（P1 与 idle tick 共用）。 */
+  s.lastWatchdogAt = Date.now();  /** 上次因流式输出刷新 last_progress_at 的时间（节流，避免每个 chunk 写盘）。 */
+  s.lastStreamProgressAt = 0;  /** 清理信箱资源（幂等）：停 tick、删 .alive。 */
+  function closeMailbox(): void {
+    if (mailboxClosed) return;
+    mailboxClosed = true;
+    if (s.mailboxTick) {
+      clearInterval(s.mailboxTick);
+      s.mailboxTick = null;
+    }
+    if (heartbeatTick) {
+      clearInterval(heartbeatTick);
+      heartbeatTick = null;
+    }
+    if (mailbox) releaseAlive(mailbox.root, mailbox.sessionId);
+  }
+
+  // 心跳必须独立于空闲 tick：turn 进行中（长 LLM 调用）也要每 15s 刷新，
+  // 否则别的会话的 watchdog 会看到心跳停 120s+，把正在干活的活进程误报成 dead。
+  if (mailbox) {
+    const hb = mailbox;
+    heartbeatTick = setInterval(() => {
+      try {
+        mailboxState.touchHeartbeat(hb.root, hb.sessionId);
+      } catch {
+        // 心跳写失败不阻塞主流程
+      }
+    }, cfg.mailbox.heartbeatMs);
+    (heartbeatTick as unknown as { unref?: () => void }).unref?.();
+  }
+
+  /** 轮询 inbox、按入站三态裁决，返回 accept 的消息并打印预览。limit 留空=不限。 */
+  function collectInbound(limit?: number): Envelope[] {
+    if (!mailbox) return [];
+    const mb = mailbox;
+    const envs = mb.poll((env) => decideInbound(cfg.crossSessionInbound, s.agent!.mode, env.from.mode), limit);
+    for (const env of envs) {
+      inboundRefs.set(env.from.session, env.id);
+      ui.line(c.dim(formatPreview(env)));
+    }
+    return envs;
+  }
+
+  // 系统提示词唯一渲染入口（issue #20）：档位选择、会话名、项目记忆都由它持有，
+  // 探针完成/切模型/rename/超限校正只需让 agent 在下一个请求边界重渲染。
+  //
+  // issue #20 收尾：系统提示词放不下预算时给**一次性**提示。
+  // 归类：不是 #18 所指的「网关缺字段」那类无当下动作的诊断，而是当前配置的直接
+  // 后果（提示词塞不进预算 → 模型可用上下文被吃掉一大块），用户当下就能补救。
+  // 去重按 provider|model|窗口：同一状态只说一次，窗口变了算新事实。
+  s.bootBlockPrinted = false;  const overBudget = makeOverBudgetReporter({
+    interactive: interactiveTTY,
+    current: () => ({ provider: cfg.providerName, model: cfg.model }),
+    log: (message) => logBootDiagnostic({ kind: "prompt-budget", message }),
+    warn: (message) => ui.warn(message),
+    bootBlockPrinted: () => s.bootBlockPrinted,
+  });
+  const onPromptSelection = (sel: PromptSelection): void => overBudget.report(sel);
+  const promptManager = new PromptManager({
+    mailbox: mailboxEnabled,
+    askUser: interactiveTTY,
+    sessionName: s.sessionLabel,
+    onSelection: onPromptSelection,
+  });
+  // issue #17：路径作用域规则（.neo/rules + .claude/rules）。无规则时零额外上下文。
+  const projectRules = discoverProjectRules(cfg.cwd);
+  const scopedRuleList = projectRules.filter((r) => r.paths.length > 0);
+  const alwaysOnRules = projectRules.filter((r) => r.paths.length === 0);
+
+  /** 后台子代理任务表（issue #16）：Agent 构造时要注入轮询闭包，实例在 Agent 之后创建。 */
+  s.backgroundTasks = null;
+  // #59：会话级备用链只接主 Agent 请求；交互与 -p（含 --drive）共用同一 controller。
+  const fallbackController =
+    effectiveFallbacks.length > 0
+      ? new ModelFallbackController({
+          cfg,
+          fallbacks: effectiveFallbacks,
+          onNotice: (m) => ui.warn(m),
+          onFallback: (e) => {
+            // #37：备用目标完整响应成功并提交后触发（controller 在 commit(i,target) 之后、
+            // return res 之前调用），因此早于本轮 assistant_message。data 逐字段投影：
+            // FallbackFailure = {target: ModelTarget, code, message} → 展平为 provider/model。
+            if (streamWriter && !s.stdoutClosed) {
+              streamWriter.emitModelFallback({
+                from: { provider: e.from.provider, model: e.from.model },
+                to: { provider: e.to.provider, model: e.to.model },
+                reason: {
+                  code: e.reason.code,
+                  message: clipFallbackReason(e.reason.message),
+                },
+                attempts: e.attempts.map((a) => ({
+                  provider: a.target.provider,
+                  model: a.target.model,
+                  code: a.code,
+                  message: clipFallbackReason(a.message),
+                })),
+              });
+            }
+            ui.warn(
+              `[fallback] ${e.from.provider}:${e.from.model} → ${e.to.provider}:${e.to.model}` +
+                `（${e.reason.code}：${e.reason.message}）`,
+            );
+          },
+        })
+      : null;
+
+
+  return Object.assign(s, {
+    args,
+    requestedTier,
+    overrides,
+    worktreeInfo,
+    cfg,
+    effectiveFallbacks,
+    interactiveTTY,
+    preComposerRows,
+    dockHost,
+    dock,
+    jsonMode,
+    streamJsonMode,
+    structuredMode,
+    ui,
+    maybeProbeOutputLimit,
+    announcedCapabilityGap,
+    announceCapabilityGap,
+    restored,
+    meta,
+    resumeRoot,
+    isRunningSession,
+    resumePreviousName,
+    classifier,
+    sess,
+    streamWriter,
+    checkpoints,
+    rewindLog,
+    memoryMode,
+    memory,
+    mailboxEnabled,
+    mailbox,
+    inboundRefs,
+    heartbeatTick,
+    mailboxClosed,
+    closeMailbox,
+    collectInbound,
+    overBudget,
+    onPromptSelection,
+    promptManager,
+    projectRules,
+    scopedRuleList,
+    alwaysOnRules,
+    fallbackController,
+  });
+}
