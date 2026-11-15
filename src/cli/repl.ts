@@ -1,166 +1,26 @@
-import { createInterface } from "node:readline";
-import { existsSync, readFileSync } from "node:fs";
 import { resolve, join } from "node:path";
-import { homedir } from "node:os";
-
-import {
-  loadConfig,
-  switchProvider,
-  applyTier,
-  isImplemented,
-  IMPLEMENTED_PROVIDER_TYPES,
-  ConfigError,
-  parseFallbackTarget,
-  MAX_MODEL_FALLBACKS,
-  normalizeTierName,
-  tierDisplayName,
-  tierChoiceLabel,
-  type Config,
-  type ModelTarget,
-} from "../config.ts";
-import { Classifier, CLASSIFIER_NAMES, isClassifierName, type ClassifierName } from "../classifier/index.ts";
-import { Agent, type AgentEvent, type PermissionMode } from "../agent.ts";
-import { ModelFallbackController } from "../modelFallback.ts";
-import {
-  JsonlWriter,
-  clipFallbackReason,
-  clipPaths,
-  clipReason,
-  clipToolArguments,
-  clipToolOutput,
-  type StreamResultExitCode,
-  type StreamResultStatus,
-} from "../streamJson.ts";
-import type {
-  AssistantMessageEventData,
-  ToolEndEventData,
-  ToolStartEventData,
-} from "../agent/loop.ts";
 import { dispatchCommand } from "./commands.ts";
-import { editInEditor } from "../editor.ts";
-import { helpText } from "./help.ts";
-import { persist, printSessions, replayTranscript, showStats } from "./sessions.ts";
+import { persist, showStats } from "./sessions.ts";
 import { authorizeShell, executeShell, runShell } from "./shell.ts";
-import { VERSION } from "./version.ts";
-import { detectRepo, ensureWorktree } from "../worktree.ts";
-import { HotkeyRouter, doubleStrike } from "../hotkeys.ts";
-import { PasteCollector, shouldFold, assemblePaste } from "../paste.ts";
-import { makeTextAttachment, makeImageAttachment, bindAttachments, resolveLine, type Attachment, type QueuedLine } from "../attachments.ts";
-import { clipboardImagePlatform, readClipboardImage } from "../clipboard.ts";
-import { select, type SelectDeps } from "../ui/select.ts";
-import { Console } from "../ui/console.ts";
-import { Composer, type ComposerStatus } from "../tui/composer.ts";
-import { TranscriptDock, type DockHost } from "../tui/dock.ts";
-import { getBranch } from "../git.ts";
-import { chooseSessionName } from "../sessionName.ts";
-import { TitleAnimator } from "../tui/title.ts";
-import { banner, c, rule } from "../ui/theme.ts";
-import {
-  applyMatch,
-  completeLine,
-  formatCandidateHint,
-  triggerAt,
-} from "../input/completion.ts";
-import { COMMANDS, knownSlashCommand } from "../input/commands.ts";
+import { bindAttachments, resolveLine, type Attachment, type QueuedLine } from "../attachments.ts";
+import { type SelectDeps } from "../ui/select.ts";
+import { c } from "../ui/theme.ts";
 import { FileIndex } from "../input/fileIndex.ts";
 import { expandReferences } from "../input/references.ts";
-import {
-  discoverProjectRules,
-  extractTouchedPaths,
-  formatAlwaysOnRules,
-  formatScopedRulesBlock,
-  normalizeRelPath,
-  selectScopedRules,
-} from "../rules/index.ts";
-import {
-  appendContinuation,
-  continuationPrompt,
-  emptyContinuation,
-  finishContinuation,
-  isActiveContinuation,
-  newlineKindsFromBytes,
-  stripContinuationMarker,
-  type Continuation,
-} from "../input/multiline.ts";
-import { PromptManager } from "../prompt/manager.ts";
-import { createMemoryBridge, type MemoryBridge } from "../memory/bridge.ts";
-import { makeRememberTool } from "../tools/memory.ts";
-import { makeTodoWriteTool, todosSummary, type TodoItem } from "../tools/todo.ts";
-import { chatStream, contentText, setMaxTokensLimitLearnedHandler, type Message } from "../llm.ts";
-import { toolNames, registerTool } from "../tools/index.ts";
-import { McpManager, type McpServerState } from "../mcp/index.ts";
-import { makeTaskTool, runSubagent } from "../tools/task.ts";
-import { BackgroundTasks, serializeJobs, restoreJobs } from "../tools/background.ts";
+import { normalizeRelPath } from "../rules/index.ts";
+import { chatStream, contentText } from "../llm.ts";
+import { runSubagent } from "../tools/task.ts";
 import { saveSubagentTranscript, loadSubagentTranscript } from "../tools/transcript.ts";
 import type { ToolCtx } from "../tools/types.ts";
 import { backgroundShells } from "../tools/backgroundShell.ts";
-import { cleanupEphemeral } from "../cleanup.ts";
 import { runDriveCheck } from "../driveCheck.ts";
-import { makeAskUserTool } from "../tools/askUser.ts";
-import { registerWikiTools } from "../tools/wiki.ts";
-import { describeShell, getShell, prepareShellInvocation } from "../shell.ts";
-import { loadEnv } from "../env/probe.ts";
-import {
-  detectAndRecordModelWindow,
-  formatCapabilityGapHint,
-  recordModelContext,
-  resolveAndApplyModelWindow,
-} from "../env/modelWindows.ts";
-import {
-  currentProviderConfig,
-  probeCapabilitiesOnFirstUse,
-  undeclaredCapabilityFields,
-  writeBackContextLimit,
-  writeBackOutputLimit,
-} from "../env/modelCaps.ts";
-import {
-  describeProbeOutcome,
-  persistLearnedOutputLimit,
-  probeOutputLimitForConfig,
-  readOutputProbeMemo,
-  shouldRunOutputProbe,
-} from "../env/outputProbe.ts";
-import { syncEnvPage } from "../env/wiki.ts";
-import { ensureScopeLayout } from "../memory/layout.ts";
-import { adoptSession, applyRestored, createSession, listSessions, loadSession, type SessionMeta } from "../session.ts";
-import { Mailbox } from "../mailbox/store.ts";
-import {
-  createIdentity,
-  readProfile,
-  releaseAlive,
-  sessionLiveness,
-  sweepSessions,
-  takenAliveNames,
-} from "../mailbox/identity.ts";
 import * as mailboxState from "../mailbox/state.ts";
-import { decideInbound, formatIncomingFrame, formatNotice, formatNoticePreview, formatPreview } from "../mailbox/inbound.ts";
-import { makeListPeersTool, makeSendMessageTool } from "../tools/mailbox.ts";
-import { mailboxRoot, type Envelope } from "../mailbox/types.ts";
-import { cleanupRuntime } from "../maintenance.ts";
+import { formatIncomingFrame, formatNotice, formatNoticePreview, formatPreview } from "../mailbox/inbound.ts";
 import { LoopScheduler, formatLoopStatus } from "../loop.ts";
-import { RewindLog, type RewindMode } from "../rewind.ts";
+import { type RewindMode } from "../rewind.ts";
 import { DriveManager, formatDriveState } from "../drive.ts";
 import { makeDriveJudge } from "../driveJudge.ts";
-import {
-  parseDriveArgs,
-  driveExitCode,
-  formatDriveSummary,
-  type DriveRunResult,
-} from "../oneshotDrive.ts";
-import { lspServers } from "../lsp/index.ts";
-import { CheckpointStore } from "../checkpoint.ts";
-import { formatResumeWarning, outcomeOf, type LastTurnMeta } from "../turnDiagnostics.ts";
-import {
-  bootLines,
-  formatGapLogLine,
-  formatOverBudgetNotice,
-  formatProbeIntent,
-  makeOverBudgetReporter,
-  formatWindowNotice,
-  formatWritebackNotice,
-  logBootDiagnostic,
-} from "../bootDiagnostics.ts";
-import type { PromptSelection } from "../prompt/select.ts";
+import { outcomeOf, type LastTurnMeta } from "../turnDiagnostics.ts";
 import type { AppSession } from "./sessionStart.ts";
 
 type QueueOrigin = "user" | "mailbox" | "notice";
@@ -332,49 +192,12 @@ export function createRepl(s: AppSession): ReplState {
     repl.runDrainSafely();
   }
 
-  /**
-   * 取一个可能还在 TDZ 里的 `const` 绑定：未初始化时返回 null 而不是抛错。
-   *
-   * `typeof x` 对 `let`/`const` 的 TDZ **不安全**（实测 Bun 1.3.13 仍抛
-   * ReferenceError），所以只能靠 try/catch。
-   */
-  repl.tdzSafe = function tdzSafe<T>(read: () => T): T | null {
-    try {
-      return read();
-    } catch {
-      return null;
-    }
-  }
-
-  /**
-   * 本会话所有临时资源的清理入口（issue #40）：`shutdown()` / `-p` / 非交互路径共用。
-   *
-   * 清单与顺序在 `src/cleanup.ts`（唯一真源），这里只做依赖绑定。
-   * 同步、幂等、逐项容错 —— 所以 `-p` 的异常路径也能在 `throw` 之前安全调用。
-   *
-   * 注意 `loopScheduler` / `drive` 是 `const`，声明在 `-p` 分支**之后**（index.ts 的
-   * 组合顺序），在 `-p` 路径上访问会命中 TDZ 抛 ReferenceError。
-   * `typeof` 挡不住 TDZ（它只对「未声明」安全，对「已声明未初始化」照样抛），
-   * 所以用 try/catch 取值：`-p` 分支跑的时候它们根本还没创建，本来也不需要清理。
-   */
-  repl.cleanupEphemeralResources = function cleanupEphemeralResources(): void {
-    cleanupEphemeral({
-      loop: repl.tdzSafe(() => repl.loopScheduler),
-      drive: repl.tdzSafe(() => repl.drive),
-      tasks: s.backgroundTasks,
-      shells: backgroundShells,
-      lsp: lspServers,
-      mcp: mcpManager,
-      closeMailbox,
-    });
-  }
-
   /** 退出：两类输入源都收敛到 closeInput()。 */
   repl.shutdown = async function shutdown(): Promise<void> {
     // issue #45：退出前把后台任务表的最新状态同步进 session（任务可能在上一次请求之后才完成）。
     syncBackgroundJobs();
     // issue #40：资源清理统一走 cleanupEphemeral（与 -p / 非交互路径同一份清单）。
-    repl.cleanupEphemeralResources();
+    s.cleanupEphemeralResources();
     try {
       await memory.flush();
     } catch {

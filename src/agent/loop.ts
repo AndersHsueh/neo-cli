@@ -593,13 +593,6 @@ export class Agent {
     return switchInfo;
   }
 
-  /**
-   * 发送一条用户消息并跑完整个 agent 循环。
-   * 多模态输入（PRD §5.4）：{text, images} → content 组装为 ContentPart[]
-   * （text part 在前，image_url parts 随后）；纯文本退化为 string，不破坏现有 provider。
-   * 分类器只吃文本（PRD §5.5：图片结构性排除）。
-   */
-  /** 移除临时消息（预算提示 / 重试提示）。按引用比对，避免误删历史里内容相同的消息。 */
   /** /context 用：本会话已加载的路径作用域规则（含命中原因）。 */
   get activeRules(): RuleMatch[] {
     return this.loadedRules;
@@ -616,6 +609,12 @@ export class Agent {
     return h !== undefined && hasAnyHook(h);
   }
 
+  /**
+   * 发送一条用户消息并跑完整个 agent 循环。
+   * 多模态输入（PRD §5.4）：{text, images} → content 组装为 ContentPart[]
+   * （text part 在前，image_url parts 随后）；纯文本退化为 string，不破坏现有 provider。
+   * 分类器只吃文本（PRD §5.5：图片结构性排除）。
+   */
   async send(
     userInput: string | { text: string; images: string[] },
     opts: { rollbackOnAbort?: boolean } = {},

@@ -230,6 +230,7 @@ export function dropScopedRulesMessage(this: Agent): void {
     this.scopedRulesMsg = null;
   }
 
+/** 移除临时消息（预算提示 / 重试提示）。按引用比对，避免误删历史里内容相同的消息。 */
 export function dropTransientMessage(this: Agent, msg: Message): void {
     const i = this.messages.lastIndexOf(msg);
     if (i !== -1) this.messages.splice(i, 1);
