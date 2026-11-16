@@ -103,6 +103,9 @@ describe("拆分残留守卫", () => {
       stderr: "pipe",
     });
     const out = `${r.stdout.toString()}${r.stderr.toString()}`;
+    // tsc 必须真的跑起来：退出码非 0 时输出里必须有 TS 诊断行。否则（bun x 解析失败、
+    // tsc 崩溃等）输出里没有 `error TS`，下面两条过滤都为空，守卫会静默通过。
+    expect(r.exitCode === 0 || /error TS\d+/.test(out)).toBe(true);
     const unused = out
       .split("\n")
       .map((l) => l.trim())
