@@ -142,10 +142,14 @@ export function createRepl(s: AppSession): ReplState {
       return true;
     },
   });
-  repl.pasteTextCounter = 0; // chip 编号会话内递增（PRD §3），图片/文本各自独立  repl.pasteImageCounter = 0;
+  repl.pasteTextCounter = 0; // chip 编号会话内递增（PRD §3），图片/文本各自独立
+  repl.pasteImageCounter = 0;
+
   // 文件索引：@ 补全的唯一来源。启动预热一次（2 万文件 ~75ms），按键路径只读缓存。
-  repl.fileIndex = new FileIndex({ cwd: cfg.cwd });  // 不阻塞首帧：composer 先起来，索引在后台刷新（Tab 路径有 in-flight 去重）。
-  repl.fileIndexPreheat = process.stdin.isTTY    ? repl.fileIndex.refresh().catch(() => {
+  repl.fileIndex = new FileIndex({ cwd: cfg.cwd });
+  // 不阻塞首帧：composer 先起来，索引在后台刷新（Tab 路径有 in-flight 去重）。
+  repl.fileIndexPreheat = process.stdin.isTTY
+    ? repl.fileIndex.refresh().catch(() => {
         // 索引失败不影响会话：后续 Tab 会再踢一次刷新
       })
     : Promise.resolve();
