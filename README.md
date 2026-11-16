@@ -27,7 +27,7 @@ bun run src/index.ts -p "修到测试全绿" --drive "bun test" --max 5 --max-mi
 
 | 平台 | shell | 状态 |
 | --- | --- | --- |
-| macOS | `$SHELL`（默认 zsh） | ✅ 实测（tsc / 2106 测试（另 3 skip） / PTY 32/32） |
+| macOS | `$SHELL`（默认 zsh） | ✅ 实测（tsc / 2110 测试（另 3 skip） / PTY 32/32） |
 | Ubuntu / Debian | `$SHELL`（默认 bash） | ✅ 实测（sp7, Ubuntu 24.04.4 LTS） |
 | 其它 POSIX（dash/ksh/fish） | 自动探测 | ✅ 解析器支持；fish 不吃登录 PATH preamble |
 | Windows 11 | `pwsh` → `powershell` → `cmd` | 🟡 **实验性，未实机验证**（见 PD-1） |
@@ -51,6 +51,7 @@ Windows 启动用 `neo.cmd`（需要 Bun 在 PATH）；Linux/macOS 用 `neo.sh` 
 - **v0.4.84**：目标驱动补齐两端 —— `/drive --judge "<标准>"` 模型判断完成条件（检查命令仍是硬条件，来源分「已验证/模型判断」标注）；`neo -p … --drive "检查命令" [--judge] [--max N] [--max-minutes M] -y` 无人值守长跑（退出码 0/1/130/2，stderr 摘要，`max_tool_iterations`×轮次×墙钟三层上限）。详见 `docs/release-notes/v0.4.84.md`。启动横幅后会显示实际使用的 shell。环境探测（`/env`）不需要模型，纯脚本采集，约 10ms。
 - **v0.4.87**：拆分 7 个超过 1000 行的源文件（CLI 入口、命令分发、配置、Agent 循环、TUI 输入、工具注册、LLM），经 barrel / 再导出保持原 import 路径；新增源文件行数守卫（工作上限 1000 行）。无行为变化。详见 `docs/release-notes/v0.4.87.md`。
 - **v0.4.88**：清理 v0.4.87 拆分残留（未用 import / 解构 / 死局部、挤行、错位 JSDoc），`src/config.ts` 公共 API 收回到拆分前；新增源码卫生守卫（config 导出清单、挤行、`tsc --noUnusedLocals` 在 src 下零告警）。无行为变化。详见 `docs/release-notes/v0.4.88.md`。
+- **v0.4.89**：处理 v0.4.88 列出的后续项 —— 会话袋信箱状态改为实时值、输入历史 1000 条上限、修复粘贴图片 chip 编号为 `NaN` 的拆分回归；`ReplState` 改回显式类型，合并 6 组重复小工具函数，`tsconfig` 打开 `noUnusedLocals`。详见 `docs/release-notes/v0.4.89.md`。
 
 ## 配置
 
