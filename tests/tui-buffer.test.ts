@@ -512,6 +512,33 @@ describe("B4 InputHistory 历史导航", () => {
     expect(source).toEqual(["a"]);
     expect(history.size).toBe(2);
   });
+
+  // v0.3.0 PRD 审查表（docs/v0.3.0-tui-prd[done].md）：「history 无上限 → history 加 1000 条上限」。
+  // 当时只写了 HISTORY_LIMIT = 1000，从未生效；超出时丢最旧的（与 readline historySize 同口径）。
+  test("B4j push 超过 1000 条时丢最旧，只保留最近 1000 条", () => {
+    const history = new InputHistory();
+    for (let i = 0; i < 1005; i += 1) history.push(`cmd-${i}`);
+    expect(history.size).toBe(1000);
+    expect(history.up("")).toBe("cmd-1004");
+    // 最旧的 5 条（cmd-0..cmd-4）已丢弃：回溯到底停在 cmd-5
+    const seen: string[] = ["cmd-1004"];
+    for (let entry = history.up(""); entry !== null; entry = history.up("")) seen.push(entry);
+    expect(seen.length).toBe(1000);
+    expect(seen[seen.length - 1]).toBe("cmd-5");
+    expect(seen).not.toContain("cmd-4");
+  });
+
+  test("B4k 构造传入超过 1000 条时只保留最近 1000 条", () => {
+    const source = Array.from({ length: 1200 }, (_, i) => `e-${i}`);
+    const history = new InputHistory(source);
+    expect(history.size).toBe(1000);
+    expect(history.up("")).toBe("e-1199");
+    history.reset();
+    expect(history.up("e-199")).toBeNull();
+    history.reset();
+    expect(history.up("e-200")).toBe("e-200");
+    expect(source.length).toBe(1200);
+  });
 });
 
 describe("B1e 折行按 grapheme 取宽（v0.4.29）", () => {
