@@ -45,7 +45,8 @@ export async function bootstrap() {
     mailboxTick: null,
     heartbeatTick: null,
     mailboxClosed: false,
-    lastWatchdogAt: Date.now(),
+    // 占位：watchdog 计时起点在下方信箱装配处才落定（见 s.lastWatchdogAt = Date.now()）。
+    lastWatchdogAt: 0,
     lastStreamProgressAt: 0,
     bootBlockPrinted: false,
     backgroundTasks: null,
@@ -222,7 +223,6 @@ export async function bootstrap() {
   // 会导致「真终端里 neo -p 零输出」。这里直接走 no-dock 的直写路径。
   const interactiveTTY =
     args.print === null && process.stdin.isTTY === true && process.stdout.isTTY === true;
-  s.composerRef = null;
   /** composer 启动前的输出（banner / 记忆提示 / --resume 回放）先缓存，启动后一次性落到上方。 */
   const preComposerRows: string[] = [];
   const dockHost: DockHost = {
@@ -436,7 +436,6 @@ export async function bootstrap() {
   let restored: Message[] | null = null;
   let meta: SessionMeta | null = null;
   const resumeRoot = mailboxRoot();
-  s.sessionLabel = null;
   const isRunningSession = (id: string): boolean =>
     sessionLiveness(resumeRoot, id, { deadAfterMs: cfg.mailbox.deadAfterMs }) === "running";
   if (args.resume !== null || args.continueLast) {
@@ -494,8 +493,6 @@ export async function bootstrap() {
   // stdoutClosed 由 writer 的 onClosed 钩子置位（EPIPE/写失败），是「无 result」的唯一物理例外；
   // turnNo 供每次 agent.send 前的 turn_started 与全部 onEvent 映射共用。
   let streamWriter: JsonlWriter | null = null;
-  s.stdoutClosed = false;
-  s.turnNo = 0;
   if (streamJsonMode) {
     streamWriter = new JsonlWriter({ sessionId: sess.meta.id, cwd: cfg.cwd });
   }
@@ -596,11 +593,11 @@ export async function bootstrap() {
   /** 最近一次入站：对端 session → 消息 id；send_message 缺省 reply_to 时自动补任务号。 */
   const inboundRefs = new Map<string, string>();
 
-  s.mailboxTick = null;
-  /** 上次 watchdog 检查时间（P1 与 idle tick 共用）。 */
+  // watchdog 计时起点 = 信箱装配完成（与拆分前 `let lastWatchdogAt = Date.now()` 同位置）。
+  // 读方：sessionStart 的 P1 检查与 repl 的空闲 tick，均按 now - lastWatchdogAt >=
+  // watchdogIntervalS 判定首次检查时机；若改用 bootstrap 开头的时刻，首检会提前
+  // 「配置 / worktree / 会话恢复」这段耗时，所以这一行不是重复初值，必须保留。
   s.lastWatchdogAt = Date.now();
-  /** 上次因流式输出刷新 last_progress_at 的时间（节流，避免每个 chunk 写盘）。 */
-  s.lastStreamProgressAt = 0;
   /** 清理信箱资源（幂等）：停 tick、删 .alive。 */
   function closeMailbox(): void {
     if (s.mailboxClosed) return;
@@ -649,7 +646,6 @@ export async function bootstrap() {
   // 归类：不是 #18 所指的「网关缺字段」那类无当下动作的诊断，而是当前配置的直接
   // 后果（提示词塞不进预算 → 模型可用上下文被吃掉一大块），用户当下就能补救。
   // 去重按 provider|model|窗口：同一状态只说一次，窗口变了算新事实。
-  s.bootBlockPrinted = false;
   const overBudget = makeOverBudgetReporter({
     interactive: interactiveTTY,
     current: () => ({ provider: cfg.providerName, model: cfg.model }),
@@ -669,8 +665,6 @@ export async function bootstrap() {
   const scopedRuleList = projectRules.filter((r) => r.paths.length > 0);
   const alwaysOnRules = projectRules.filter((r) => r.paths.length === 0);
 
-  /** 后台子代理任务表（issue #16）：Agent 构造时要注入轮询闭包，实例在 Agent 之后创建。 */
-  s.backgroundTasks = null;
   // #59：会话级备用链只接主 Agent 请求；交互与 -p（含 --drive）共用同一 controller。
   const fallbackController =
     effectiveFallbacks.length > 0

@@ -75,8 +75,6 @@ export function createRepl(s: AppSession): ReplState {
   repl.turnSeq = 0;
   /** 连续自动 turn 计数（PRD §4.4 链条上限）；用户输入重置。 */
   repl.autoTurnChain = 0;
-  /** 当前 turn 的 mailbox 触发者；只有它才允许 send_message 自动补 reply_to。 */
-  s.activeTurnFrom = null;
   repl.turnStartedAt = 0;
   repl.lastTurnMs = 0;
   /** 真正在跑 agent turn（不含斜杠命令/选择菜单）；状态行的时长只认它。 */

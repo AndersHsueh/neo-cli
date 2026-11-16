@@ -18,10 +18,14 @@ export type SharedMut = {
   heartbeatTick: ReturnType<typeof setInterval> | null;
   /** 信箱资源是否已释放（closeMailbox 幂等标记）。同上，读方拿实时值。 */
   mailboxClosed: boolean;
+  /** 上次 watchdog 检查时间（P1 与 idle tick 共用）。 */
   lastWatchdogAt: number;
+  /** 上次因流式输出刷新 last_progress_at 的时间（节流，避免每个 chunk 写盘）。 */
   lastStreamProgressAt: number;
   bootBlockPrinted: boolean;
+  /** 后台子代理任务表（issue #16）：Agent 构造时要注入轮询闭包，实例在 Agent 之后创建。 */
   backgroundTasks: BackgroundTasks | null;
+  /** 当前 turn 的 mailbox 触发者；只有它才允许 send_message 自动补 reply_to。 */
   activeTurnFrom: string | null;
   agent: Agent | null;
   drive?: DriveManager | null;
