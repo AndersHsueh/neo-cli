@@ -43,6 +43,8 @@ export async function bootstrap() {
     stdoutClosed: false,
     turnNo: 0,
     mailboxTick: null,
+    heartbeatTick: null,
+    mailboxClosed: false,
     lastWatchdogAt: Date.now(),
     lastStreamProgressAt: 0,
     bootBlockPrinted: false,
@@ -595,23 +597,21 @@ export async function bootstrap() {
   const inboundRefs = new Map<string, string>();
 
   s.mailboxTick = null;
-  let heartbeatTick: ReturnType<typeof setInterval> | null = null;
-  let mailboxClosed = false;
   /** 上次 watchdog 检查时间（P1 与 idle tick 共用）。 */
   s.lastWatchdogAt = Date.now();
   /** 上次因流式输出刷新 last_progress_at 的时间（节流，避免每个 chunk 写盘）。 */
   s.lastStreamProgressAt = 0;
   /** 清理信箱资源（幂等）：停 tick、删 .alive。 */
   function closeMailbox(): void {
-    if (mailboxClosed) return;
-    mailboxClosed = true;
+    if (s.mailboxClosed) return;
+    s.mailboxClosed = true;
     if (s.mailboxTick) {
       clearInterval(s.mailboxTick);
       s.mailboxTick = null;
     }
-    if (heartbeatTick) {
-      clearInterval(heartbeatTick);
-      heartbeatTick = null;
+    if (s.heartbeatTick) {
+      clearInterval(s.heartbeatTick);
+      s.heartbeatTick = null;
     }
     if (mailbox) releaseAlive(mailbox.root, mailbox.sessionId);
   }
@@ -620,14 +620,14 @@ export async function bootstrap() {
   // 否则别的会话的 watchdog 会看到心跳停 120s+，把正在干活的活进程误报成 dead。
   if (mailbox) {
     const hb = mailbox;
-    heartbeatTick = setInterval(() => {
+    s.heartbeatTick = setInterval(() => {
       try {
         mailboxState.touchHeartbeat(hb.root, hb.sessionId);
       } catch {
         // 心跳写失败不阻塞主流程
       }
     }, cfg.mailbox.heartbeatMs);
-    (heartbeatTick as unknown as { unref?: () => void }).unref?.();
+    (s.heartbeatTick as unknown as { unref?: () => void }).unref?.();
   }
 
   /** 轮询 inbox、按入站三态裁决，返回 accept 的消息并打印预览。limit 留空=不限。 */
@@ -740,8 +740,6 @@ export async function bootstrap() {
     mailboxEnabled,
     mailbox,
     inboundRefs,
-    heartbeatTick,
-    mailboxClosed,
     closeMailbox,
     collectInbound,
     overBudget,
