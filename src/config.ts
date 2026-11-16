@@ -111,7 +111,6 @@ export type {
   RouteConfig,
 } from "./config/types.ts";
 
-/** paste.* 解析：settings.json > 内置默认（3 行 / 300 字符 / 8MB）。 */
 /**
  * 解析 settings.shell（v0.4.0 平台适配层）。
  *
@@ -298,6 +297,7 @@ export function parseMcpServers(raw: unknown): { servers: McpServerConfig[]; war
   return { servers, warnings };
 }
 
+/** paste.* 解析：settings.json > 内置默认（3 行 / 300 字符 / 8MB）。 */
 function resolvePasteConfig(raw: Raw | undefined): PasteConfig {
   const r = raw ?? {};
   return {

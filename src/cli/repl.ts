@@ -82,13 +82,6 @@ export function createRepl(s: AppSession): ReplState {
   /** 真正在跑 agent turn（不含斜杠命令/选择菜单）；状态行的时长只认它。 */
   repl.turnActive = false;
   /**
-   * 定时 / 自节奏循环提示（issue #25）。
-   *
-   * 丢弃条件用 `turnActive`（turn 正在跑）而不是 `draining`：`draining` 在「正在处理
-   * /loop 命令」时也为 true，用它会把启动瞬间的第一拍误丢。命令本身不占 turn，
-   * 此时把拍入队后 drain 的 while 会自然接上。
-   */
-  /**
    * 目标驱动自动续跑（issue #24 / #50）。
    *  - 检查命令：用户显式配置（与 hooks 同口径：不经审批、按配置自动跑）；
    *  - 模型判断：只在用户显式 `--judge` 时启用，一次独立小请求，结果标注为「模型判断」。
@@ -135,6 +128,13 @@ export function createRepl(s: AppSession): ReplState {
     },
   });
 
+  /**
+   * 定时 / 自节奏循环提示（issue #25）。
+   *
+   * 丢弃条件用 `turnActive`（turn 正在跑）而不是 `draining`：`draining` 在「正在处理
+   * /loop 命令」时也为 true，用它会把启动瞬间的第一拍误丢。命令本身不占 turn，
+   * 此时把拍入队后 drain 的 while 会自然接上。
+   */
   repl.loopScheduler = new LoopScheduler({
     enqueue: (prompt) => {
       if (repl.turnActive || repl.queue.length > 0) return false;

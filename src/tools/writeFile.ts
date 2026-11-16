@@ -4,8 +4,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { lspServers } from "../lsp/index.ts";
-import { gateTool, notExecuted, type ToolImpl } from "./types.ts";
-import { ToolError } from "./types.ts";
+import { ToolError, gateTool, notExecuted, type ToolImpl } from "./types.ts";
 import { abs, assertNotGlobalSkills, assertRawImmutable, requireFile } from "./fsPaths.ts";
 
 export const writeFileTool: ToolImpl = {

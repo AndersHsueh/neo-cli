@@ -18,13 +18,12 @@ import { contentText } from "../llm.ts";
 import type { Message } from "../llm.ts";
 import { applyTier, normalizeTierName, tierAvailable, type Config, type ModelTier } from "../config.ts";
 import { resolveAndApplyModelWindow } from "../env/modelWindows.ts";
-import { toolSpecs } from "./index.ts";
+import { PLAN_ONLY_TOOL_NAMES, TOOL_NAMES_EXCLUDED_FOR_SUBAGENT, toolSpecs } from "./index.ts";
 import { TIER_ORDER } from "../classifier/types.ts";
 import { getEnvForPrompt } from "../env/probe.ts";
 import { formatEnvPrompt } from "../env/render.ts";
 import { normalizePromptTierRequest, renderSubagentPrompt } from "../prompt/subagent.ts";
 import { ToolError, type ToolCtx, type ToolImpl } from "./types.ts";
-import { PLAN_ONLY_TOOL_NAMES, TOOL_NAMES_EXCLUDED_FOR_SUBAGENT } from "./index.ts";
 
 /** 子代理迭代上限。子代理是单一任务，跑满主代理的 80 次迭代意味着早已跑偏。 */
 const SUB_MAX_ITERATIONS = 24;

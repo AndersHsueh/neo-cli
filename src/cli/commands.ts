@@ -100,8 +100,6 @@ export async function dispatchCommand(line: string, ctx: CommandContext): Promis
 }
 
 /** 顶层 case 名。嵌套 switch（/memory）缩进更深，不会被算进来。 */
-
-/** 顶层 case 名。嵌套 switch（/memory）缩进更深，不会被算进来。 */
 export function implementedCommandNames(source?: string): string[] {
   const text = source ?? [
     readFileSync(new URL("./commands.ts", import.meta.url), "utf8"),

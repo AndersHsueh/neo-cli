@@ -8,8 +8,7 @@ import type { PermissionMode } from "../agent.ts";
 import { renderPlan } from "../agent.ts";
 import { contentText } from "../llm.ts";
 import { initProjectLevel as initProjectLevelImpl } from "../memory/init.ts";
-import { sessionLiveness, renameSession, takenAliveNames } from "../mailbox/identity.ts";
-import { readProfile } from "../mailbox/identity.ts";
+import { readProfile, sessionLiveness, renameSession, takenAliveNames } from "../mailbox/identity.ts";
 import { mailboxRoot } from "../mailbox/types.ts";
 import { chooseSessionName } from "../sessionName.ts";
 import {

@@ -50,12 +50,6 @@ export interface StdioRpcOptions {
 const MAX_LINE = 8 * 1024 * 1024;
 
 /**
- * 一个 stdio JSON-RPC 连接。
- *
- * 生命周期：start() → request()* → close()。任何一侧断开都会让**所有**在途请求
- * 立刻 reject（而不是等到超时），这样工具调用能马上给模型一句「连接已断开」。
- */
-/**
  * 传输层最小契约（issue #29）：stdio 与 HTTP 两种实现都满足它，
  * 客户端管理器只依赖这层，不关心底下是子进程还是 fetch。
  */
@@ -69,6 +63,12 @@ export interface McpRpc {
   close(): void;
 }
 
+/**
+ * 一个 stdio JSON-RPC 连接。
+ *
+ * 生命周期：start() → request()* → close()。任何一侧断开都会让**所有**在途请求
+ * 立刻 reject（而不是等到超时），这样工具调用能马上给模型一句「连接已断开」。
+ */
 export class StdioRpc implements McpRpc {
   private proc: Subprocess<"pipe", "pipe", "pipe"> | null = null;
   private nextId = 1;

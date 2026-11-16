@@ -25,16 +25,6 @@ export function isParallelToolCallsRejection(err: unknown): boolean {
 /* ------------------------------------------------------------------ */
 
 /**
- * 服务端因 max_tokens 超过**该模型**的上限而拒绝时，从错误文案里取出上限。
- *
- * 为什么需要：上限因模型而异（MiniMax 实测：M3 系 524,288，M2.7 系 196,608），而 provider 级
- * 的 `max_tokens` 对四个档位共用 —— 配成 M3 能接受的值，切到 fast 档的 M2.7 就必然 400。
- * 不可能让用户逐模型手工调配置，所以按报错学习、夹紧、重发。
- *
- * 只在 400/422 且文案同时出现 max tokens 语义与「>/超过/exceed」时才认，并且要求
- * 解析出的上限小于本次发送的值（否则夹紧没有意义，不能死循环）。
- */
-/**
  * 上下文窗口类错误文案（context length / prompt too long）。
  * 由 agent 的 overflow 恢复处理，max_tokens 的学习与降级都不碰。
  */
@@ -54,6 +44,16 @@ export function isAuthErrorText(text: string): boolean {
   );
 }
 
+/**
+ * 服务端因 max_tokens 超过**该模型**的上限而拒绝时，从错误文案里取出上限。
+ *
+ * 为什么需要：上限因模型而异（MiniMax 实测：M3 系 524,288，M2.7 系 196,608），而 provider 级
+ * 的 `max_tokens` 对四个档位共用 —— 配成 M3 能接受的值，切到 fast 档的 M2.7 就必然 400。
+ * 不可能让用户逐模型手工调配置，所以按报错学习、夹紧、重发。
+ *
+ * 只在 400/422 且文案同时出现 max tokens 语义与「>/超过/exceed」时才认，并且要求
+ * 解析出的上限小于本次发送的值（否则夹紧没有意义，不能死循环）。
+ */
 export function parseMaxTokensLimit(err: unknown, sent: number): number | null {
   if (!(err instanceof LLMError)) return null;
   if (err.status !== 400 && err.status !== 422) return null;

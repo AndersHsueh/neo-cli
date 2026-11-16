@@ -377,17 +377,6 @@ export async function runHooks(this: Agent,
   }
 
   /**
-   * 轮末 TurnEnd（issue #3）。
-   *
-   * 只在**主代理**的回合结束时触发：子代理的 send() 也会走到这里，
-   * 但子代理的「回合」不是用户眼里的回合 —— 让 TurnEnd 在子代理里也跑，
-   * 一次用户请求会触发 N+1 次，且子代理的统计会污染用户的 hook 逻辑。
-   * Pre/PostToolUse 则相反：子代理的工具调用同样触发（见 makeCtx）。
-   *
-   * 返回非 null = 有 onFailure=block 的 TurnEnd hook 失败，字符串是给用户/模型的
-   * 诊断（调用方会把它并进 errorMessage 并标 hadError）。
-   */
-  /**
    * 轮末 TurnEnd（issue #3）+ Notification 的 turn_end（issue #56）。
    *
    * 只在**主代理**的回合结束时触发：子代理的 send() 也会走到这里，

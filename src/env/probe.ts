@@ -8,8 +8,7 @@
  *  - 不跑 sudo、不 dump 全量 env、不联网；
  *  - 所有外部依赖可注入，便于单测模拟 darwin/linux/win32。
  */
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
-import { statfsSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, renameSync, statfsSync, writeFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { homedir, hostname as osHostname, arch as osArch, cpus, freemem, release, totalmem } from "node:os";
 import { dirname, join } from "node:path";
