@@ -1,5 +1,5 @@
 import { existsSync, readFileSync } from "node:fs";
-import { resolve, join } from "node:path";
+import { join } from "node:path";
 import { tierDisplayName, tierChoiceLabel, type Config } from "../config.ts";
 import { Agent } from "../agent.ts";
 import { clipPaths, clipReason, clipToolArguments, clipToolOutput } from "../streamJson.ts";
@@ -40,27 +40,14 @@ type BootstrapSession = Exclude<Awaited<ReturnType<typeof bootstrap>>, number>;
 export async function startSession(s: BootstrapSession) {
   const {
     args,
-    requestedTier,
-    overrides,
-    worktreeInfo,
     cfg,
-    effectiveFallbacks,
     interactiveTTY,
-    preComposerRows,
-    dockHost,
-    dock,
-    jsonMode,
     streamJsonMode,
     structuredMode,
     ui,
-    maybeProbeOutputLimit,
-    announcedCapabilityGap,
     announceCapabilityGap,
     restored,
     meta,
-    resumeRoot,
-    isRunningSession,
-    resumePreviousName,
     classifier,
     sess,
     streamWriter,
@@ -68,19 +55,13 @@ export async function startSession(s: BootstrapSession) {
     rewindLog,
     memoryMode,
     memory,
-    mailboxEnabled,
     mailbox,
     inboundRefs,
-    heartbeatTick,
-    mailboxClosed,
     closeMailbox,
     collectInbound,
-    overBudget,
-    onPromptSelection,
     promptManager,
     projectRules,
     scopedRuleList,
-    alwaysOnRules,
     fallbackController,
   } = s;
   const agent = new Agent({

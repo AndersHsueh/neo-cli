@@ -8,52 +8,32 @@
  * 本文件只负责循环。类型在 types.ts，预算提示在 steer.ts，权限判定在 policy.ts，
  * 压缩切分在 compact.ts。新增一种宿主能力走 AgentOptions 回调，不要把具体模块 import 进来。
  */
-import { chatStream, estimateTokens, contentText, LLMError, type Message, type StreamResult, type ToolSpec, type Usage } from "../llm.ts";
+import { chatStream, estimateTokens, type Message, type ToolSpec, type Usage } from "../llm.ts";
 import type { Classifier } from "../classifier/index.ts";
 import { applyTier, type Config } from "../config.ts";
-import { StreamFormatter } from "../ui/stream.ts";
-import { renderMarkdown } from "../ui/render.ts";
-import { c, colorEnabled } from "../ui/theme.ts";
-import { dispatch, toolSpecs, toolKindOf, isParallelizable, TOOL_NAMES_EXCLUDED_FOR_SUBAGENT } from "../tools/index.ts";
-import { ToolError, type ToolCtx } from "../tools/types.ts";
-import { appendTurnLog } from "../turnDiagnostics.ts";
-import { isContextOverflowError, parseContextLimitFromError } from "../contextWindow.ts";
+import { toolSpecs, TOOL_NAMES_EXCLUDED_FOR_SUBAGENT } from "../tools/index.ts";
+import { ToolError } from "../tools/types.ts";
 import { formatModelLine } from "../prompt/modelLine.ts";
 import { isRecallMessage } from "../memory/port.ts";
 import { applyCompaction, planCompaction } from "./compact.ts";
-import { decidePermission } from "./policy.ts";
 import {
   PlanSession,
   PLAN_CONTROL_TOOLS,
   effectivePermissionMode,
   filterPlanTools,
   implementationMessage,
-  planModeMessage,
   type PlanDraft,
   type PlanSnapshot,
 } from "./plan-mode.ts";
-import { previewArgs } from "./render.ts";
-import { budgetMessage as buildBudgetMessage, readGoalSafe } from "./steer.ts";
 import type {
   AgentIO,
   AgentOptions,
-  AssistantMessageEventData,
   PermissionMode,
-  ToolEndEventData,
-  ToolEventStatus,
-  ToolStartEventData,
   TurnStats,
   UsageBucket,
 } from "./types.ts";
 import type { RuleMatch } from "../rules/index.ts";
-import {
-  dispatchHooks,
-  describeOutcome,
-  hasAnyHook,
-  type HookEvent,
-  type HookPayload,
-  type NotificationReason,
-} from "../hooks/index.ts";
+import { hasAnyHook } from "../hooks/index.ts";
 
 import { sendTurn } from "./sendTurn.ts";
 import {
@@ -88,18 +68,6 @@ export type {
   TurnStats,
 } from "./types.ts";
 export { renderFinal } from "./render.ts";
-
-/**
- * #37：把 DispatchResult 映射为公开工具状态。
- *
- * `executed === false` 表示工具根本没跑（用户拒绝 / plan 拒绝 / Pre 阻断 /
- * 参数非法 / 未知工具），必须区别于「跑了但失败」——这也是 `settleToolOutcome`
- * 保持中性的同一判据。
- */
-function toolStatusOf(r: { ok: boolean; executed?: boolean }): ToolEventStatus {
-  if (r.executed === false) return "not_executed";
-  return r.ok ? "success" : "failure";
-}
 
 export class Agent {
   messages: Message[] = [];

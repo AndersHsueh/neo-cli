@@ -20,7 +20,7 @@ import { fileURLToPath } from "node:url";
 
 import type { EnvConfig } from "./env/types.ts";
 import type { ShellConfig } from "./shell.ts";
-import { parseHooksConfig, type HooksConfig } from "./hooks/types.ts";
+import { parseHooksConfig } from "./hooks/types.ts";
 import { DEFAULT_SELECTION_CONFIG, TIER_ORDER, type PromptSelectionConfig } from "./prompt/select.ts";
 
 import {
@@ -33,35 +33,21 @@ import {
 import {
   API_TYPE_PREFERENCE,
   ConfigError,
-  DEFAULT_LSP,
-  DEFAULT_OUTPUT_PROBE,
-  DEFAULT_PARALLEL_TOOL_CALLS,
-  DEFAULT_REPO_MAP,
   DEFAULT_RETRY_CONFIG,
   IMPLEMENTED_PROVIDER_TYPES,
-  MAX_MODEL_FALLBACKS,
   MODEL_TIERS,
   TIER_FIELD,
-  applyModelTarget,
   isImplemented,
   isModelTier,
-  normalizeTierName,
-  parseFallbackTarget,
   resolveLspConfig,
   resolveModelFallback,
   resolveOutputProbe,
   resolveParallelToolCalls,
   resolveRepoMapConfig,
-  tierChoiceLabel,
-  tierDisplayName,
   type Config,
-  type LspConfig,
   type McpServerConfig,
   type MemoryConfig,
-  type ModelTarget,
   type ModelTier,
-  type OutputProbeSettings,
-  type ParallelToolCallsMode,
   type PasteConfig,
   type ProviderConfig,
   type ProviderType,
@@ -77,7 +63,53 @@ import {
   normalizeBaseUrl,
 } from "./config/types.ts";
 
-export * from "./config/types.ts";
+// 公共 API 以拆分前 src/config.ts 的导出为准；Raw、TIER_FIELD、num/bool/str 等解析辅助只在配置模块内部使用，不再导出。
+export {
+  API_TYPE_PREFERENCE,
+  ConfigError,
+  DEFAULT_LSP,
+  DEFAULT_OUTPUT_PROBE,
+  DEFAULT_PARALLEL_TOOL_CALLS,
+  DEFAULT_REPO_MAP,
+  DEFAULT_RETRY_CONFIG,
+  IMPLEMENTED_PROVIDER_TYPES,
+  MAX_MODEL_FALLBACKS,
+  MODEL_TIERS,
+  applyModelTarget,
+  isImplemented,
+  isModelTier,
+  normalizeBaseUrl,
+  normalizeTierName,
+  parseFallbackTarget,
+  resolveLspConfig,
+  resolveModelFallback,
+  resolveOutputProbe,
+  resolveParallelToolCalls,
+  resolveRepoMapConfig,
+  tierChoiceLabel,
+  tierDisplayName,
+} from "./config/types.ts";
+export type {
+  Config,
+  LspConfig,
+  LspServerConfig,
+  McpHttpServerConfig,
+  McpServerBase,
+  McpServerConfig,
+  McpSseServerConfig,
+  McpStdioServerConfig,
+  MemoryConfig,
+  ModelTarget,
+  ModelTier,
+  OutputProbeSettings,
+  ParallelToolCallsMode,
+  PasteConfig,
+  ProviderConfig,
+  ProviderType,
+  RepoMapConfig,
+  RetryConfig,
+  RouteConfig,
+} from "./config/types.ts";
 
 /** paste.* 解析：settings.json > 内置默认（3 行 / 300 字符 / 8MB）。 */
 /**

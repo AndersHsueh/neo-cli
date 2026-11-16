@@ -230,7 +230,8 @@ function buildMailboxSection(): string {
 }
 
 /** /init 生成的记忆文件内容。 */
-export function buildMemoryFile(cfg: Config): string {  const tree = listFiles(cfg.cwd, 3, 400);
+export function buildMemoryFile(cfg: Config): string {
+  const tree = listFiles(cfg.cwd, 3, 400);
   return `# 项目记忆
 
 > 由 neo 的 /init 自动生成于 ${new Date().toISOString()}

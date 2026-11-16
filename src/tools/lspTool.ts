@@ -3,7 +3,7 @@
  */
 import { lspServers, LSP_OPERATIONS, LSP_POSITION_OPERATIONS, type CallDirection, type LspOperation } from "../lsp/index.ts";
 import { ToolError, type ToolImpl } from "./types.ts";
-import { abs, requireFile } from "./fsPaths.ts";
+import { abs } from "./fsPaths.ts";
 
 export const lspTool: ToolImpl = {
   sensitive: false,

@@ -32,7 +32,6 @@ import {
   type SessionState,
   type TurnOutcome,
   type WatchdogKind,
-  type WatchdogNotice,
   type WatchdogVerdict,
 } from "./types.ts";
 

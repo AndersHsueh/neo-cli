@@ -1,50 +1,17 @@
 /** Agent.send 的回合循环，抽到独立模块以免 loop.ts 超过行数上限。 */
-import { chatStream, estimateTokens, contentText, LLMError, type Message, type StreamResult, type ToolSpec, type Usage } from "../llm.ts";
-import type { Classifier } from "../classifier/index.ts";
-import { applyTier, type Config } from "../config.ts";
+import { estimateTokens, LLMError, type Message, type ToolSpec } from "../llm.ts";
 import { StreamFormatter } from "../ui/stream.ts";
 import { renderMarkdown } from "../ui/render.ts";
 import { c, colorEnabled } from "../ui/theme.ts";
-import { dispatch, toolSpecs, toolKindOf, isParallelizable, TOOL_NAMES_EXCLUDED_FOR_SUBAGENT } from "../tools/index.ts";
-import { ToolError, type ToolCtx } from "../tools/types.ts";
-import { appendTurnLog } from "../turnDiagnostics.ts";
+import { dispatch, isParallelizable } from "../tools/index.ts";
 import { isContextOverflowError, parseContextLimitFromError } from "../contextWindow.ts";
-import { formatModelLine } from "../prompt/modelLine.ts";
-import { isRecallMessage } from "../memory/port.ts";
-import { applyCompaction, planCompaction } from "./compact.ts";
-import { decidePermission } from "./policy.ts";
-import {
-  PlanSession,
-  PLAN_CONTROL_TOOLS,
-  effectivePermissionMode,
-  filterPlanTools,
-  implementationMessage,
-  planModeMessage,
-  type PlanDraft,
-  type PlanSnapshot,
-} from "./plan-mode.ts";
 import { previewArgs } from "./render.ts";
-import { budgetMessage as buildBudgetMessage, readGoalSafe } from "./steer.ts";
 import type {
-  AgentIO,
-  AgentOptions,
-  AssistantMessageEventData,
-  PermissionMode,
   ToolEndEventData,
   ToolEventStatus,
   ToolStartEventData,
   TurnStats,
-  UsageBucket,
 } from "./types.ts";
-import type { RuleMatch } from "../rules/index.ts";
-import {
-  dispatchHooks,
-  describeOutcome,
-  hasAnyHook,
-  type HookEvent,
-  type HookPayload,
-  type NotificationReason,
-} from "../hooks/index.ts";
 
 import type { Agent } from "./loop.ts";
 

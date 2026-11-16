@@ -2,8 +2,7 @@
  * glob 工具与 glob 模式编译。
  */
 import { statSync } from "node:fs";
-import { join } from "node:path";
-import { ToolError, type ToolImpl } from "./types.ts";
+import type { ToolImpl } from "./types.ts";
 import { listSearchFiles } from "./fileList.ts";
 import { abs, requireDir } from "./fsPaths.ts";
 

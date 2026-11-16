@@ -204,14 +204,6 @@ export class Console {
       this.dock.tool(this.toolLineNow());
       return;
     }
-    const seg = toolLineSegments({
-      name: this.toolName,
-      args: this.toolArgs,
-      width: this.cols(),
-      dots: this.toolDots,
-      status: this.toolStatus,
-      errorText: this.toolError,
-    });
     this.write(`\r\x1b[2K${this.toolLineNow()}`);
   }
 

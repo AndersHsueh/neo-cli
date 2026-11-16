@@ -2,11 +2,11 @@
  * grep 工具：按正则搜索文件内容。
  */
 import { existsSync, readFileSync, statSync } from "node:fs";
-import { relative, sep } from "node:path";
+import { sep } from "node:path";
 import { ToolError, type ToolImpl } from "./types.ts";
 import { listSearchFiles } from "./fileList.ts";
 import { globToRegExp } from "./glob.ts";
-import { MAX_GREP_FILE, abs, requireDir, requireFile } from "./fsPaths.ts";
+import { MAX_GREP_FILE, abs, requireDir } from "./fsPaths.ts";
 
 export const grepTool: ToolImpl = {
   sensitive: false,

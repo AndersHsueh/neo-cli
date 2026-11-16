@@ -199,7 +199,6 @@ export interface ProbeStaticOptions {
 /** 有副作用的系统命令一律不经 shell：直接 `--version`，800ms 超时。 */
 export function probeStatic(opts: ProbeStaticOptions): EnvStatic {
   const deps = resolveDeps(opts.deps);
-  const platform = deps.platform;
   const shell = opts.shell ?? deps.shell ?? getShell();
   const now = deps.now();
 

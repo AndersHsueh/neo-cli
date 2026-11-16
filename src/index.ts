@@ -6,8 +6,6 @@
  * 会话落盘在 cli/sessions.ts，Agent 循环在 agent/loop.ts。
  * 这里只负责把它们接起来。新增命令不要改本文件。
  */
-import { homedir } from "node:os";
-import { rule } from "./ui/theme.ts";
 import { bootstrap } from "./cli/bootstrap.ts";
 import { startSession } from "./cli/sessionStart.ts";
 import { runOneshotOrPiped } from "./cli/oneshot.ts";
@@ -23,6 +21,4 @@ async function main(): Promise<number> {
 }
 
 const code = await main();
-void homedir;
-void rule;
 process.exit(code);

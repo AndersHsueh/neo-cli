@@ -1,9 +1,8 @@
-import { resolve, join } from "node:path";
 import { dispatchCommand } from "./commands.ts";
 import { persist, showStats } from "./sessions.ts";
 import { authorizeShell, executeShell, runShell } from "./shell.ts";
-import { bindAttachments, resolveLine, type Attachment, type QueuedLine } from "../attachments.ts";
-import { type SelectDeps } from "../ui/select.ts";
+import { bindAttachments, resolveLine, type Attachment } from "../attachments.ts";
+import type { SelectDeps } from "../ui/select.ts";
 import { c } from "../ui/theme.ts";
 import { FileIndex } from "../input/fileIndex.ts";
 import { expandReferences } from "../input/references.ts";
@@ -17,25 +16,11 @@ import { runDriveCheck } from "../driveCheck.ts";
 import * as mailboxState from "../mailbox/state.ts";
 import { formatIncomingFrame, formatNotice, formatNoticePreview, formatPreview } from "../mailbox/inbound.ts";
 import { LoopScheduler, formatLoopStatus } from "../loop.ts";
-import { type RewindMode } from "../rewind.ts";
+import type { RewindMode } from "../rewind.ts";
 import { DriveManager, formatDriveState } from "../drive.ts";
 import { makeDriveJudge } from "../driveJudge.ts";
 import { outcomeOf, type LastTurnMeta } from "../turnDiagnostics.ts";
 import type { AppSession } from "./sessionStart.ts";
-
-type QueueOrigin = "user" | "mailbox" | "notice";
-interface QueueItem extends QueuedLine {
-  origin: QueueOrigin;
-  /** mailbox/notice 的来源 session（状态机 turn.from）。 */
-  from?: string;
-  /** 由 `/loop` 注入的拍（issue #25）：需要像用户输入一样在 scrollback 回显一行。 */
-  loop?: boolean;
-  /**
-   * shell 输入模式（issue #30）提交的命令：text 是命令原文（不含 `!`），
-   * 由 drain 直接交给 runShellWithTui —— 不再走「整行 startsWith !」那条，避免双重剥前缀。
-   */
-  shell?: boolean;
-}
 
 export type ReplState = Record<string, any>;
 
@@ -44,76 +29,59 @@ export type ReplState = Record<string, any>;
  */
 export function createRepl(s: AppSession): ReplState {
   const {
-    args,
-    requestedTier,
-    overrides,
-    worktreeInfo,
     cfg,
-    effectiveFallbacks,
-    interactiveTTY,
-    preComposerRows,
-    dockHost,
-    dock,
-    jsonMode,
-    streamJsonMode,
-    structuredMode,
     ui,
-    maybeProbeOutputLimit,
-    announcedCapabilityGap,
-    announceCapabilityGap,
-    restored,
-    meta,
-    resumeRoot,
-    isRunningSession,
-    resumePreviousName,
     classifier,
     sess,
-    streamWriter,
     checkpoints,
     rewindLog,
     memoryMode,
     memory,
-    mailboxEnabled,
     mailbox,
     inboundRefs,
-    heartbeatTick,
-    mailboxClosed,
-    closeMailbox,
     collectInbound,
-    overBudget,
-    onPromptSelection,
     promptManager,
     projectRules,
-    scopedRuleList,
     alwaysOnRules,
-    fallbackController,
     agent,
-    persistBackgroundJobs,
     restoredJobs,
     syncBackgroundJobs,
     sessionTodos,
-    mcpManager,
-    memoryFile,
-    alwaysOnText
+    mcpManager
   } = s;
   const repl = {} as ReplState;
   // ---- 共享：队列 / drain / 输入源抽象（TTY composer 与 readline 共用）----
-  repl.composer = null;  repl.titleAnimator = null;  repl.externalShellActive = false;  repl.promptInput = () => {};  repl.closeInput = () => {};  repl.selectDeps = {    router: { on: ((_k, _fn) => () => {}) as SelectDeps["router"]["on"] },
+  repl.composer = null;
+  repl.titleAnimator = null;
+  repl.externalShellActive = false;
+  repl.promptInput = () => {};
+  repl.closeInput = () => {};
+  repl.selectDeps = {
+    router: { on: ((_k, _fn) => () => {}) as SelectDeps["router"]["on"] },
     isTTY: false,
   };
   // 空闲 tick 的互斥条件（select / 审批问句期间不塞 mailbox 自动 turn）
-  repl.selectActive = false;  repl.selectCancel = undefined;
-  repl.questionPending = false;  repl.clipboardUnsupportedNotified = false;
+  repl.selectActive = false;
+  repl.selectCancel = undefined;
+  repl.questionPending = false;
+  repl.clipboardUnsupportedNotified = false;
   // 输入串行化：粘贴多行或快速回车时，readline 的 line 事件会并发触发。
   // 用队列 + 单 worker 保证处理顺序与输出不交错。
   // M1 粘贴增强（PRD §5.4）：queue 元素升级为 QueuedLine（行文本 + 绑定附件）。
   // 跨会话消息（PRD v1.2 §4.4 P2）：合成行带 origin，与用户行共享同一队列。
-  repl.queue = [];  repl.draining = false;  /** 会话内 turn 序号（状态机审计用）。 */
-  repl.turnSeq = 0;  /** 连续自动 turn 计数（PRD §4.4 链条上限）；用户输入重置。 */
-  repl.autoTurnChain = 0;  /** 当前 turn 的 mailbox 触发者；只有它才允许 send_message 自动补 reply_to。 */
+  repl.queue = [];
+  repl.draining = false;
+  /** 会话内 turn 序号（状态机审计用）。 */
+  repl.turnSeq = 0;
+  /** 连续自动 turn 计数（PRD §4.4 链条上限）；用户输入重置。 */
+  repl.autoTurnChain = 0;
+  /** 当前 turn 的 mailbox 触发者；只有它才允许 send_message 自动补 reply_to。 */
   s.activeTurnFrom = null;
-  repl.turnStartedAt = 0;  repl.lastTurnMs = 0;  /** 真正在跑 agent turn（不含斜杠命令/选择菜单）；状态行的时长只认它。 */
-  repl.turnActive = false;  /**
+  repl.turnStartedAt = 0;
+  repl.lastTurnMs = 0;
+  /** 真正在跑 agent turn（不含斜杠命令/选择菜单）；状态行的时长只认它。 */
+  repl.turnActive = false;
+  /**
    * 定时 / 自节奏循环提示（issue #25）。
    *
    * 丢弃条件用 `turnActive`（turn 正在跑）而不是 `draining`：`draining` 在「正在处理
@@ -125,7 +93,8 @@ export function createRepl(s: AppSession): ReplState {
    *  - 检查命令：用户显式配置（与 hooks 同口径：不经审批、按配置自动跑）；
    *  - 模型判断：只在用户显式 `--judge` 时启用，一次独立小请求，结果标注为「模型判断」。
    */
-  repl.drive = new DriveManager({    runCheck: async (cmd) => {
+  repl.drive = new DriveManager({
+    runCheck: async (cmd) => {
       try {
         return await runDriveCheck(cmd, cfg);
       } catch (e) {
@@ -166,7 +135,8 @@ export function createRepl(s: AppSession): ReplState {
     },
   });
 
-  repl.loopScheduler = new LoopScheduler({    enqueue: (prompt) => {
+  repl.loopScheduler = new LoopScheduler({
+    enqueue: (prompt) => {
       if (repl.turnActive || repl.queue.length > 0) return false;
       repl.queue.push({ text: prompt, attachments: [], origin: "user", loop: true });
       s.composerRef?.setQueueCount(repl.queue.length);
@@ -572,7 +542,8 @@ export function createRepl(s: AppSession): ReplState {
    *  - 委派 watchdog 每 cross_session_watchdog_interval_s（默认 120s）检查一次；
    *  - 自动 turn 链超过上限时暂停拉取（用户输入会重置）。
    */
-  repl.runIdleTick = (): void => {    if (!mailbox) return;
+  repl.runIdleTick = (): void => {
+    if (!mailbox) return;
     if (repl.draining || repl.queue.length > 0 || repl.selectActive || repl.questionPending) return;
     if (repl.autoTurnChain >= cfg.mailbox.autoTurnLimit) return;
 
@@ -607,7 +578,10 @@ export function createRepl(s: AppSession): ReplState {
 
   // 状态条每帧都会问 ctx；contextUsage() 会遍历全部 messages + stringify tools，
   // 500ms 节流一次即可（两位有效数字，人眼分辨不出）。
-  repl.ctxCacheValue = 0;  repl.ctxCacheAt = 0;  repl.ctxUsage = (): number => {    const now = Date.now();
+  repl.ctxCacheValue = 0;
+  repl.ctxCacheAt = 0;
+  repl.ctxUsage = (): number => {
+    const now = Date.now();
     if (now - repl.ctxCacheAt >= 500) {
       repl.ctxCacheValue = agent.contextUsage();
       repl.ctxCacheAt = now;

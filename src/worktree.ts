@@ -474,7 +474,6 @@ export function removeWorktree(
   if (!isValidWorktreeName(name)) {
     return { ok: false, needsForce: false, message: `worktree 名字非法："${name}"` };
   }
-  const path = worktreePath(repoRoot, name);
   const listed = listManaged(repoRoot, deps, opts.cwd);
   const target = listed.find((w) => w.name === name);
   if (!target) {

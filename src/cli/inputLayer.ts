@@ -1,5 +1,4 @@
 import { createInterface } from "node:readline";
-import { resolve, join } from "node:path";
 import { tierDisplayName } from "../config.ts";
 import { editInEditor } from "../editor.ts";
 import { persist, replayTranscript } from "./sessions.ts";
@@ -8,7 +7,7 @@ import { HotkeyRouter, doubleStrike } from "../hotkeys.ts";
 import { PasteCollector, shouldFold, assemblePaste } from "../paste.ts";
 import { makeTextAttachment, makeImageAttachment, bindAttachments, type Attachment } from "../attachments.ts";
 import { clipboardImagePlatform, readClipboardImage } from "../clipboard.ts";
-import { type SelectDeps } from "../ui/select.ts";
+import type { SelectDeps } from "../ui/select.ts";
 import { Composer, type ComposerStatus } from "../tui/composer.ts";
 import { getBranch } from "../git.ts";
 import { TitleAnimator } from "../tui/title.ts";
@@ -40,56 +39,22 @@ interface TabCycle {
 export async function runInteractive(s: AppSession): Promise<number> {
   const {
     args,
-    requestedTier,
-    overrides,
-    worktreeInfo,
     cfg,
-    effectiveFallbacks,
     interactiveTTY,
     preComposerRows,
-    dockHost,
     dock,
-    jsonMode,
-    streamJsonMode,
-    structuredMode,
     ui,
-    maybeProbeOutputLimit,
-    announcedCapabilityGap,
-    announceCapabilityGap,
     restored,
-    meta,
-    resumeRoot,
-    isRunningSession,
-    resumePreviousName,
-    classifier,
     sess,
-    streamWriter,
     checkpoints,
     rewindLog,
-    memoryMode,
     memory,
-    mailboxEnabled,
-    mailbox,
-    inboundRefs,
-    heartbeatTick,
-    mailboxClosed,
     closeMailbox,
-    collectInbound,
     overBudget,
-    onPromptSelection,
-    promptManager,
-    projectRules,
-    scopedRuleList,
-    alwaysOnRules,
-    fallbackController,
     agent,
-    persistBackgroundJobs,
-    restoredJobs,
-    syncBackgroundJobs,
     sessionTodos,
     mcpManager,
-    memoryFile,
-    alwaysOnText
+    memoryFile
   } = s;
   // ---- 交互模式 ----
   if (process.stdin.isTTY) {

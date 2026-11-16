@@ -1,4 +1,3 @@
-import { join } from "node:path";
 import { clipReason, type StreamResultExitCode, type StreamResultStatus } from "../streamJson.ts";
 import { persist } from "./sessions.ts";
 import { c } from "../ui/theme.ts";
@@ -16,56 +15,14 @@ import type { AppSession } from "./sessionStart.ts";
 export async function runOneshotOrPiped(s: AppSession): Promise<number | null> {
   const {
     args,
-    requestedTier,
-    overrides,
-    worktreeInfo,
     cfg,
-    effectiveFallbacks,
-    interactiveTTY,
-    preComposerRows,
-    dockHost,
-    dock,
     jsonMode,
     streamJsonMode,
     structuredMode,
-    ui,
-    maybeProbeOutputLimit,
-    announcedCapabilityGap,
-    announceCapabilityGap,
-    restored,
-    meta,
-    resumeRoot,
-    isRunningSession,
-    resumePreviousName,
-    classifier,
     sess,
     streamWriter,
-    checkpoints,
-    rewindLog,
-    memoryMode,
     memory,
-    mailboxEnabled,
-    mailbox,
-    inboundRefs,
-    heartbeatTick,
-    mailboxClosed,
-    closeMailbox,
-    collectInbound,
-    overBudget,
-    onPromptSelection,
-    promptManager,
-    projectRules,
-    scopedRuleList,
-    alwaysOnRules,
-    fallbackController,
-    agent,
-    persistBackgroundJobs,
-    restoredJobs,
-    syncBackgroundJobs,
-    sessionTodos,
-    mcpManager,
-    memoryFile,
-    alwaysOnText
+    agent
   } = s;
   // ---- 单次模式 ----
   if (args.print !== null) {

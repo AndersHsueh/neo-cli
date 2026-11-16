@@ -5,12 +5,11 @@
  */
 import type { EnvConfig } from "../env/types.ts";
 import type { ShellConfig } from "../shell.ts";
-import { type HooksConfig } from "../hooks/types.ts";
-import { TIER_ORDER, type PromptSelectionConfig } from "../prompt/select.ts";
-import {
-  DEFAULT_MAILBOX_CONFIG,
-  type InboundPolicy,
-  type MailboxConfig,
+import type { HooksConfig } from "../hooks/types.ts";
+import type { PromptSelectionConfig } from "../prompt/select.ts";
+import type {
+  InboundPolicy,
+  MailboxConfig,
 } from "../mailbox/types.ts";
 
 class ConfigError extends Error {

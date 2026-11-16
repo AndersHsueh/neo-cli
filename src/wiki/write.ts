@@ -285,7 +285,6 @@ export function syncIndex(layout: WikiLayout, pageName: string, summary: string)
   }
 
   const text = readFileSync(p, "utf8");
-  const link = `[[${pageName}]]`;
   const lines = text.split("\n");
   const rowRe = new RegExp(`^\\|.*\\[\\[${escapeRe(pageName)}\\]\\]`);
 

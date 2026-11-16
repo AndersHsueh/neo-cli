@@ -14,7 +14,7 @@
  *  - **失败静默**：读不到/解析失败就当没有地图（增强项，不得阻塞启动）。
  */
 import { readdirSync, readFileSync, statSync, type Dirent } from "node:fs";
-import { dirname, extname, join, posix, relative, sep } from "node:path";
+import { extname, join, posix, sep } from "node:path";
 
 import { DEFAULT_REPO_MAP, type Config, type RepoMapConfig } from "../config.ts";
 
@@ -423,7 +423,8 @@ export function buildRepoMap(cfg: Pick<Config, "cwd" | "repoMap">): RepoMap {
       cfg.cwd,
       collected.map((f) => f.rel),
     );
-    const sources = sortSourcesByRefs(collected, refs, (f) => f.rel);    const lines: string[] = [];
+    const sources = sortSourcesByRefs(collected, refs, (f) => f.rel);
+    const lines: string[] = [];
     let chars = 0;
     let symbols = 0;
     let truncated = false;

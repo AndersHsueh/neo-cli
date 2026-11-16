@@ -51,7 +51,6 @@ export class FrameRenderer {
   private active = false;
   /** 当前帧内光标所在行（下一次 erase 要从这里上移）。 */
   private cursorRowInFrame = 0;
-  private frameHeight = 0;
   private readonly sync: boolean;
 
   constructor(private readonly deps: FrameDeps) {
@@ -71,7 +70,6 @@ export class FrameRenderer {
     if (this.cursorRowInFrame > 0) s = `\x1b[${this.cursorRowInFrame}A\r`;
     s += "\x1b[0J";
     this.active = false;
-    this.frameHeight = 0;
     this.cursorRowInFrame = 0;
     return s;
   }
@@ -87,7 +85,6 @@ export class FrameRenderer {
     if (up > 0) body += `\x1b[${up}A`;
     body += `\r\x1b[${cursorCol + 1}G`;
     this.active = true;
-    this.frameHeight = safeRows.length;
     this.cursorRowInFrame = cursorRow;
     return body;
   }
@@ -142,7 +139,6 @@ export class FrameRenderer {
     if (this.cursorRowInFrame > 0) s = `\x1b[${this.cursorRowInFrame}A\r`;
     s += "\x1b[0J";
     this.active = false;
-    this.frameHeight = 0;
     this.cursorRowInFrame = 0;
     this.emit(s);
   }
@@ -150,7 +146,6 @@ export class FrameRenderer {
   /** 终端 resize 后：上一帧的行宽已失效，只能按旧输入行号尽力擦除再整帧重画。 */
   invalidate(): void {
     this.active = false;
-    this.frameHeight = 0;
     this.cursorRowInFrame = 0;
   }
 }

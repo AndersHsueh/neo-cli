@@ -2,7 +2,7 @@
  * shell / shell_output 工具：前台或后台执行命令，并按 id 读取后台输出。
  */
 import { existsSync, statSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { resolve } from "node:path";
 import { ToolError, gateTool, notExecuted, type ToolImpl } from "./types.ts";
 import { backgroundShells, shellStatusLabel } from "./backgroundShell.ts";
 import { shellMarks } from "./shellMarks.ts";

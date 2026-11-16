@@ -1,9 +1,9 @@
-import { resolve, join } from "node:path";
+import { resolve } from "node:path";
 import { loadConfig, switchProvider, applyTier, isImplemented, IMPLEMENTED_PROVIDER_TYPES, ConfigError, parseFallbackTarget, MAX_MODEL_FALLBACKS, normalizeTierName, type Config, type ModelTarget } from "../config.ts";
 import { Classifier, CLASSIFIER_NAMES, isClassifierName, type ClassifierName } from "../classifier/index.ts";
 import { ModelFallbackController } from "../modelFallback.ts";
 import { JsonlWriter, clipFallbackReason } from "../streamJson.ts";
-import { persist, printSessions } from "./sessions.ts";
+import { printSessions } from "./sessions.ts";
 import { VERSION } from "./version.ts";
 import { detectRepo, ensureWorktree } from "../worktree.ts";
 import { Console } from "../ui/console.ts";
@@ -220,7 +220,8 @@ export async function bootstrap() {
   // 会导致「真终端里 neo -p 零输出」。这里直接走 no-dock 的直写路径。
   const interactiveTTY =
     args.print === null && process.stdin.isTTY === true && process.stdout.isTTY === true;
-  s.composerRef = null;  /** composer 启动前的输出（banner / 记忆提示 / --resume 回放）先缓存，启动后一次性落到上方。 */
+  s.composerRef = null;
+  /** composer 启动前的输出（banner / 记忆提示 / --resume 回放）先缓存，启动后一次性落到上方。 */
   const preComposerRows: string[] = [];
   const dockHost: DockHost = {
     width: () => {
@@ -433,7 +434,8 @@ export async function bootstrap() {
   let restored: Message[] | null = null;
   let meta: SessionMeta | null = null;
   const resumeRoot = mailboxRoot();
-  s.sessionLabel = null;  const isRunningSession = (id: string): boolean =>
+  s.sessionLabel = null;
+  const isRunningSession = (id: string): boolean =>
     sessionLiveness(resumeRoot, id, { deadAfterMs: cfg.mailbox.deadAfterMs }) === "running";
   if (args.resume !== null || args.continueLast) {
     const target = args.resume ?? "last";
@@ -490,7 +492,9 @@ export async function bootstrap() {
   // stdoutClosed 由 writer 的 onClosed 钩子置位（EPIPE/写失败），是「无 result」的唯一物理例外；
   // turnNo 供每次 agent.send 前的 turn_started 与全部 onEvent 映射共用。
   let streamWriter: JsonlWriter | null = null;
-  s.stdoutClosed = false;  s.turnNo = 0;  if (streamJsonMode) {
+  s.stdoutClosed = false;
+  s.turnNo = 0;
+  if (streamJsonMode) {
     streamWriter = new JsonlWriter({ sessionId: sess.meta.id, cwd: cfg.cwd });
   }
 
@@ -590,11 +594,14 @@ export async function bootstrap() {
   /** 最近一次入站：对端 session → 消息 id；send_message 缺省 reply_to 时自动补任务号。 */
   const inboundRefs = new Map<string, string>();
 
-  s.mailboxTick = null;  let heartbeatTick: ReturnType<typeof setInterval> | null = null;
+  s.mailboxTick = null;
+  let heartbeatTick: ReturnType<typeof setInterval> | null = null;
   let mailboxClosed = false;
   /** 上次 watchdog 检查时间（P1 与 idle tick 共用）。 */
-  s.lastWatchdogAt = Date.now();  /** 上次因流式输出刷新 last_progress_at 的时间（节流，避免每个 chunk 写盘）。 */
-  s.lastStreamProgressAt = 0;  /** 清理信箱资源（幂等）：停 tick、删 .alive。 */
+  s.lastWatchdogAt = Date.now();
+  /** 上次因流式输出刷新 last_progress_at 的时间（节流，避免每个 chunk 写盘）。 */
+  s.lastStreamProgressAt = 0;
+  /** 清理信箱资源（幂等）：停 tick、删 .alive。 */
   function closeMailbox(): void {
     if (mailboxClosed) return;
     mailboxClosed = true;
@@ -642,7 +649,8 @@ export async function bootstrap() {
   // 归类：不是 #18 所指的「网关缺字段」那类无当下动作的诊断，而是当前配置的直接
   // 后果（提示词塞不进预算 → 模型可用上下文被吃掉一大块），用户当下就能补救。
   // 去重按 provider|model|窗口：同一状态只说一次，窗口变了算新事实。
-  s.bootBlockPrinted = false;  const overBudget = makeOverBudgetReporter({
+  s.bootBlockPrinted = false;
+  const overBudget = makeOverBudgetReporter({
     interactive: interactiveTTY,
     current: () => ({ provider: cfg.providerName, model: cfg.model }),
     log: (message) => logBootDiagnostic({ kind: "prompt-budget", message }),

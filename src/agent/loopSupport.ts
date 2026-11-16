@@ -1,42 +1,15 @@
 /** Agent 回合支持方法：日志、钩子、路径与收尾。 */
-import { chatStream, estimateTokens, contentText, LLMError, type Message, type StreamResult, type ToolSpec, type Usage } from "../llm.ts";
-import type { Classifier } from "../classifier/index.ts";
-import { applyTier, type Config } from "../config.ts";
-import { StreamFormatter } from "../ui/stream.ts";
-import { renderMarkdown } from "../ui/render.ts";
-import { c, colorEnabled } from "../ui/theme.ts";
-import { dispatch, toolSpecs, toolKindOf, isParallelizable, TOOL_NAMES_EXCLUDED_FOR_SUBAGENT } from "../tools/index.ts";
-import { ToolError, type ToolCtx } from "../tools/types.ts";
+import { contentText, type Message, type StreamResult } from "../llm.ts";
+import { toolKindOf } from "../tools/index.ts";
+import type { ToolCtx } from "../tools/types.ts";
 import { appendTurnLog } from "../turnDiagnostics.ts";
-import { isContextOverflowError, parseContextLimitFromError } from "../contextWindow.ts";
-import { formatModelLine } from "../prompt/modelLine.ts";
-import { isRecallMessage } from "../memory/port.ts";
-import { applyCompaction, planCompaction } from "./compact.ts";
 import { decidePermission } from "./policy.ts";
-import {
-  PlanSession,
-  PLAN_CONTROL_TOOLS,
-  effectivePermissionMode,
-  filterPlanTools,
-  implementationMessage,
-  planModeMessage,
-  type PlanDraft,
-  type PlanSnapshot,
-} from "./plan-mode.ts";
-import { previewArgs } from "./render.ts";
+import { planModeMessage } from "./plan-mode.ts";
 import { budgetMessage as buildBudgetMessage, readGoalSafe } from "./steer.ts";
 import type {
-  AgentIO,
-  AgentOptions,
   AssistantMessageEventData,
-  PermissionMode,
-  ToolEndEventData,
-  ToolEventStatus,
-  ToolStartEventData,
   TurnStats,
-  UsageBucket,
 } from "./types.ts";
-import type { RuleMatch } from "../rules/index.ts";
 import {
   dispatchHooks,
   describeOutcome,

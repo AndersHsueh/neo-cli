@@ -11,13 +11,11 @@
  * 不反向 import 本模块到 probe，避免循环。
  */
 import { arch, homedir, hostname, platform } from "node:os";
-import { join } from "node:path";
 import type { Config } from "../config.ts";
 import { modelsRequests } from "../llm.ts";
 import type { CapabilityFlag, ModelContextInfo } from "./types.ts";
 import { resolveContextWindow, type ResolvedWindow } from "../contextWindow.ts";
 import {
-  envRoot,
   loadEnv,
   machineKeyOf,
   readSnapshot,

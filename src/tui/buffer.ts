@@ -17,7 +17,7 @@
  * - 视觉行是左闭右开 `[start, end)`；光标落在折行边界时归后一行行首（B2）。
  */
 
-import { charWidth, displayWidth, graphemeWidth, graphemes } from "../ui/theme.ts";
+import { displayWidth, graphemeWidth, graphemes } from "../ui/theme.ts";
 
 /** 一条视觉行。start/end 是整段 text 的 code point 下标，`[start, end)`。 */
 export interface VisualLine {
@@ -398,8 +398,6 @@ export class TextBuffer {
  * 满足 `startsWith(prefix)` 的条目里前后跳；`down` 到底返回草稿；`reset()`（提交后）
  * 清导航态。`push` 忽略空/纯空白与和上一条完全相同的输入。
  */
-const HISTORY_LIMIT = 1000;
-
 export class InputHistory {
   private readonly entries: string[];
   /** 当前选中的条目下标；=== entries.length 表示未在导航。 */

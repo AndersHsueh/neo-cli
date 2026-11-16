@@ -17,12 +17,10 @@ import { fileURLToPath } from "node:url";
 
 export const WIKI_SECTION_START = "<!-- neo:wiki-workflow:start";
 export const WIKI_SECTION_END = "<!-- neo:wiki-workflow:end -->";
-/** 区块标记的完整开头（含说明尾巴），用于识别旧格式标记。 */
-const START_RE = /<!-- neo:wiki-workflow:start[^>]*-->/;
 /**
  * 整行就是 START 标记（允许前后空白）。
  *
- * 必须锚定 `^...$`：`START_RE` 是子串匹配，用户手写行里引用标记
+ * 必须锚定 `^...$`：只做子串匹配时，用户手写行里引用标记
  * （`- 别手改 <!-- ...start ... --> 之间的内容`）也会命中，把它当边界
  * 就会连同区块外的手写内容一起被替换掉。
  */

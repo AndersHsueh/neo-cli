@@ -8,42 +8,30 @@ import {
   completeLine,
   rankCommands,
   triggerAt,
-  type CommandEntry,
 } from "../input/completion.ts";
-import { reduce as reduceSelect, type SelectOption, type SelectState } from "../ui/select.ts";
+import { reduce as reduceSelect } from "../ui/select.ts";
 import {
   askAnswerText,
-  buildAskOptions,
   reduceAskUser,
   toggleSelected,
   type AskUserAnswer,
-  type AskUserOptionView,
-  type AskUserRequest,
-  type AskUserState,
 } from "../ui/askUser.ts";
-import { TextBuffer, InputHistory, layoutBuffer, type VisualLine } from "./buffer.ts";
-import { stripAnsi, truncateAnsi, wrapAnsi } from "./ansi.ts";
-import { PasteMachine, mapKey, type RawKey, type KeyAction } from "./keys.ts";
+import { TextBuffer, layoutBuffer } from "./buffer.ts";
+import { truncateAnsi, wrapAnsi } from "./ansi.ts";
+import { mapKey, type RawKey, type KeyAction } from "./keys.ts";
 import { shouldFold } from "../paste.ts";
 import {
-  EscDoublePress,
   REWIND_MODE_QUESTION,
   REWIND_TURN_QUESTION,
   modeMenuItems,
   rewindSummary,
   turnMenuItems,
 } from "./rewindMenu.ts";
-import type { RewindMode, RewindResult, RewindTurn } from "../rewind.ts";
+import type { RewindMode } from "../rewind.ts";
 import {
-  INPUT_VIEWPORT,
   DOUBLE_CTRL_C_MS,
-  NOTICE_DEFAULT_MS,
-  identityPaint,
   type Composer,
-  type SelectSession,
-  type AskState,
   type AskUserSession,
-  type TabCycle,
 } from "./composer.ts";
 
   // ---------------------------------------------------------------- 按键

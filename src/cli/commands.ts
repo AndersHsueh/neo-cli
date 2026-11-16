@@ -4,117 +4,16 @@
  * 每个 case 仍是一条命令的实现。分发走注册表，新增命令不用再改入口的 switch。
  * 命令名必须同时出现在 input/commands.ts，漂移守卫会对照两边。
  */
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { readFileSync } from "node:fs";
 
-import type { Agent, PermissionMode } from "../agent.ts";
-import { renderPlan } from "../agent.ts";
-import {
-  CLASSIFIER_NAMES,
-  isClassifierName,
-  type Classifier,
-} from "../classifier/index.ts";
-import type { CheckpointStore } from "../checkpoint.ts";
-import {
-  describeRoute,
-  isImplemented,
-  maskKey,
-  MODEL_TIERS,
-  normalizeTierName,
-  switchProvider,
-  applyTier,
-  tierChoiceLabel,
-  tierDisplayName,
-  type Config,
-} from "../config.ts";
-import {
-  currentModelCapabilityView,
-  detectAndRecordModelWindow,
-  formatCapabilityGapHint,
-  formatModelWindowLines,
-  refreshCapabilitiesAfterModelSwitch,
-  resolveAndApplyModelWindow,
-} from "../env/modelWindows.ts";
-import { loadEnv } from "../env/probe.ts";
-import { formatEnvForCli } from "../env/render.ts";
-import { syncEnvPage } from "../env/wiki.ts";
-import { rulesReport } from "../rules/index.ts";
-import { repoMapSummary } from "../prompt/repoMap.ts";
-import type { BackgroundView } from "../tools/background.ts";
-import type { ShellJobView } from "../tools/backgroundShell.ts";
-import type { RewindMode, RewindResult, RewindTurn } from "../rewind.ts";
-import type { DriveSpec } from "../drive.ts";
-import { formatInterval, parseLoopCommand, type LoopSpec } from "../loop.ts";
-import { formatShellJobs } from "../tools/backgroundShell.ts";
-import type { ProjectRule, RuleMatch } from "../rules/index.ts";
-import { contentText } from "../llm.ts";
-import { listModels } from "../llm.ts";
-import type { MemoryBridge } from "../memory/bridge.ts";
-import type { McpServerState } from "../mcp/client.ts";
-import type { PromptSelection } from "../prompt/select.ts";
-import type { ToolVisibility } from "../prompt/visibility.ts";
-import { ensureScopeLayout } from "../memory/layout.ts";
-import { initProjectLevel as initProjectLevelImpl } from "../memory/init.ts";
-import { sessionLiveness, renameSession, takenAliveNames } from "../mailbox/identity.ts";
-import { readProfile } from "../mailbox/identity.ts";
-import * as mailboxState from "../mailbox/state.ts";
-import { mailboxRoot, type Envelope } from "../mailbox/types.ts";
-import type { Mailbox } from "../mailbox/store.ts";
-import { chooseSessionName } from "../sessionName.ts";
-import { HOOK_EVENTS } from "../hooks/index.ts";
-import { renderMarkdown } from "../ui/render.ts";
-import {
-  buildReviewPrompt,
-  collectReviewDiff,
-  REVIEW_DIFF_LIMIT,
-  summarizePatch,
-} from "../review.ts";
-import {
-  detectRepo,
-  listManaged,
-  removeWorktree,
-  WORKTREE_BRANCH_PREFIX,
-  worktreeBranch,
-  worktreeRoot,
-} from "../worktree.ts";
-import {
-  applyRestored,
-  listSessions,
-  loadSession,
-  type SessionMeta,
-} from "../session.ts";
-import { renderSessionMarkdown } from "../sessionExport.ts";
 import {
   buildSkillSlashPrompt,
   describeSource,
   discoverSkills,
-  formatSkillLine,
   isValidSkillName,
-  normalizeDescription,
   tryLoadSkillForSlash,
 } from "../skills.ts";
-import { makeListPeersTool } from "../tools/mailbox.ts";
-import { runSubagent } from "../tools/task.ts";
-import { mainToolNames, toolNames } from "../tools/index.ts";
-import { formatTodos, type TodoItem } from "../tools/todo.ts";
-import type { ToolCtx } from "../tools/types.ts";
-import { select, type SelectDeps } from "../ui/select.ts";
-import type { Console } from "../ui/console.ts";
-import { formatToolCall } from "../ui/toolLog.ts";
-import { c, truncate } from "../ui/theme.ts";
-import { buildMemoryFile } from "../system-prompt.ts";
-import {
-  buildIngestPrompt,
-  finishIngest,
-  loadIngestTemplate,
-  planIngest,
-} from "../wiki/ingest.ts";
-import { formatLintReport, lintWiki, resolveWikiDir } from "../wiki/lint.ts";
-import { resolveWikiLayout } from "../wiki/paths.ts";
-import { appendLog } from "../wiki/write.ts";
 import { commandHandler, registerCommand } from "./command-registry.ts";
-import { helpText } from "./help.ts";
-import { printSessions, replayTranscript } from "./sessions.ts";
 
 import type { CommandContext } from "./commandContext.ts";
 export type { CommandContext } from "./commandContext.ts";

@@ -28,12 +28,8 @@ import {
 import {
   LLMError,
   LLMTimeoutError,
-  contentText,
-  type ContentPart,
   type Message,
-  type Role,
   type StreamResult,
-  type ThinkingBlock,
   type ToolCall,
   type ToolSpec,
   type Usage,
@@ -59,17 +55,10 @@ import {
   appendMaxTokensHint,
   isParallelToolCallsRejection,
   effectiveMaxTokens,
-  isAuthErrorText,
-  isContextLengthErrorText,
-  isMaxTokensErrorText,
   learnedMaxTokens,
   maxTokensKey,
   parseMaxTokensLimit,
-  resetLearnedMaxTokens,
-  resetMaxTokensLimitLearnedHandler,
-  setMaxTokensLimitLearnedHandler,
   shouldDowngradeForOpaque400,
-  type MaxTokensLimitLearned,
 } from "./llm/maxTokens.ts";
 
 export {

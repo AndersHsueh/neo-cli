@@ -20,20 +20,11 @@
  */
 import { emitKeypressEvents } from "node:readline";
 import { c, displayWidth, truncate } from "../ui/theme.ts";
-import {
-  formatCandidateHint,
-  applyMatch,
-  completeLine,
-  rankCommands,
-  triggerAt,
-  type CommandEntry,
-} from "../input/completion.ts";
+import type { CommandEntry } from "../input/completion.ts";
 import { reduce as reduceSelect, type SelectOption, type SelectState } from "../ui/select.ts";
 import {
-  askAnswerText,
   buildAskOptions,
   reduceAskUser,
-  toggleSelected,
   type AskUserAnswer,
   type AskUserOptionView,
   type AskUserRequest,
@@ -41,19 +32,11 @@ import {
 } from "../ui/askUser.ts";
 import { FrameRenderer } from "./frame.ts";
 import { TextBuffer, InputHistory, layoutBuffer, type VisualLine } from "./buffer.ts";
-import { PasteMachine, mapKey, type RawKey, type KeyAction } from "./keys.ts";
+import { PasteMachine, type RawKey } from "./keys.ts";
 import { renderStatus, type StatusSnapshot, type StatusSegment } from "./status.ts";
 import { stripAnsi, truncateAnsi, wrapAnsi } from "./ansi.ts";
 import { TitleAnimator, type TitleView } from "./title.ts";
-import { shouldFold } from "../paste.ts";
-import {
-  EscDoublePress,
-  REWIND_MODE_QUESTION,
-  REWIND_TURN_QUESTION,
-  modeMenuItems,
-  rewindSummary,
-  turnMenuItems,
-} from "./rewindMenu.ts";
+import { EscDoublePress } from "./rewindMenu.ts";
 import type { RewindMode, RewindResult, RewindTurn } from "../rewind.ts";
 
 import {
