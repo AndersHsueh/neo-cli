@@ -68,7 +68,7 @@ function flatten(text: string, max: number): string {
   return text.replace(/\s+/g, " ").trim().slice(0, max);
 }
 
-function toolDigest(name: string, rawArgs: string): string {
+function toolDigest(rawArgs: string): string {
   let args: Record<string, unknown> = {};
   try {
     const parsed: unknown = JSON.parse(rawArgs || "{}");
@@ -147,7 +147,7 @@ export function buildTurnRecord(
         ok = !SKIP_TOOL_OUTPUT_PREFIX.test(out.trim());
         break;
       }
-      tools.push({ name, ok, digest: toolDigest(name, call.function.arguments) });
+      tools.push({ name, ok, digest: toolDigest(call.function.arguments) });
       files.push(...touchedFiles(name, call.function.arguments));
     }
   }

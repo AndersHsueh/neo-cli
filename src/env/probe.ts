@@ -255,7 +255,7 @@ export function probeStatic(opts: ProbeStaticOptions): EnvStatic {
     },
     locale: {
       lang: env["LC_ALL"] ?? env["LANG"] ?? null,
-      timezone: detectTimezone(now),
+      timezone: detectTimezone(),
     },
     privileges: {
       uid: deps.uid ?? (typeof process.getuid === "function" ? process.getuid() : null),
@@ -292,7 +292,7 @@ function detectPrettyOs(
   return platform;
 }
 
-function detectTimezone(now: Date): string | null {
+function detectTimezone(): string | null {
   try {
     return Intl.DateTimeFormat().resolvedOptions().timeZone ?? null;
   } catch {
