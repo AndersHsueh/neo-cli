@@ -391,12 +391,18 @@ export class TextBuffer {
   }
 }
 
+/** 输入框历史的条数上限（v0.3.0 PRD 审查项「history 加 1000 条上限」）。 */
+export const INPUT_HISTORY_LIMIT = 1000;
+
 /**
  * 提交历史导航（B4）。
  *
  * 语义：第一次 `up(current)` 记住 `prefix=current` 与 `draft=current`，之后只在
  * 满足 `startsWith(prefix)` 的条目里前后跳；`down` 到底返回草稿；`reset()`（提交后）
  * 清导航态。`push` 忽略空/纯空白与和上一条完全相同的输入。
+ *
+ * 条数上限 {@link INPUT_HISTORY_LIMIT}：超出时丢最旧的（与 readline `historySize` 同口径）。
+ * 历史只在进程内，不落盘。
  */
 export class InputHistory {
   private readonly entries: string[];
@@ -406,7 +412,7 @@ export class InputHistory {
   private draft: string | null = null;
 
   constructor(entries: string[] = []) {
-    this.entries = [...entries];
+    this.entries = entries.slice(-INPUT_HISTORY_LIMIT);
   }
 
   get size(): number {
@@ -420,6 +426,9 @@ export class InputHistory {
       return;
     }
     this.entries.push(line);
+    if (this.entries.length > INPUT_HISTORY_LIMIT) {
+      this.entries.splice(0, this.entries.length - INPUT_HISTORY_LIMIT);
+    }
     this.resetNav();
   }
 
