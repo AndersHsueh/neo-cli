@@ -10,7 +10,7 @@
  * 用真实短命进程（sh -c '…'），跨平台用 sh（POSIX）；Windows 不在本仓基线（见 README 平台支持）。
  */
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 

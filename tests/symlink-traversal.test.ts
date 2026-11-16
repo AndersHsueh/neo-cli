@@ -229,7 +229,7 @@ describe("F5 真实目录遍历不被修复破坏", () => {
 
 describe("F6 system prompt 工作目录树把软链显示为目录", () => {
   test("工作目录树含 skills/foo/ 且能递归到 skills/foo/SKILL.md", () => {
-    const { cwd, store, cfg } = layout();
+    const { store, cfg } = layout();
 
     const prompt = buildSystemPrompt(cfg);
 

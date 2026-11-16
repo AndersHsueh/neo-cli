@@ -257,7 +257,6 @@ function makeFrame(opts: { status?: string; interleave?: boolean } = {}): {
   let pos = 0; // code point 下标
   let cursorFrameRow = 0;
   let cursorFrameCol = 0;
-  let frameRows = 1;
   const cols = (): number => Math.max(20, process.stdout.columns || 80);
   const status = opts.status ?? "status: ready";
 
@@ -321,7 +320,6 @@ function makeFrame(opts: { status?: string; interleave?: boolean } = {}): {
     const rows = [top, ...body, bottom, status];
     eraseFrame();
     process.stdout.write(rows.join("\r\n"));
-    frameRows = rows.length;
     cursorFrameRow = 1 + cursorLine;
     cursorFrameCol = Math.min(col, w);
     const up = rows.length - 1 - cursorFrameRow;

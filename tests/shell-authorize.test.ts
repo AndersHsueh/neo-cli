@@ -12,7 +12,6 @@ import { describe, expect, test } from "bun:test";
 
 import { authorizeShell } from "../src/cli/shell.ts";
 import type { Console } from "../src/ui/console.ts";
-import type { PermissionMode } from "../src/agent/types.ts";
 
 interface FakeConsole {
   asked: string[];

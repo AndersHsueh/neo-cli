@@ -7,7 +7,7 @@
  *  C 系统提示词：启用时注入「仓库地图」，关闭时不注入
  *  D 配置解析与 `/context` 摘要文案
  */
-import { afterAll, afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { afterAll, beforeEach, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";

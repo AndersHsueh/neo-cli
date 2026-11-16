@@ -19,7 +19,6 @@ const SANDBOX = realpathSync(mkdtempSync(join(tmpdir(), "neo-oneshot-slash-")));
 const sessionsDir = join(SANDBOX, "sessions");
 let seq = 0;
 
-const enc = new TextEncoder();
 const ANSWER =
   'data: {"choices":[{"delta":{"content":"hi"}}]}\n\n' +
   'data: {"choices":[{"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":11,"completion_tokens":2,"total_tokens":13}}\n\n' +

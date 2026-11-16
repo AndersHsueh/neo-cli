@@ -329,7 +329,7 @@ describe("C Agent 集成", () => {
       sessionId: "sess-c4",
       mode: "interactive",
       captureEnabled: true,
-      streamFn: async (_cfg, messages) =>
+      streamFn: async (_cfg) =>
         fakeStream(
           JSON.stringify({
             ops: [

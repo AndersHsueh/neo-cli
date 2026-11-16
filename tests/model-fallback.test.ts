@@ -17,7 +17,6 @@ import {
   parseFallbackTarget,
   resolveModelFallback,
   type Config,
-  type ModelTarget,
   type ProviderConfig,
   type ProviderType,
 } from "../src/config.ts";

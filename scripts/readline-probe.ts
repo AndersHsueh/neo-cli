@@ -34,7 +34,7 @@ import { appendFileSync, closeSync, constants as fsConstants, openSync, readFile
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { EventEmitter } from "node:events";
 import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { join, resolve } from "node:path";
 import { createInterface, emitKeypressEvents } from "node:readline";
 import type { Interface as RLInterface } from "node:readline";
 import type { Subprocess } from "bun";
@@ -79,7 +79,6 @@ interface LogEntry extends Record<string, unknown> {
   event: string;
 }
 
-const ROOT = resolve(dirname(new URL(import.meta.url).pathname), "..");
 const SELF = resolve(new URL(import.meta.url).pathname);
 const BUN = process.execPath;
 const SCRIPT_BIN = Bun.which("script") ?? "/usr/bin/script";
@@ -1703,7 +1702,7 @@ async function probeP3(tmpRoot: string): Promise<{ conclusion: string; evidence:
   const noCompleter = subObservations.find((o) => o.variant === "none");
   const noopCompleter = subObservations.find((o) => o.variant === "noop");
 
-  const { completer, keypressTab, routerTab, stateAfterTab, ordered, stateMutated, line2 } = main;
+  const { completer, keypressTab, routerTab, ordered, stateMutated, line2 } = main;
   const completerSeq = completer.seq;
   const keypressSeq = keypressTab.seq;
   const routerSeq = routerTab.seq;

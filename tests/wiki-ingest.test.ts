@@ -7,7 +7,7 @@
  * 运行：bun test tests/wiki-ingest.test.ts
  */
 import { describe, expect, test, afterAll } from "bun:test";
-import { existsSync, mkdirSync, rmSync, writeFileSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
@@ -23,7 +23,6 @@ import {
   finishIngest,
 } from "../src/wiki/ingest.ts";
 import { resolveWikiLayout } from "../src/wiki/paths.ts";
-import { appendLog } from "../src/wiki/write.ts";
 import type { WikiLayout } from "../src/wiki/paths.ts";
 
 const ROOT = join(tmpdir(), `neo-wiki-ingest-${Date.now()}`);

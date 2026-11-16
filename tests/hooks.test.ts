@@ -913,7 +913,7 @@ describe("i 子代理", () => {
         cfg: makeCfg(),
         approve: async () => true,
         host: main,
-        preToolUse: async (tool, args) => {
+        preToolUse: async (tool) => {
           const r = await dispatchHooks(cfg, "PreToolUse", { ...PAYLOAD, tool_name: tool } as HookPayload, tool, makeCfg());
           return r.blocked ? r.reason : null;
         },

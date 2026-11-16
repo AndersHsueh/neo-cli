@@ -337,7 +337,7 @@ describe("E watchdog", () => {
   });
 
   test("E4 对方在等别人 → waiting_on_peers，不告警", () => {
-    const { a, b, c } = fresh("wait", { withC: true });
+    const { a, b } = fresh("wait", { withC: true });
     b.send("c", "please test");
     a.send("b", "task");
     b.poll();

@@ -11,7 +11,7 @@ import { tmpdir } from "node:os";
 import { Agent } from "../src/agent.ts";
 import type { Classifier } from "../src/classifier/index.ts";
 import type { Config } from "../src/config.ts";
-import { LLMError, type Message, type StreamResult } from "../src/llm.ts";
+import { LLMError, type StreamResult } from "../src/llm.ts";
 import { captureConsole } from "./helpers.ts";
 
 function makeCfg(): Config {

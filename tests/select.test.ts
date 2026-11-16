@@ -202,7 +202,7 @@ describe("select() 集成", () => {
       out: new FakeOut() as never,
       isTTY: true,
       graceMs: 0,
-      onActiveChange: (active, cancel) => {
+      onActiveChange: (_active, cancel) => {
         cancelFn = cancel; // 与 index.ts 接线一致：无条件赋值，false 时清引用
       },
     });

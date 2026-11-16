@@ -4,7 +4,7 @@
  * 覆盖规格 §7.6：ops 硬校验、去重、冲突更正、推断分流、journal 先落盘、
  * 失败降级、锁占用、会话页面上限。全部用 fake chatStream，不触网。
  */
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } from "bun:test";
+import { afterAll, beforeAll, beforeEach, describe, expect, test } from "bun:test";
 import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -17,7 +17,6 @@ import type { DistillOp, MemoryInventoryItem } from "../src/memory/distill.ts";
 import { applyOps, appendToSection, collectInventory, isDuplicate, USER_FACT_HEADING, USER_INFER_HEADING } from "../src/memory/merge.ts";
 import { CaptureEngine, buildTurnRecord, shouldCapture } from "../src/memory/capture.ts";
 import { makeRememberTool } from "../src/tools/memory.ts";
-import type { TurnCaptureInput } from "../src/memory/port.ts";
 import { ensureScopeLayout } from "../src/memory/layout.ts";
 import { appendTurn, auditState, readAudit, pendingRecords, localDate } from "../src/memory/journal.ts";
 import { todayStamp } from "../src/wiki/write.ts";

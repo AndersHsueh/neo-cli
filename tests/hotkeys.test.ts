@@ -178,27 +178,6 @@ describe("doubleStrike", () => {
 /* Agent.send 回滚                                                     */
 /* ------------------------------------------------------------------ */
 
-interface ConsoleLike {
-  info(msg?: string): void;
-  warn(msg?: string): void;
-  error(msg?: string): void;
-  line(s?: string): void;
-  blank(): void;
-  kv(k: string, v: string): void;
-  statusBar(f: Array<[string, string]>): void;
-  toolHeader(n: string, a: string): void;
-  toolResult(b: string, m?: number): void;
-  startSpinner(t: string): void;
-  stopSpinner(f?: string): void;
-  beginStream(k: string): void;
-  writeStream(t: string, k: string): void;
-  endStream(k: string): void;
-  ensureStreamClosed(k: string): void;
-  indent(b: string): string;
-  width: number;
-  confirm(q: string): Promise<boolean>;
-}
-
 function quietConsole(): Console {
   return {
     info() {}, warn() {}, error() {}, line() {}, blank() {}, kv() {}, statusBar() {},

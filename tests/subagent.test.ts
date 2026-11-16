@@ -14,7 +14,7 @@
  * 运行：bun test tests/subagent.test.ts
  */
 import { describe, expect, test, afterAll } from "bun:test";
-import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 

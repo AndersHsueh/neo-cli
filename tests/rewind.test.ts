@@ -8,7 +8,7 @@
  *    平移；起点落在被压缩区间内的轮次 clamp 到摘要位置；旧会话（无新字段）行为不变
  */
 import { afterEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
