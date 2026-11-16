@@ -52,6 +52,7 @@ Windows 启动用 `neo.cmd`（需要 Bun 在 PATH）；Linux/macOS 用 `neo.sh` 
 - **v0.4.87**：拆分 7 个超过 1000 行的源文件（CLI 入口、命令分发、配置、Agent 循环、TUI 输入、工具注册、LLM），经 barrel / 再导出保持原 import 路径；新增源文件行数守卫（工作上限 1000 行）。无行为变化。详见 `docs/release-notes/v0.4.87.md`。
 - **v0.4.88**：清理 v0.4.87 拆分残留（未用 import / 解构 / 死局部、挤行、错位 JSDoc），`src/config.ts` 公共 API 收回到拆分前；新增源码卫生守卫（config 导出清单、挤行、`tsc --noUnusedLocals` 在 src 下零告警）。无行为变化。详见 `docs/release-notes/v0.4.88.md`。
 - **v0.4.89**：处理 v0.4.88 列出的后续项 —— 会话袋信箱状态改为实时值、输入历史 1000 条上限、修复粘贴图片 chip 编号为 `NaN` 的拆分回归；`ReplState` 改回显式类型，合并 6 组重复小工具函数，`tsconfig` 打开 `noUnusedLocals`。详见 `docs/release-notes/v0.4.89.md`。
+- **v0.4.90**：完成 v0.4.89 遗留的 `loopSupport.ts` 整文件缩进统一，一并收齐 `composerInput.ts`、`sendTurn.ts`、`repl.drain` 与 `inputLayer.ts` 同类缩进；归位 `writeTurnLog` 注释、压缩多余空行。仅格式与注释调整，无行为变更，测试基线不变。详见 `docs/release-notes/v0.4.90.md`。
 
 ## 配置
 
