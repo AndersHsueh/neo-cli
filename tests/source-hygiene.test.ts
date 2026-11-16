@@ -12,6 +12,8 @@
  *   H2 src/config.ts 不用 `export *`，导出的类型名与拆分前一致；
  *   H3 src 下没有「分号/左花括号后隔两个以上空格又接代码或 JSDoc」的挤行；
  *   H4 `tsc --noUnusedLocals` 在 src 下零告警（只查局部与 import；参数属接口签名，不查）。
+ *      tsconfig 自 noUnusedLocals 打开后已对 src/tests/scripts 全仓生效；H4 仍保留为 src 的
+ *      独立守卫：只跑 bun test 时也生效，tsconfig 开关被误删时仍拦得住。
  */
 import { describe, expect, test } from "bun:test";
 import { readdirSync, readFileSync, statSync } from "node:fs";
