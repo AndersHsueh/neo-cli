@@ -27,7 +27,7 @@ bun run src/index.ts -p "修到测试全绿" --drive "bun test" --max 5 --max-mi
 
 | 平台 | shell | 状态 |
 | --- | --- | --- |
-| macOS | `$SHELL`（默认 zsh） | ✅ 实测（tsc / 2104 测试 / PTY 32/32） |
+| macOS | `$SHELL`（默认 zsh） | ✅ 实测（tsc / 2102 测试（另 3 skip） / PTY 32/32） |
 | Ubuntu / Debian | `$SHELL`（默认 bash） | ✅ 实测（sp7, Ubuntu 24.04.4 LTS） |
 | 其它 POSIX（dash/ksh/fish） | 自动探测 | ✅ 解析器支持；fish 不吃登录 PATH preamble |
 | Windows 11 | `pwsh` → `powershell` → `cmd` | 🟡 **实验性，未实机验证**（见 PD-1） |
@@ -49,6 +49,7 @@ Windows 启动用 `neo.cmd`（需要 Bun 在 PATH）；Linux/macOS 用 `neo.sh` 
 - **v0.4.82**：issue #35 第 0/1 批 —— `/rewind` 只列用户轮次、`/compact` 后轮次下标平移、`-p` 非交互路径回收全部临时资源、`-p` 下斜杠命令明确提示；LSP 扩展（workspaceSymbol / callHierarchy / completion）、MCP 旧式 SSE 传输、后台子代理任务落盘。详见 `docs/release-notes/v0.4.82.md`。
 - **v0.4.83**：issue #35 第 2 批 —— `/compact --from <轮次>` 定点压缩、Esc Esc 交互式 rewind 菜单、子代理对话落盘与 `/tasks chat` 续聊、仓库地图按 import 引用图排序（纯文本，不引 tree-sitter）。详见 `docs/release-notes/v0.4.83.md`。shell 探测顺序：`settings.shell.path` → `NEO_SHELL` → `$SHELL` → 平台默认 → `which` → `/bin/sh`；
 - **v0.4.84**：目标驱动补齐两端 —— `/drive --judge "<标准>"` 模型判断完成条件（检查命令仍是硬条件，来源分「已验证/模型判断」标注）；`neo -p … --drive "检查命令" [--judge] [--max N] [--max-minutes M] -y` 无人值守长跑（退出码 0/1/130/2，stderr 摘要，`max_tool_iterations`×轮次×墙钟三层上限）。详见 `docs/release-notes/v0.4.84.md`。启动横幅后会显示实际使用的 shell。环境探测（`/env`）不需要模型，纯脚本采集，约 10ms。
+- **v0.4.87**：拆分 7 个超过 1000 行的源文件（CLI 入口、命令分发、配置、Agent 循环、TUI 输入、工具注册、LLM），经 barrel / 再导出保持原 import 路径；新增源文件行数守卫（工作上限 1000 行）。无行为变化。详见 `docs/release-notes/v0.4.87.md`。
 
 ## 配置
 
