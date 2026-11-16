@@ -41,6 +41,9 @@ echo
 #
 # 关键：整段（含组内错误输出）通过 tee 落盘；set -o pipefail 保证
 # 阶段命令的失败不会被 tee 的 0 退出码掩盖。
+# 证据末尾补一行 `exit: <code>`：tsc 成功时本身零输出，没有这行
+# 证据文件就只剩抬头，看不出跑没跑完。组的退出状态仍是阶段命令自己的退出码
+# （最后用 `(exit "$rc")` 交还），通过 / 失败判定与之前完全一致。
 run_stage() {
   local stage="$1"
   shift
@@ -54,7 +57,10 @@ run_stage() {
     echo "repo:    $ROOT"
     echo "bun:     $(bun --version)"
     echo "──────────────────────────"
-    "$@"
+    rc=0
+    "$@" || rc=$?
+    echo "exit: ${rc}"
+    (exit "$rc")
   } 2>&1 | tee "$out"; then
     echo "  ✔ ${stage} 通过（证据：docs/evidence/${EVIDENCE_PREFIX}-${stage}.txt）"
     check_test_skips "$stage" "$out"
