@@ -185,7 +185,7 @@ function scanSkillsDir(base: string, source: SkillSource): SkillMeta[] {
  * 当目录走进 walk，`readdirSync` 抛错被 catch 吞掉 → 该文件永远不会被当作文件匹配，
  * 比修之前更差。故用 `statSync`（跟随软链）判真实类型。
  *
- * 三个遍历点（tools 的 glob/grep/list_dir、system-prompt 的 listFiles）共用此实现，
+ * 遍历点（tools 的 glob/grep 文件清单 fileList.ts 与 list_dir、system-prompt 的 listFiles）共用此实现，
  * 避免同一判定在多处漂移。
  */
 export function isRealDir(full: string, e: Dirent): boolean {

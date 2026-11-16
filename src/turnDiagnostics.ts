@@ -77,7 +77,8 @@ export function turnLogRoot(env: NodeJS.ProcessEnv = process.env): string {
   return env["NEO_LOG_DIR"] ?? join(homedir(), ".neo", "logs");
 }
 
-function dayKey(now: Date): string {
+/** 本地时区的 YYYY-MM-DD（轮次 / 启动日志按天分文件）。 */
+export function dayKey(now: Date): string {
   const y = now.getFullYear();
   const m = String(now.getMonth() + 1).padStart(2, "0");
   const d = String(now.getDate()).padStart(2, "0");

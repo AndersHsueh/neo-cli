@@ -16,7 +16,7 @@
 import { appendFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 
-import { turnLogRoot } from "./turnDiagnostics.ts";
+import { dayKey, turnLogRoot } from "./turnDiagnostics.ts";
 
 /** 一条启动诊断。`kind` 是稳定枚举，日志消费方按它过滤。 */
 export interface BootDiagnostic {
@@ -36,13 +36,6 @@ export interface BootDiagnostic {
 /** 日志根目录：与轮次日志同根（NEO_LOG_DIR 可覆盖，测试/多环境隔离）。 */
 export function bootLogRoot(env: NodeJS.ProcessEnv = process.env): string {
   return turnLogRoot(env);
-}
-
-function dayKey(now: Date): string {
-  const y = now.getFullYear();
-  const m = String(now.getMonth() + 1).padStart(2, "0");
-  const d = String(now.getDate()).padStart(2, "0");
-  return `${y}-${m}-${d}`;
 }
 
 /** 当日启动诊断文件（`<root>/boot/<YYYY-MM-DD>.jsonl`）。 */

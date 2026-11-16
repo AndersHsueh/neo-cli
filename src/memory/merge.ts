@@ -20,6 +20,7 @@ import {
   writeBack,
 } from "../wiki/write.ts";
 import { assertInsideLayout } from "./layout.ts";
+import { extractPageSummary } from "./recall.ts";
 import {
   appendAppliedHashes,
   contentHash,
@@ -71,15 +72,6 @@ export function collectInventory(
   read(layouts.project, "project");
   read(layouts.user, "user");
   return out;
-}
-
-function extractPageSummary(text: string): string {
-  const m = /^## (?:摘要|Summary)\s*\n+([\s\S]*?)(?=\n## |\n> |$)/m.exec(text);
-  const first = (m?.[1] ?? "")
-    .split("\n")
-    .map((l) => l.trim())
-    .find((l) => l !== "" && !l.startsWith("<!--"));
-  return first ?? "";
 }
 
 function safeDate(path: string): string {

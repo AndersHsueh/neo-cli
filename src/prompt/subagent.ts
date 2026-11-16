@@ -8,7 +8,7 @@
 import type { WindowSource } from "../contextWindow.ts";
 import type { ToolSpec } from "../llm.ts";
 import { renderSubagentCore } from "./render.ts";
-import { DEFAULT_SELECTION_CONFIG, TIER_ORDER, selectPromptTier, type PromptSelection, type PromptSelectionConfig } from "./select.ts";
+import { DEFAULT_SELECTION_CONFIG, TIER_ORDER, rank, selectPromptTier, type PromptSelection, type PromptSelectionConfig } from "./select.ts";
 import type { PromptTier } from "./tiers.ts";
 import { countSystemTokens } from "./tokens.ts";
 
@@ -29,10 +29,6 @@ const HIGH_STAKES_WORDS = [
 export function requiredMinTier(taskText: string): PromptTier {
   const lower = taskText.toLowerCase();
   return HIGH_STAKES_WORDS.some((w) => lower.includes(w.toLowerCase())) ? "standard" : "mini";
-}
-
-function rank(t: PromptTier): number {
-  return TIER_ORDER.indexOf(t);
 }
 
 export interface SubPromptInput {

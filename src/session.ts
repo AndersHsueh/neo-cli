@@ -52,7 +52,7 @@ export interface SessionFile {
   messages: Message[];
 }
 
-function sessionsDir(): string {
+export function sessionsDir(): string {
   // 测试注入点（与 NEO_MEMORY_DIR 同一惯例）：CI/测试不得读写用户真实会话。
   const env = process.env["NEO_SESSIONS_DIR"];
   if (env) return env;

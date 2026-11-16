@@ -16,9 +16,9 @@
  * 容错：缺失 / 损坏 / 类型不对一律返回 null，由调用方降级成「没有历史」。
  */
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
 import { join } from "node:path";
 import type { Message } from "../llm.ts";
+import { sessionsDir } from "../session.ts";
 
 /** 保留的消息条数上限（含系统提示）。 */
 export const MAX_TRANSCRIPT_MESSAGES = 60;
@@ -32,13 +32,6 @@ interface TranscriptFile {
   sessionId: string;
   jobId: string;
   messages: Message[];
-}
-
-function sessionsDir(): string {
-  // 与 session.ts 同一注入点：测试不得读写用户真实会话。
-  const env = process.env["NEO_SESSIONS_DIR"];
-  if (env) return env;
-  return join(homedir(), ".neo", "sessions");
 }
 
 /** 文件名里的非法字符替换掉：jobId 来自本进程（bg-N），但会话 id 可能含路径分隔符。 */

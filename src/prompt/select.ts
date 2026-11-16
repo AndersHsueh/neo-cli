@@ -84,7 +84,7 @@ function gateMaxTier(window: number): PromptTier {
   return "mini";
 }
 
-function rank(t: PromptTier): number {
+export function rank(t: PromptTier): number {
   return TIER_ORDER.indexOf(t);
 }
 

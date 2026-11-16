@@ -34,7 +34,8 @@ export interface WorktreeDeps {
   exec?: (args: string[], cwd: string) => GitResult;
 }
 
-function defaultExec(args: string[], cwd: string): GitResult {
+/** 默认 git 执行器：stdout / stderr 都收集，spawn 失败记 127。review.ts 共用。 */
+export function defaultExec(args: string[], cwd: string): GitResult {
   try {
     const p = Bun.spawnSync(["git", ...args], { cwd, stdout: "pipe", stderr: "pipe" });
     return {

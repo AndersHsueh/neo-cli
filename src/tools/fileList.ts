@@ -15,6 +15,7 @@
  */
 import { existsSync, lstatSync, readFileSync, readdirSync, statSync, type Dirent } from "node:fs";
 import { join } from "node:path";
+import { isRealDir } from "../skills.ts";
 
 export interface ListedFile {
   /** 相对搜索根的路径，统一用 "/" 分隔。 */
@@ -213,16 +214,6 @@ function isIgnored(rules: IgnoreRule[], rel: string, isDir: boolean): boolean {
   return ignored;
 }
 
-function isDirEntry(full: string, e: Dirent): boolean {
-  if (e.isDirectory()) return true;
-  if (!e.isSymbolicLink()) return false;
-  try {
-    return statSync(full).isDirectory();
-  } catch {
-    return false;
-  }
-}
-
 function walkList(root: string, maxFiles: number): ListResult {
   const files: ListedFile[] = [];
   let truncated = false;
@@ -247,7 +238,7 @@ function walkList(root: string, maxFiles: number): ListResult {
       if (e.name === ".git") continue;
       const full = join(cur.dir, e.name);
       const rel = cur.rel ? `${cur.rel}/${e.name}` : e.name;
-      const dir = isDirEntry(full, e);
+      const dir = isRealDir(full, e);
       if (isIgnored(localRules, rel, dir)) continue;
       if (dir) {
         if (FALLBACK_SKIP_DIRS.has(e.name) || cur.depth >= MAX_WALK_DEPTH) continue;
@@ -287,7 +278,7 @@ function expandGitEntries(root: string, rels: string[], maxFiles: number): Liste
       if (e.name === ".git" || e.name === "node_modules") continue;
       const full = join(dirAbs, e.name);
       const rel = `${relBase}/${e.name}`;
-      if (isDirEntry(full, e)) walkDir(full, rel, depth + 1);
+      if (isRealDir(full, e)) walkDir(full, rel, depth + 1);
       else push(rel, full);
     }
   };
