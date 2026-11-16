@@ -490,8 +490,7 @@ export async function bootstrap() {
   const sess = meta ? adoptSession(meta, cfg.model) : createSession(cfg.model, cfg.cwd);
 
   // #37 stream-json：唯一 writer 只在 streamJsonMode 下创建，session_id 取 sess.meta.id。
-  // stdoutClosed 由 writer 的 onClosed 钩子置位（EPIPE/写失败），是「无 result」的唯一物理例外；
-  // turnNo 供每次 agent.send 前的 turn_started 与全部 onEvent 映射共用。
+  // （s.stdoutClosed / s.turnNo 的语义见 SharedMut。）
   let streamWriter: JsonlWriter | null = null;
   if (streamJsonMode) {
     streamWriter = new JsonlWriter({ sessionId: sess.meta.id, cwd: cfg.cwd });

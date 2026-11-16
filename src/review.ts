@@ -15,7 +15,7 @@
  *    注意未跟踪文件在任何基线下都列出来 —— 它们不在任何 commit 里，
  *    `git diff <ref>` 天然看不见，漏掉它们等于漏审新文件。
  */
-import { defaultExec } from "./worktree.ts";
+import { defaultExec, type GitResult } from "./worktree.ts";
 
 /** diff 体积上限（字符）。超过就截断并在提示里注明，避免撑爆上下文。 */
 export const REVIEW_DIFF_LIMIT = 80_000;
@@ -25,7 +25,7 @@ export const REVIEW_UNTRACKED_LIMIT = 200;
 
 export interface ReviewDeps {
   /** 执行 git 命令，返回 {code, stdout, stderr}。测试可注入。 */
-  exec?: (args: string[], cwd: string) => { code: number; stdout: string; stderr: string };
+  exec?: (args: string[], cwd: string) => GitResult;
 }
 
 export type ReviewScope =

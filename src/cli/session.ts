@@ -8,7 +8,9 @@ import type { LoopScheduler } from "../loop.ts";
 export type SharedMut = {
   composerRef: Composer | null;
   sessionLabel: string | null;
+  /** #37 stream-json：由 writer 的 onClosed 钩子置位（EPIPE/写失败），是「无 result」的唯一物理例外。 */
   stdoutClosed: boolean;
+  /** #37 stream-json：每次 agent.send 前的 turn_started 与全部 onEvent 映射共用的 turn 号。 */
   turnNo: number;
   mailboxTick: ReturnType<typeof setInterval> | null;
   /**
