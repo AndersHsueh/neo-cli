@@ -278,311 +278,311 @@ export function createRepl(s: AppSession): ReplState {
     if (repl.draining) return;
     repl.draining = true;
     try {
-    while (repl.queue.length > 0) {
-      const q = repl.queue.shift();
-      if (!q) continue;
-      try {
-      s.composerRef?.setQueueCount(repl.queue.length);
-      const line = q.text;
-      if (!line) continue;
-      const origin = q.origin;
+      while (repl.queue.length > 0) {
+        const q = repl.queue.shift();
+        if (!q) continue;
+        try {
+          s.composerRef?.setQueueCount(repl.queue.length);
+          const line = q.text;
+          if (!line) continue;
+          const origin = q.origin;
 
-      if (origin === "user") {
-        // issue #25：循环注入的拍不是用户亲手敲的，必须回显一行，否则用户不知道自动发了什么。
-        if (q.loop) ui.line(`${c.accent("❯ ")}${c.text(line)}`);
-        // issue #30：输入态 shell 模式提交的命令（原文，无 `!`）直接执行。
-        if (q.shell) {
-          await repl.runShellWithTui(line);
-          continue;
-        }
-        if (line.startsWith("!")) {
-          await repl.runShellWithTui(line.slice(1));
-          continue;
-        }
-        if (line.startsWith("/")) {
-          await dispatchCommand(line, {
-            agent,
-            ui,
-            cfg,
-            memory,
-            classifier,
-            meta: sess.meta,
-            shutdown: repl.shutdown,
-            selectDeps: repl.selectDeps,
-            mailbox,
-            checkpoints,
-            injectMailbox: (env) => {
-              ui.line(c.dim(formatPreview(env)));
-              repl.queue.push({ text: formatIncomingFrame(env), attachments: [], origin: "mailbox", from: env.from.session });
-            },
-            onMailboxRekey: () => inboundRefs.clear(),
-            // /context 要展示「当前 cfg 下会选哪一档」：探针回写窗口后到下一轮边界之间，
-            // lastSelection 还是探针前的旧档，会和同一命令里的 window 行（读 cfg，已是新值）
-            // 自相矛盾。currentSelection 只算不写 —— 不碰 messages[0]，提示词何时生效不受影响。
-            promptSelection: () => promptManager.currentSelection(cfg),
-            // issue #17：规则条数与命中原因（/context 展示）。
-            rules: () => ({ alwaysOn: alwaysOnRules, loaded: agent.activeRules, total: projectRules.length }),
-            // issue #20 收尾：工具可见集 dry-run（只算不生效，运行时工具集不变）。
-            toolVisibility: () => promptManager.currentVisibility(cfg),
-            onNameChange: (name) => {
-              s.sessionLabel = name;
-              repl.titleAnimator?.setName(name);
-              // issue #19：名字进了系统提示词身份句，rename 后必须重建，否则模型仍自称旧名。
-              promptManager.setSessionName(name);
-              agent.refreshSystemPrompt();
-            },
-            // issue #13：/技能名 把合成消息排进队列，由 drain 的 while 在下一轮取出。
-            // 不在这里直接 agent.send —— drain 正在跑，重入会打乱 draining 状态机。
-            enqueueUserTurn: (text) => {
-              repl.queue.push({ text, attachments: [], origin: "user" });
-              s.composerRef?.setQueueCount(repl.queue.length);
-            },
-            memoryMode,
-            todos: () => sessionTodos,
-            mcp: () => mcpManager.statuses(),
-            // issue #25：定时/自节奏循环（仅交互会话；-p 不传 → 命令提示不可用）
-            loop: {
-              start: (spec) => repl.loopScheduler.start(spec),
-              stop: () => repl.loopScheduler.stop(),
-              status: () => formatLoopStatus(repl.loopScheduler.state, Date.now()),
-            },
-            // issue #24：目标驱动自动续跑（完成条件 = 检查命令 exit 0）
-            drive: {
-              start: (spec) => repl.drive.start(spec),
-              stop: () => repl.drive.stop(),
-              status: () => formatDriveState(repl.drive.state),
-            },
-            // issue #27：按轮次回滚（代码 / 对话 / 两者）
-            rewind: {
-              list: () => rewindLog.list(),
-              apply: (target, mode) => {
-                const r = rewindLog.rewind({
-                  target,
-                  mode: mode as RewindMode,
-                  store: { undoSeqs: (seqs) => checkpoints.undoSeqs(seqs) },
-                  conversation: {
-                    length: () => agent.messages.length,
-                    truncate: (n) => {
-                      agent.messages.length = Math.max(1, n); // 永远保住 messages[0] 系统提示
-                    },
+          if (origin === "user") {
+            // issue #25：循环注入的拍不是用户亲手敲的，必须回显一行，否则用户不知道自动发了什么。
+            if (q.loop) ui.line(`${c.accent("❯ ")}${c.text(line)}`);
+            // issue #30：输入态 shell 模式提交的命令（原文，无 `!`）直接执行。
+            if (q.shell) {
+              await repl.runShellWithTui(line);
+              continue;
+            }
+            if (line.startsWith("!")) {
+              await repl.runShellWithTui(line.slice(1));
+              continue;
+            }
+            if (line.startsWith("/")) {
+              await dispatchCommand(line, {
+                agent,
+                ui,
+                cfg,
+                memory,
+                classifier,
+                meta: sess.meta,
+                shutdown: repl.shutdown,
+                selectDeps: repl.selectDeps,
+                mailbox,
+                checkpoints,
+                injectMailbox: (env) => {
+                  ui.line(c.dim(formatPreview(env)));
+                  repl.queue.push({ text: formatIncomingFrame(env), attachments: [], origin: "mailbox", from: env.from.session });
+                },
+                onMailboxRekey: () => inboundRefs.clear(),
+                // /context 要展示「当前 cfg 下会选哪一档」：探针回写窗口后到下一轮边界之间，
+                // lastSelection 还是探针前的旧档，会和同一命令里的 window 行（读 cfg，已是新值）
+                // 自相矛盾。currentSelection 只算不写 —— 不碰 messages[0]，提示词何时生效不受影响。
+                promptSelection: () => promptManager.currentSelection(cfg),
+                // issue #17：规则条数与命中原因（/context 展示）。
+                rules: () => ({ alwaysOn: alwaysOnRules, loaded: agent.activeRules, total: projectRules.length }),
+                // issue #20 收尾：工具可见集 dry-run（只算不生效，运行时工具集不变）。
+                toolVisibility: () => promptManager.currentVisibility(cfg),
+                onNameChange: (name) => {
+                  s.sessionLabel = name;
+                  repl.titleAnimator?.setName(name);
+                  // issue #19：名字进了系统提示词身份句，rename 后必须重建，否则模型仍自称旧名。
+                  promptManager.setSessionName(name);
+                  agent.refreshSystemPrompt();
+                },
+                // issue #13：/技能名 把合成消息排进队列，由 drain 的 while 在下一轮取出。
+                // 不在这里直接 agent.send —— drain 正在跑，重入会打乱 draining 状态机。
+                enqueueUserTurn: (text) => {
+                  repl.queue.push({ text, attachments: [], origin: "user" });
+                  s.composerRef?.setQueueCount(repl.queue.length);
+                },
+                memoryMode,
+                todos: () => sessionTodos,
+                mcp: () => mcpManager.statuses(),
+                // issue #25：定时/自节奏循环（仅交互会话；-p 不传 → 命令提示不可用）
+                loop: {
+                  start: (spec) => repl.loopScheduler.start(spec),
+                  stop: () => repl.loopScheduler.stop(),
+                  status: () => formatLoopStatus(repl.loopScheduler.state, Date.now()),
+                },
+                // issue #24：目标驱动自动续跑（完成条件 = 检查命令 exit 0）
+                drive: {
+                  start: (spec) => repl.drive.start(spec),
+                  stop: () => repl.drive.stop(),
+                  status: () => formatDriveState(repl.drive.state),
+                },
+                // issue #27：按轮次回滚（代码 / 对话 / 两者）
+                rewind: {
+                  list: () => rewindLog.list(),
+                  apply: (target, mode) => {
+                    const r = rewindLog.rewind({
+                      target,
+                      mode: mode as RewindMode,
+                      store: { undoSeqs: (seqs) => checkpoints.undoSeqs(seqs) },
+                      conversation: {
+                        length: () => agent.messages.length,
+                        truncate: (n) => {
+                          agent.messages.length = Math.max(1, n); // 永远保住 messages[0] 系统提示
+                        },
+                      },
+                    });
+                    sess.meta.rewind = rewindLog.serialize();
+                    persist(agent.messages, sess.meta);
+                    return r;
                   },
-                });
-                sess.meta.rewind = rewindLog.serialize();
-                persist(agent.messages, sess.meta);
-                return r;
-              },
-              // issue #46：用户轮次 → 该轮起点的消息下标（定点 compact 的锚点）。
-              turnStart: (target) => {
-                const turns = rewindLog.list();
-                if (turns.length === 0) return null;
-                const idx = target === "last" ? turns.length - 1 : target;
-                return turns[idx]?.messagesBefore ?? null;
-              },
-            },
-            // issue #28：后台长驻 shell（列表 / 停止）
-            shells: {
-              list: () => backgroundShells.list(),
-              kill: (target) => backgroundShells.kill(target),
-            },
-            // issue #16：后台子代理任务（列表 / 取消）
-            // issue #45：本进程没有任务时，回落到 resume 载入的只读历史（running 已映射成 interrupted）。
-            tasks: {
-              list: () => {
-                const live = s.backgroundTasks?.list() ?? [];
-                return live.length > 0 ? live : restoredJobs;
-              },
-              cancel: (target) => s.backgroundTasks?.cancel(target) ?? 0,
-              // issue #48：续聊 —— 读回该任务的子代理对话，追加用户消息后继续跑。
-              // 恢复后的任务没有活 Agent，这里重建一个（AbortController 也重新建）。
-              chat: async (id, text) => {
-                const messages = loadSubagentTranscript(sess.meta.id, id);
-                if (!messages || messages.length === 0) {
-                  return {
-                    ok: false as const,
-                    error: `任务 ${id} 没有可续聊的对话记录（可能未落盘或已被清理）。`,
-                  };
-                }
-                const ctrl = new AbortController();
-                const ctx: ToolCtx = {
-                  cfg,
-                  approve: (_tool, detail) => ui.confirm(detail),
-                  checkpoint: checkpoints,
-                  signal: ctrl.signal,
-                };
-                try {
-                  const reply = await runSubagent(agent, text, undefined, ctx, undefined, {
-                    messages,
-                    onMessages: (msgs) => saveSubagentTranscript(sess.meta.id, id, msgs),
-                  });
-                  return { ok: true as const, reply };
-                } catch (e) {
-                  return { ok: false as const, error: `续聊失败：${(e as Error).message}` };
-                }
-              },
-            },
-          });
-          continue;
-        }
-        repl.autoTurnChain = 0;
-        if (mailbox) {
-          try {
-            mailboxState.noteHumanInput(mailbox.root, mailbox.sessionId);
-          } catch {
-            // 状态写入失败不阻塞交互
+                  // issue #46：用户轮次 → 该轮起点的消息下标（定点 compact 的锚点）。
+                  turnStart: (target) => {
+                    const turns = rewindLog.list();
+                    if (turns.length === 0) return null;
+                    const idx = target === "last" ? turns.length - 1 : target;
+                    return turns[idx]?.messagesBefore ?? null;
+                  },
+                },
+                // issue #28：后台长驻 shell（列表 / 停止）
+                shells: {
+                  list: () => backgroundShells.list(),
+                  kill: (target) => backgroundShells.kill(target),
+                },
+                // issue #16：后台子代理任务（列表 / 取消）
+                // issue #45：本进程没有任务时，回落到 resume 载入的只读历史（running 已映射成 interrupted）。
+                tasks: {
+                  list: () => {
+                    const live = s.backgroundTasks?.list() ?? [];
+                    return live.length > 0 ? live : restoredJobs;
+                  },
+                  cancel: (target) => s.backgroundTasks?.cancel(target) ?? 0,
+                  // issue #48：续聊 —— 读回该任务的子代理对话，追加用户消息后继续跑。
+                  // 恢复后的任务没有活 Agent，这里重建一个（AbortController 也重新建）。
+                  chat: async (id, text) => {
+                    const messages = loadSubagentTranscript(sess.meta.id, id);
+                    if (!messages || messages.length === 0) {
+                      return {
+                        ok: false as const,
+                        error: `任务 ${id} 没有可续聊的对话记录（可能未落盘或已被清理）。`,
+                      };
+                    }
+                    const ctrl = new AbortController();
+                    const ctx: ToolCtx = {
+                      cfg,
+                      approve: (_tool, detail) => ui.confirm(detail),
+                      checkpoint: checkpoints,
+                      signal: ctrl.signal,
+                    };
+                    try {
+                      const reply = await runSubagent(agent, text, undefined, ctx, undefined, {
+                        messages,
+                        onMessages: (msgs) => saveSubagentTranscript(sess.meta.id, id, msgs),
+                      });
+                      return { ok: true as const, reply };
+                    } catch (e) {
+                      return { ok: false as const, error: `续聊失败：${(e as Error).message}` };
+                    }
+                  },
+                },
+              });
+              continue;
+            }
+            repl.autoTurnChain = 0;
+            if (mailbox) {
+              try {
+                mailboxState.noteHumanInput(mailbox.root, mailbox.sessionId);
+              } catch {
+                // 状态写入失败不阻塞交互
+              }
+            }
+          } else {
+            repl.autoTurnChain++;
           }
-        }
-      } else {
-        repl.autoTurnChain++;
-      }
 
-      // 合成行（mailbox/notice）文本已经是 frame 后的内容，不经命令分发、不做 chip 还原。
-      // v0.2.4 C3：先展开 @ 引用，再做 chip 还原 ——
-      // 反过来会把「粘贴内容里恰好出现的 @foo」也当成引用展开（用户并没有这个意图）。
-      const expanded =
-        origin === "user"
-          ? expandReferences(line, { cwd: cfg.cwd })
-          : { text: line, refs: [], errors: [] as string[] };
-      const resolved =
-        origin === "user"
-          ? resolveLine(expanded.text, q.attachments)
-          : { text: line, images: [] as string[] };
-      if (expanded.refs.length > 0) {
-        // issue #17：用户 @ 引用算触达（规则只看路径，不看被引用内容）。
-        agent.noteTouchedPaths(
-          expanded.refs
-            .map((r) => normalizeRelPath(cfg.cwd, r.path))
-            .filter((p): p is string => p !== null && p !== "."),
-        );
-        const lines = expanded.refs.reduce((n, r) => n + r.lines, 0);
-        ui.line(c.dim(`· 已引用 ${expanded.refs.length} 个文件（+${lines} 行）`));
-      }
-      for (const e of expanded.errors) ui.line(c.dim(`· ${e}`));
-      if (resolved.images.length > 0) {
-        // PRD §5.8：用户对「发出去了什么」有知情权（图片可能含敏感信息）
-        ui.line(c.dim(`· 已发送图片 ×${resolved.images.length}`));
-      }
-      ui.blank();
-      repl.turnStartedAt = Date.now();
-      repl.turnActive = true;
-      s.composerRef?.setBusy(true);
-      let outcome: "ok" | "aborted" | "error" = "ok";
-      s.activeTurnFrom = origin === "user" ? null : (q.from ?? null);
-      if (mailbox) {
-        try {
-          mailboxState.beginTurn(mailbox.root, mailbox.sessionId, {
-            seq: ++repl.turnSeq,
-            source: origin === "user" ? "user" : "mailbox",
-            from: origin === "user" ? null : (q.from ?? null),
-          });
-        } catch {
-          // 状态机失败不阻塞 turn
-        }
-      }
-      // issue #27：轮次记账（回到「发这句话之前」的锚点）。begin 必须在 send 之前 ——
-      // agent.send 会把 user 消息压进 messages，之后就拿不到精确边界了。
-      const rewindPending = rewindLog.beginTurn({
-        prompt: resolved.text,
-        messagesLength: agent.messages.length,
-        checkpointSeqBefore: checkpoints.list(1)[0]?.seq ?? 0,
-        // issue #42：只有用户亲自发的轮次才是 /rewind 目标；跨会话 / 通知 / loop·drive 注入记为自动轮
-        // （仍要记账，回滚用户轮次时它们的文件检查点也要一起恢复）。
-        source: origin === "user" && !q.loop ? "human" : "auto",
-      });
-      let turnStats: Awaited<ReturnType<typeof agent.send>> | null = null;
-      try {
-        // ESC 回滚语义（PRD §4.11 裁决 A）：人类输入的 turn 保留回滚；
-        // 由 mailbox / 状态通知触发的自动 turn 只停不删（否则会连任务消息与已完成结果一起抹掉）。
-        turnStats = await agent.send(
-          resolved.images.length > 0 ? { text: resolved.text, images: resolved.images } : resolved.text,
-          { rollbackOnAbort: origin === "user" },
-        );
-        outcome = outcomeOf(turnStats);
-        if (turnStats.hadError || turnStats.emptyResponse) {
-          ui.error(`本轮未完成：${turnStats.errorMessage ?? "模型未产出正文"}`);
-          ui.line(c.dim("  诊断日志：~/.neo/logs/turns/（可用 NEO_LOG_DIR 覆盖）"));
-        }
-        ui.blank();
-        ui.blank();
-        showStats(ui, agent, cfg, turnStats);
-        const last: LastTurnMeta = {
-          at: new Date().toISOString(),
-          outcome,
-          finishReason: turnStats.finishReason,
-          errorMessage: turnStats.errorMessage,
-          durationMs: turnStats.durationMs,
-          promptTokens: turnStats.promptTokens,
-          completionTokens: turnStats.completionTokens,
-        };
-        sess.meta.lastTurn = last;
-      } catch (e) {
-        outcome = "error";
-        ui.error(`未捕获异常: ${(e as Error).message}`);
-        sess.meta.lastTurn = {
-          at: new Date().toISOString(),
-          outcome: "error",
-          finishReason: null,
-          errorMessage: (e as Error).message,
-        };
-        // C9：本轮带图且请求失败 → 追加一行软提示（无法可靠区分「服务端拒绝图片」
-        // 与其他 4xx，用软提示近似 PRD 要求，不误导为确定结论）
-        if (resolved.images.length > 0) ui.line(c.dim("  当前 provider 可能不支持图片输入"));
-        if (process.env["NEO_DEBUG"]) console.error(e);
-      } finally {
-        repl.turnActive = false;
-        s.composerRef?.setBusy(false);
-        // issue #25：self 节奏循环在「每轮结束」后排下一拍（interval 模式自己在定时器里排）。
-        repl.loopScheduler.onTurnEnd();
-        // issue #24：目标驱动续跑 —— 每轮结束跑检查命令，未通过则自动再排一轮。
-        // issue #50：把最近一轮的工具输出摘要交给 judge（截断并标注，PRD §2.3）。
-        // issue #50：只取**本轮**的工具输出（turnStats.toolCalls 条）；0 工具轮给空，避免混入上一轮尾巴。
-        const thisTurnToolCalls = turnStats?.toolCalls ?? 0;
-        const recentToolOutput =
-          thisTurnToolCalls > 0
-            ? agent.messages
-                .filter((m) => m.role === "tool")
-                .slice(-thisTurnToolCalls)
-                .map((m) => `tool(${m.name ?? ""}): ${contentText(m.content) ?? ""}`)
-                .join("\n")
-            : "";
-        const clipped =
-          recentToolOutput.length > 2_000
-            ? `${recentToolOutput.slice(-2_000)}\n…[已截断，只保留最近 2000 字符]`
-            : recentToolOutput;
-        void repl.drive
-          .onTurnEnd({ toolCalls: turnStats?.toolCalls ?? 0, recentOutput: clipped })
-          .catch((e: unknown) => {
-            ui.warn(`自动续跑检查失败：${(e as Error).message}`);
-          });
-        // issue #27：把本轮新产生的检查点归到这一轮，并写回 session meta。
-        try {
-          const newSeqs = checkpoints
-            .list(1_000)
-            .filter((e) => e.seq > rewindPending.checkpointSeqBefore)
-            .map((e) => e.seq);
-          rewindLog.endTurn(rewindPending, newSeqs);
-          sess.meta.rewind = rewindLog.serialize();
-        } catch {
-          /* 轮次记账失败不影响主流程 */
-        }
-        repl.lastTurnMs = repl.turnStartedAt > 0 ? Date.now() - repl.turnStartedAt : 0;
-        s.activeTurnFrom = null;
-        if (mailbox) {
-          try {
-            mailboxState.endTurn(mailbox.root, mailbox.sessionId, {
-              outcome,
-              abortSource: outcome === "aborted" ? "human" : outcome === "error" ? "error" : null,
-            });
-          } catch {
-            // 状态机失败不阻塞交互
+          // 合成行（mailbox/notice）文本已经是 frame 后的内容，不经命令分发、不做 chip 还原。
+          // v0.2.4 C3：先展开 @ 引用，再做 chip 还原 ——
+          // 反过来会把「粘贴内容里恰好出现的 @foo」也当成引用展开（用户并没有这个意图）。
+          const expanded =
+            origin === "user"
+              ? expandReferences(line, { cwd: cfg.cwd })
+              : { text: line, refs: [], errors: [] as string[] };
+          const resolved =
+            origin === "user"
+              ? resolveLine(expanded.text, q.attachments)
+              : { text: line, images: [] as string[] };
+          if (expanded.refs.length > 0) {
+            // issue #17：用户 @ 引用算触达（规则只看路径，不看被引用内容）。
+            agent.noteTouchedPaths(
+              expanded.refs
+                .map((r) => normalizeRelPath(cfg.cwd, r.path))
+                .filter((p): p is string => p !== null && p !== "."),
+            );
+            const lines = expanded.refs.reduce((n, r) => n + r.lines, 0);
+            ui.line(c.dim(`· 已引用 ${expanded.refs.length} 个文件（+${lines} 行）`));
           }
+          for (const e of expanded.errors) ui.line(c.dim(`· ${e}`));
+          if (resolved.images.length > 0) {
+            // PRD §5.8：用户对「发出去了什么」有知情权（图片可能含敏感信息）
+            ui.line(c.dim(`· 已发送图片 ×${resolved.images.length}`));
+          }
+          ui.blank();
+          repl.turnStartedAt = Date.now();
+          repl.turnActive = true;
+          s.composerRef?.setBusy(true);
+          let outcome: "ok" | "aborted" | "error" = "ok";
+          s.activeTurnFrom = origin === "user" ? null : (q.from ?? null);
+          if (mailbox) {
+            try {
+              mailboxState.beginTurn(mailbox.root, mailbox.sessionId, {
+                seq: ++repl.turnSeq,
+                source: origin === "user" ? "user" : "mailbox",
+                from: origin === "user" ? null : (q.from ?? null),
+              });
+            } catch {
+              // 状态机失败不阻塞 turn
+            }
+          }
+          // issue #27：轮次记账（回到「发这句话之前」的锚点）。begin 必须在 send 之前 ——
+          // agent.send 会把 user 消息压进 messages，之后就拿不到精确边界了。
+          const rewindPending = rewindLog.beginTurn({
+            prompt: resolved.text,
+            messagesLength: agent.messages.length,
+            checkpointSeqBefore: checkpoints.list(1)[0]?.seq ?? 0,
+            // issue #42：只有用户亲自发的轮次才是 /rewind 目标；跨会话 / 通知 / loop·drive 注入记为自动轮
+            // （仍要记账，回滚用户轮次时它们的文件检查点也要一起恢复）。
+            source: origin === "user" && !q.loop ? "human" : "auto",
+          });
+          let turnStats: Awaited<ReturnType<typeof agent.send>> | null = null;
+          try {
+            // ESC 回滚语义（PRD §4.11 裁决 A）：人类输入的 turn 保留回滚；
+            // 由 mailbox / 状态通知触发的自动 turn 只停不删（否则会连任务消息与已完成结果一起抹掉）。
+            turnStats = await agent.send(
+              resolved.images.length > 0 ? { text: resolved.text, images: resolved.images } : resolved.text,
+              { rollbackOnAbort: origin === "user" },
+            );
+            outcome = outcomeOf(turnStats);
+            if (turnStats.hadError || turnStats.emptyResponse) {
+              ui.error(`本轮未完成：${turnStats.errorMessage ?? "模型未产出正文"}`);
+              ui.line(c.dim("  诊断日志：~/.neo/logs/turns/（可用 NEO_LOG_DIR 覆盖）"));
+            }
+            ui.blank();
+            ui.blank();
+            showStats(ui, agent, cfg, turnStats);
+            const last: LastTurnMeta = {
+              at: new Date().toISOString(),
+              outcome,
+              finishReason: turnStats.finishReason,
+              errorMessage: turnStats.errorMessage,
+              durationMs: turnStats.durationMs,
+              promptTokens: turnStats.promptTokens,
+              completionTokens: turnStats.completionTokens,
+            };
+            sess.meta.lastTurn = last;
+          } catch (e) {
+            outcome = "error";
+            ui.error(`未捕获异常: ${(e as Error).message}`);
+            sess.meta.lastTurn = {
+              at: new Date().toISOString(),
+              outcome: "error",
+              finishReason: null,
+              errorMessage: (e as Error).message,
+            };
+            // C9：本轮带图且请求失败 → 追加一行软提示（无法可靠区分「服务端拒绝图片」
+            // 与其他 4xx，用软提示近似 PRD 要求，不误导为确定结论）
+            if (resolved.images.length > 0) ui.line(c.dim("  当前 provider 可能不支持图片输入"));
+            if (process.env["NEO_DEBUG"]) console.error(e);
+          } finally {
+            repl.turnActive = false;
+            s.composerRef?.setBusy(false);
+            // issue #25：self 节奏循环在「每轮结束」后排下一拍（interval 模式自己在定时器里排）。
+            repl.loopScheduler.onTurnEnd();
+            // issue #24：目标驱动续跑 —— 每轮结束跑检查命令，未通过则自动再排一轮。
+            // issue #50：把最近一轮的工具输出摘要交给 judge（截断并标注，PRD §2.3）。
+            // issue #50：只取**本轮**的工具输出（turnStats.toolCalls 条）；0 工具轮给空，避免混入上一轮尾巴。
+            const thisTurnToolCalls = turnStats?.toolCalls ?? 0;
+            const recentToolOutput =
+              thisTurnToolCalls > 0
+                ? agent.messages
+                    .filter((m) => m.role === "tool")
+                    .slice(-thisTurnToolCalls)
+                    .map((m) => `tool(${m.name ?? ""}): ${contentText(m.content) ?? ""}`)
+                    .join("\n")
+                : "";
+            const clipped =
+              recentToolOutput.length > 2_000
+                ? `${recentToolOutput.slice(-2_000)}\n…[已截断，只保留最近 2000 字符]`
+                : recentToolOutput;
+            void repl.drive
+              .onTurnEnd({ toolCalls: turnStats?.toolCalls ?? 0, recentOutput: clipped })
+              .catch((e: unknown) => {
+                ui.warn(`自动续跑检查失败：${(e as Error).message}`);
+              });
+            // issue #27：把本轮新产生的检查点归到这一轮，并写回 session meta。
+            try {
+              const newSeqs = checkpoints
+                .list(1_000)
+                .filter((e) => e.seq > rewindPending.checkpointSeqBefore)
+                .map((e) => e.seq);
+              rewindLog.endTurn(rewindPending, newSeqs);
+              sess.meta.rewind = rewindLog.serialize();
+            } catch {
+              /* 轮次记账失败不影响主流程 */
+            }
+            repl.lastTurnMs = repl.turnStartedAt > 0 ? Date.now() - repl.turnStartedAt : 0;
+            s.activeTurnFrom = null;
+            if (mailbox) {
+              try {
+                mailboxState.endTurn(mailbox.root, mailbox.sessionId, {
+                  outcome,
+                  abortSource: outcome === "aborted" ? "human" : outcome === "error" ? "error" : null,
+                });
+              } catch {
+                // 状态机失败不阻塞交互
+              }
+            }
+          }
+          persist(agent.messages, sess.meta);
+        } catch (e) {
+          // 单条输入失败只丢这一条：命令/工具抛错不能让 draining 永久卡死。
+          ui.error(`处理输入失败: ${(e as Error).message}`);
         }
       }
-      persist(agent.messages, sess.meta);
-      } catch (e) {
-        // 单条输入失败只丢这一条：命令/工具抛错不能让 draining 永久卡死。
-        ui.error(`处理输入失败: ${(e as Error).message}`);
-      }
-    }
     } finally {
       repl.draining = false;
       s.composerRef?.setQueueCount(repl.queue.length);
