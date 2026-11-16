@@ -653,8 +653,3 @@ export async function sendTurn(
   }
   return this.lastStats;
 }
-
-  /**
-   * 写一轮诊断日志（v0.4.1 A1）。失败静默：诊断不得影响主流程。
-   * 只记元数据，不记 prompt/回答正文。
-   */
