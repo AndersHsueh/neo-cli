@@ -29,7 +29,6 @@ export function toolStatusOf(r: { ok: boolean; executed?: boolean }): ToolEventS
 
 export async function sendTurn(
   this: Agent,
-
   userInput: string | { text: string; images: string[] },
   opts: { rollbackOnAbort?: boolean } = {},
 ): Promise<TurnStats> {

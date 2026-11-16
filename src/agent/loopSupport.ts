@@ -124,7 +124,6 @@ export function budgetMessage(this: Agent, attempt: number, max: number): Messag
   return { role: "system", content: `${text}\n\n${planModeMessage(plan)}` };
 }
 
-
 /**
  * 记下本会话触达的路径（issue #17）。归一由宿主完成，这里只去重。
  * 来源：工具参数（read/write/edit/list/glob/grep）+ 用户 `@` 引用。
@@ -322,8 +321,6 @@ export function makeCtx(this: Agent, signal: AbortSignal): ToolCtx {
       : undefined,
   };
 }
-
-
 
 /**
  * 执行一个 hook 事件。

@@ -653,7 +653,6 @@ export function createRepl(s: AppSession): ReplState {
     return repl.ctxCacheValue;
   };
 
-
   s.drive = repl.drive;
   s.loopScheduler = repl.loopScheduler;
   return repl;
