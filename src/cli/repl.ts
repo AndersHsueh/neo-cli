@@ -1,10 +1,12 @@
 import { dispatchCommand } from "./commands.ts";
 import { persist, showStats } from "./sessions.ts";
 import { authorizeShell, executeShell, runShell } from "./shell.ts";
-import { bindAttachments, resolveLine, type Attachment } from "../attachments.ts";
+import { bindAttachments, resolveLine, type Attachment, type QueuedLine } from "../attachments.ts";
 import type { SelectDeps } from "../ui/select.ts";
 import { c } from "../ui/theme.ts";
 import { FileIndex } from "../input/fileIndex.ts";
+import type { Composer } from "../tui/composer.ts";
+import type { TitleAnimator } from "../tui/title.ts";
 import { expandReferences } from "../input/references.ts";
 import { normalizeRelPath } from "../rules/index.ts";
 import { chatStream, contentText } from "../llm.ts";
@@ -22,7 +24,67 @@ import { makeDriveJudge } from "../driveJudge.ts";
 import { outcomeOf, type LastTurnMeta } from "../turnDiagnostics.ts";
 import type { AppSession } from "./sessionStart.ts";
 
-export type ReplState = Record<string, any>;
+export type QueueOrigin = "user" | "mailbox" | "notice";
+export interface QueueItem extends QueuedLine {
+  origin: QueueOrigin;
+  /** mailbox/notice 的来源 session（状态机 turn.from）。 */
+  from?: string;
+  /** 由 `/loop` 注入的拍（issue #25）：需要像用户输入一样在 scrollback 回显一行。 */
+  loop?: boolean;
+  /**
+   * shell 输入模式（issue #30）提交的命令：text 是命令原文（不含 `!`），
+   * 由 drain 直接交给 runShellWithTui —— 不再走「整行 startsWith !」那条，避免双重剥前缀。
+   */
+  shell?: boolean;
+}
+
+/**
+ * REPL 层可变状态 + 入口函数。createRepl 建好队列 / drain / idle tick，
+ * inputLayer 再接上输入源（composer 或 readline）并覆写 promptInput / closeInput / selectDeps。
+ * 字段与拆分前 src/index.ts 交互段的 let/const 一一对应（类型照搬）。
+ */
+export interface ReplState {
+  // ---- 输入源（inputLayer 装配）----
+  composer: Composer | null;
+  titleAnimator: TitleAnimator | null;
+  /** `!cmd` 让出终端期间为 true。 */
+  externalShellActive: boolean;
+  promptInput: () => void;
+  closeInput: () => void;
+  selectDeps: SelectDeps;
+  // ---- 空闲 tick 互斥条件 ----
+  selectActive: boolean;
+  /** select 期间 Ctrl+C 路由为取消选择（C9）。 */
+  selectCancel: (() => void) | undefined;
+  questionPending: boolean;
+  clipboardUnsupportedNotified: boolean;
+  // ---- 队列 / turn 记账 ----
+  queue: QueueItem[];
+  draining: boolean;
+  turnSeq: number;
+  autoTurnChain: number;
+  turnStartedAt: number;
+  lastTurnMs: number;
+  turnActive: boolean;
+  drive: DriveManager;
+  loopScheduler: LoopScheduler;
+  // ---- 粘贴 chip / @ 补全 ----
+  pasteTextCounter: number;
+  pasteImageCounter: number;
+  fileIndex: FileIndex;
+  fileIndexPreheat: Promise<void>;
+  // ---- 入口函数 ----
+  submitUserLine: (raw: string, attachments: Attachment[]) => void;
+  shutdown: () => Promise<void>;
+  runShellWithTui: (cmd: string) => Promise<void>;
+  drain: () => Promise<void>;
+  runDrainSafely: () => void;
+  runIdleTick: () => void;
+  // ---- 状态行上下文占用（500ms 缓存）----
+  ctxCacheValue: number;
+  ctxCacheAt: number;
+  ctxUsage: () => number;
+}
 
 /**
  * 队列 / drain / shutdown / idle tick。输入源在 inputLayer 里接上。
