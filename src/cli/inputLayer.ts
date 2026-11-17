@@ -53,7 +53,6 @@ export async function runInteractive(s: AppSession): Promise<number> {
     overBudget,
     agent,
     sessionTodos,
-    mcpManager,
     memoryFile
   } = s;
   // ---- 交互模式 ----
@@ -202,21 +201,23 @@ export async function runInteractive(s: AppSession): Promise<number> {
     };
     const onCrash = (e: unknown): void => {
       try { repl.composer?.stop(); } catch { /* 尽力还原 */ }
-      // MCP 子进程不能留在崩溃路径上：否则用户重开 neo 会看到一堆孤儿 node。
-      try { mcpManager.closeAll(); } catch { /* 清理失败不掩盖原异常 */ }
+      // issue #75：崩溃路径也要收后台 shell（只关 MCP 不够，shell 已 setsid 脱组）。
+      try { s.cleanupEphemeralResources(); } catch { /* 清理失败不掩盖原异常 */ }
       console.error(c.err(`✖ 未捕获异常，终端已还原：${(e as Error)?.message ?? String(e)}`));
       process.exit(1);
     };
-    const onTerm = (): void => {
+    const onTerm = (sig: NodeJS.Signals): void => {
       try { repl.composer?.stop(); } catch { /* 尽力还原 */ }
-      try { mcpManager.closeAll(); } catch { /* 同上 */ }
-      process.exit(143);
+      try { s.cleanupEphemeralResources(); } catch { /* 同上 */ }
+      process.exit(sig === "SIGHUP" ? 129 : 143);
     };
+    const onSigterm = (): void => onTerm("SIGTERM");
+    const onSighup = (): void => onTerm("SIGHUP");
     process.on("SIGINT", onSigintTui);
     process.once("uncaughtException", onCrash);
     process.once("unhandledRejection", onCrash);
-    process.once("SIGTERM", onTerm);
-    process.once("SIGHUP", onTerm);
+    process.once("SIGTERM", onSigterm);
+    process.once("SIGHUP", onSighup);
     try {
       repl.composer.start();
       // 启动前的 banner / 记忆提示 / --resume 回放：补写到帧上方（顺序不变）
@@ -231,8 +232,8 @@ export async function runInteractive(s: AppSession): Promise<number> {
       process.off("SIGINT", onSigintTui);
       process.off("uncaughtException", onCrash);
       process.off("unhandledRejection", onCrash);
-      process.off("SIGTERM", onTerm);
-      process.off("SIGHUP", onTerm);
+      process.off("SIGTERM", onSigterm);
+      process.off("SIGHUP", onSighup);
     }
   } else {
     const rl = createInterface({
@@ -609,8 +610,8 @@ export async function runInteractive(s: AppSession): Promise<number> {
       process.off("SIGINT", onSigint);
       if (process.stdout.isTTY) process.stdout.off("resize", onResize);
       ui.setPromptRestorer(null);
-      // MCP 子进程随输入源关闭一并收掉（readline 路径没有统一的 shutdown 出口）。
-      try { mcpManager.closeAll(); } catch { /* 清理失败不阻止退出 */ }
+      // issue #75：readline 路径同样走完整清理（含后台 shell），不只关 MCP。
+      try { s.cleanupEphemeralResources(); } catch { /* 清理失败不阻止退出 */ }
       closeMailbox();
       if (process.stdin.isTTY) process.stdout.write("\x1b[?2004l"); // 退出还原终端 bracketed paste 模式
     });
@@ -623,9 +624,9 @@ export async function runInteractive(s: AppSession): Promise<number> {
   }
 
   closeMailbox();
-  // MCP 子进程：正常退出路径（readline close）已收，这里兜底再调一次（幂等）。
+  // 正常退出路径已收过，这里兜底再调一次（幂等，含后台 shell）。
   try {
-    mcpManager.closeAll();
+    s.cleanupEphemeralResources();
   } catch {
     // 清理失败不阻止退出
   }

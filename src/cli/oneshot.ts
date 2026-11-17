@@ -8,6 +8,7 @@ import { DriveManager } from "../drive.ts";
 import { makeDriveJudge } from "../driveJudge.ts";
 import { parseDriveArgs, driveExitCode, formatDriveSummary, type DriveRunResult } from "../oneshotDrive.ts";
 import type { AppSession } from "./sessionStart.ts";
+import { installFatalSignalHandlers } from "../signals.ts";
 
 /**
  * -p / 非交互 `neo <prompt>` 路径。若不是这些模式，返回 null，交给交互 REPL。
@@ -92,8 +93,19 @@ export async function runOneshotOrPiped(s: AppSession): Promise<number | null> {
     // 结构化模式（json / stream-json）把 SIGINT 转成 aborted 统计：Ctrl+C 后
     // 仍能输出一行 JSON / 收口 result（exit 130），而不是被信号直接杀掉、
     // 编排器拿到空 stdout。
-    const onSigint = (): void => agent.cancel();
-    if (structuredMode) process.on("SIGINT", onSigint);
+    // issue #75：shell 已 setsid 脱组，普通 -p 也必须处理 SIGINT / SIGHUP / SIGTERM，
+    // 先 cleanupEphemeral 再按 130/129/143 退出，否则前台 shell 与孙进程会继续写盘。
+    // 结构化模式的 SIGINT 仍只 cancel，走原有 aborted 收口（先输出 JSON 再 130）。
+    const uninstallSignals = installFatalSignalHandlers({
+      cleanup: () => s.cleanupEphemeralResources(),
+      onSignal: (sig) => {
+        if (structuredMode && sig === "SIGINT") {
+          agent.cancel();
+          return "continue";
+        }
+        return "exit";
+      },
+    });
     let stats: Awaited<ReturnType<typeof agent.send>>;
     // issue #51：驱动终态（普通 -p 为 null）。
     let driveResult: DriveRunResult | null = null;
@@ -213,7 +225,7 @@ export async function runOneshotOrPiped(s: AppSession): Promise<number | null> {
       s.cleanupEphemeralResources();
       throw e;
     } finally {
-      if (structuredMode) process.off("SIGINT", onSigint);
+      uninstallSignals();
     }
     // 正常结束（含 hadError / aborted）：先收子进程再落盘退出。
     // -p 是「跑完就退」的一次性进程，子进程没有第二次机会被回收。

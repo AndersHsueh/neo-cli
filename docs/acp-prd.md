@@ -274,3 +274,4 @@ ACP 是编辑器里的**交互会话**，记忆走交互模式：用户级 + 项
 - 2026-11-17：官方 `@agentclientprotocol/sdk` 默认入口（v1，fluent `agent()`）在 Bun 下类型与运行时均可用，未走 §2.2 自实现备案。
 - 但 SDK 的 `Connection.receive()` 对入站消息不等待，初始化闸门只在 `initialize` 的 `respondWithResult` 里放行。同一批 stdin 里紧跟的 `session/new` 会被误判为未初始化。实现在 `src/acp/inbound.ts` 对喂给 SDK 的字节流排队：上一条带 id 的请求对应的响应写出后才放行下一条。未改 SDK 源码。
 - 客户端 `mcpServers`、工具/权限/cancel/diff 映射在后续步骤填写。
+- 2026-11-17（issue #75）：`SIGINT` / `SIGHUP` / `SIGTERM` 先 `dispose`（含按进程组回收后台 shell）再分别以 130 / 129 / 143 退出。模型 `shell` 工具已 setsid 脱组，信号不会自动传到子进程。

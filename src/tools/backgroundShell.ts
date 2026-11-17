@@ -1,3 +1,4 @@
+import { readdirSync, readFileSync } from "node:fs";
 /**
  * 后台长驻 shell（issue #28）。
  *
@@ -79,14 +80,45 @@ function signalGroup(pid: number, sig: NodeJS.Signals | 0): boolean {
   }
 }
 
-/** 进程组是否还有成员（ESRCH = 组已不存在）。 */
+/**
+ * 进程组里是否还有非僵尸成员。
+ *
+ * killAll 的同步等待里事件循环被 Bun.sleepSync 挡住，已退出的 shell 会一直是
+ * 僵尸，此时 `kill(-pid, 0)` 仍成功，每个任务都会空等满约 200ms。先看 /proc：
+ * 只剩僵尸就视为组已空（issue #75 复审 §4c）。/proc 不可用时退回信号探测。
+ */
+function groupHasNonZombie(pgid: number): boolean {
+  try {
+    for (const name of readdirSync("/proc")) {
+      if (!/^\d+$/.test(name)) continue;
+      let stat: string;
+      try {
+        stat = readFileSync(`/proc/${name}/stat`, "utf8");
+      } catch {
+        continue;
+      }
+      const rparen = stat.lastIndexOf(")");
+      if (rparen < 0) continue;
+      const rest = stat.slice(rparen + 2).split(" ");
+      const state = rest[0];
+      const pgrp = Number(rest[2]);
+      if (pgrp === pgid && state !== "Z") return true;
+    }
+    return false;
+  } catch {
+    return true;
+  }
+}
+
+/** 进程组是否还有活着的成员（ESRCH / 只剩僵尸 = 否）。 */
 function groupAlive(pid: number): boolean {
   try {
-    return signalGroup(pid, 0);
+    if (!signalGroup(pid, 0)) return false;
   } catch {
     // EPERM 等：组还在，只是我们发不了信号。
     return true;
   }
+  return groupHasNonZombie(pid);
 }
 
 /**

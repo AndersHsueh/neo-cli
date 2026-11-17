@@ -34,6 +34,7 @@ import { acpPromptError } from "./turn.ts";
 import { createInboundGate } from "./inbound.ts";
 import { REQUEST_PERMISSION_METHOD } from "./permission.ts";
 import { toolCallEndOf, toolCallStartOf } from "./tools.ts";
+import { installFatalSignalHandlers } from "../signals.ts";
 
 /**
  * 首期广告的能力（PRD §2.4）：只广告真做的。
@@ -317,6 +318,11 @@ export async function runAcpServer(): Promise<number> {
     }
   };
   invokeDispose = dispose;
+  // issue #75：shell 已 setsid 脱组，编辑器按进程组发 SIGTERM/SIGHUP（或人工 Ctrl-C）
+  // 时必须先 dispose 再按 143/129/130 退出，否则后台 shell 与孙进程会留下写盘。
+  const uninstallSignals = installFatalSignalHandlers({
+    cleanup: () => dispose(),
+  });
 
   const app = agent({ name: "neo" })
     .onRequest(methods.agent.initialize, ({ params }) => {
@@ -480,6 +486,7 @@ export async function runAcpServer(): Promise<number> {
   // 不在这里退出：连接要一直读到 stdin 关闭（编辑器随时可能发下一条请求）。
   await connection.closed;
   // 连接结束（stdin EOF / 流被取消）后确保资源释放，再让进程退出。
+  uninstallSignals();
   dispose();
   return 0;
 }
