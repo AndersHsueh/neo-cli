@@ -8,8 +8,7 @@
  * `ndJsonStream()` 做 NDJSON 编解码，`agent()` 的 fluent API 注册 handler。
  * 本文件只负责：协议方法 → neo 侧的映射，以及 stdout 的独占。
  *
- * 本步（C）实现：`initialize`、`session/new`、`session/prompt` 与文本类 `session/update`。
- * 工具事件 / 权限 / cancel / diff 是 D 步，未注册的方法一律回 `-32601`，不伪造结果。
+ * 未注册的方法一律回 `-32601`，不伪造结果。
  */
 import { isAbsolute, join } from "node:path";
 import { existsSync, readFileSync, statSync } from "node:fs";
@@ -308,11 +307,6 @@ export async function runAcpServer(): Promise<number> {
       void inbound.readable.cancel();
     } catch {
       /* 已关闭 */
-    }
-    try {
-      void connection?.closed.catch(() => undefined);
-    } catch {
-      /* 连接未建立 */
     }
   };
   invokeDispose = dispose;

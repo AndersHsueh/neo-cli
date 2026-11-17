@@ -128,6 +128,9 @@ export function createPermissionBridge(opts: PermissionBridgeOptions): Permissio
         pendingAbort = null;
       }
 
+      // 等待期间已经被 cancel：即便迟到的 allow 先落到了 Promise，也按取消处理，不得落盘。
+      if (aborted || opts.isCancelled?.()) return "cancel";
+
       const outcome = response.outcome;
       if (outcome.outcome === "cancelled") return "cancel";
       const kind = params.options.find((o) => o.optionId === outcome.optionId)?.kind;
