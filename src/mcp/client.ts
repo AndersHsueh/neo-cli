@@ -100,6 +100,8 @@ export class McpManager {
   private live = new Map<string, Live>();
   private states = new Map<string, McpServerState>();
   private unregisters: Array<() => void> = [];
+  /** 正在握手的连接：closeAll 时它们还不在 live 里，也必须收掉（ACP 第三轮 N3）。 */
+  private connecting = new Set<McpRpc>();
   private closed = false;
 
   constructor(
@@ -176,6 +178,7 @@ export class McpManager {
               onStderr: (line) => this.opts.onStderr?.(cfg.name, line),
             });
 
+    this.connecting.add(rpc);
     try {
       if (rpc instanceof StdioRpc) rpc.start();
       // issue #44：SSE 必须先建长连接拿到 endpoint，否则第一个 request 无处可 POST。
@@ -199,6 +202,7 @@ export class McpManager {
         timeoutMs,
         `tools/list 超时（${timeoutMs}ms）`,
       );
+      if (this.closed) throw new Error("连接已关闭");
       return {
         ok: true,
         cfg,
@@ -212,6 +216,8 @@ export class McpManager {
       // 不存在「状态 error 但工具还在注册表里可调」的矛盾状态。
       rpc.close();
       return { ok: false, cfg, error: describeError(cfg, e, rpc), connectMs: Date.now() - started };
+    } finally {
+      this.connecting.delete(rpc);
     }
   }
 
@@ -314,6 +320,8 @@ export class McpManager {
     this.unregisters = [];
     for (const [, l] of this.live) l.rpc.close();
     this.live.clear();
+    for (const rpc of this.connecting) rpc.close();
+    this.connecting.clear();
   }
 }
 

@@ -30,6 +30,7 @@ import { loadConfig, ConfigError, type Config, type McpServerConfig } from "../c
 import type { PermissionMode, ToolEndEventData, ToolStartEventData } from "../agent/types.ts";
 import { resolveAndApplyModelWindow } from "../env/modelWindows.ts";
 import { createAcpSession, type AcpSession } from "./session.ts";
+import { acpPromptError } from "./turn.ts";
 import { createInboundGate } from "./inbound.ts";
 import { REQUEST_PERMISSION_METHOD } from "./permission.ts";
 import { toolCallEndOf, toolCallStartOf } from "./tools.ts";
@@ -297,9 +298,12 @@ export async function runAcpServer(): Promise<number> {
 
   /** 统一释放（复审 R3）：会话资源 + 入站流 + 连接，幂等。 */
   let disposed = false;
+  /** session/new 装配中途断连：已拉起的 MCP 子进程由它收掉（第三轮 N3）。 */
+  const hostGone = new AbortController();
   const dispose = (): void => {
     if (disposed) return;
     disposed = true;
+    hostGone.abort();
     try {
       session?.dispose();
     } catch (e) {
@@ -355,6 +359,7 @@ export async function runAcpServer(): Promise<number> {
       const created = await createAcpSession({
         cfg,
         cwd,
+        signal: hostGone.signal,
         onText: (text) => {
           // 助手文本 → agent_message_chunk（PRD §2.9）。通知先于 prompt 响应发出。
           sendNotification({
@@ -431,9 +436,8 @@ export async function runAcpServer(): Promise<number> {
         const response: PromptResponse = { stopReason };
         return response;
       } catch (e) {
-        if (e instanceof RequestError) throw e;
-        // R9：引擎失败不得伪装 end_turn —— 转成可读的 JSON-RPC 错误。
-        throw RequestError.internalError(undefined, `本轮失败：${(e as Error).message}`);
+        // R9：引擎失败不得伪装 end_turn —— 转成可读的 JSON-RPC 错误（-32603）。
+        throw acpPromptError(e);
       } finally {
         prompting = false;
       }

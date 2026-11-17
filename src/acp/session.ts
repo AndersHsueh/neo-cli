@@ -16,7 +16,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Config, McpServerConfig } from "../config.ts";
 import { Agent } from "../agent.ts";
-import type { AgentEvent, PermissionMode, ToolEndEventData, ToolStartEventData, TurnStats } from "../agent/types.ts";
+import type { AgentEvent, AssistantMessageEventData, PermissionMode, ToolEndEventData, ToolStartEventData } from "../agent/types.ts";
 import { createPermissionBridge, type PermissionUi } from "./permission.ts";
 import { isWriteTool, pathOfArgs, snapshotOldText, toolKind } from "./tools.ts";
 import { Console } from "../ui/console.ts";
@@ -36,20 +36,15 @@ import { persist } from "../cli/sessions.ts";
 import { createSession, type SessionMeta } from "../session.ts";
 import { CheckpointStore } from "../checkpoint.ts";
 import { McpManager } from "../mcp/index.ts";
+import { backgroundShells } from "../tools/backgroundShell.ts";
+import { runAcpTurn, type AcpStopReason } from "./turn.ts";
 
 /** 诊断只走 stderr：stdout 是协议通道。 */
 function log(message: string): void {
   process.stderr.write(`[acp] ${message}\n`);
 }
 
-/**
- * `session/prompt` 的 stopReason（PRD §2.8 / 复审 R8）。
- *
- * 与 ACP v1 的 `StopReason` 对齐：只有「正常终止」才走这里；
- * 引擎失败（hadError / emptyResponse / 抛出的非取消异常）必须变成 JSON-RPC 错误，
- * 不得伪装成 `end_turn`（R9）。
- */
-export type AcpStopReason = "end_turn" | "cancelled" | "max_tokens" | "max_turn_requests" | "refusal";
+export type { AcpStopReason } from "./turn.ts";
 
 /** 装配好的 ACP 会话。 */
 export interface AcpSession {
@@ -93,6 +88,11 @@ export interface CreateAcpSessionOptions {
    * `session/update` 都 await 完，否则通知可能晚于 prompt 的响应写出。
    */
   flushNotifications?: () => Promise<void>;
+  /**
+   * 宿主断连（server dispose）信号：`session/new` 还在等 MCP 握手时 stdin 就关了，
+   * 已拉起的 MCP 子进程也必须收掉（第三轮 N3）—— 此时还没有 AcpSession 可 dispose。
+   */
+  signal?: AbortSignal;
 }
 
 /**
@@ -150,6 +150,8 @@ export async function createAcpSession(opts: CreateAcpSessionOptions): Promise<A
   // 判定顺序在桥里：decidePermission 说 allow → 直接放行；plan → 拒绝；
   // needs-confirm → 问编辑器；客户端不在/失败/超时 → 回退 settings 模式（不放宽）。
   let cancelled = false;
+  /** 本轮最后一次模型响应是否是无工具调用的正文收口（N2）。 */
+  let answeredLastIteration = false;
   const permissionBridge = createPermissionBridge({
     mode,
     ui: opts.permissionUi ?? null,
@@ -210,6 +212,11 @@ export async function createAcpSession(opts: CreateAcpSessionOptions): Promise<A
       return false;
     },
     onEvent: (e: AgentEvent) => {
+      if (e.type === "assistant_message") {
+        const data = e.data as AssistantMessageEventData;
+        answeredLastIteration = data.tool_calls.length === 0 && data.content.trim() !== "";
+        return;
+      }
       if (e.type === "text" && typeof e.data === "string" && e.data !== "") {
         onText(e.data);
         return;
@@ -288,6 +295,9 @@ export async function createAcpSession(opts: CreateAcpSessionOptions): Promise<A
       // 子进程在 start() 时已经拉起（R5 的「已启动」以此为准）；握手失败只记诊断。
       connectTimeoutMs: 4_000,
     });
+    const manager = mcpManager;
+    if (opts.signal?.aborted) manager.closeAll();
+    else opts.signal?.addEventListener("abort", () => manager.closeAll(), { once: true });
     try {
       const n = await mcpManager.connectAll();
       if (n > 0) log(`MCP：已接入 ${n} 个外部工具`);
@@ -341,30 +351,6 @@ export async function createAcpSession(opts: CreateAcpSessionOptions): Promise<A
 
   const meta: SessionMeta = sess.meta;
 
-  /**
-   * 把一轮的 stats 映射成 stopReason（PRD §2.8 / 复审 R8）。
-   *
-   * 顺序有讲究：
-   *  1. 取消优先 —— 取消不是错误，也不是「正常结束」；
-   *  2. 工具迭代上限**必须排在 hadError 之前**：撞上限时 `sendTurn` 的收口兜底
-   *     常常同时把 hadError 置 true（「循环结束却没有最终正文」），但客户端该看到的是
-   *     `max_turn_requests` 而不是一个 JSON-RPC 错误；
-   *  3. `length` 截断只要**有正文**就是 `max_tokens`（部分回答是有效结果）；
-   *  4. `content_filter` / `refusal` → `refusal`；
-   *  5. 其余 hadError / emptyResponse → 抛错（R9：不得伪装 end_turn）。
-   *     注意空响应的 finishReason 可能是 `stop`，所以这一条不能反过来被 finishReason 盖掉。
-   */
-  const stopReasonOf = (stats: TurnStats, hitIterationLimit: boolean): AcpStopReason => {
-    if (cancelled || stats.aborted) return "cancelled";
-    if (hitIterationLimit) return "max_turn_requests";
-    if (stats.finishReason === "length") return "max_tokens";
-    if (stats.finishReason === "content_filter" || stats.finishReason === "refusal") return "refusal";
-    if (stats.hadError || stats.emptyResponse) {
-      throw new Error(stats.errorMessage ?? "模型本轮没有产出可用结果（引擎报告失败）");
-    }
-    return "end_turn";
-  };
-
   return {
     sessionId,
     cwd,
@@ -373,24 +359,18 @@ export async function createAcpSession(opts: CreateAcpSessionOptions): Promise<A
       // 新一轮开始：清掉上一轮的取消标志（cancel 只作用于在途的那一轮）。
       // 权限桥的 aborted 也必须复位，否则上一轮取消后本轮连权限都不问（复审 R2）。
       cancelled = false;
+      answeredLastIteration = false;
       permissionBridge.resetForTurn();
-      let stats: TurnStats;
-      try {
-        stats = await agent.send(text);
-      } catch (e) {
-        // 非取消异常：先把已排队的通知发完，再如实抛给 server 转成 JSON-RPC 错误。
-        await opts.flushNotifications?.();
-        persist(agent.messages, meta);
-        throw e;
-      }
-      // 通知队列：onEvent 是同步的，通知发送（含 await client.notify）在 server 侧排队；
-      // prompt 的响应必须在「本轮全部通知」之后写出，所以这里等队列排空（取消场景同样如此）。
-      await opts.flushNotifications?.();
-      // 落盘：与 TUI 同口径（persist 内部已吞异常），编辑器重开进程后会话文件仍在。
-      persist(agent.messages, meta);
-      // 工具迭代上限：与 sendTurn 的收口提示同一判据（iterations 用满且有工具调用）。
-      const hitIterationLimit = stats.iterations >= cfg.maxToolIterations && stats.toolCalls > 0;
-      return { stopReason: stopReasonOf(stats, hitIterationLimit) };
+      // 通知排空与落盘（与 TUI 同口径）在 runAcpTurn 里，成功/失败/抛错都先做完再返回。
+      const stopReason = await runAcpTurn(text, {
+        send: (t) => agent.send(t),
+        flush: opts.flushNotifications,
+        persist: () => persist(agent.messages, meta),
+        cancelled: () => cancelled,
+        maxToolIterations: cfg.maxToolIterations,
+        answeredLastIteration: () => answeredLastIteration,
+      });
+      return { stopReason };
     },
     cancel() {
       cancelled = true;
@@ -411,6 +391,13 @@ export async function createAcpSession(opts: CreateAcpSessionOptions): Promise<A
         agent.cancel();
       } catch (e) {
         log(`dispose：中止在途请求失败 ${(e as Error).message}`);
+      }
+      // 后台 shell（background:true）不挂在 agent.cancel 的 AbortSignal 上，
+      // 与 TUI 退出（src/cleanup.ts）同口径单独收掉，否则 EOF 后还会写盘（第三轮 N1）。
+      try {
+        backgroundShells.killAll();
+      } catch (e) {
+        log(`dispose：结束后台 shell 失败 ${(e as Error).message}`);
       }
       if (mcpManager) {
         try {
