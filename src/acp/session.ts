@@ -56,8 +56,8 @@ export interface AcpSession {
   /** `session/cancel`：中止在途的模型请求与工具。 */
   cancel(): void;
   /**
-   * 释放会话资源（复审 R3）：结束在途权限询问、中止在途模型请求与工具
-   * （**在途 shell 必须停掉**，不能在 stdin 关闭后继续写盘）、关闭 MCP 连接。幂等。
+   * 释放会话资源（复审 R3 / 第三轮 N1）：结束在途权限询问、中止在途模型请求与工具、
+   * 收掉后台 shell（**都不能在 stdin 关闭后继续写盘**）、关闭 MCP 连接。幂等。
    */
   dispose(): void;
 }

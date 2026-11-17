@@ -778,9 +778,7 @@ describe("R3 stdin EOF 必须停止在途工作", () => {
         },
       });
       // 等后台 shell 真的启动（pid 落盘）。
-      for (let i = 0; i < 300 && !existsSync(pidFile); i++) {
-        await new Promise((res) => setTimeout(res, 20));
-      }
+      await waitForFile(pidFile, 6_000);
       // 再等第二个权限请求（write_file）到达。
       const perm = await r.waitFor((m) => m.method === "session/request_permission", 8_000);
       expect(perm).not.toBeNull();
@@ -802,11 +800,7 @@ describe("R3 stdin EOF 必须停止在途工作", () => {
       expect(existsSync(never)).toBe(false);
       // 加强：后台 shell 不得在 EOF 后继续写盘，且进程已被回收。
       await new Promise((res) => setTimeout(res, 2_500));
-      if (existsSync(pidFile)) {
-        const raw = readFileSync(pidFile, "utf8").trim();
-        const n = Number(raw);
-        if (Number.isFinite(n) && n > 0) bgPid = n;
-      }
+      bgPid = readPid(pidFile);
       r.kill();
       expect(existsSync(bgAfterEof)).toBe(false);
       expect(bgPid).not.toBeNull();
