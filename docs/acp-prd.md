@@ -79,6 +79,9 @@ ACP（Agent Client Protocol）是编辑器与 agent 之间的 JSON-RPC 协议：
 - `cwd` 作为本次会话的工作区（等价于 `-C`）：配置、工具沙箱、记忆项目级根、检查点全部以它为根。
   **配置搜索根与 `permission_mode` 读取都以 session `cwd` 为准**，不是进程启动目录：先读
   `<cwd>/settings.json`，工作区没有再回退到启动目录、包装根、`~/.neo/settings.json`。
+  回退是**整份文件**的回退：模型配置与 `permission_mode` 永远取自同一份选中的 settings.json，
+  不会出现「模型配置来自启动目录、权限模式却按工作区缺省 ask」的混搭。工作区有 settings 时
+  只看工作区那一份（启动目录的 auto-all 不会放宽工作区的 plan）。
   相对路径 → `-32602`；目录不存在 → `-32602`（可读消息）。
 - 成功返回 `{ sessionId }`（沿用 `src/session.ts` 的会话 id）。
 - **缺模型凭证**（`cfg.apiKey` 为空，与 `src/cli/bootstrap.ts` 的判定同口径）→ 返回清楚错误

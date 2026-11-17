@@ -10,7 +10,7 @@
  *
  * 未注册的方法一律回 `-32601`，不伪造结果。
  */
-import { isAbsolute, join } from "node:path";
+import { isAbsolute } from "node:path";
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { agent, methods, ndJsonStream, PROTOCOL_VERSION, RequestError } from "@agentclientprotocol/sdk";
 import type {
@@ -113,17 +113,20 @@ function promptText(blocks: ContentBlock[]): string {
 }
 
 /**
- * 从 **session cwd** 的 settings.json 读顶层 `permission_mode`（PRD §2.5/§2.11，复审 R4）。
+ * 从 loadConfig **实际选中的那份** settings.json 读顶层 `permission_mode`（PRD §2.5/§2.11，复审 R4）。
+ *
+ * 必须与模型配置同源：工作区有 settings 就读工作区的；没有则与 loadConfig 一样回退
+ * （启动目录 → 包装根 → ~/.neo）。不能单独固定读 `<cwd>/settings.json` ——
+ * 那会让模型配置回退到启动目录、权限却落回 ask，两者来自不同文件。
  *
  * 只读这一个键，不新增对外 Config API：`loadConfig` 的 Config 是公开契约，
  * 为一个 ACP 专属回退值扩字段会牵动所有宿主。合法值 ask/auto-edit/auto-all/plan，
  * 缺省/非法 → "ask"（**不放宽**：拼错的配置不该变成 auto-all）。
  * 读不到/解析失败同样回 "ask"，解析错误本身由 loadConfig 在别处报出来。
  */
-function readPermissionMode(cwd: string): PermissionMode {
+function readPermissionMode(path: string | null): PermissionMode {
   try {
-    const path = join(cwd, "settings.json");
-    if (!existsSync(path)) return "ask";
+    if (path === null || !existsSync(path)) return "ask";
     const raw = JSON.parse(readFileSync(path, "utf8")) as unknown;
     if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return "ask";
     const value = (raw as Record<string, unknown>)["permission_mode"];
@@ -395,8 +398,8 @@ export async function runAcpServer(): Promise<number> {
               ? Promise.reject(new Error("连接尚未建立"))
               : connection.client.request<RequestPermissionResponse>(REQUEST_PERMISSION_METHOD, params),
         },
-        // settings 的 permission_mode（**session cwd** 的 settings.json）：客户端不在/失败/超时时回退用。
-        permissionMode: readPermissionMode(cwd),
+        // settings 的 permission_mode（与模型配置同一份 settings.json，工作区优先）：客户端不在/失败/超时时回退用。
+        permissionMode: readPermissionMode(cfg.settingsPath),
         // 客户端在 session/new 里传入的 stdio MCP（PRD §2.7）：与 settings 的 mcpServers 合并。
         clientMcpServers: clientMcpServers(params.mcpServers),
         flushNotifications,

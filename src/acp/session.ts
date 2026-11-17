@@ -107,7 +107,7 @@ export async function createAcpSession(opts: CreateAcpSessionOptions): Promise<A
   // ACP 是交互会话：显式钉死 both，避免 loadConfig 缺省或外界把 scopeMode 降成 project。
   cfg.memory.scopeMode = "both";
 
-  // 权限模式：settings 的 permission_mode（server 从 **session cwd** 的 settings.json 读，复审 R4），
+  // 权限模式：settings 的 permission_mode（server 从 loadConfig 选中的同一份 settings.json 读，工作区优先，复审 R4），
   // 缺省 "ask"（与 `neo` 默认一致）。绝不因为走 ACP 就悄悄放宽成 auto-all。
   const mode: PermissionMode = opts.permissionMode ?? "ask";
 
