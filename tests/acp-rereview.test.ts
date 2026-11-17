@@ -1209,6 +1209,125 @@ describe("N3 session/new 握手中 EOF", () => {
 });
 
 /* ================================================================== *
+ * #75 ACP EOF 按进程组回收
+ * ================================================================== */
+
+/**
+ * 派生孙进程的命令（issue #75）：外层 sh 起内层 sh（孙进程）并 `wait`。
+ * 只杀外层 shell 时，孙进程仍会在 1.5s 后写 `after` —— 这就是红点。
+ */
+function grandchildCommand(pidFile: string, afterFile: string): string {
+  const inner = `printf $$ > ${JSON.stringify(pidFile)}; sleep 1.5; printf x > ${JSON.stringify(afterFile)}`;
+  return `sh -c ${JSON.stringify(inner)} & wait`;
+}
+
+/**
+ * 最小 stdio MCP server 源码的「快」变体（issue #75）：在 minimalMcpSource 基础上，
+ * 回完 tools/list 后写 `listed` marker —— 用来确认它已握手完成、正处在
+ * 「已握手未注册」的空档里（此时 closeAll 最容易漏掉它）。
+ */
+function fastMcpSource(marker: string, listed: string): string {
+  return minimalMcpSource(marker, { answerHandshake: true }).replace(
+    `    } else if (msg.method === "tools/list") {\n`,
+    `    } else if (msg.method === "tools/list") {\n` +
+      `      setTimeout(() => { try { require("node:fs").writeFileSync(${JSON.stringify(listed)}, "1"); } catch {} }, 0);\n`,
+  );
+}
+
+describe("#75 ACP EOF 按进程组回收", () => {
+  test("#75 ACP 后台 shell 的派生孙进程在 stdin EOF 后不得写盘", async () => {
+    const ws = workspace();
+    const pidFile = join(ws, "gc.pid");
+    const afterEof = join(ws, "gc.after");
+    const llm = fakeLlm([
+      sseToolCallFrames("call-75-bg", "shell", {
+        command: grandchildCommand(pidFile, afterEof),
+        background: true,
+      }),
+      sseTextFrames("已启动后台命令"),
+    ]);
+    let gcPid: number | null = null;
+    try {
+      const dir = project(llm.baseUrl);
+      patchSettings(dir, { permission_mode: "auto-all" });
+      const r = await runClient(dir, { cwd: ws, promptBlocks: [{ type: "text", text: "起个后台命令" }] });
+      // 等本轮真的结束（end_turn），此时后台 shell 的孙进程还在 sleep。
+      const resp = await r.waitFor((m) => m.id === 3 && (m.result !== undefined || m.error !== undefined), 15_000);
+      expect(resp).not.toBeNull();
+      expect(stopReasonOf(resp)).toBe("end_turn");
+      // background:true 立刻返回，孙进程 pid 可能晚于 end_turn 落盘。
+      expect(await waitForFile(pidFile, 3_000)).toBe(true);
+      gcPid = readPid(pidFile);
+      expect(gcPid).not.toBeNull();
+      // EOF：后台 shell 的整个进程组必须被回收，孙进程不得继续写盘。
+      await r.closeStdin();
+      await new Promise((res) => setTimeout(res, 2_500));
+      r.kill();
+      expect(existsSync(afterEof)).toBe(false);
+      expect(isAlive(gcPid as number)).toBe(false);
+    } finally {
+      llm.stop();
+      if (gcPid !== null) killPid(gcPid);
+    }
+  }, 40_000);
+
+  test("#75 ACP 两个 MCP 一快一慢握手时 EOF，两个子进程都退出", async () => {
+    const ws = workspace();
+    const fastPidFile = join(ws, "fast.pid");
+    const slowPidFile = join(ws, "slow.pid");
+    const fastListed = join(ws, "fast.listed");
+    const fastScript = join(ws, "fast-mcp.ts");
+    const slowScript = join(ws, "slow-mcp.ts");
+    writeFileSync(fastScript, fastMcpSource(fastPidFile, fastListed), "utf8");
+    // 慢的永不回应 initialize，且忽略 stdin 关闭：只能靠 dispose 的 kill 回收。
+    writeFileSync(slowScript, minimalMcpSource(slowPidFile, { answerHandshake: false }), "utf8");
+    const llm = fakeLlm([sseTextFrames("ok")]);
+    let fastPid: number | null = null;
+    let slowPid: number | null = null;
+    let eofSent = false;
+    let bothReady = false;
+    try {
+      const dir = project(llm.baseUrl);
+      patchSettings(dir, {
+        mcpServers: [
+          { name: "fast75", command: process.execPath, args: [fastScript], env: [] },
+          { name: "slow75", command: process.execPath, args: [slowScript], env: [] },
+        ],
+      });
+      const r = await runClient(dir, {
+        cwd: ws,
+        // id=1 回来后 session/new 已发出：等两个 MCP 子进程都起来、快的已回完 tools/list，
+        // 此时慢的仍卡在握手（4s 超时前），然后 EOF（仿 N3）。
+        onMessage: async (msg, _state, api) => {
+          if (msg.id !== 1 || eofSent) return;
+          const fastUp = await waitForFile(fastPidFile, 3_000);
+          const slowUp = await waitForFile(slowPidFile, 3_000);
+          const listed = await waitForFile(fastListed, 3_000);
+          bothReady = fastUp && slowUp && listed;
+          eofSent = true;
+          await api.closeStdin();
+        },
+      });
+      fastPid = readPid(fastPidFile);
+      slowPid = readPid(slowPidFile);
+      expect(bothReady).toBe(true);
+      expect(fastPid).not.toBeNull();
+      expect(slowPid).not.toBeNull();
+      // 等 neo 退出（握手超时 4s 内应被 EOF 打断），再给 500ms 观察子进程。
+      for (let i = 0; i < 400 && !r.exited(); i++) await new Promise((res) => setTimeout(res, 20));
+      await new Promise((res) => setTimeout(res, 500));
+      r.kill();
+      expect(isAlive(fastPid as number)).toBe(false);
+      expect(isAlive(slowPid as number)).toBe(false);
+    } finally {
+      llm.stop();
+      if (fastPid !== null) killPid(fastPid);
+      if (slowPid !== null) killPid(slowPid);
+    }
+  }, 40_000);
+});
+
+/* ================================================================== *
  * R9 引擎失败不得伪装成功
  * ================================================================== */
 
