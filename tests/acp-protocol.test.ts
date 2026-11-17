@@ -624,8 +624,8 @@ async function runSessionThenPrompt(
     proc.stdin.flush();
     for await (const chunk of proc.stdout as unknown as AsyncIterable<Uint8Array>) {
       out += decoder.decode(chunk, { stream: true });
-      if (sentPrompt) continue;
       // 逐行找 session/new 的响应（stdout 只归协议，解析失败就继续等）。
+      // 发送 prompt 之后也要继续解析：看到 id=3 再关 stdin（EOF 会取消在途工作）。
       for (const line of out.split("\n")) {
         if (!line.startsWith("{")) continue;
         let parsed: JsonRpcMessage;
@@ -635,10 +635,19 @@ async function runSessionThenPrompt(
           continue;
         }
         const sessionId = parsed.id === 2 ? sessionIdOf(parsed) : null;
-        if (sessionId !== null) {
+        if (sessionId !== null && !sentPrompt) {
           sentPrompt = true;
           proc.stdin.write(promptRequest(3, sessionId, promptText));
-          await proc.stdin.end();
+          proc.stdin.flush();
+          // 不要在这里关 stdin：EOF 会触发服务端统一 dispose，取消在途 prompt。
+          // 等本轮 prompt 的响应（id=3）写出后再关，进程才能干净退出。
+        }
+        if (sentPrompt && parsed.id === 3 && (parsed.result !== undefined || parsed.error !== undefined)) {
+          try {
+            await proc.stdin.end();
+          } catch {
+            /* 已退出 */
+          }
         }
       }
     }

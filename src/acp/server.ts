@@ -27,7 +27,7 @@ import type {
   SessionNotification,
 } from "@agentclientprotocol/sdk";
 import { VERSION } from "../cli/version.ts";
-import { loadConfig, ConfigError, type Config } from "../config.ts";
+import { loadConfig, ConfigError, type Config, type McpServerConfig } from "../config.ts";
 import type { PermissionMode, ToolEndEventData, ToolStartEventData } from "../agent/types.ts";
 import { resolveAndApplyModelWindow } from "../env/modelWindows.ts";
 import { createAcpSession, type AcpSession } from "./session.ts";
@@ -39,9 +39,11 @@ import { toolCallEndOf, toolCallStartOf } from "./tools.ts";
  * 首期广告的能力（PRD §2.4）：只广告真做的。
  *
  * - `loadSession: false`：`session/load` 未做；
- * - `promptCapabilities` 显式全 false：只接 text block，image/audio/embeddedContext
- *   尚未映射到 `Agent.send()` 的图片通道；
- * - `mcpCapabilities` 不广告：客户端传入的 `mcpServers` 首期不接入（PRD §2.7 待定）。
+ * - `promptCapabilities`：`text` 是基线；`embeddedContext: false` 只禁 `resource` 内容块，
+ *   `resource_link` 是 v1 必选、已做（复审 R6）；`image` / `audio` 尚未映射到
+ *   `Agent.send()` 的图片通道，显式 false；
+ * - `mcpCapabilities` 不广告 http/sse：只接 stdio（settings + 客户端传入，复审 R5），
+ *   HTTP/SSE 已知未做（PRD §5），不广告也不因此拒绝 session/new。
  */
 const CAPABILITIES: AgentCapabilities = {
   loadSession: false,
@@ -84,7 +86,14 @@ function requireApiKey(cfg: Config): void {
   );
 }
 
-/** 从 ContentBlock 数组里取文本（只接受 text block，其余明确报错，不静默丢弃）。 */
+/**
+ * 从 ContentBlock 数组里取文本（PRD §2.8 / 复审 R6）。
+ *
+ * - `text`：原文；
+ * - `resource_link`：v1 **必选**，映射成一行「资源 name (uri)」交给模型
+ *   （不读文件内容 —— 那是 `resource` 的语义，首期未做）；
+ * - `image` / `audio` / `resource`：明确报 `-32602`，不静默丢弃。
+ */
 function promptText(blocks: ContentBlock[]): string {
   const parts: string[] = [];
   for (const block of blocks) {
@@ -92,24 +101,29 @@ function promptText(blocks: ContentBlock[]): string {
       parts.push(block.text);
       continue;
     }
+    if (block.type === "resource_link") {
+      const name = typeof block.name === "string" && block.name !== "" ? block.name : block.uri;
+      parts.push(`资源 ${name} (${block.uri})`);
+      continue;
+    }
     throw RequestError.invalidParams(
-      `暂不支持 ${block.type} 内容块（只支持 text；image/audio/resource 见 PRD §5 已知未做）`,
+      `暂不支持 ${block.type} 内容块（支持 text 与 resource_link；image/audio/resource 见 PRD §5 已知未做）`,
     );
   }
   return parts.join("\n");
 }
 
 /**
- * 从进程 cwd 的 settings.json 读顶层 `permission_mode`（PRD §2.11 的 settings 回退口径）。
+ * 从 **session cwd** 的 settings.json 读顶层 `permission_mode`（PRD §2.5/§2.11，复审 R4）。
  *
  * 只读这一个键，不新增对外 Config API：`loadConfig` 的 Config 是公开契约，
  * 为一个 ACP 专属回退值扩字段会牵动所有宿主。合法值 ask/auto-edit/auto-all/plan，
  * 缺省/非法 → "ask"（**不放宽**：拼错的配置不该变成 auto-all）。
  * 读不到/解析失败同样回 "ask"，解析错误本身由 loadConfig 在别处报出来。
  */
-function readPermissionMode(): PermissionMode {
+function readPermissionMode(cwd: string): PermissionMode {
   try {
-    const path = join(process.cwd(), "settings.json");
+    const path = join(cwd, "settings.json");
     if (!existsSync(path)) return "ask";
     const raw = JSON.parse(readFileSync(path, "utf8")) as unknown;
     if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return "ask";
@@ -123,6 +137,68 @@ function readPermissionMode(): PermissionMode {
 }
 
 /**
+ * 把客户端 `session/new` 传入的 `mcpServers` 归一成 `McpServerConfig`（PRD §2.7 / 复审 R5）。
+ *
+ * 官方形态：`{ name, command, args?, env?: [{ name, value }] }`（stdio）。
+ * - `env` 数组转对象；
+ * - HTTP/SSE 形态（带 `url` / `type`）**跳过**并记「未支持的传输」：不广告
+ *   `mcpCapabilities.http/sse`，也**不因此拒绝 session/new**；
+ * - 单条写错只丢这一条（诊断里只说名字与原因，**绝不写 env 值**）。
+ */
+function clientMcpServers(raw: unknown): McpServerConfig[] {
+  if (!Array.isArray(raw)) return [];
+  const out: McpServerConfig[] = [];
+  const seen = new Set<string>();
+  for (const item of raw) {
+    if (typeof item !== "object" || item === null || Array.isArray(item)) {
+      log("session/new 的 mcpServers 有一条不是对象，已跳过");
+      continue;
+    }
+    const r = item as Record<string, unknown>;
+    const name = typeof r["name"] === "string" ? r["name"].trim() : "";
+    if (name === "") {
+      log("session/new 的 mcpServers 有一条缺少 name，已跳过");
+      continue;
+    }
+    if (!/^[A-Za-z0-9_-]+$/.test(name)) {
+      log(`session/new 的 mcpServers "${name}" 名字非法（只允许字母/数字/_/-），已跳过`);
+      continue;
+    }
+    const transport = typeof r["type"] === "string" ? r["type"].trim().toLowerCase() : "";
+    if (transport === "http" || transport === "sse" || typeof r["url"] === "string") {
+      log(`session/new 的 mcpServers "${name}" 使用未支持的传输（${transport || "url"}），已跳过`);
+      continue;
+    }
+    const command = typeof r["command"] === "string" ? r["command"].trim() : "";
+    if (command === "") {
+      log(`session/new 的 mcpServers "${name}" 缺少 command，已跳过`);
+      continue;
+    }
+    if (seen.has(name)) {
+      log(`session/new 的 mcpServers "${name}" 重名，已跳过后面那条`);
+      continue;
+    }
+    seen.add(name);
+    const argsRaw = r["args"];
+    const args = Array.isArray(argsRaw) ? argsRaw.map((a) => String(a)) : [];
+    // env 是 [{ name, value }] 数组；转成对象。值只进子进程环境，不进任何日志。
+    const env: Record<string, string> = {};
+    const envRaw = r["env"];
+    if (Array.isArray(envRaw)) {
+      for (const pair of envRaw) {
+        if (typeof pair !== "object" || pair === null) continue;
+        const p = pair as Record<string, unknown>;
+        const key = typeof p["name"] === "string" ? p["name"] : "";
+        if (key === "") continue;
+        env[key] = typeof p["value"] === "string" ? p["value"] : String(p["value"] ?? "");
+      }
+    }
+    out.push({ name, transport: "stdio", command, args, env, enabled: true });
+  }
+  return out;
+}
+
+/**
  * 启动 stdio 上的 ACP 服务端，直到 stdin 关闭才返回。
  *
  * 返回值是进程退出码（正常关闭 stdin → 0）。
@@ -130,6 +206,8 @@ function readPermissionMode(): PermissionMode {
 export async function runAcpServer(): Promise<number> {
   // 入站顺序闸门（PRD §2.2 备案 A）：SDK 的 receive() 不等待 handler，
   // 初始化闸门在 handler 之前就拒绝后续请求，所以排队必须发生在字节流上。
+  // dispose 在闸门之后定义，EOF 回调通过这个可变槽转过去。
+  let invokeDispose: () => void = () => undefined;
   const inbound = createInboundGate(
     new ReadableStream<Uint8Array>({
       start(controller) {
@@ -140,6 +218,7 @@ export async function runAcpServer(): Promise<number> {
         process.stdin.on("error", (err) => controller.error(err));
       },
     }),
+    { onRawEnd: () => invokeDispose() },
   );
 
   // 只有看到「带 id 的 JSON-RPC 响应」写出后才放行下一条入站请求。
@@ -162,6 +241,9 @@ export async function runAcpServer(): Promise<number> {
             const msg = JSON.parse(line) as Record<string, unknown>;
             if (msg && typeof msg === "object" && "id" in msg && !("method" in msg)) {
               inbound.markAnswered();
+              // initialize 的响应写出之后 SDK 才放开初始化闸门。
+              // 必须在这里 markInitialized，不能在 handler 里提前放行。
+              inbound.markInitialized();
             }
           } catch {
             /* 不完整或不合法的行交给协议对端处理，这里不放行。 */
@@ -201,8 +283,8 @@ export async function runAcpServer(): Promise<number> {
    *
    * 注意：**光靠这里修不好**。SDK 的初始化闸门在 handler 进入之前就拒绝了
    * 未初始化的请求，所以真正的排队在字节流层（`createInboundGate`）。
-   * 这一层保留，用于保证「同一 session 的 prompt 不并发」等 handler 内部顺序，
-   * 以及让响应写出的先后与请求到达一致。
+   * 这一层只保留给 `session/new`（保证响应写出的先后与请求到达一致、
+   * 且第二次 session/new 仍稳定回 -32603）；`session/prompt` **不再串行**（复审 R7）。
    */
   let queue: Promise<unknown> = Promise.resolve();
   const serial = <T>(fn: () => Promise<T> | T): Promise<T> => {
@@ -210,6 +292,30 @@ export async function runAcpServer(): Promise<number> {
     queue = run.catch(() => undefined);
     return run;
   };
+
+  /** 统一释放（复审 R3）：会话资源 + 入站流 + 连接，幂等。 */
+  let disposed = false;
+  const dispose = (): void => {
+    if (disposed) return;
+    disposed = true;
+    try {
+      session?.dispose();
+    } catch (e) {
+      log(`dispose 失败：${(e as Error).message}`);
+    }
+    // 结束入站流：SDK 的读循环随之结束，connection.closed 才能 resolve，进程才退得掉。
+    try {
+      void inbound.readable.cancel();
+    } catch {
+      /* 已关闭 */
+    }
+    try {
+      void connection?.closed.catch(() => undefined);
+    } catch {
+      /* 连接未建立 */
+    }
+  };
+  invokeDispose = dispose;
 
   const app = agent({ name: "neo" })
     .onRequest(methods.agent.initialize, ({ params }) => {
@@ -237,9 +343,9 @@ export async function runAcpServer(): Promise<number> {
 
       let cfg: Config;
       try {
-        // settings.json 从**进程 cwd** 读（loadConfig 既有候选路径），工作区只作为 cfg.cwd。
-        // 二者可以不同：编辑器给的工作区通常是 spawn 目录本身或其子目录。
-        cfg = loadConfig({ cwd });
+        // settings.json 从 **session cwd** 读（复审 R4）：编辑器给的工作区就是配置根，
+        // 与 spawn 目录可以不同。TUI / -p 不传第二参数，行为不变。
+        cfg = loadConfig({ cwd }, { settingsDir: cwd });
         resolveAndApplyModelWindow(cfg);
       } catch (e) {
         if (e instanceof ConfigError) {
@@ -295,8 +401,10 @@ export async function runAcpServer(): Promise<number> {
               ? Promise.reject(new Error("连接尚未建立"))
               : connection.client.request<RequestPermissionResponse>(REQUEST_PERMISSION_METHOD, params),
         },
-        // settings 的 permission_mode（进程 cwd 的 settings.json）：客户端不在/失败/超时时回退用。
-        permissionMode: readPermissionMode(),
+        // settings 的 permission_mode（**session cwd** 的 settings.json）：客户端不在/失败/超时时回退用。
+        permissionMode: readPermissionMode(cwd),
+        // 客户端在 session/new 里传入的 stdio MCP（PRD §2.7）：与 settings 的 mcpServers 合并。
+        clientMcpServers: clientMcpServers(params.mcpServers),
         flushNotifications,
       });
       session = created;
@@ -306,27 +414,33 @@ export async function runAcpServer(): Promise<number> {
       return response;
       }),
     )
-    .onRequest(methods.agent.session.prompt, async ({ params }) =>
-      serial(async () => {
+    .onRequest(methods.agent.session.prompt, async ({ params }) => {
+      // R7：**不串 serial()**。串行化会让第二个 prompt 堵在队头，挡住其后的 cancel 与
+      // 权限响应（队头阻塞）。重叠判定改为在入口同步置位 `prompting`：
+      // 置位必须在任何 await 之前，否则两个 handler 会同时通过检查。
       const current = session;
       if (!current || current.sessionId !== params.sessionId) {
         // 未知 session：-32002，并把请求里的 id 回带（PRD §2.3）。
         throw RequestError.sessionNotFound(params.sessionId);
       }
       if (prompting) {
+        // 已有 prompt 在跑：立刻回 -32603，不第二次调模型（PRD §2.8）。
         throw RequestError.internalError(undefined, "该 session 已有一轮 prompt 在跑，不能并发");
       }
-      const text = promptText(params.prompt);
       prompting = true;
       try {
+        const text = promptText(params.prompt);
         const { stopReason } = await current.prompt(text);
         const response: PromptResponse = { stopReason };
         return response;
+      } catch (e) {
+        if (e instanceof RequestError) throw e;
+        // R9：引擎失败不得伪装 end_turn —— 转成可读的 JSON-RPC 错误。
+        throw RequestError.internalError(undefined, `本轮失败：${(e as Error).message}`);
       } finally {
         prompting = false;
       }
-      }),
-    )
+    })
     .onNotification(methods.agent.session.cancel, ({ params }) => {
       // cancel 是**通知**：不串进 serial()，否则要等 prompt 结束才被处理 —— 那就没有意义了。
       // 未知 session 只记诊断，不抛错（通知没有响应通道，抛错只会变成客户端错误日志）。
@@ -346,7 +460,25 @@ export async function runAcpServer(): Promise<number> {
   connection = app.connect(stream);
   log(`服务端已就绪（stdio NDJSON，ACP v${PROTOCOL_VERSION}）`);
 
+  // 原始 stdin 结束/出错 → 统一 dispose（复审 R3）：在途 shell 必须停掉，
+  // 不能在 stdin 关闭后继续写盘；入站流结束让 connection.closed 收口，进程才能退出。
+  process.stdin.on("end", () => {
+    log("stdin 已关闭，释放会话");
+    dispose();
+  });
+  process.stdin.on("error", (err) => {
+    log(`stdin 出错：${err.message}`);
+    dispose();
+  });
+  // stdout 写出失败（编辑器已断开）→ 同样 dispose：协议通道没了，继续跑没有意义。
+  process.stdout.on("error", (err) => {
+    log(`stdout 写出失败：${err.message}`);
+    dispose();
+  });
+
   // 不在这里退出：连接要一直读到 stdin 关闭（编辑器随时可能发下一条请求）。
   await connection.closed;
+  // 连接结束（stdin EOF / 流被取消）后确保资源释放，再让进程退出。
+  dispose();
   return 0;
 }

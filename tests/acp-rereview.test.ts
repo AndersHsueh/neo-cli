@@ -20,7 +20,6 @@ const SANDBOX = realpathSync(mkdtempSync(join(tmpdir(), "neo-acp-rereview-")));
 const sessionsDir = join(SANDBOX, "sessions");
 let seq = 0;
 
-const SPAWN_TIMEOUT_MS = 8_000;
 
 afterAll(() => {
   rmSync(SANDBOX, { recursive: true, force: true });
@@ -142,37 +141,17 @@ interface JsonRpcMessage {
   params?: unknown;
 }
 
-function parseNdjson(out: string): JsonRpcMessage[] {
-  expect(out.includes("\x1b")).toBe(false);
-  return out
-    .split("\n")
-    .filter((line) => line !== "")
-    .map((line) => {
-      expect(line.trim()).toBe(line);
-      expect(line.startsWith("{")).toBe(true);
-      const parsed = JSON.parse(line) as unknown;
-      expect(typeof parsed).toBe("object");
-      expect(parsed).not.toBeNull();
-      expect(Array.isArray(parsed)).toBe(false);
-      return parsed as JsonRpcMessage;
-    });
-}
-
-function findResponse(messages: JsonRpcMessage[], id: number): JsonRpcMessage | undefined {
-  return messages.find((m) => m.id === id && (m.result !== undefined || m.error !== undefined));
-}
-
-function errorCode(resp: JsonRpcMessage | undefined): number {
+function errorCode(resp: JsonRpcMessage | null | undefined): number {
   const err = resp?.error as { code?: unknown } | undefined;
   return typeof err?.code === "number" ? err.code : Number.NaN;
 }
 
-function sessionIdOf(resp: JsonRpcMessage | undefined): string | null {
+function sessionIdOf(resp: JsonRpcMessage | null | undefined): string | null {
   const result = resp?.result as { sessionId?: unknown } | undefined;
   return typeof result?.sessionId === "string" && result.sessionId !== "" ? result.sessionId : null;
 }
 
-function stopReasonOf(resp: JsonRpcMessage | undefined): unknown {
+function stopReasonOf(resp: JsonRpcMessage | null | undefined): unknown {
   return (resp?.result as { stopReason?: unknown } | undefined)?.stopReason;
 }
 
@@ -340,6 +319,8 @@ interface ClientRun {
   messages: JsonRpcMessage[];
   /** 等到 stdout 出现满足条件的消息（含已经到达的；超时返回 null）。 */
   waitFor: (pred: (msg: JsonRpcMessage) => boolean, ms: number) => Promise<JsonRpcMessage | null>;
+  /** 往进程 stdin 写一条原始协议行。 */
+  write: (line: string) => void;
   closeStdin: () => Promise<void>;
   /** 进程是否已退出。 */
   exited: () => boolean;
@@ -522,6 +503,7 @@ async function runClient(cwd: string, opts: ClientOptions = {}): Promise<ClientR
     state,
     messages,
     waitFor,
+    write,
     closeStdin,
     exited: () => exitCode !== null || proc.exitCode !== null,
     kill: () => {
@@ -611,16 +593,16 @@ describe("R2 cancel 只作用于当前轮", () => {
             }
             return;
           }
-          if (msg.id === 3 && msg.result !== undefined && phase === 1) {
-            phase = 3;
-            api.write(promptRequest(4, state.sessionId as string, "第二轮"));
-          }
+          // 第二轮 prompt 由测试在第一轮 cancelled 之后显式发出，避免与 waitFor 竞态重复发送。
         },
       });
 
       const firstResp = await r.waitFor((m) => m.id === 3 && m.result !== undefined, 5_000);
       expect(stopReasonOf(firstResp as JsonRpcMessage)).toBe("cancelled");
 
+      // 下一轮由测试显式发出（不依赖 onMessage 与 waitFor 的时序）：这才是「取消后再聊」。
+      if (!r.state.sessionId) throw new Error("session/new 未返回 sessionId");
+      r.write(promptRequest(4, r.state.sessionId, "第二轮"));
       const secondResp = await r.waitFor((m) => m.id === 4 && (m.result !== undefined || m.error !== undefined), 5_000);
       r.kill();
       // 第二轮必须真的弹权限（当前实现直接 cancelled，连权限都不问）。
@@ -888,18 +870,14 @@ describe("R7 重叠 prompt", () => {
     const llm = fakeLlm([sseTextFrames("慢回答")], sseTextFrames("慢回答"), 350);
     try {
       const dir = project(llm.baseUrl);
-      let sent = false;
       const r = await runClient(dir, {
         cwd: ws,
         promptBlocks: [{ type: "text", text: "第一个" }],
-        onMessage: (msg, state, api) => {
-          if (sent) return;
-          if (msg.id !== 3) return;
-          // 第一个 prompt 已发出但还没结果：立刻发第二个。
-          sent = true;
-          api.write(promptRequest(4, state.sessionId as string, "第二个"));
-        },
       });
+      // 第一个 prompt 已在 runClient 里发出（模型有 350ms 延迟），此时尚未结束。
+      // 按原始客户端字节到达顺序立刻塞入第二个 session/prompt。
+      if (!r.state.sessionId) throw new Error("session/new 未返回 sessionId");
+      r.write(promptRequest(4, r.state.sessionId, "第二个"));
       const second = await r.waitFor((m) => m.id === 4 && (m.result !== undefined || m.error !== undefined), 8_000);
       const first = await r.waitFor((m) => m.id === 3 && (m.result !== undefined || m.error !== undefined), 8_000);
       r.kill();

@@ -14,9 +14,9 @@
  */
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import type { Config } from "../config.ts";
+import type { Config, McpServerConfig } from "../config.ts";
 import { Agent } from "../agent.ts";
-import type { AgentEvent, PermissionMode, ToolEndEventData, ToolStartEventData } from "../agent/types.ts";
+import type { AgentEvent, PermissionMode, ToolEndEventData, ToolStartEventData, TurnStats } from "../agent/types.ts";
 import { createPermissionBridge, type PermissionUi } from "./permission.ts";
 import { isWriteTool, pathOfArgs, snapshotOldText, toolKind } from "./tools.ts";
 import { Console } from "../ui/console.ts";
@@ -35,21 +35,36 @@ import { makeTodoWriteTool, type TodoItem } from "../tools/todo.ts";
 import { persist } from "../cli/sessions.ts";
 import { createSession, type SessionMeta } from "../session.ts";
 import { CheckpointStore } from "../checkpoint.ts";
+import { McpManager } from "../mcp/index.ts";
 
 /** 诊断只走 stderr：stdout 是协议通道。 */
 function log(message: string): void {
   process.stderr.write(`[acp] ${message}\n`);
 }
 
+/**
+ * `session/prompt` 的 stopReason（PRD §2.8 / 复审 R8）。
+ *
+ * 与 ACP v1 的 `StopReason` 对齐：只有「正常终止」才走这里；
+ * 引擎失败（hadError / emptyResponse / 抛出的非取消异常）必须变成 JSON-RPC 错误，
+ * 不得伪装成 `end_turn`（R9）。
+ */
+export type AcpStopReason = "end_turn" | "cancelled" | "max_tokens" | "max_turn_requests" | "refusal";
+
 /** 装配好的 ACP 会话。 */
 export interface AcpSession {
   sessionId: string;
   cwd: string;
   agent: Agent;
-  /** 跑一轮用户输入；返回 stopReason（正常 end_turn / 被取消 cancelled）。 */
-  prompt(text: string): Promise<{ stopReason: "end_turn" | "cancelled" }>;
+  /** 跑一轮用户输入；返回 stopReason（映射见 `AcpStopReason`）。 */
+  prompt(text: string): Promise<{ stopReason: AcpStopReason }>;
   /** `session/cancel`：中止在途的模型请求与工具。 */
   cancel(): void;
+  /**
+   * 释放会话资源（复审 R3）：结束在途权限询问、中止在途模型请求与工具
+   * （**在途 shell 必须停掉**，不能在 stdin 关闭后继续写盘）、关闭 MCP 连接。幂等。
+   */
+  dispose(): void;
 }
 
 export interface CreateAcpSessionOptions {
@@ -69,6 +84,11 @@ export interface CreateAcpSessionOptions {
   /** settings 的权限模式（回退用）。 */
   permissionMode?: PermissionMode;
   /**
+   * 客户端在 `session/new` 里传入的 stdio MCP server（PRD §2.7 / 复审 R5）。
+   * 已由 server 归一成 `McpServerConfig`；HTTP/SSE 形态不在这里出现（未支持，不广告）。
+   */
+  clientMcpServers?: McpServerConfig[];
+  /**
    * 等通知队列排空（server 注入）：`prompt()` 返回前必须把本轮所有
    * `session/update` 都 await 完，否则通知可能晚于 prompt 的响应写出。
    */
@@ -87,7 +107,7 @@ export async function createAcpSession(opts: CreateAcpSessionOptions): Promise<A
   // ACP 是交互会话：显式钉死 both，避免 loadConfig 缺省或外界把 scopeMode 降成 project。
   cfg.memory.scopeMode = "both";
 
-  // 权限模式：settings 的 permission_mode（server 从进程 cwd 的 settings.json 读），
+  // 权限模式：settings 的 permission_mode（server 从 **session cwd** 的 settings.json 读，复审 R4），
   // 缺省 "ask"（与 `neo` 默认一致）。绝不因为走 ACP 就悄悄放宽成 auto-all。
   const mode: PermissionMode = opts.permissionMode ?? "ask";
 
@@ -242,6 +262,47 @@ export async function createAcpSession(opts: CreateAcpSessionOptions): Promise<A
   promptManager.invalidate();
   agent.refreshSystemPrompt();
 
+  // ---- MCP 外部工具（PRD §2.7 / 复审 R5）----
+  // 两个来源合并：settings.json 的 mcpServers（只认本地，模板里的示例不启动）+
+  // 客户端在 session/new 里传入的 stdio server。重名以 settings 为准（用户自己的配置优先）。
+  // 单个 server 失败只记诊断，不阻塞 session/new；连完再刷新系统提示，模型第一轮就能看见 mcp__*。
+  const mcpConfigs: McpServerConfig[] = [...(cfg.mcpServers ?? [])];
+  const takenNames = new Set(mcpConfigs.map((c) => c.name));
+  for (const c of opts.clientMcpServers ?? []) {
+    if (takenNames.has(c.name)) {
+      log(`MCP：客户端传入的 "${c.name}" 与 settings 重名，按 settings 的配置处理`);
+      continue;
+    }
+    takenNames.add(c.name);
+    mcpConfigs.push(c);
+  }
+  let mcpManager: McpManager | null = null;
+  if (mcpConfigs.length > 0) {
+    mcpManager = new McpManager(mcpConfigs, {
+      // server 的 stderr 很吵（npx 进度、日志），默认丢弃；这里只留一行诊断位。
+      onStderr: (server, line) => {
+        void server;
+        void line;
+      },
+      // 握手超时要短：假/坏 server 不能把 session/new 卡住 30 秒。
+      // 子进程在 start() 时已经拉起（R5 的「已启动」以此为准）；握手失败只记诊断。
+      connectTimeoutMs: 4_000,
+    });
+    try {
+      const n = await mcpManager.connectAll();
+      if (n > 0) log(`MCP：已接入 ${n} 个外部工具`);
+      for (const s of mcpManager.statuses()) {
+        // 只报 server 名与错误文本：env / headers 的值绝不进日志（PRD §2.7）。
+        if (s.status === "error") log(`MCP server "${s.name}" 连接失败：${s.error ?? "未知原因"}`);
+      }
+    } catch (e) {
+      // connectAll 本身不抛；真抛了也只是诊断，不拖垮会话。
+      log(`MCP 装配失败：${(e as Error).message}（session 不阻塞）`);
+    }
+    promptManager.invalidate();
+    agent.refreshSystemPrompt();
+  }
+
   // 项目记忆文件（AGENTS.md / NEO.md / .neo.md）与无 paths 的规则并入系统提示。
   const memoryFile = ["AGENTS.md", "NEO.md", ".neo.md"].map((f) => join(cwd, f)).find((p) => existsSync(p));
   const alwaysOnText = formatAlwaysOnRules(projectRules);
@@ -280,28 +341,84 @@ export async function createAcpSession(opts: CreateAcpSessionOptions): Promise<A
 
   const meta: SessionMeta = sess.meta;
 
+  /**
+   * 把一轮的 stats 映射成 stopReason（PRD §2.8 / 复审 R8）。
+   *
+   * 顺序有讲究：
+   *  1. 取消优先 —— 取消不是错误，也不是「正常结束」；
+   *  2. 工具迭代上限**必须排在 hadError 之前**：撞上限时 `sendTurn` 的收口兜底
+   *     常常同时把 hadError 置 true（「循环结束却没有最终正文」），但客户端该看到的是
+   *     `max_turn_requests` 而不是一个 JSON-RPC 错误；
+   *  3. `length` 截断只要**有正文**就是 `max_tokens`（部分回答是有效结果）；
+   *  4. `content_filter` / `refusal` → `refusal`；
+   *  5. 其余 hadError / emptyResponse → 抛错（R9：不得伪装 end_turn）。
+   *     注意空响应的 finishReason 可能是 `stop`，所以这一条不能反过来被 finishReason 盖掉。
+   */
+  const stopReasonOf = (stats: TurnStats, hitIterationLimit: boolean): AcpStopReason => {
+    if (cancelled || stats.aborted) return "cancelled";
+    if (hitIterationLimit) return "max_turn_requests";
+    if (stats.finishReason === "length") return "max_tokens";
+    if (stats.finishReason === "content_filter" || stats.finishReason === "refusal") return "refusal";
+    if (stats.hadError || stats.emptyResponse) {
+      throw new Error(stats.errorMessage ?? "模型本轮没有产出可用结果（引擎报告失败）");
+    }
+    return "end_turn";
+  };
+
   return {
     sessionId,
     cwd,
     agent,
     async prompt(text: string) {
       // 新一轮开始：清掉上一轮的取消标志（cancel 只作用于在途的那一轮）。
+      // 权限桥的 aborted 也必须复位，否则上一轮取消后本轮连权限都不问（复审 R2）。
       cancelled = false;
-      const stats = await agent.send(text);
+      permissionBridge.resetForTurn();
+      let stats: TurnStats;
+      try {
+        stats = await agent.send(text);
+      } catch (e) {
+        // 非取消异常：先把已排队的通知发完，再如实抛给 server 转成 JSON-RPC 错误。
+        await opts.flushNotifications?.();
+        persist(agent.messages, meta);
+        throw e;
+      }
       // 通知队列：onEvent 是同步的，通知发送（含 await client.notify）在 server 侧排队；
-      // prompt 的响应必须先于「本轮结束」之后的所有通知写出，所以这里等队列排空。
+      // prompt 的响应必须在「本轮全部通知」之后写出，所以这里等队列排空（取消场景同样如此）。
       await opts.flushNotifications?.();
       // 落盘：与 TUI 同口径（persist 内部已吞异常），编辑器重开进程后会话文件仍在。
       persist(agent.messages, meta);
-      // 取消 → cancelled（PRD §2.11）；其余按正常结束。
-      if (cancelled || stats.aborted) return { stopReason: "cancelled" as const };
-      return { stopReason: "end_turn" as const };
+      // 工具迭代上限：与 sendTurn 的收口提示同一判据（iterations 用满且有工具调用）。
+      const hitIterationLimit = stats.iterations >= cfg.maxToolIterations && stats.toolCalls > 0;
+      return { stopReason: stopReasonOf(stats, hitIterationLimit) };
     },
     cancel() {
       cancelled = true;
       // 先结束在途的权限询问：否则要等到超时（默认 300s）才生效。
       permissionBridge.abortPending();
       agent.cancel();
+    },
+    dispose() {
+      // 顺序：先结束在途权限询问（否则工具会卡到超时），再中止模型请求与工具
+      // （在途 shell 由 agent.cancel 的 AbortSignal 杀掉），最后关 MCP 连接。
+      cancelled = true;
+      try {
+        permissionBridge.abortPending();
+      } catch (e) {
+        log(`dispose：结束权限询问失败 ${(e as Error).message}`);
+      }
+      try {
+        agent.cancel();
+      } catch (e) {
+        log(`dispose：中止在途请求失败 ${(e as Error).message}`);
+      }
+      if (mcpManager) {
+        try {
+          mcpManager.closeAll();
+        } catch (e) {
+          log(`dispose：关闭 MCP 失败 ${(e as Error).message}`);
+        }
+      }
     },
   };
 }

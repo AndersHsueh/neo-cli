@@ -65,9 +65,10 @@ ACP（Agent Client Protocol）是编辑器与 agent 之间的 JSON-RPC 协议：
 - `authMethods`：首期**空数组**（鉴权沿用 settings.json 的模型配置，不新做 OAuth/登录流）。
 - `agentCapabilities` 首期**只广告本次真做的能力**：
   - `loadSession: false`（`session/load` 未做，见 §5）；
-  - `promptCapabilities`：`text` 是基线必支持；`image` / `audio` / `embeddedContext` 若现有能力能顺手映射
-    （`Agent.send()` 已支持 `{text, images}`）才开，否则显式 `false` 并列入 §5；
-  - `mcpCapabilities`：按 §2.7 的实际结论填，不接就不广告；
+  - `promptCapabilities`：`text` 与 **`resource_link` 都是 v1 必选、已做**。`embeddedContext: false`
+    **只禁止**内嵌 `resource` 内容块，不得用来拒绝 `resource_link`。`image` / `audio` 未映射，显式 `false` 并列入 §5；
+  - `mcpCapabilities`：官方 v1 规定所有 Agent **必须**支持 stdio MCP，该字段只用来广告 `http` / `sse`。
+    本实现接入 settings 与客户端传入的 **stdio** MCP（见 §2.7），**不广告** http/sse（已知未做，见 §5）；
   - **不广告**：`session/list`、`session/delete`、`sessionCapabilities.*`（resume/close/additionalDirectories/
     systemPrompt）、`terminals`、session modes、config options、斜杠命令广告、`auth.logout`。
 - `initialize` 之前收到其它请求 → `-32600`。
@@ -76,6 +77,8 @@ ACP（Agent Client Protocol）是编辑器与 agent 之间的 JSON-RPC 协议：
 
 - 参数：`cwd`（**必填，绝对路径**）、`mcpServers`（可为空数组）。
 - `cwd` 作为本次会话的工作区（等价于 `-C`）：配置、工具沙箱、记忆项目级根、检查点全部以它为根。
+  **配置搜索根与 `permission_mode` 读取都以 session `cwd` 为准**，不是进程启动目录：先读
+  `<cwd>/settings.json`，工作区没有再回退到启动目录、包装根、`~/.neo/settings.json`。
   相对路径 → `-32602`；目录不存在 → `-32602`（可读消息）。
 - 成功返回 `{ sessionId }`（沿用 `src/session.ts` 的会话 id）。
 - **缺模型凭证**（`cfg.apiKey` 为空，与 `src/cli/bootstrap.ts` 的判定同口径）→ 返回清楚错误
@@ -88,24 +91,29 @@ ACP（Agent Client Protocol）是编辑器与 agent 之间的 JSON-RPC 协议：
 首期一个进程只服务一个 session。第二次 `session/new` **必须返回明确错误**（`-32603` 或 `-32600`，
 message 含「只支持一个 session」），不得静默复用第一个 sessionId、不得新建第二个 agent 实例。
 
-### 2.7 客户端传入的 `mcpServers`
+### 2.7 `mcpServers`（settings + 客户端传入）
 
-- 若能接进现有 `McpManager`（`src/mcp/client.ts`，构造函数吃 `McpServerConfig[]`）而不重写 MCP 层，就做：
-  ACP 的 stdio 形态（`name` / `command` / `args` / `env: [{name,value}]`）→ `McpStdioServerConfig`
-  （`env` 由数组转对象），HTTP 形态按 `mcpCapabilities.http` 决定是否广告。
-- 否则首期仍用 settings.json 的 `mcpServers`，并把「客户端 mcpServers 未接入」写进 §5 已知未做。
-- 无论走哪条：**不得**把 `env` / `headers` 的值写进 `session/update`、错误消息、日志或模型上下文。
+官方 v1 Session Setup：所有 Agent **必须**支持 stdio MCP；`mcpCapabilities` 只控制 http/sse 广告。
+
+- 两个来源一并接入现有 `McpManager`（`src/mcp/client.ts`）：settings.json 的 `mcpServers`，以及客户端
+  在 `session/new` 里传入的 stdio 形态（`name` / `command` / `args` / `env: [{name,value}]`）→
+  `McpStdioServerConfig`（`env` 由数组转对象）。重名以 settings 为准。
+- 单个 server 失败只写 stderr 诊断，不因此拒绝 `session/new`；会话结束时 `closeAll()`。
+- HTTP / SSE 形态首期**不接入、不广告**，跳过并记「未支持的传输」，不拒绝会话（见 §5）。
+- **不得**把 `env` / `headers` 的值写进 `session/update`、错误消息、日志或模型上下文。
 
 ### 2.8 `session/prompt`
 
 - 参数：`sessionId`、`prompt`（ContentBlock 数组）。
-- 把 `prompt` 里的 text block 拼成一轮用户输入，交给现有 agent 循环跑完整轮；整轮结束后返回 `stopReason`：
+- 把 `prompt` 里的 text 与 `resource_link` block 拼成一轮用户输入（`resource_link` 映射为「资源 name (uri)」），
+  交给现有 agent 循环跑完整轮；整轮结束后返回 `stopReason`：
   - 正常结束 → `end_turn`；
   - 被 `session/cancel` 取消 → `cancelled`（**不是** JSON-RPC 错误，见 §2.11）；
   - 达到工具迭代上限（`cfg.maxToolIterations`）→ `max_turn_requests`；
-  - 模型明确拒绝 → `refusal`；输出被截断到上限 → `max_tokens`。
-- 同一 session 已有 prompt 在跑时收到新的 `session/prompt` → `-32603`（可读消息），不并发跑两轮。
-- 非 text block（image/audio/resource）：按 §2.4 广告的能力决定接受或 `-32602`；不接受就明确报错，不静默丢弃。
+  - 模型明确拒绝（`finish_reason` 为 `content_filter` / `refusal`）→ `refusal`；输出被截断到上限（`length`）→ `max_tokens`。
+- 同一 session 已有 prompt 在跑时收到新的 `session/prompt` → `-32603`（可读消息），不并发跑两轮、不第二次调用模型。
+- 非取消的引擎失败（连接失败、连续空响应、意外异常）→ 可读 JSON-RPC 错误（`-32603`），**不得**伪装成 `end_turn`。
+- `image` / `audio` / 内嵌 `resource`：未映射，回 `-32602`，不静默丢弃。`embeddedContext: false` 不能用来拒绝 `resource_link`。
 
 ### 2.9 `session/update`（通知）
 
@@ -146,9 +154,9 @@ message 含「只支持一个 session」），不得静默复用第一个 sessio
 ### 2.11 `session/cancel` 与权限
 
 **取消**：`session/cancel` 是**通知**（无响应）。收到后立即 `agent.cancel()`（`src/agent/loop.ts` 的 AbortController），
-停模型请求与工具；可以再发未完成的 `session/update`，但**必须在那之前**用 `stopReason: "cancelled"` 回应原
-`session/prompt`。取消**不得**变成 JSON-RPC 错误（现有 `sendTurn` 在 abort 时返回 `aborted: true` 的 stats，
-不抛错，正好对上）。
+停模型请求与工具。然后**先把本轮尚未发出的 `session/update` 刷完**，再用 `stopReason: "cancelled"` 回应原
+`session/prompt`（响应在全部通知之后；与官方顺序一致，不要改成先响应后通知）。取消**不得**变成 JSON-RPC 错误
+（现有 `sendTurn` 在 abort 时返回 `aborted: true` 的 stats，不抛错，正好对上）。
 
 **权限**：客户端能响应 `session/request_permission` 时，工具确认走编辑器 UI：
 
@@ -241,8 +249,8 @@ ACP 是编辑器里的**交互会话**，记忆走交互模式：用户级 + 项
 - 斜杠命令广告（`available_commands_update`）；
 - `session/load`（若能复用现有 `--resume` 且不扩范围可做，否则不做；首期 `loadSession: false`）；
 - 多 session（一进程一 session）；
-- 客户端 `mcpServers` 接入（若 §2.7 判定成本高，则沿用 settings.json 的 `mcpServers`）；
-- `promptCapabilities.image` / `audio` / `embeddedContext`（未映射就显式 `false`）；
+- MCP 的 HTTP / SSE 传输（stdio 已做，不广告 http/sse）；
+- `promptCapabilities.image` / `audio` / 内嵌 `resource`（未映射，显式 `false`；`resource_link` 已做）；
 - `usage_update` / `session_info_update` / `notice` / compaction 相关 update 广告。
 
 ## 6 参考

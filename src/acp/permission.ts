@@ -57,6 +57,12 @@ export interface PermissionBridge {
    * 不这样做的话，取消要等到超时（默认 300s）才生效，D5 会挂死。
    */
   abortPending(): void;
+  /**
+   * 新一轮 `prompt()` 开始时调用（复审 R2）：复位上一轮的取消状态。
+   * 只清「本轮已被取消」这个开关，**不**清 `always` 记忆 ——
+   * `allow_always` / `reject_always` 的语义是本 session 内有效，跨轮保留。
+   */
+  resetForTurn(): void;
 }
 
 export function createPermissionBridge(opts: PermissionBridgeOptions): PermissionBridge {
@@ -142,6 +148,11 @@ export function createPermissionBridge(opts: PermissionBridgeOptions): Permissio
       const abort = pendingAbort;
       pendingAbort = null;
       abort?.();
+    },
+    resetForTurn() {
+      // 只复位「本轮已取消」：`always` 记忆是本 session 级的，不能在这里丢。
+      aborted = false;
+      pendingAbort = null;
     },
   };
 }

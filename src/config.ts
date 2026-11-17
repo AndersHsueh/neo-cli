@@ -518,13 +518,33 @@ function providerFromLegacy(raw: Raw): ProviderConfig | null {
 /* 载入                                                                */
 /* ------------------------------------------------------------------ */
 
-export function loadConfig(overrides: Partial<Config> = {}): Config {
-  const here = process.cwd();
+/**
+ * `loadConfig` 的可选第二参数（issue #60 复审 R4）。
+ *
+ * `settingsDir`：settings.json 的**搜索根**。缺省 = `process.cwd()`（TUI / `-p` 的既有行为，
+ * 保持不变）；ACP 传 session 的 `cwd`，让配置与 `permission_mode` 都以编辑器给的工作区为准，
+ * 而不是编辑器拉起进程时的目录。
+ */
+export interface LoadConfigOptions {
+  settingsDir?: string;
+}
+
+export function loadConfig(overrides: Partial<Config> = {}, options: LoadConfigOptions = {}): Config {
+  // 搜索根：显式给了就用它，否则沿用进程 cwd（TUI 默认行为不变）。
+  const here = options.settingsDir ?? process.cwd();
   // v0.4.0：Windows 上 URL.pathname 是 /C:/... 形态，必须用 fileURLToPath 还原盘符路径。
   const pkgRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+  const spawnDir = process.cwd();
 
+  // ACP 传 settingsDir=session cwd：先工作区，再启动目录（编辑器拉起进程时的 cwd，
+  // 工作区里不一定有 settings.json），然后才是包装根与用户级 ~/.neo。
+  // 不能在工作区没有文件时直接掉到包装根/模板——那会悄悄用开发机上的密钥，
+  // 把「缺凭证」测例和沙箱假 LLM 全部打到错误的配置上。
   const candidates = [
     join(here, "settings.json"),
+    ...(options.settingsDir !== undefined && resolve(here) !== resolve(spawnDir)
+      ? [join(spawnDir, "settings.json")]
+      : []),
     join(pkgRoot, "settings.json"),
     join(homedir(), ".neo", "settings.json"),
   ];
