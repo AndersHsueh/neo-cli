@@ -21,6 +21,7 @@ import { describeShell, getShell } from "../shell.ts";
 import { bootLines } from "../bootDiagnostics.ts";
 import type { AppSession } from "./sessionStart.ts";
 import { createRepl } from "./repl.ts";
+import { installFatalSignalHandlers } from "../signals.ts";
 
 type RlInternal = { line: string; cursor: number; _refreshLine?: () => void; history?: string[] };
 interface TabCycle {
@@ -199,25 +200,23 @@ export async function runInteractive(s: AppSession): Promise<number> {
       if (repl.externalShellActive) return;
       void repl.shutdown();
     };
-    const onCrash = (e: unknown): void => {
+    const reapSession = (): void => {
       try { repl.composer?.stop(); } catch { /* 尽力还原 */ }
-      // issue #75：崩溃路径也要收后台 shell（只关 MCP 不够，shell 已 setsid 脱组）。
       try { s.cleanupEphemeralResources(); } catch { /* 清理失败不掩盖原异常 */ }
+    };
+    const onCrash = (e: unknown): void => {
+      reapSession();
       console.error(c.err(`✖ 未捕获异常，终端已还原：${(e as Error)?.message ?? String(e)}`));
       process.exit(1);
     };
-    const onTerm = (sig: NodeJS.Signals): void => {
-      try { repl.composer?.stop(); } catch { /* 尽力还原 */ }
-      try { s.cleanupEphemeralResources(); } catch { /* 同上 */ }
-      process.exit(sig === "SIGHUP" ? 129 : 143);
-    };
-    const onSigterm = (): void => onTerm("SIGTERM");
-    const onSighup = (): void => onTerm("SIGHUP");
     process.on("SIGINT", onSigintTui);
     process.once("uncaughtException", onCrash);
     process.once("unhandledRejection", onCrash);
-    process.once("SIGTERM", onSigterm);
-    process.once("SIGHUP", onSighup);
+    // issue #75：SIGHUP/SIGTERM 先回收（含后台 shell）再按 129/143 退出。
+    const uninstallTermSignals = installFatalSignalHandlers({
+      signals: ["SIGTERM", "SIGHUP"],
+      cleanup: reapSession,
+    });
     try {
       repl.composer.start();
       // 启动前的 banner / 记忆提示 / --resume 回放：补写到帧上方（顺序不变）
@@ -232,8 +231,7 @@ export async function runInteractive(s: AppSession): Promise<number> {
       process.off("SIGINT", onSigintTui);
       process.off("uncaughtException", onCrash);
       process.off("unhandledRejection", onCrash);
-      process.off("SIGTERM", onSigterm);
-      process.off("SIGHUP", onSighup);
+      uninstallTermSignals();
     }
   } else {
     const rl = createInterface({

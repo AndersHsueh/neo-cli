@@ -452,16 +452,16 @@ describe("#75 ACP 信号须回收后台 shell 的孙进程", () => {
 describe("#75 TUI onTerm/onCrash 须回收后台 shell", () => {
   test("#75 TUI onTerm/onCrash 必须回收后台 shell", () => {
     const src = readFileSync(join(import.meta.dir, "../src/cli/inputLayer.ts"), "utf8");
+    const reapStart = src.indexOf("const reapSession");
     const crashStart = src.indexOf("const onCrash");
-    const termStart = src.indexOf("const onTerm");
-    const sigintTui = src.indexOf('process.on("SIGINT", onSigintTui)');
-    expect(crashStart).toBeGreaterThan(0);
-    expect(termStart).toBeGreaterThan(crashStart);
-    expect(sigintTui).toBeGreaterThan(termStart);
-    const onCrash = src.slice(crashStart, termStart);
-    const onTerm = src.slice(termStart, sigintTui);
-    const reaps = /cleanupEphemeralResources\s*\(|backgroundShells\.killAll\s*\(/;
-    expect(reaps.test(onCrash)).toBe(true);
-    expect(reaps.test(onTerm)).toBe(true);
+    expect(reapStart).toBeGreaterThan(0);
+    expect(crashStart).toBeGreaterThan(reapStart);
+    const reapBody = src.slice(reapStart, crashStart);
+    const onCrash = src.slice(crashStart, src.indexOf('process.on("SIGINT", onSigintTui)'));
+    // 共享 reapSession：崩溃与 SIGTERM/SIGHUP 都走 cleanupEphemeralResources。
+    expect(/cleanupEphemeralResources\s*\(/.test(reapBody)).toBe(true);
+    expect(/reapSession\s*\(/.test(onCrash)).toBe(true);
+    expect(src).toMatch(/signals:\s*\[\s*"SIGTERM"\s*,\s*"SIGHUP"\s*\]/);
+    expect(src).toMatch(/cleanup:\s*reapSession/);
   });
 });
