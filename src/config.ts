@@ -525,7 +525,7 @@ function providerFromLegacy(raw: Raw): ProviderConfig | null {
  * 保持不变）；ACP 传 session 的 `cwd`，让配置与 `permission_mode` 都以编辑器给的工作区为准，
  * 而不是编辑器拉起进程时的目录。
  */
-export interface LoadConfigOptions {
+interface LoadConfigOptions {
   settingsDir?: string;
 }
 
