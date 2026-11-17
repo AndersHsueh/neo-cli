@@ -16,7 +16,9 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Config } from "../config.ts";
 import { Agent } from "../agent.ts";
-import type { AgentEvent } from "../agent/loop.ts";
+import type { AgentEvent, PermissionMode, ToolEndEventData, ToolStartEventData } from "../agent/types.ts";
+import { createPermissionBridge, type PermissionUi } from "./permission.ts";
+import { isWriteTool, pathOfArgs, snapshotOldText, toolKind } from "./tools.ts";
 import { Console } from "../ui/console.ts";
 import { PromptManager } from "../prompt/manager.ts";
 import { createMemoryBridge, type MemoryBridge } from "../memory/bridge.ts";
@@ -44,8 +46,10 @@ export interface AcpSession {
   sessionId: string;
   cwd: string;
   agent: Agent;
-  /** 跑一轮用户输入；返回 stopReason 的判定依据（本步只区分正常结束）。 */
-  prompt(text: string): Promise<{ stopReason: "end_turn" }>;
+  /** 跑一轮用户输入；返回 stopReason（正常 end_turn / 被取消 cancelled）。 */
+  prompt(text: string): Promise<{ stopReason: "end_turn" | "cancelled" }>;
+  /** `session/cancel`：中止在途的模型请求与工具。 */
+  cancel(): void;
 }
 
 export interface CreateAcpSessionOptions {
@@ -53,6 +57,22 @@ export interface CreateAcpSessionOptions {
   cwd: string;
   /** 助手文本增量（PRD §2.9：`agent_message_chunk`）。 */
   onText: (text: string) => void;
+  /** 工具事件（PRD §2.9/§2.10）：tool_call / tool_call_update。 */
+  onToolStart?: (data: ToolStartEventData) => void;
+  /**
+   * 工具结束。`oldText` 是写工具在 tool_start 时快照的旧内容（新文件/非写工具为 null），
+   * `argsJson` 是同一 call 在 tool_start 时的原始参数（tool_end.paths 不足以还原绝对路径）。
+   */
+  onToolEnd?: (data: ToolEndEventData, oldText: string | null, argsJson: string | undefined) => void;
+  /** 编辑器侧权限询问（PRD §2.11）；null = 回退 settings 权限模式。 */
+  permissionUi?: PermissionUi | null;
+  /** settings 的权限模式（回退用）。 */
+  permissionMode?: PermissionMode;
+  /**
+   * 等通知队列排空（server 注入）：`prompt()` 返回前必须把本轮所有
+   * `session/update` 都 await 完，否则通知可能晚于 prompt 的响应写出。
+   */
+  flushNotifications?: () => Promise<void>;
 }
 
 /**
@@ -67,6 +87,9 @@ export async function createAcpSession(opts: CreateAcpSessionOptions): Promise<A
   // ACP 是交互会话：显式钉死 both，避免 loadConfig 缺省或外界把 scopeMode 降成 project。
   cfg.memory.scopeMode = "both";
 
+  // 权限模式：settings 的 permission_mode（server 从进程 cwd 的 settings.json 读），
+  // 缺省 "ask"（与 `neo` 默认一致）。绝不因为走 ACP 就悄悄放宽成 auto-all。
+  const mode: PermissionMode = opts.permissionMode ?? "ask";
 
   // 会话文件先建：记忆桥需要 sessionId 作为审计键（与 sessionStart 同一顺序）。
   const sess = createSession(cfg.model, cwd);
@@ -103,12 +126,30 @@ export async function createAcpSession(opts: CreateAcpSessionOptions): Promise<A
   const projectRules = discoverProjectRules(cwd);
   const scopedRuleList = projectRules.filter((r) => r.paths.length > 0);
 
+  // ---- 权限桥（PRD §2.11）----
+  // 判定顺序在桥里：decidePermission 说 allow → 直接放行；plan → 拒绝；
+  // needs-confirm → 问编辑器；客户端不在/失败/超时 → 回退 settings 模式（不放宽）。
+  let cancelled = false;
+  const permissionBridge = createPermissionBridge({
+    mode,
+    ui: opts.permissionUi ?? null,
+    sessionId,
+    isCancelled: () => cancelled,
+    log,
+  });
+
+  /** 最近一次 tool_start 的上下文：tool_end 事件里没有原始参数，diff/locations 要用它。 */
+  let lastToolStart: { call_id: string; name: string; args: string } | null = null;
+  /** 写工具在 tool_start 时的旧内容快照（按 call_id），供 tool_end 出 diff。 */
+  const oldTextByCall = new Map<string, string | null>();
+  /** 同一 call 的原始参数：tool_end.paths 是 cwd 相对且工作区外为空，diff 必须用这个。 */
+  const argsByCall = new Map<string, string>();
+
   const agent = new Agent({
     cfg,
     console: ui,
-    // 权限模式与 `neo` 默认一致（"ask"）：编辑器审批（session/request_permission）是 D 步，
-    // 本步不接，因此**不放宽**——需要确认的工具仍走既有审批判定，而不是悄悄 auto-all。
-    mode: "ask",
+    // 权限模式来自 settings 的 permission_mode（缺省 ask），不再硬编码。
+    mode,
     systemPrompt: promptManager.render(cfg).text,
     renderSystemPrompt: () => promptManager.render(cfg).text,
     getSessionName: () => null,
@@ -128,8 +169,51 @@ export async function createAcpSession(opts: CreateAcpSessionOptions): Promise<A
     refreshContextWindow: () => resolveAndApplyModelWindow(cfg),
     // 编辑器里没有 TUI 提问模态，ask_user 不注册。
     nonInteractive: true,
+    // 审批走权限桥：decidePermission 已在 makeCtx 里先判过（plan/allow 不会到这里），
+    // 这里只处理 needs-confirm —— 问编辑器，或（客户端不在/失败/超时）回退 settings。
+    approve: async (tool, detail) => {
+      const start = lastToolStart?.name === tool ? lastToolStart : null;
+      const path = start ? pathOfArgs(start.args, cwd) : null;
+      const outcome = await permissionBridge.ask(tool, {
+        toolCallId: start?.call_id ?? tool,
+        title: detail === "" ? tool : `${tool} ${detail}`,
+        kind: toolKind(tool),
+        ...(path ? { locations: [{ path }] } : {}),
+      });
+      if (outcome === "allow") return true;
+      if (outcome === "cancel") {
+        // 用户取消：先中止本轮，再按拒绝处理（工具不执行）。
+        cancelled = true;
+        agent.cancel();
+        return false;
+      }
+      return false;
+    },
     onEvent: (e: AgentEvent) => {
-      if (e.type === "text" && typeof e.data === "string" && e.data !== "") onText(e.data);
+      if (e.type === "text" && typeof e.data === "string" && e.data !== "") {
+        onText(e.data);
+        return;
+      }
+      if (e.type === "tool_start") {
+        const data = e.data as ToolStartEventData;
+        lastToolStart = { call_id: data.call_id, name: data.name, args: data.args };
+        argsByCall.set(data.call_id, data.args);
+        // 写工具的旧内容必须在写盘前快照：等 tool_end 再读就已经是新内容了。
+        if (isWriteTool(data.name)) {
+          const path = pathOfArgs(data.args, cwd);
+          oldTextByCall.set(data.call_id, path ? snapshotOldText(path) : null);
+        }
+        opts.onToolStart?.(data);
+        return;
+      }
+      if (e.type === "tool_end") {
+        const data = e.data as ToolEndEventData;
+        // 通知发送（含 await client.notify）在 server 的回调里排队，
+        // 这里只按顺序把事件交出去 —— onEvent 是同步的，不能在这里 await。
+        opts.onToolEnd?.(data, oldTextByCall.get(data.call_id) ?? null, argsByCall.get(data.call_id));
+        oldTextByCall.delete(data.call_id);
+        argsByCall.delete(data.call_id);
+      }
     },
   });
 
@@ -201,12 +285,23 @@ export async function createAcpSession(opts: CreateAcpSessionOptions): Promise<A
     cwd,
     agent,
     async prompt(text: string) {
+      // 新一轮开始：清掉上一轮的取消标志（cancel 只作用于在途的那一轮）。
+      cancelled = false;
       const stats = await agent.send(text);
+      // 通知队列：onEvent 是同步的，通知发送（含 await client.notify）在 server 侧排队；
+      // prompt 的响应必须先于「本轮结束」之后的所有通知写出，所以这里等队列排空。
+      await opts.flushNotifications?.();
       // 落盘：与 TUI 同口径（persist 内部已吞异常），编辑器重开进程后会话文件仍在。
       persist(agent.messages, meta);
-      // 本步只做文本基线：取消/迭代上限/拒绝/截断的映射在 D 步。
-      if (stats.aborted) log("本轮被取消（session/cancel 的 stopReason 映射在 D 步）");
+      // 取消 → cancelled（PRD §2.11）；其余按正常结束。
+      if (cancelled || stats.aborted) return { stopReason: "cancelled" as const };
       return { stopReason: "end_turn" as const };
+    },
+    cancel() {
+      cancelled = true;
+      // 先结束在途的权限询问：否则要等到超时（默认 300s）才生效。
+      permissionBridge.abortPending();
+      agent.cancel();
     },
   };
 }

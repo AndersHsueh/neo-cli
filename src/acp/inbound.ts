@@ -7,8 +7,11 @@
  *
  * 在 handler 外包 serial() 太晚。这里在喂给 SDK 的字节流上排队：
  * - stdin 按行拆成完整 JSON-RPC 消息；
- * - 上一条带 id 的请求对应的响应写出之后，才放行下一条；
- * - 客户端通知（无 id）喂入后不等响应；
+ * - **只串行化入站请求**（有 method 且有 id）：上一条请求的响应写出之后，才放行下一条请求；
+ * - 客户端通知（有 method 无 id）与客户端对服务端请求的响应（有 id 无 method）
+ *   **立刻放行**，不等当前请求结束 —— 否则 `session/cancel` 要等 `session/prompt`
+ *   跑完才被读到（cancel 永远晚于它要取消的那一轮），
+ *   `session/request_permission` 的响应也要等 prompt 结束才喂进去（互相死锁）；
  * - 服务端自己发出的 session/update（无 id）不算响应。
  */
 const MAX_LINE_BYTES = 32 * 1024 * 1024;
@@ -32,7 +35,7 @@ export interface InboundGate {
 }
 
 /**
- * 把原始 stdin 字节流包成「一次只放一条消息」的输入流。
+ * 把原始 stdin 字节流包成「请求一次只放一条、通知与响应立刻放行」的输入流。
  */
 export function createInboundGate(stdin: ReadableStream<Uint8Array>): InboundGate {
   const decoder = new TextDecoder();
@@ -45,9 +48,12 @@ export function createInboundGate(stdin: ReadableStream<Uint8Array>): InboundGat
 
   const pump = (): void => {
     if (!controller) return;
-    while (!awaitingResponse && pending.length > 0) {
+    while (pending.length > 0) {
+      // 队头是请求且上一条请求还没应答：整队停在这里，保持到达顺序。
+      if (awaitingResponse && isRequestLine((pending[0] as string).trim())) return;
       const line = pending.shift() as string;
       controller.enqueue(encoder.encode(line));
+      // 只有请求会占住闸门；通知与响应喂进去就完事，不等任何东西。
       if (isRequestLine(line.trim())) awaitingResponse = true;
     }
     if (closed && pending.length === 0 && !awaitingResponse) {

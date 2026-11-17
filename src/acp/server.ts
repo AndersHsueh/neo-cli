@@ -11,23 +11,29 @@
  * 本步（C）实现：`initialize`、`session/new`、`session/prompt` 与文本类 `session/update`。
  * 工具事件 / 权限 / cancel / diff 是 D 步，未注册的方法一律回 `-32601`，不伪造结果。
  */
-import { isAbsolute } from "node:path";
-import { existsSync, statSync } from "node:fs";
+import { isAbsolute, join } from "node:path";
+import { existsSync, readFileSync, statSync } from "node:fs";
 import { agent, methods, ndJsonStream, PROTOCOL_VERSION, RequestError } from "@agentclientprotocol/sdk";
 import type {
   AgentCapabilities,
   ContentBlock,
   Implementation,
+  AgentConnection,
   InitializeResponse,
   NewSessionResponse,
   PromptResponse,
+  RequestPermissionRequest,
+  RequestPermissionResponse,
   SessionNotification,
 } from "@agentclientprotocol/sdk";
 import { VERSION } from "../cli/version.ts";
 import { loadConfig, ConfigError, type Config } from "../config.ts";
+import type { PermissionMode, ToolEndEventData, ToolStartEventData } from "../agent/types.ts";
 import { resolveAndApplyModelWindow } from "../env/modelWindows.ts";
 import { createAcpSession, type AcpSession } from "./session.ts";
 import { createInboundGate } from "./inbound.ts";
+import { REQUEST_PERMISSION_METHOD } from "./permission.ts";
+import { toolCallEndOf, toolCallStartOf } from "./tools.ts";
 
 /**
  * 首期广告的能力（PRD §2.4）：只广告真做的。
@@ -94,6 +100,29 @@ function promptText(blocks: ContentBlock[]): string {
 }
 
 /**
+ * 从进程 cwd 的 settings.json 读顶层 `permission_mode`（PRD §2.11 的 settings 回退口径）。
+ *
+ * 只读这一个键，不新增对外 Config API：`loadConfig` 的 Config 是公开契约，
+ * 为一个 ACP 专属回退值扩字段会牵动所有宿主。合法值 ask/auto-edit/auto-all/plan，
+ * 缺省/非法 → "ask"（**不放宽**：拼错的配置不该变成 auto-all）。
+ * 读不到/解析失败同样回 "ask"，解析错误本身由 loadConfig 在别处报出来。
+ */
+function readPermissionMode(): PermissionMode {
+  try {
+    const path = join(process.cwd(), "settings.json");
+    if (!existsSync(path)) return "ask";
+    const raw = JSON.parse(readFileSync(path, "utf8")) as unknown;
+    if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return "ask";
+    const value = (raw as Record<string, unknown>)["permission_mode"];
+    if (value === "ask" || value === "auto-edit" || value === "auto-all" || value === "plan") return value;
+    if (value !== undefined) log(`settings.json 的 permission_mode=${JSON.stringify(value)} 不合法，按 ask 处理`);
+    return "ask";
+  } catch {
+    return "ask";
+  }
+}
+
+/**
  * 启动 stdio 上的 ACP 服务端，直到 stdin 关闭才返回。
  *
  * 返回值是进程退出码（正常关闭 stdin → 0）。
@@ -147,6 +176,25 @@ export async function runAcpServer(): Promise<number> {
   let session: AcpSession | null = null;
   /** 同一 session 已有 prompt 在跑时，新的 session/prompt 回 -32603（PRD §2.8）。 */
   let prompting = false;
+  /** 连接句柄：`connect()` 之后才有；通知与权限请求都经它发给客户端。 */
+  let connection: AgentConnection | null = null;
+
+  /**
+   * 通知串行队列：`session/update` 必须按事件顺序写出，且 prompt 的响应要在
+   * 本轮全部通知之后 —— 所以 `prompt()` 返回前 `flushNotifications()`。
+   * 发送失败只进诊断：客户端断开不该把一轮对话变成 JSON-RPC 错误。
+   */
+  let notifyQueue: Promise<void> = Promise.resolve();
+  const sendNotification = (notification: SessionNotification): void => {
+    const run = notifyQueue.then(async () => {
+      if (!session || !connection) return;
+      await connection.client.notify(methods.client.session.update, notification);
+    });
+    notifyQueue = run.catch((err: unknown) => {
+      log(`session/update 发送失败：${(err as Error).message}`);
+    });
+  };
+  const flushNotifications = (): Promise<void> => notifyQueue;
 
   /**
    * 请求串行队列（PRD §2.3 的「initialize 之前收到其它请求 → -32600」）。
@@ -175,7 +223,7 @@ export async function runAcpServer(): Promise<number> {
         };
         return response;
     })
-    .onRequest(methods.agent.session.new, async ({ params, client }) =>
+    .onRequest(methods.agent.session.new, async ({ params }) =>
       serial(async () => {
       // 先校验 cwd：非法参数应回 -32602，即使本进程已有 session（B1 在同一连接里测相对路径）。
       const cwd = resolveWorkspace(params.cwd);
@@ -206,14 +254,50 @@ export async function runAcpServer(): Promise<number> {
         cwd,
         onText: (text) => {
           // 助手文本 → agent_message_chunk（PRD §2.9）。通知先于 prompt 响应发出。
-          const notification: SessionNotification = {
+          sendNotification({
             sessionId: created.sessionId,
             update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text } },
-          };
-          void client.notify(methods.client.session.update, notification).catch((err: unknown) => {
-            log(`session/update 发送失败：${(err as Error).message}`);
           });
         },
+        onToolStart: (data: ToolStartEventData) => {
+          // tool_start → tool_call（PRD §2.9）：pending，编辑器据此显示「要做什么」。
+          const start = toolCallStartOf(data, cwd);
+          sendNotification({
+            sessionId: created.sessionId,
+            update: {
+              sessionUpdate: "tool_call",
+              toolCallId: start.toolCallId,
+              title: start.title,
+              kind: start.kind,
+              status: start.status,
+              ...(start.locations ? { locations: start.locations } : {}),
+            },
+          });
+        },
+        onToolEnd: (data: ToolEndEventData, oldText: string | null, argsJson: string | undefined) => {
+          // tool_end → tool_call_update（PRD §2.10）：写工具带 diff，oldText/args 来自 tool_start 快照。
+          const end = toolCallEndOf(data, cwd, oldText, argsJson);
+          sendNotification({
+            sessionId: created.sessionId,
+            update: {
+              sessionUpdate: "tool_call_update",
+              toolCallId: end.toolCallId,
+              status: end.status,
+              ...(end.content ? { content: end.content } : {}),
+              ...(end.locations ? { locations: end.locations } : {}),
+            },
+          });
+        },
+        // 权限询问（PRD §2.11）：直接转成对客户端的 JSON-RPC 请求。
+        permissionUi: {
+          request: (params: RequestPermissionRequest) =>
+            connection === null
+              ? Promise.reject(new Error("连接尚未建立"))
+              : connection.client.request<RequestPermissionResponse>(REQUEST_PERMISSION_METHOD, params),
+        },
+        // settings 的 permission_mode（进程 cwd 的 settings.json）：客户端不在/失败/超时时回退用。
+        permissionMode: readPermissionMode(),
+        flushNotifications,
       });
       session = created;
       log(`session/new：${created.sessionId}（工作区 ${cwd}）`);
@@ -243,12 +327,23 @@ export async function runAcpServer(): Promise<number> {
       }
       }),
     )
+    .onNotification(methods.agent.session.cancel, ({ params }) => {
+      // cancel 是**通知**：不串进 serial()，否则要等 prompt 结束才被处理 —— 那就没有意义了。
+      // 未知 session 只记诊断，不抛错（通知没有响应通道，抛错只会变成客户端错误日志）。
+      const current = session;
+      if (!current || current.sessionId !== params.sessionId) {
+        log(`session/cancel 指向未知 session ${params.sessionId}（已忽略）`);
+        return;
+      }
+      log(`session/cancel：${params.sessionId}`);
+      current.cancel();
+    })
     .onRequest("*", ({ method }) => {
       // 未实现的方法明确报 -32601，不返回假结果。
       throw RequestError.methodNotFound(method);
     });
 
-  const connection = app.connect(stream);
+  connection = app.connect(stream);
   log(`服务端已就绪（stdio NDJSON，ACP v${PROTOCOL_VERSION}）`);
 
   // 不在这里退出：连接要一直读到 stdin 关闭（编辑器随时可能发下一条请求）。

@@ -950,8 +950,12 @@ interface ClientRunOptions {
   policy?: RequestPolicy;
   /** 收到 session/new 响应后要发的 prompt 文本（不发则只建会话）。 */
   promptText?: string;
-  /** 看到某个条件后追加写 stdin（如发 cancel）。返回 true 表示已执行，不再重复。 */
-  onMessage?: (msg: JsonRpcMessage, state: ClientState) => void;
+  /**
+   * 看到某个条件后追加写 stdin（如发 cancel）。
+   * 第三个参数 `write` 是本客户端的 stdin 写入函数 —— 回调在 runAcpClient 内部，
+   * 不传出来的话回调里根本拿不到管道（D5 之前就卡在这里）。
+   */
+  onMessage?: (msg: JsonRpcMessage, state: ClientState, write: (line: string) => void) => void;
   timeoutMs?: number;
 }
 
@@ -1109,7 +1113,7 @@ async function runAcpClient(cwd: string, opts: ClientRunOptions = {}): Promise<R
         // prompt 的响应到了：本轮结束，关 stdin 让服务端退出（否则 for await 等不到 EOF）。
         if (msg.id === 3) await closeStdin();
 
-        opts.onMessage?.(msg, state);
+        opts.onMessage?.(msg, state, write);
       }
     }
     await errReader;
@@ -1392,7 +1396,7 @@ describe("D5 cancel 返回 cancelled", () => {
       const r = await runAcpClient(dir, {
         promptText: "写文件然后卡住",
         policy: "ignore",
-        onMessage: (msg, state) => {
+        onMessage: (msg, state, write) => {
           // 看到权限请求（或任何工具事件）后发 cancel；只发一次。
           if (state.sentCancel) return;
           if (msg.method !== "session/request_permission" || msg.id === undefined) return;

@@ -206,6 +206,12 @@ export interface AgentOptions {
   /** 强制关闭提问模态（用户 abort 时）。 */
   cancelAskUser?: () => void;
   /**
+   * 审批钩子（ACP 等非 TUI 宿主注入）：`decidePermission` 之后用它替代 `ui.confirm`。
+   * 不传 = 仍走 `ui.confirm`（TUI / -p 的默认路径，行为不变）。
+   * 返回 false = 拒绝；宿主自行决定「取消」如何映射（ACP 里 cancel 也返回 false）。
+   */
+  approve?: (tool: string, detail: string) => Promise<boolean>;
+  /**
    * 交互式规划工作流（issue #14）：进入规划态前的权限模式。
    *
    * 只由 `/plan` 命令设置（`--plan` / `/mode plan` 是只读闸门，不走这里）。

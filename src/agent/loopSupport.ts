@@ -279,7 +279,9 @@ export function makeCtx(this: Agent, signal: AbortSignal): ToolCtx {
         signal,
         "permission_prompt",
       );
-      return ui.confirm(`${tool} — ${detail}`);
+      return this.opt.approve
+        ? this.opt.approve(tool, detail)
+        : ui.confirm(`${tool} — ${detail}`);
     },
     onNotice: (m) => ui.info(m),
     onProgress: (m) => ui.updateSpinner(m),
