@@ -260,4 +260,6 @@ ACP 是编辑器里的**交互会话**，记忆走交互模式：用户级 + 项
 
 ## 7 实现记录
 
-（实现阶段填写：SDK 是否可用、是否走 §2.2 备案及原因、客户端 `mcpServers` 是否接入、`plan` 映射是否落地。）
+- 2026-11-17：官方 `@agentclientprotocol/sdk` 默认入口（v1，fluent `agent()`）在 Bun 下类型与运行时均可用，未走 §2.2 自实现备案。
+- 但 SDK 的 `Connection.receive()` 对入站消息不等待，初始化闸门只在 `initialize` 的 `respondWithResult` 里放行。同一批 stdin 里紧跟的 `session/new` 会被误判为未初始化。实现在 `src/acp/inbound.ts` 对喂给 SDK 的字节流排队：上一条带 id 的请求对应的响应写出后才放行下一条。未改 SDK 源码。
+- 客户端 `mcpServers`、工具/权限/cancel/diff 映射在后续步骤填写。

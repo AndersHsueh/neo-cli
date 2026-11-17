@@ -103,7 +103,7 @@ function project(baseUrl?: string, apiKey?: string): string {
  * 子进程环境：注入沙箱目录，并**显式删掉**真实 NEO_API_KEY 等覆盖项。
  * 否则开发机上的 NEO_API_KEY / NEO_BASE_URL 会盖掉沙箱 settings，测试就不再隔离。
  */
-function childEnv(): Record<string, string | undefined> {
+function childEnv(overrides: Record<string, string | undefined> = {}): Record<string, string | undefined> {
   const env: Record<string, string | undefined> = {
     ...process.env,
     NEO_SESSIONS_DIR: sessionsDir,
@@ -112,6 +112,7 @@ function childEnv(): Record<string, string | undefined> {
     NEO_USER_WIKI_DIR: join(SANDBOX, "wiki"),
     NEO_MEMORY_JOURNAL_DIR: join(SANDBOX, "journal"),
     NEO_MEMORY_DISABLE: "1",
+    ...overrides,
   };
   for (const key of ["NEO_API_KEY", "NEO_BASE_URL", "NEO_PROVIDER", "NEO_MODEL", "NEO_TIER"]) {
     delete env[key];
@@ -157,13 +158,14 @@ async function runAcp(
   cwd: string,
   args: string[],
   stdinText: string,
+  envOverrides?: Record<string, string | undefined>,
 ): Promise<RunResult> {
   const proc = Bun.spawn(["bun", INDEX, ...args], {
     cwd,
     stdin: "pipe",
     stdout: "pipe",
     stderr: "pipe",
-    env: childEnv(),
+    env: childEnv(envOverrides),
   });
   try {
     proc.stdin.write(stdinText);
@@ -622,7 +624,7 @@ async function runSessionThenPrompt(
         if (sessionId !== null) {
           sentPrompt = true;
           proc.stdin.write(promptRequest(3, sessionId, promptText));
-          proc.stdin.flush();
+          await proc.stdin.end();
         }
       }
     }
@@ -663,7 +665,6 @@ describe("C1 prompt 文本流与 end_turn", () => {
     });
     try {
       const dir = project(`http://127.0.0.1:${server.port}/v1`);
-      const ws = workspace();
       const r = await runSessionThenPrompt(dir, "hi");
       expect(r.timedOut).toBe(false);
 
@@ -767,7 +768,11 @@ describe("C2 记忆 scopeMode 为 both", () => {
     // 用户级库**故意先不建**：它是否被创建/写入，正是本用例要观察的副作用。
 
     const ws = workspace();
-    const r = await runAcp(dir, ["acp"], initializeRequest(1, 1) + newSessionRequest(2, ws));
+    const r = await runAcp(dir, ["acp"], initializeRequest(1, 1) + newSessionRequest(2, ws), {
+      // 其它用例默认关掉记忆以免写盘；本用例要观察用户级 layout，必须打开。
+      NEO_MEMORY_DISABLE: undefined,
+      NEO_USER_WIKI_DIR: userWikiRoot,
+    });
     expect(r.timedOut).toBe(false);
     const messages = parseNdjson(r.out);
     expect(findResponse(messages, 1)).toBeDefined();
