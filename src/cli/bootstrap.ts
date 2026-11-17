@@ -30,6 +30,7 @@ import { CheckpointStore } from "../checkpoint.ts";
 import { formatGapLogLine, formatProbeIntent, makeOverBudgetReporter, formatWindowNotice, formatWritebackNotice, logBootDiagnostic } from "../bootDiagnostics.ts";
 import type { PromptSelection } from "../prompt/select.ts";
 import { parseArgs, HELP, streamJsonUsageError } from "./args.ts";
+import { acpUsageError, reportAcpUsageError } from "../acp/entry.ts";
 import type { SharedMut } from "./session.ts";
 
 /**
@@ -55,6 +56,24 @@ export async function bootstrap() {
   };
   const args = parseArgs(process.argv.slice(2));
   if (args.badArgs) return 2;
+  // issue #60：`neo acp` 是独立入口（stdin/stdout 整条让给 ACP 协议）。
+  // 互斥判定必须早于下面的 stream-json 校验，否则 `neo acp --output-format stream-json`
+  // 会先撞上「stream-json 需要 -p」，报出与 ACP 无关的错误。
+  const acpError = acpUsageError(args);
+  if (acpError !== null) return reportAcpUsageError(acpError);
+  // `neo acp --help` / `-v` 是元请求：打印既有文本后退出 0，绝不启动服务端。
+  // 位置必须在互斥判定之后（`acp -p x --help` 仍是用法错误 2），
+  // 又必须早于 stream-json 校验（否则 `acp --output-format stream-json --help` 会先撞 -p 规则）。
+  if (args.rest[0] === "acp" && (args.help || args.version)) {
+    if (args.help) console.log(HELP);
+    else console.log(c.accent(`neo v${VERSION}`));
+    return 0;
+  }
+  if (args.rest[0] === "acp") {
+    // 动态 import：TUI / -p 路径不加载 ACP 服务端与 SDK。
+    const { runAcpServer } = await import("../acp/server.ts");
+    return await runAcpServer();
+  }
   // #37：stream-json 只在 -p/--print 下合法。缺 -p（交互模式或
   // `neo <prompt>` 非 -p 形式）在会话创建前按 JSONL 收口为用法错误 2，
   // 此时还没有 SessionMeta.id，信封的 session_id 必须为 null。

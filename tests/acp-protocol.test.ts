@@ -279,6 +279,28 @@ describe("A1 neo acp 入口存在且与 -p 互斥", () => {
     expect(withJson.code).toBe(2);
     expect(withJson.err.trim().length).toBeGreaterThan(0);
     expect(withJson.out).toBe("");
+
+    // acp --help / -h：元请求，打印既有帮助文本后退出 0，绝不启动服务端。
+    // 判据是「没有 [acp] 服务端已就绪」—— 那行只在 runAcpServer() 里打，
+    // 出现即说明 bootstrap 又抢在 --help 之前进了服务端。
+    for (const flag of ["--help", "-h"]) {
+      const help = await runUsage(dir, ["acp", flag]);
+      expect(help.timedOut).toBe(false);
+      expect(help.code).toBe(0);
+      expect(help.out.includes("用法") || help.out.includes("neo v")).toBe(true);
+      expect(help.err.includes("[acp] 服务端已就绪")).toBe(false);
+      // stdout 是帮助文本，不是协议流：不得出现 NDJSON 响应。
+      expect(help.out.trimStart().startsWith("{")).toBe(false);
+    }
+
+    // acp --version / -v：同样早退，打印版本行退出 0。
+    for (const flag of ["--version", "-v"]) {
+      const ver = await runUsage(dir, ["acp", flag]);
+      expect(ver.timedOut).toBe(false);
+      expect(ver.code).toBe(0);
+      expect(ver.out).toContain("neo v");
+      expect(ver.err.includes("[acp] 服务端已就绪")).toBe(false);
+    }
   }, 30_000);
 });
 

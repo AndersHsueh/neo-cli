@@ -21,5 +21,8 @@
   "devDependencies": {
     "@types/bun": "^1.4.3",
     "typescript": "^7.0.2"
+  },
+  "dependencies": {
+    "@agentclientprotocol/sdk": "^2.7.0"
   }
 }
