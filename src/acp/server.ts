@@ -39,7 +39,7 @@ import { toolCallEndOf, toolCallStartOf } from "./tools.ts";
  * 首期广告的能力（PRD §2.4）：只广告真做的。
  *
  * - `loadSession: false`：`session/load` 未做；
- * - `promptCapabilities` 显式全 false：本步只做 text 基线，image/audio/embeddedContext
+ * - `promptCapabilities` 显式全 false：只接 text block，image/audio/embeddedContext
  *   尚未映射到 `Agent.send()` 的图片通道；
  * - `mcpCapabilities` 不广告：客户端传入的 `mcpServers` 首期不接入（PRD §2.7 待定）。
  */
@@ -84,7 +84,7 @@ function requireApiKey(cfg: Config): void {
   );
 }
 
-/** 从 ContentBlock 数组里取文本（本步只接受 text block，其余明确报错，不静默丢弃）。 */
+/** 从 ContentBlock 数组里取文本（只接受 text block，其余明确报错，不静默丢弃）。 */
 function promptText(blocks: ContentBlock[]): string {
   const parts: string[] = [];
   for (const block of blocks) {
@@ -93,7 +93,7 @@ function promptText(blocks: ContentBlock[]): string {
       continue;
     }
     throw RequestError.invalidParams(
-      `暂不支持 ${block.type} 内容块（本步只支持 text；image/audio/resource 见 PRD §5 已知未做）`,
+      `暂不支持 ${block.type} 内容块（只支持 text；image/audio/resource 见 PRD §5 已知未做）`,
     );
   }
   return parts.join("\n");

@@ -113,16 +113,18 @@ export interface ToolCallEnd {
  *
  * `oldText` 由调用方在 `tool_start` 时采集（`snapshotOldText`）后传进来；
  * 这里只在工具真的成功执行时给出 diff —— 被拒绝/失败时旧内容没变，给 diff 等于撒谎。
+ *
+ * `argsJson` 是同一 call 在 tool_start 时的原始参数：`tool_end.paths` 是 cwd 相对路径，
+ * 且工作区外会被丢掉，拼不出 diff 要的绝对路径。没有它就不给 diff / locations。
  */
 export function toolCallEndOf(
   data: ToolEndEventData,
   cwd: string,
   oldText: string | null | undefined,
-  /** tool_start 时的原始 args。tool_end.paths 是 cwd 相对路径，且工作区外会被丢掉，不能用来拼 diff。 */
   argsJson?: string,
 ): ToolCallEnd {
   const status = toolStatus(data.status);
-  const path = isWriteTool(data.name) ? pathOfArgs(argsJson ?? lastArgsOf(data), cwd) : null;
+  const path = isWriteTool(data.name) ? pathOfArgs(argsJson ?? "", cwd) : null;
   const base: ToolCallEnd = { toolCallId: data.call_id, status, rawOutput: data.output };
 
   if (path && status === "completed") {
@@ -136,19 +138,7 @@ export function toolCallEndOf(
     // 写工具没成功：仍然告诉编辑器「本来要改这个文件」，但不伪造 diff。
     return { ...base, locations: [{ path }], content: [{ type: "content", content: { type: "text", text: data.output } }] };
   }
-  return {
-    ...base,
-    content: [{ type: "content", content: { type: "text", text: data.output } }],
-  };
-}
-
-/**
- * `tool_end` 事件里没有原始参数，只有 paths（组合根 clipPaths 后的路径）。
- * 写作类工具只有一个目标文件，取第一个绝对路径即可。
- */
-function lastArgsOf(data: ToolEndEventData): string {
-  const first = data.paths[0];
-  return first ? JSON.stringify({ path: first }) : "";
+  return { ...base, content: [{ type: "content", content: { type: "text", text: data.output } }] };
 }
 
 /** 参数摘要（与 TUI 的预览同口径：单行、截断）。 */

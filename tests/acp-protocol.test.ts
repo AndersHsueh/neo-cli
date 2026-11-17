@@ -1,5 +1,5 @@
 /**
- * issue #60 ACP 服务端验收 —— 覆盖 PRD（docs/acp-prd.md）§3 的 A1 / A2 / A3 与 B1 / B2 / B3 / C1 / C2。
+ * issue #60 ACP 服务端验收 —— 覆盖 PRD（docs/acp-prd.md）§3 的 A1–A3、B1–B3、C1–C2、D1–D5、E1。
  *
  * 覆盖范围（如实声明）：
  *  - A1 `neo acp` 入口存在且与 -p 互斥（含与 --output-format json 互斥）；
@@ -10,8 +10,9 @@
  *  - B2 同一进程第二次 `session/new` 被拒绝（单 session，PRD §2.6）；
  *  - B3 缺模型凭证时 `session/new` 返回 JSON-RPC 错误且不伪造 sessionId（PRD §2.5）；
  *  - C1 `session/prompt` 先发 agent_message_chunk 通知，再以 stopReason=end_turn 结束（PRD §2.8/§2.9）；
- *  - C2 ACP 会话是交互记忆（用户级+项目级），不是 -p 的仅项目级（PRD §2.12）。
- * 本文件**不覆盖** D1–E1（工具事件、diff、权限、cancel、help/README），那些由后续红态/绿态补齐。
+ *  - C2 ACP 会话是交互记忆（用户级+项目级），不是 -p 的仅项目级（PRD §2.12）；
+ *  - D1–D5 工具事件、写作 diff、编辑器权限与回退、cancel（PRD §2.9–§2.11）；
+ *  - E1 help 与 README 含 `neo acp` 与 Zed `agent_servers` 配置示例。
  *
  * C2 的观察点（文件系统副作用，不 import 尚未存在的实现模块）：
  *  交互模式启动时会给用户级记忆建骨架（`ensureScopeLayout("user", …)`，src/memory/layout.ts:75）

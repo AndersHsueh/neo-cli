@@ -172,6 +172,7 @@ export async function createAcpSession(opts: CreateAcpSessionOptions): Promise<A
     // 审批走权限桥：decidePermission 已在 makeCtx 里先判过（plan/allow 不会到这里），
     // 这里只处理 needs-confirm —— 问编辑器，或（客户端不在/失败/超时）回退 settings。
     approve: async (tool, detail) => {
+      // 工具串行执行，最近一次 tool_start 就是本次审批的对象（拿 call_id 与路径）。
       const start = lastToolStart?.name === tool ? lastToolStart : null;
       const path = start ? pathOfArgs(start.args, cwd) : null;
       const outcome = await permissionBridge.ask(tool, {
@@ -185,7 +186,6 @@ export async function createAcpSession(opts: CreateAcpSessionOptions): Promise<A
         // 用户取消：先中止本轮，再按拒绝处理（工具不执行）。
         cancelled = true;
         agent.cancel();
-        return false;
       }
       return false;
     },
