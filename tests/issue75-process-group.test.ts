@@ -23,7 +23,7 @@ import { cleanupEphemeral } from "../src/cleanup.ts";
 import type { Config } from "../src/config.ts";
 import { McpManager } from "../src/mcp/client.ts";
 import type { McpStdioServerConfig } from "../src/config/types.ts";
-import { TOOLS } from "../src/tools/index.ts";
+import { TOOLS, toolNames } from "../src/tools/index.ts";
 import { BackgroundShells, backgroundShells, resetBackgroundShells } from "../src/tools/backgroundShell.ts";
 import type { ToolCtx } from "../src/tools/types.ts";
 
@@ -139,8 +139,8 @@ describe("#75 BackgroundShells 按进程组终止", () => {
       expect(pid).not.toBeNull();
 
       expect(bg.kill(started.id)).toBe(1);
-      // 孙进程的 1.5s 睡眠窗口过去后，它不得写盘、也不得活着。
-      await new Promise((r) => setTimeout(r, 2_500));
+      // 进程已死就不可能再写盘，不必固定等 2.5s。若一直活着，超时后仍断言 after 不存在（红点是写盘，不是「pid 没死」）。
+      await waitFor(() => !isAlive(pid as number), 2_000);
       expect(existsSync(gc.afterFile)).toBe(false);
       expect(isAlive(pid as number)).toBe(false);
     } finally {
@@ -162,7 +162,7 @@ describe("#75 BackgroundShells 按进程组终止", () => {
       expect(pid).not.toBeNull();
 
       bg.killAll();
-      await new Promise((r) => setTimeout(r, 2_500));
+      await waitFor(() => !isAlive(pid as number), 2_000);
       expect(existsSync(gc.afterFile)).toBe(false);
       expect(isAlive(pid as number)).toBe(false);
     } finally {
@@ -185,7 +185,7 @@ describe("#75 BackgroundShells 按进程组终止", () => {
 
       // TUI 退出路径（src/cleanup.ts）：只传 shells，其余依赖缺省。
       cleanupEphemeral({ shells: bg });
-      await new Promise((r) => setTimeout(r, 2_500));
+      await waitFor(() => !isAlive(pid as number), 2_000);
       expect(existsSync(gc.afterFile)).toBe(false);
       expect(isAlive(pid as number)).toBe(false);
     } finally {
@@ -229,7 +229,7 @@ describe("#75 前台 shell 被 abort 时按进程组终止", () => {
         () => undefined,
         () => undefined,
       );
-      await new Promise((r) => setTimeout(r, 2_500));
+      await waitFor(() => !isAlive(pid as number), 2_000);
       expect(existsSync(gc.afterFile)).toBe(false);
       expect(isAlive(pid as number)).toBe(false);
     } finally {
@@ -259,7 +259,7 @@ describe("#75 前台 shell 被 abort 时按进程组终止", () => {
  * - `answer=true`：正常回 initialize / tools/list，并在回完 tools/list 后写 `listedFile`。
  * - `answer=false`：永不回应（模拟慢 server 卡在握手）。
  */
-function fakeMcpSource(pidFile: string, listedFile: string, answer: boolean): string {
+function fakeMcpSource(pidFile: string, listedFile: string, answer: boolean, toolsJson = "[]"): string {
   return (
     `import { writeFileSync } from "node:fs";\n` +
     `writeFileSync(${JSON.stringify(pidFile)}, String(process.pid));\n` +
@@ -283,7 +283,7 @@ function fakeMcpSource(pidFile: string, listedFile: string, answer: boolean): st
     `    if (msg.method === "initialize") {\n` +
     `      process.stdout.write(JSON.stringify({ jsonrpc: "2.0", id: msg.id, result: { protocolVersion: "2024-11-05", capabilities: { tools: {} }, serverInfo: { name: "f", version: "0" } } }) + "\\n");\n` +
     `    } else if (msg.method === "tools/list") {\n` +
-    `      process.stdout.write(JSON.stringify({ jsonrpc: "2.0", id: msg.id, result: { tools: [] } }) + "\\n");\n` +
+    `      process.stdout.write(JSON.stringify({ jsonrpc: "2.0", id: msg.id, result: { tools: ${toolsJson} } }) + "\\n");\n` +
     `      writeFileSync(${JSON.stringify(listedFile)}, "1");\n` +
     `    }\n` +
     `  }\n` +
@@ -337,6 +337,56 @@ describe("#75 McpManager 并行握手断连回收", () => {
       // 两个子进程都必须退出：慢的在 connecting 里，快的在「已握手未注册」的空档里。
       expect(await waitFor(() => !isAlive(fastPid as number), 2_000)).toBe(true);
       expect(await waitFor(() => !isAlive(slowPid as number), 2_000)).toBe(true);
+    } finally {
+      try {
+        m.closeAll();
+      } catch {
+        /* 已关闭 */
+      }
+      killPid(fastPid);
+      killPid(slowPid);
+    }
+  }, 40_000);
+
+  /**
+   * 覆盖测试（当前 HEAD 上即绿）：把 closed 检查单独钉住。
+   *
+   * 现有「一快一慢 closeAll」只断言子进程已死，而 closeAll 会顺手关掉仍在
+   * `connecting` 里的已握手连接，所以单独删掉 registerAll 里的 `if (this.closed)`
+   * 时那条仍绿（Leo 复审 M3）。本用例在握手已全部结算之后、registerAll 之前
+   * 调用 closeAll，再等 connectAll 返回，断言不得注册工具、不得把 server 标成
+   * connected。快的 tools/list 带一个真实工具：否则 toolCount 在错误注册时仍是 0。
+   */
+  test("#75 McpManager：closeAll 发生在握手已结算、registerAll 之前，不得注册工具、不得进入 live", async () => {
+    const dir = caseDir();
+    const fastPidFile = join(dir, "fast2.pid");
+    const slowPidFile = join(dir, "slow2.pid");
+    const fastListed = join(dir, "fast2.listed");
+    const fastScript = join(dir, "fast2.ts");
+    const slowScript = join(dir, "slow2.ts");
+    const pingTool = '[{ "name": "ping", "description": "p", "inputSchema": { "type": "object", "properties": {} } }]';
+    writeFileSync(fastScript, fakeMcpSource(fastPidFile, fastListed, true, pingTool), "utf8");
+    writeFileSync(slowScript, fakeMcpSource(slowPidFile, join(dir, "slow2.listed"), false), "utf8");
+
+    const m = new McpManager([mcpServer("fast", fastScript), mcpServer("slow", slowScript)], {
+      connectTimeoutMs: 800,
+    });
+    let fastPid: number | null = null;
+    let slowPid: number | null = null;
+    try {
+      const connecting = m.connectAll();
+      expect(await waitForFile(fastPidFile, 10_000)).toBe(true);
+      expect(await waitForFile(slowPidFile, 10_000)).toBe(true);
+      expect(await waitForFile(fastListed, 10_000)).toBe(true);
+      fastPid = readPid(fastPidFile);
+      slowPid = readPid(slowPidFile);
+      // 让快的 handshake promise 结算；慢的仍卡在 initialize，connectAll 还没走到 registerAll。
+      await new Promise((r) => setTimeout(r, 100));
+      m.closeAll();
+      await connecting;
+      expect(m.toolCount()).toBe(0);
+      expect(m.statuses().find((st) => st.name === "fast")?.status).not.toBe("connected");
+      expect(toolNames()).not.toContain("mcp__fast__ping");
     } finally {
       try {
         m.closeAll();
