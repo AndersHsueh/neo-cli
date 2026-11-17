@@ -28,7 +28,7 @@
  * 禁止 mock.module（bun test 单进程共享模块表）。
  */
 import { afterAll, describe, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, mkdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -89,6 +89,19 @@ function writeSettings(dir: string, baseUrl = "http://127.0.0.1:9/v1", apiKey = 
     ),
     "utf8",
   );
+}
+
+/**
+ * 把沙箱 settings.json 的权限模式改成指定值（D4 用）。
+ *
+ * 键名沿用既有 settings 口径；实现若从别处读模式，本用例会失败在「写盘发生了」，
+ * 这正是 D4 要抓的缺陷（回退没生效 = 放宽了权限）。
+ */
+function writePermissionMode(dir: string, mode: "ask" | "auto-edit" | "auto-all" | "plan"): void {
+  const path = join(dir, "settings.json");
+  const current = JSON.parse(readFileSync(path, "utf8")) as Record<string, unknown>;
+  current["permission_mode"] = mode;
+  writeFileSync(path, JSON.stringify(current, null, 2), "utf8");
 }
 
 /** 每个用例一个独立工作目录（settings.json 只从 cwd 读，不碰真实 home）。 */
@@ -800,4 +813,606 @@ describe("C2 记忆 scopeMode 为 both", () => {
     // 若 scopeMode 被误设成 "project"，上面的 existsSync(userPagesDir) 会失败；
     // 若会话根本没建起来，第一个断言（sessionId）会失败 —— 两种失败都指向真实缺陷。
   }, 30_000);
+});
+
+/* ================================================================== *
+ * D 步：工具事件 / diff / 权限 / cancel（PRD §2.9–§2.11）
+ *
+ * 与 A–C 步的区别：这里必须让 agent 真的跑起工具循环，所以假 LLM 端点要按
+ * 「第 N 次请求回什么」脚本化（照 tests/cli-stream-json.test.ts 的 tool_calls 帧）。
+ * 客户端一侧也从「一次性喂完 stdin」升级成**管道级假客户端**：按行读 stdout，
+ * 看到服务端请求（session/request_permission 等）再写回 stdin。
+ *
+ * 本段**不 import 任何尚未存在的实现模块**：全部观察点都在 stdout 的 NDJSON 与
+ * 沙箱文件系统上，红态下失败在断言而不是加载期。
+ * ================================================================== */
+
+/** 假 LLM 端点：按请求序号回放脚本；脚本用尽后回一句收尾文本。 */
+interface FakeLlm {
+  baseUrl: string;
+  /** 收到的 chat/completions 次数（断言「工具真的被模型请求驱动」用）。 */
+  hits: () => number;
+  stop: () => void;
+}
+
+/** OpenAI 流式 tool_calls 帧（单次调用，arguments 一次给全）。 */
+function sseToolCallFrames(callId: string, name: string, args: unknown): string {
+  return (
+    `data: ${JSON.stringify({
+      choices: [
+        {
+          delta: {
+            tool_calls: [{ index: 0, id: callId, type: "function", function: { name, arguments: "" } }],
+          },
+          finish_reason: null,
+        },
+      ],
+    })}\n\n` +
+    `data: ${JSON.stringify({
+      choices: [
+        {
+          delta: { tool_calls: [{ index: 0, function: { arguments: JSON.stringify(args) } }] },
+          finish_reason: null,
+        },
+      ],
+    })}\n\n` +
+    `data: ${JSON.stringify({ choices: [{ delta: {}, finish_reason: "tool_calls" }] })}\n\n` +
+    "data: [DONE]\n\n"
+  );
+}
+
+/** OpenAI 流式纯文本帧。 */
+function sseTextFrames(text: string): string {
+  return (
+    `data: ${JSON.stringify({ choices: [{ delta: { content: text } }] })}\n\n` +
+    'data: {"choices":[{"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":11,"completion_tokens":2,"total_tokens":13}}\n\n' +
+    "data: [DONE]\n\n"
+  );
+}
+
+/**
+ * 起一个本地假 OpenAI 端点（Bun.serve port 0，不出本机）。
+ *
+ * `script` 是「第 N 次 chat/completions 返回什么」的数组；用尽后回 `fallback`。
+ * 完成条件判定器（#50/#51）是独立小请求，单独回 `not done`，不吃脚本（照 cli-stream-json）。
+ */
+function fakeLlm(script: string[], fallback = sseTextFrames("完成")): FakeLlm {
+  let hits = 0;
+  const server = Bun.serve({
+    port: 0,
+    async fetch(req) {
+      const url = new URL(req.url);
+      if (url.pathname.endsWith("/models")) {
+        return Response.json({ object: "list", data: [{ id: "fake-model" }] });
+      }
+      if (url.pathname.endsWith("/chat/completions")) {
+        const body = (await req.json().catch(() => ({}))) as { messages?: unknown };
+        if (JSON.stringify(body.messages ?? []).includes("完成条件判定器")) {
+          return new Response(sseTextFrames('{"done": false, "reason": "还没好"}'), {
+            headers: { "content-type": "text/event-stream" },
+          });
+        }
+        const frame = script[hits] ?? fallback;
+        hits += 1;
+        return new Response(frame, { headers: { "content-type": "text/event-stream" } });
+      }
+      return new Response("not found", { status: 404 });
+    },
+  });
+  return {
+    baseUrl: `http://127.0.0.1:${server.port}/v1`,
+    hits: () => hits,
+    stop: () => server.stop(true),
+  };
+}
+
+/** `session/cancel` 是**通知**（无 id，PRD §2.11）。 */
+function cancelNotification(sessionId: string): string {
+  return JSON.stringify({ jsonrpc: "2.0", method: "session/cancel", params: { sessionId } }) + "\n";
+}
+
+/** 客户端对服务端请求的响应（JSON-RPC result）。 */
+function jsonRpcResult(id: unknown, result: unknown): string {
+  return JSON.stringify({ jsonrpc: "2.0", id, result }) + "\n";
+}
+
+/** 客户端对服务端请求的响应（JSON-RPC error）。 */
+function jsonRpcError(id: unknown, code: number, message: string): string {
+  return JSON.stringify({ jsonrpc: "2.0", id, error: { code, message } }) + "\n";
+}
+
+/**
+ * 权限响应：按 optionId 选中（PRD §2.11 的 `outcome.selected`）。
+ * optionId 由实现自定，所以这里从请求的 `options` 里按 `kind` 挑，不硬编码 id。
+ */
+function permissionResponse(id: unknown, params: unknown, kind: "allow_once" | "reject_once"): string {
+  const options = (params as { options?: Array<{ optionId?: unknown; kind?: unknown }> } | undefined)?.options ?? [];
+  const picked = options.find((o) => o.kind === kind) ?? options[0];
+  const optionId = typeof picked?.optionId === "string" ? picked.optionId : kind;
+  return jsonRpcResult(id, { outcome: { outcome: "selected", optionId } });
+}
+
+/** 假客户端在收到服务端请求时的处理策略。 */
+type RequestPolicy =
+  /** 回 allow_once（D1/D2/D3 允许分支）。 */
+  | "allow"
+  /** 回 reject_once（D3 拒绝分支）。 */
+  | "reject"
+  /** 回 JSON-RPC error（D4：调用失败 → 回退 settings）。 */
+  | "error"
+  /** 不回应（D5：让 prompt 卡住，好发 cancel）。 */
+  | "ignore";
+
+interface ClientRunOptions {
+  /** initialize 里的 clientCapabilities（D4 传不支持权限的形态）。 */
+  clientCapabilities?: Record<string, unknown>;
+  /** 服务端请求（带 id 的 inbound request）的策略；默认 allow。 */
+  policy?: RequestPolicy;
+  /** 收到 session/new 响应后要发的 prompt 文本（不发则只建会话）。 */
+  promptText?: string;
+  /** 看到某个条件后追加写 stdin（如发 cancel）。返回 true 表示已执行，不再重复。 */
+  onMessage?: (msg: JsonRpcMessage, state: ClientState) => void;
+  timeoutMs?: number;
+}
+
+interface ClientState {
+  sessionId: string | null;
+  /** 已见过的服务端请求 method 列表（按到达顺序）。 */
+  serverRequests: string[];
+  /** 已见过的 session/update 的 sessionUpdate 值（按到达顺序）。 */
+  updates: string[];
+  /** 是否已发过 prompt。 */
+  sentPrompt: boolean;
+  /** 是否已发过 cancel。 */
+  sentCancel: boolean;
+}
+
+/**
+ * 管道级假客户端：真起 `bun src/index.ts acp`，按行读 stdout，
+ * 对服务端请求按 policy 写回 stdin，最后关 stdin 等退出。
+ *
+ * 超时一律 killSpawnedBun（红态下不会挂死）。
+ */
+async function runAcpClient(cwd: string, opts: ClientRunOptions = {}): Promise<RunResult> {
+  const timeoutMs = opts.timeoutMs ?? 20_000;
+  const policy: RequestPolicy = opts.policy ?? "allow";
+  const proc = Bun.spawn(["bun", INDEX, "acp"], {
+    cwd,
+    stdin: "pipe",
+    stdout: "pipe",
+    stderr: "pipe",
+    env: childEnv(),
+  });
+  const decoder = new TextDecoder();
+  const state: ClientState = {
+    sessionId: null,
+    serverRequests: [],
+    updates: [],
+    sentPrompt: false,
+    sentCancel: false,
+  };
+  let out = "";
+  let err = "";
+  let timedOut = false;
+  let buf = "";
+
+  const errReader = (async () => {
+    for await (const chunk of proc.stderr as unknown as AsyncIterable<Uint8Array>) {
+      err += decoder.decode(chunk, { stream: true });
+    }
+  })();
+
+  const timer = setTimeout(() => {
+    timedOut = true;
+    killSpawnedBun(proc);
+  }, timeoutMs);
+
+  const write = (line: string): void => {
+    try {
+      proc.stdin.write(line);
+      proc.stdin.flush();
+    } catch {
+      /* 子进程可能已退出 */
+    }
+  };
+
+  let stdinClosed = false;
+  const closeStdin = async (): Promise<void> => {
+    if (stdinClosed) return;
+    stdinClosed = true;
+    try {
+      await proc.stdin.end();
+    } catch {
+      /* 已退出 */
+    }
+  };
+
+  try {
+    write(
+      JSON.stringify({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "initialize",
+        params: {
+          protocolVersion: 1,
+          clientCapabilities: opts.clientCapabilities ?? {
+            fs: { readTextFile: false, writeTextFile: false },
+            terminal: false,
+          },
+          clientInfo: { name: "neo-acp-test-client", title: "neo acp test client", version: "0.0.0" },
+        },
+      }) + "\n",
+    );
+
+    for await (const chunk of proc.stdout as unknown as AsyncIterable<Uint8Array>) {
+      const text = decoder.decode(chunk, { stream: true });
+      out += text;
+      buf += text;
+      for (;;) {
+        const nl = buf.indexOf("\n");
+        if (nl === -1) break;
+        const line = buf.slice(0, nl).trim();
+        buf = buf.slice(nl + 1);
+        if (line === "") continue;
+        let msg: JsonRpcMessage;
+        try {
+          msg = JSON.parse(line) as JsonRpcMessage;
+        } catch {
+          continue;
+        }
+
+        // 服务端 → 客户端的**请求**（有 id 且有 method）：按 policy 回应。
+        if (typeof msg.method === "string" && msg.id !== undefined) {
+          state.serverRequests.push(msg.method);
+          if (policy === "allow") {
+            if (msg.method === "session/request_permission") {
+              write(permissionResponse(msg.id, msg.params, "allow_once"));
+            } else {
+              write(jsonRpcError(msg.id, -32601, `测试客户端不实现 ${msg.method}`));
+            }
+          } else if (policy === "reject") {
+            if (msg.method === "session/request_permission") {
+              write(permissionResponse(msg.id, msg.params, "reject_once"));
+            } else {
+              write(jsonRpcError(msg.id, -32601, `测试客户端不实现 ${msg.method}`));
+            }
+          } else if (policy === "error") {
+            write(jsonRpcError(msg.id, -32603, "测试客户端不实现权限请求"));
+          }
+          // policy === "ignore"：不回应，让服务端卡住（D5 用）。
+        }
+
+        // 服务端通知：记录 session/update 的类型。
+        if (msg.method === "session/update" && msg.id === undefined) {
+          const kind = (msg.params as { update?: { sessionUpdate?: unknown } } | undefined)?.update?.sessionUpdate;
+          if (typeof kind === "string") state.updates.push(kind);
+        }
+
+        // 响应：initialize 之后建会话；session/new 之后发 prompt。
+        if (msg.id === 1 && msg.result !== undefined) {
+          write(newSessionRequest(2, cwd));
+        }
+        if (msg.id === 2) {
+          const sid = sessionIdOf(msg);
+          if (sid !== null) {
+            state.sessionId = sid;
+            if (opts.promptText !== undefined && !state.sentPrompt) {
+              state.sentPrompt = true;
+              write(promptRequest(3, sid, opts.promptText));
+            }
+          } else if (opts.promptText === undefined) {
+            // 只建会话、不发 prompt 的用法：拿到结果就收工。
+            await closeStdin();
+          }
+        }
+
+        // prompt 的响应到了：本轮结束，关 stdin 让服务端退出（否则 for await 等不到 EOF）。
+        if (msg.id === 3) await closeStdin();
+
+        opts.onMessage?.(msg, state);
+      }
+    }
+    await errReader;
+    const code = await proc.exited;
+    return { out, err, code, timedOut };
+  } finally {
+    clearTimeout(timer);
+    await closeStdin();
+  }
+}
+
+/** 从消息流里取所有 `session/update` 的 update 对象（按顺序）。 */
+function sessionUpdates(messages: JsonRpcMessage[]): Array<Record<string, unknown>> {
+  const list: Array<Record<string, unknown>> = [];
+  for (const m of messages) {
+    if (m.method !== "session/update" || m.id !== undefined) continue;
+    const update = (m.params as { update?: unknown } | undefined)?.update;
+    if (typeof update === "object" && update !== null) list.push(update as Record<string, unknown>);
+  }
+  return list;
+}
+
+/** 取某个 toolCallId 的所有 update（按顺序）。 */
+function toolUpdatesOf(updates: Array<Record<string, unknown>>, toolCallId: string): Array<Record<string, unknown>> {
+  return updates.filter((u) => u["toolCallId"] === toolCallId);
+}
+
+/* ------------------------------------------------------------------ *
+ * D1 工具调用 pending → completed
+ * ------------------------------------------------------------------ */
+
+describe("D1 工具调用 pending 到 completed", () => {
+  test("D1 工具调用 pending 到 completed", async () => {
+    const ws = workspace();
+    // 只读工具（list_dir 不需要批准），参数简单、绝对路径落在沙箱内。
+    const llm = fakeLlm([sseToolCallFrames("call-d1", "list_dir", { path: ws })]);
+    try {
+      const dir = project(llm.baseUrl);
+      const r = await runAcpClient(dir, { promptText: "列出目录" });
+      expect(r.timedOut).toBe(false);
+
+      const messages = parseNdjson(r.out);
+      expect(sessionIdOf(findResponse(messages, 2))).not.toBeNull();
+
+      const updates = sessionUpdates(messages);
+      // 先有 tool_call（PRD §2.9）：toolCallId 用 call_id，带 title 或 name，status pending/in_progress。
+      const start = updates.find((u) => u["sessionUpdate"] === "tool_call");
+      expect(start).toBeDefined();
+      expect(start?.["toolCallId"]).toBe("call-d1");
+      const titleOrName = start?.["title"] ?? start?.["name"];
+      expect(typeof titleOrName).toBe("string");
+      expect(String(titleOrName)).toContain("list_dir");
+      expect(["pending", "in_progress"]).toContain(String(start?.["status"]));
+
+      // 后有同一 toolCallId 的 tool_call_update，status=completed（本用例应成功）。
+      const end = toolUpdatesOf(updates, "call-d1").find((u) => u["sessionUpdate"] === "tool_call_update");
+      expect(end).toBeDefined();
+      expect(end?.["status"]).toBe("completed");
+
+      // 顺序：tool_call 在 tool_call_update 之前，且都在 prompt 的 result 之前。
+      const promptResp = findResponse(messages, 3);
+      expect(promptResp).toBeDefined();
+      expect(promptResp?.error).toBeUndefined();
+      expect((promptResp?.result as { stopReason?: unknown } | undefined)?.stopReason).toBe("end_turn");
+      const idxStart = updates.indexOf(start as Record<string, unknown>);
+      const idxEnd = updates.indexOf(end as Record<string, unknown>);
+      expect(idxStart).toBeLessThan(idxEnd);
+      const startMsg = messages.findIndex(
+        (m) =>
+          m.method === "session/update" &&
+          (m.params as { update?: { sessionUpdate?: unknown } } | undefined)?.update?.sessionUpdate === "tool_call",
+      );
+      expect(startMsg).toBeGreaterThanOrEqual(0);
+      expect(startMsg).toBeLessThan(messages.indexOf(promptResp as JsonRpcMessage));
+    } finally {
+      llm.stop();
+    }
+  }, 40_000);
+});
+
+/* ------------------------------------------------------------------ *
+ * D2 写作工具 diff content
+ * ------------------------------------------------------------------ */
+
+describe("D2 写作工具 diff content", () => {
+  test("D2 写作工具 diff content", async () => {
+    const ws = workspace();
+    const target = join(ws, "d2-written.txt");
+    const content = "d2 写入内容\n第二行\n";
+    expect(existsSync(target)).toBe(false);
+
+    const llm = fakeLlm([sseToolCallFrames("call-d2", "write_file", { path: target, content })]);
+    try {
+      const dir = project(llm.baseUrl);
+      // 权限一律 allow_once：本用例只验 diff，不把「被拒绝」和「没有 diff」混在一起。
+      const r = await runAcpClient(dir, { promptText: "写个文件", policy: "allow" });
+      expect(r.timedOut).toBe(false);
+
+      const messages = parseNdjson(r.out);
+      const updates = sessionUpdates(messages);
+      const end = toolUpdatesOf(updates, "call-d2").find((u) => u["sessionUpdate"] === "tool_call_update");
+      expect(end).toBeDefined();
+      expect(end?.["status"]).toBe("completed");
+
+      // content 里有 type:"diff"（PRD §2.10）。
+      const blocks = (end?.["content"] ?? []) as Array<Record<string, unknown>>;
+      expect(Array.isArray(blocks)).toBe(true);
+      const diff = blocks.find((b) => b["type"] === "diff");
+      expect(diff).toBeDefined();
+      expect(diff?.["path"]).toBe(target);
+      // 新文件：oldText 为 null，newText 是写入后的完整内容。
+      expect(diff?.["oldText"] ?? null).toBeNull();
+      expect(String(diff?.["newText"] ?? "")).toContain("d2 写入内容");
+
+      // 同时带 locations，path 与 diff 相同。
+      const locations = (end?.["locations"] ?? []) as Array<Record<string, unknown>>;
+      expect(Array.isArray(locations)).toBe(true);
+      expect(locations.length).toBeGreaterThan(0);
+      expect(locations[0]?.["path"]).toBe(target);
+
+      // 文件真的写下去了（diff 不是编的）。
+      expect(existsSync(target)).toBe(true);
+    } finally {
+      llm.stop();
+    }
+  }, 40_000);
+});
+
+/* ------------------------------------------------------------------ *
+ * D3 权限走编辑器 UI
+ * ------------------------------------------------------------------ */
+
+describe("D3 权限走编辑器 UI", () => {
+  test("D3 权限走编辑器 UI", async () => {
+    // ---- 分支 1：allow_once → 工具执行、文件落盘 ----
+    const wsAllow = workspace();
+    const allowTarget = join(wsAllow, "d3-allow.txt");
+    const llmAllow = fakeLlm([
+      sseToolCallFrames("call-d3a", "write_file", { path: allowTarget, content: "允许写入\n" }),
+    ]);
+    try {
+      const dir = project(llmAllow.baseUrl);
+      const r = await runAcpClient(dir, { promptText: "写文件", policy: "allow" });
+      expect(r.timedOut).toBe(false);
+
+      const messages = parseNdjson(r.out);
+      // 写类工具必须先走 session/request_permission（PRD §2.11）。
+      const permissionReq = messages.find(
+        (m) => m.method === "session/request_permission" && m.id !== undefined,
+      );
+      expect(permissionReq).toBeDefined();
+      const params = permissionReq?.params as
+        | { sessionId?: unknown; toolCall?: { toolCallId?: unknown }; options?: unknown }
+        | undefined;
+      expect(typeof params?.sessionId).toBe("string");
+      expect(params?.toolCall?.toolCallId).toBe("call-d3a");
+      expect(Array.isArray(params?.options)).toBe(true);
+      expect((params?.options as unknown[]).length).toBeGreaterThan(0);
+
+      // 允许后工具执行：文件存在，且 prompt 正常结束（不是 JSON-RPC 错误）。
+      expect(existsSync(allowTarget)).toBe(true);
+      const promptResp = findResponse(messages, 3);
+      expect(promptResp).toBeDefined();
+      expect(promptResp?.error).toBeUndefined();
+    } finally {
+      llmAllow.stop();
+    }
+
+    // ---- 分支 2：reject_once → 不执行、不写盘，但 prompt 仍有 result ----
+    const wsReject = workspace();
+    const rejectTarget = join(wsReject, "d3-reject.txt");
+    const llmReject = fakeLlm([
+      sseToolCallFrames("call-d3b", "write_file", { path: rejectTarget, content: "不该写入\n" }),
+    ]);
+    try {
+      const dir = project(llmReject.baseUrl);
+      const r = await runAcpClient(dir, { promptText: "写文件", policy: "reject" });
+      expect(r.timedOut).toBe(false);
+
+      const messages = parseNdjson(r.out);
+      expect(messages.find((m) => m.method === "session/request_permission" && m.id !== undefined)).toBeDefined();
+
+      // 拒绝 → 不写盘。
+      expect(existsSync(rejectTarget)).toBe(false);
+
+      // 且整轮不因拒绝而变成 JSON-RPC 错误：prompt 有 result（PRD §2.11）。
+      const promptResp = findResponse(messages, 3);
+      expect(promptResp).toBeDefined();
+      expect(promptResp?.error).toBeUndefined();
+      expect(typeof (promptResp?.result as { stopReason?: unknown } | undefined)?.stopReason).toBe("string");
+    } finally {
+      llmReject.stop();
+    }
+  }, 60_000);
+});
+
+/* ------------------------------------------------------------------ *
+ * D4 无权限能力时回退 settings
+ * ------------------------------------------------------------------ */
+
+describe("D4 无权限能力时回退 settings", () => {
+  test("D4 无权限能力时回退 settings", async () => {
+    const ws = workspace();
+    const target = join(ws, "d4-fallback.txt");
+    // 权限回退到 settings 既有模式：这里用 plan（decidePermission 一律拒绝，src/agent/policy.ts:44）。
+    const llm = fakeLlm([sseToolCallFrames("call-d4", "write_file", { path: target, content: "不该写入\n" })]);
+    try {
+      const dir = project(llm.baseUrl);
+      writePermissionMode(dir, "plan");
+      // 客户端不广告权限能力（也不响应 request_permission）→ 必须回退 settings。
+      const r = await runAcpClient(dir, {
+        promptText: "写文件",
+        policy: "error",
+        clientCapabilities: { fs: { readTextFile: false, writeTextFile: false }, terminal: false },
+      });
+      expect(r.timedOut).toBe(false);
+
+      const messages = parseNdjson(r.out);
+      // plan 模式：写盘没有发生。
+      expect(existsSync(target)).toBe(false);
+
+      // 也没有「成功的 diff 落盘」：任何 tool_call_update 都不得以 completed + diff 收尾。
+      const updates = sessionUpdates(messages);
+      const completedWithDiff = updates.filter(
+        (u) =>
+          u["sessionUpdate"] === "tool_call_update" &&
+          u["status"] === "completed" &&
+          Array.isArray(u["content"]) &&
+          (u["content"] as Array<Record<string, unknown>>).some((b) => b["type"] === "diff"),
+      );
+      expect(completedWithDiff).toEqual([]);
+
+      // 整轮不挂死：prompt 有 result（拒绝走 notExecuted 通道，不是 JSON-RPC 错误）。
+      const promptResp = findResponse(messages, 3);
+      expect(promptResp).toBeDefined();
+      expect(promptResp?.error).toBeUndefined();
+    } finally {
+      llm.stop();
+    }
+
+    // ---- 反向分支：settings 设 auto-all 时写盘必须发生 ----
+    // 这一半才是「回退真的接上了」的证据：只断言「plan 下不写盘」无法区分
+    // 「回退生效」与「非 TTY 下 confirm 一律拒绝」（src/ui/console.ts:598）。
+    const wsAll = workspace();
+    const allTarget = join(wsAll, "d4-auto-all.txt");
+    const llmAll = fakeLlm([sseToolCallFrames("call-d4b", "write_file", { path: allTarget, content: "应当写入\n" })]);
+    try {
+      const dir = project(llmAll.baseUrl);
+      writePermissionMode(dir, "auto-all");
+      const r = await runAcpClient(dir, {
+        promptText: "写文件",
+        policy: "error",
+        clientCapabilities: { fs: { readTextFile: false, writeTextFile: false }, terminal: false },
+      });
+      expect(r.timedOut).toBe(false);
+      const messages = parseNdjson(r.out);
+      const promptResp = findResponse(messages, 3);
+      expect(promptResp).toBeDefined();
+      expect(promptResp?.error).toBeUndefined();
+      // 回退到 auto-all → decidePermission 放行 → 文件落盘。
+      expect(existsSync(allTarget)).toBe(true);
+    } finally {
+      llmAll.stop();
+    }
+  }, 60_000);
+});
+
+/* ------------------------------------------------------------------ *
+ * D5 cancel 返回 cancelled
+ * ------------------------------------------------------------------ */
+
+describe("D5 cancel 返回 cancelled", () => {
+  test("D5 cancel 返回 cancelled", async () => {
+    const ws = workspace();
+    const target = join(ws, "d5-cancel.txt");
+    // 让 prompt 卡在权限请求上（客户端不回应），再发 session/cancel。
+    const llm = fakeLlm([sseToolCallFrames("call-d5", "write_file", { path: target, content: "不该写入\n" })]);
+    try {
+      const dir = project(llm.baseUrl);
+      const r = await runAcpClient(dir, {
+        promptText: "写文件然后卡住",
+        policy: "ignore",
+        onMessage: (msg, state) => {
+          // 看到权限请求（或任何工具事件）后发 cancel；只发一次。
+          if (state.sentCancel) return;
+          if (msg.method !== "session/request_permission" || msg.id === undefined) return;
+          if (state.sessionId === null) return;
+          state.sentCancel = true;
+          write(cancelNotification(state.sessionId));
+        },
+      });
+      expect(r.timedOut).toBe(false);
+
+      const messages = parseNdjson(r.out);
+      const promptResp = findResponse(messages, 3);
+      // 取消不是 JSON-RPC 错误（PRD §2.11）。
+      expect(promptResp).toBeDefined();
+      expect(promptResp?.error).toBeUndefined();
+      expect((promptResp?.result as { stopReason?: unknown } | undefined)?.stopReason).toBe("cancelled");
+      // 被取消的那次写盘不落盘。
+      expect(existsSync(target)).toBe(false);
+    } finally {
+      llm.stop();
+    }
+  }, 40_000);
 });
