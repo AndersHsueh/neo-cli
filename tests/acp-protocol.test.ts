@@ -1420,3 +1420,37 @@ describe("D5 cancel 返回 cancelled", () => {
     }
   }, 40_000);
 });
+
+/* ------------------------------------------------------------------ *
+ * E1 help 与 README 含 acp 与 agent_servers
+ * ------------------------------------------------------------------ */
+
+describe("E1 help 与 README 含 acp 与 agent_servers", () => {
+  test("E1 help 与 README 含 acp 与 agent_servers", async () => {
+    const dir = project();
+
+    // ---- help：`neo acp --help` / `-h` 退出 0，用法区有 acp 一行，且说明是「stdio 上的 ACP 服务端，供 Zed/JetBrains 拉起」（PRD §2.13）。
+    for (const flag of ["--help", "-h"]) {
+      const help = await runUsage(dir, ["acp", flag]);
+      expect(help.timedOut).toBe(false);
+      expect(help.code).toBe(0);
+      // 不启动服务端：那行只在 runAcpServer() 里打。
+      expect(help.err.includes("[acp] 服务端已就绪")).toBe(false);
+      // 用法区真的出现 `neo acp` 这一行（不是散落在别处的 acp 字样）。
+      expect(help.out.includes("neo acp")).toBe(true);
+      // 说明文字：ACP 服务端 + 编辑器（Zed / JetBrains 任一即可）。
+      expect(help.out.includes("ACP 服务端")).toBe(true);
+      expect(help.out.includes("Zed") || help.out.includes("JetBrains")).toBe(true);
+    }
+
+    // ---- README：正文含 `neo acp`，并含 Zed External Agent 的 agent_servers 配置示例。
+    const readme = readFileSync(join(import.meta.dir, "..", "README.md"), "utf8");
+    expect(readme.includes("neo acp")).toBe(true);
+    expect(readme.includes("agent_servers")).toBe(true);
+    // 配置示例的三个键值：JSON 空白可不同，但键值必须能在文件里找到。
+    // 用容忍空白的正则，避免把「换行/缩进风格」当成验收标准。
+    expect(/"type"\s*:\s*"custom"/.test(readme)).toBe(true);
+    expect(/"command"\s*:\s*"neo"/.test(readme)).toBe(true);
+    expect(/"args"\s*:\s*\[\s*"acp"\s*\]/.test(readme)).toBe(true);
+  }, 30_000);
+});

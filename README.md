@@ -595,6 +595,22 @@ Anthropic 路径的差异处理：`system` 提到顶层字段，连续 `tool` �
 | `--fallback <provider>:<model>` | 有序模型备用链，可重复；任一项出现即整体替换 `settings.model_fallback`，最多 8 项 |
 | `--no-fallback` | 本次禁用备用链，与 `--fallback` 互斥 |
 
+### `neo acp` —— 编辑器里的 ACP 服务端
+
+`neo acp` 在 stdio 上跑一个 ACP v1 服务端，供 Zed / JetBrains 等支持 ACP 的编辑器作为外部 Agent 拉起。它与 TUI、`-p` 互斥：stdin/stdout 整条让给 ACP 协议（stdout 只有协议 NDJSON，诊断走 stderr），`-p` / `--output-format` / `--resume` 等会话参数一律不接受 —— 会话由编辑器在 `session/new` 里给出 cwd。MCP 服务沿用 `settings.json` 的 `mcpServers`（编辑器传入的 `mcpServers` 首期不接入）。鉴权沿用 `settings.json`，不需要额外登录。
+
+Zed 的 External Agent（Custom Agent）配置，写进 Zed 的 `settings.json`：
+
+```json
+{
+  "agent_servers": {
+    "neo": { "type": "custom", "command": "neo", "args": ["acp"] }
+  }
+}
+```
+
+`command` 需要是 PATH 上的 `neo`；用源码运行时改成 `bun`，`args` 写成 `["run", "<仓库路径>/src/index.ts", "acp"]`。
+
 ## 本轮实现（已实现，尚未发版）：#52 / #59 / #37
 
 > **状态边界**：当前已发布版本仍为 **v0.4.84**（2026-11-10 / `a2858ae`）。本节描述的是已合入并推送至 `main`、通过定向验证、但**尚未发版**的能力；不改写上文 v0.4.84 的历史描述，也不改 `docs/release-notes/`。没有新 tag、新 release note 或新发布日期。

@@ -18,6 +18,8 @@ ${c.bold("用法")}
   bun run src/index.ts -w <name>       在托管 worktree 里开会话（.neo/worktrees/<name>）
   bun run src/index.ts --resume        恢复上一次会话
   bun run src/index.ts --sessions      列出会话
+  neo acp                              stdio 上的 ACP 服务端，供 Zed/JetBrains 等编辑器拉起
+                                       （与 TUI / -p 互斥；stdin/stdout 整条归协议）
 
 ${c.bold("选项")}
   -p, --print <text>    单次模式
