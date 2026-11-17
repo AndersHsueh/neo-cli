@@ -756,6 +756,41 @@ describe("R4 session cwd 决定配置与权限", () => {
       llm.stop();
     }
   }, 40_000);
+
+  test("R4c 工作区无 settings 时，模型配置与权限模式回退到同一份启动目录 settings", async () => {
+    // 复现 Leo 正控 relative-overwrite-edit：auto-all 写在 spawn 目录，session cwd 无 settings。
+    // 模型配置已回退到 spawn 目录；权限模式必须读同一份文件，不得单独落回 ask。
+    const ws = workspace();
+    const target = join(ws, "target.txt");
+    writeFileSync(target, "old text\n", "utf8");
+    const llm = fakeLlm([
+      sseToolCallFrames("call-r4c-w", "write_file", { path: "target.txt", content: "new text\n" }),
+      sseToolCallFrames("call-r4c-e", "edit_file", { path: "target.txt", old_string: "new", new_string: "edited" }),
+    ]);
+    try {
+      const dir = project(llm.baseUrl);
+      patchSettings(dir, { permission_mode: "auto-all" });
+      const r = await runClient(dir, {
+        cwd: ws,
+        policy: "ignore", // 不应答权限：auto-all 下本就不该问
+        promptBlocks: [{ type: "text", text: "改文件" }],
+      });
+      const resp = await r.waitFor((m) => m.id === 3 && (m.result !== undefined || m.error !== undefined), 6_000);
+      r.kill();
+      expect(r.state.serverRequests.filter((m) => m === "session/request_permission")).toEqual([]);
+      expect(stopReasonOf(resp)).toBe("end_turn");
+      expect(readFileSync(target, "utf8")).toBe("edited text\n");
+      expect(existsSync(join(dir, "target.txt"))).toBe(false);
+      const diffPaths = r.messages
+        .filter((m) => m.method === "session/update")
+        .flatMap((m) => ((m.params as { update?: { content?: unknown[] } }).update?.content ?? []) as { type?: string; path?: string }[])
+        .filter((c) => c.type === "diff")
+        .map((c) => c.path);
+      expect(diffPaths).toEqual([target, target]);
+    } finally {
+      llm.stop();
+    }
+  }, 40_000);
 });
 
 /* ================================================================== *
