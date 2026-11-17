@@ -107,6 +107,81 @@ function childEnv(overrides: Record<string, string | undefined> = {}): Record<st
   return env;
 }
 
+/** pid 是否还活着（进程已退出 / 不存在 → false）。 */
+function isAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** finally 兜底：杀掉测试里记下的残留 pid。 */
+function killPid(pid: number): void {
+  try {
+    process.kill(pid, "SIGKILL");
+  } catch {
+    /* 已退出 */
+  }
+}
+
+/** 从 pid 文件读进程号；文件不存在/内容非法 → null。 */
+function readPid(file: string): number | null {
+  if (!existsSync(file)) return null;
+  const n = Number(readFileSync(file, "utf8").trim());
+  return Number.isFinite(n) && n > 0 ? n : null;
+}
+
+/** 轮询等文件出现（超时返回 false）。 */
+async function waitForFile(file: string, ms: number): Promise<boolean> {
+  const deadline = Date.now() + ms;
+  while (Date.now() < deadline) {
+    if (existsSync(file)) return true;
+    await new Promise((res) => setTimeout(res, 20));
+  }
+  return existsSync(file);
+}
+
+/**
+ * 最小 stdio MCP server 源码（N3/R5 共用）。
+ *
+ * 逐行读 JSON-RPC：initialize / tools/list 正常回，通知不回；
+ * 启动时把 pid 写进 `marker`；`setInterval` 保活并**忽略 stdin 关闭** ——
+ * 否则父进程一死它自己就退，测不出 dispose 有没有真的回收子进程。
+ */
+function minimalMcpSource(marker: string, opts: { answerHandshake: boolean }): string {
+  return (
+    `import { writeFileSync } from "node:fs";\n` +
+    `writeFileSync(${JSON.stringify(marker)}, String(process.pid));\n` +
+    `const answer = ${opts.answerHandshake ? "true" : "false"};\n` +
+    `setInterval(() => {}, 1 << 30);\n` +
+    `process.stdin.on("error", () => {});\n` +
+    `process.stdin.on("end", () => {});\n` +
+    `let buf = "";\n` +
+    `process.stdin.on("data", (chunk) => {\n` +
+    `  buf += String(chunk);\n` +
+    `  for (;;) {\n` +
+    `    const nl = buf.indexOf("\\n");\n` +
+    `    if (nl === -1) break;\n` +
+    `    const line = buf.slice(0, nl).trim();\n` +
+    `    buf = buf.slice(nl + 1);\n` +
+    `    if (line === "") continue;\n` +
+    `    let msg;\n` +
+    `    try { msg = JSON.parse(line); } catch { continue; }\n` +
+    `    if (msg.method === undefined || msg.id === undefined) continue;\n` +
+    `    if (!answer) continue;\n` +
+    `    if (msg.method === "initialize") {\n` +
+    `      process.stdout.write(JSON.stringify({ jsonrpc: "2.0", id: msg.id, result: { protocolVersion: "2024-11-05", capabilities: { tools: {} }, serverInfo: { name: "p", version: "0" } } }) + "\\n");\n` +
+    `    } else if (msg.method === "tools/list") {\n` +
+    `      process.stdout.write(JSON.stringify({ jsonrpc: "2.0", id: msg.id, result: { tools: [] } }) + "\\n");\n` +
+    `    }\n` +
+    `  }\n` +
+    `});\n` +
+    `process.stdin.resume();\n`
+  );
+}
+
 /** Bun.spawn 的 pid 是启动器；超时清理必须连它的直接子进程一起打。 */
 function killSpawnedBun(proc: Bun.Subprocess): void {
   const out = Bun.spawnSync(["ps", "-axo", "pid=,ppid="], { stdout: "pipe", stderr: "pipe" });
@@ -665,24 +740,49 @@ describe("R3 stdin EOF 必须停止在途工作", () => {
     }
   }, 40_000);
 
-  test("R3b 卡在权限请求时 EOF，进程应退出或 prompt 有终态", async () => {
+  test("R3b 卡在权限请求时 EOF：进程退出、不写盘、子进程已回收", async () => {
     const ws = workspace();
-    const llm = fakeLlm([sseToolCallFrames("call-r3b", "write_file", { path: join(ws, "never.txt"), content: "x" })]);
+    const pidFile = join(ws, "r3b.pid");
+    const bgAfterEof = join(ws, "r3b-bg-after-eof");
+    const never = join(ws, "never.txt");
+    // 第 1 轮：后台 shell（auto-edit 下 shell 仍要确认 → 用 ask + 首个权限请求回 allow）。
+    // 第 2 轮：write_file 卡在权限请求不回应，此时 EOF。
+    const llm = fakeLlm([
+      sseToolCallFrames("call-r3b-bg", "shell", {
+        command: `printf $$ > ${JSON.stringify(pidFile)}; sleep 1.5; printf x > ${JSON.stringify(bgAfterEof)}`,
+        background: true,
+      }),
+      sseToolCallFrames("call-r3b-w", "write_file", { path: never, content: "x" }),
+    ]);
+    let bgPid: number | null = null;
     try {
       const dir = project(llm.baseUrl);
       let closed = false;
+      let allowedFirst = false;
       const r = await runClient(dir, {
         cwd: ws,
-        policy: "ignore",
-        promptBlocks: [{ type: "text", text: "写文件" }],
+        policy: "ignore", // 默认不回应；下面只放行第一个（shell）
+        promptBlocks: [{ type: "text", text: "先起后台命令，再写文件" }],
         onMessage: async (msg, _state, api) => {
-          if (closed) return;
           if (msg.method !== "session/request_permission" || msg.id === undefined) return;
+          if (!allowedFirst) {
+            // 第一个权限请求 = shell：批准，让后台命令真的跑起来。
+            allowedFirst = true;
+            api.write(permissionResponse(msg.id, msg.params, "allow_once"));
+            return;
+          }
+          // 第二个 = write_file：不回应，直接 EOF。
+          if (closed) return;
           closed = true;
           await api.closeStdin();
         },
       });
-      const perm = await r.waitFor((m) => m.method === "session/request_permission", 5_000);
+      // 等后台 shell 真的启动（pid 落盘）。
+      for (let i = 0; i < 300 && !existsSync(pidFile); i++) {
+        await new Promise((res) => setTimeout(res, 20));
+      }
+      // 再等第二个权限请求（write_file）到达。
+      const perm = await r.waitFor((m) => m.method === "session/request_permission", 8_000);
       expect(perm).not.toBeNull();
       if (!closed) {
         closed = true;
@@ -694,11 +794,26 @@ describe("R3 stdin EOF 必须停止在途工作", () => {
       );
       await new Promise((res) => setTimeout(res, 200));
       const stillRunning = !r.exited();
-      r.kill();
-      // 约 1s 内应有终态：要么进程退出，要么 prompt 有响应；不能「活着且无响应」。
+      // 保留原有断言：约 1s 内应有终态（退出或 prompt 有响应）。
       expect(settled !== null || !stillRunning).toBe(true);
+      // 加强：进程必须真的退出。
+      expect(stillRunning).toBe(false);
+      // 加强：卡在权限的写盘不得发生。
+      expect(existsSync(never)).toBe(false);
+      // 加强：后台 shell 不得在 EOF 后继续写盘，且进程已被回收。
+      await new Promise((res) => setTimeout(res, 2_500));
+      if (existsSync(pidFile)) {
+        const raw = readFileSync(pidFile, "utf8").trim();
+        const n = Number(raw);
+        if (Number.isFinite(n) && n > 0) bgPid = n;
+      }
+      r.kill();
+      expect(existsSync(bgAfterEof)).toBe(false);
+      expect(bgPid).not.toBeNull();
+      expect(isAlive(bgPid as number)).toBe(false);
     } finally {
       llm.stop();
+      if (bgPid !== null) killPid(bgPid);
     }
   }, 40_000);
 });
@@ -798,18 +913,13 @@ describe("R4 session cwd 决定配置与权限", () => {
  * ================================================================== */
 
 describe("R5 MCP 装配", () => {
-  test("R5a settings.mcpServers 的 stdio server 应在 session/new 后被拉起", async () => {
+  test("R5a settings.mcpServers 的 stdio server 应在 session/new 后被拉起，且 EOF 后回收", async () => {
     const ws = workspace();
     const marker = join(ws, "mcp-started.marker");
     const fakeMcp = join(ws, "fake-mcp.ts");
-    writeFileSync(
-      fakeMcp,
-      `import { writeFileSync } from "node:fs";\n` +
-        `writeFileSync(${JSON.stringify(marker)}, "started");\n` +
-        `process.stdin.resume();\n`,
-      "utf8",
-    );
+    writeFileSync(fakeMcp, minimalMcpSource(marker, { answerHandshake: true }), "utf8");
     const llm = fakeLlm([sseTextFrames("ok")]);
+    let mcpPid: number | null = null;
     try {
       const dir = project(llm.baseUrl);
       patchSettings(dir, {
@@ -818,28 +928,30 @@ describe("R5 MCP 装配", () => {
       const r = await runClient(dir, { cwd: ws });
       const newResp = await r.waitFor((m) => m.id === 2 && (m.result !== undefined || m.error !== undefined), 8_000);
       expect(sessionIdOf(newResp)).not.toBeNull();
-      // 给连接一点时间（握手 + 拉起子进程）。
-      await new Promise((res) => setTimeout(res, 1_200));
-      const started = existsSync(marker);
-      r.kill();
+      // 等 MCP 子进程真的起来（握手 + 拉起）。
+      const started = await waitForFile(marker, 8_000);
+      mcpPid = readPid(marker);
       expect(started).toBe(true);
+      expect(mcpPid).not.toBeNull();
+      // EOF：dispose 必须回收 MCP 子进程（它忽略 stdin 关闭，只能靠 kill）。
+      await r.closeStdin();
+      for (let i = 0; i < 250 && !r.exited(); i++) await new Promise((res) => setTimeout(res, 20));
+      await new Promise((res) => setTimeout(res, 500));
+      r.kill();
+      expect(isAlive(mcpPid as number)).toBe(false);
     } finally {
       llm.stop();
+      if (mcpPid !== null) killPid(mcpPid);
     }
   }, 40_000);
 
-  test("R5b 客户端 session/new 传入的 stdio mcpServers 应被接入", async () => {
+  test("R5b 客户端 session/new 传入的 stdio mcpServers 应被接入，且 EOF 后回收", async () => {
     const ws = workspace();
     const marker = join(ws, "client-mcp.marker");
     const fakeMcp = join(ws, "fake-client-mcp.ts");
-    writeFileSync(
-      fakeMcp,
-      `import { writeFileSync } from "node:fs";\n` +
-        `writeFileSync(${JSON.stringify(marker)}, "started");\n` +
-        `process.stdin.resume();\n`,
-      "utf8",
-    );
+    writeFileSync(fakeMcp, minimalMcpSource(marker, { answerHandshake: true }), "utf8");
     const llm = fakeLlm([sseTextFrames("ok")]);
+    let mcpPid: number | null = null;
     try {
       const dir = project(llm.baseUrl);
       const r = await runClient(dir, {
@@ -853,15 +965,21 @@ describe("R5 MCP 装配", () => {
       });
       const newResp = await r.waitFor((m) => m.id === 2 && (m.result !== undefined || m.error !== undefined), 8_000);
       expect(sessionIdOf(newResp)).not.toBeNull();
-      await new Promise((res) => setTimeout(res, 1_200));
-      const started = existsSync(marker);
+      const started = await waitForFile(marker, 8_000);
+      mcpPid = readPid(marker);
+      expect(started).toBe(true);
+      expect(mcpPid).not.toBeNull();
+      await r.closeStdin();
+      for (let i = 0; i < 250 && !r.exited(); i++) await new Promise((res) => setTimeout(res, 20));
+      await new Promise((res) => setTimeout(res, 500));
       const err = r.err;
       r.kill();
-      expect(started).toBe(true);
       // 不得把 MCP env/header 值写进诊断。
       expect(err.includes("s3cr3t-acp-mcp-token")).toBe(false);
+      expect(isAlive(mcpPid as number)).toBe(false);
     } finally {
       llm.stop();
+      if (mcpPid !== null) killPid(mcpPid);
     }
   }, 40_000);
 });
@@ -975,6 +1093,119 @@ describe("R8 stopReason 映射", () => {
       expect(stopReasonOf(resp)).toBe("refusal");
     } finally {
       llm.stop();
+    }
+  }, 40_000);
+});
+
+/* ================================================================== *
+ * N1 EOF 回收后台 shell
+ * ================================================================== */
+
+describe("N1 EOF 回收后台 shell", () => {
+  test("N1 后台 shell 在 stdin EOF 后不得继续写盘", async () => {
+    const ws = workspace();
+    const pidFile = join(ws, "bg.pid");
+    const afterEof = join(ws, "bg-after-eof");
+    const llm = fakeLlm([
+      sseToolCallFrames("call-n1", "shell", {
+        command: `printf $$ > ${JSON.stringify(pidFile)}; sleep 1.5; printf x > ${JSON.stringify(afterEof)}`,
+        background: true,
+      }),
+      sseTextFrames("已启动后台命令"),
+    ]);
+    let bgPid: number | null = null;
+    try {
+      const dir = project(llm.baseUrl);
+      patchSettings(dir, { permission_mode: "auto-all" });
+      const r = await runClient(dir, { cwd: ws, promptBlocks: [{ type: "text", text: "起个后台命令" }] });
+      // 等本轮真的结束（end_turn），此时后台 shell 还在 sleep。
+      const resp = await r.waitFor((m) => m.id === 3 && (m.result !== undefined || m.error !== undefined), 15_000);
+      expect(resp).not.toBeNull();
+      expect(stopReasonOf(resp)).toBe("end_turn");
+      bgPid = readPid(pidFile);
+      expect(bgPid).not.toBeNull();
+      // EOF：后台 shell 必须被回收，不得继续写盘。
+      await r.closeStdin();
+      await new Promise((res) => setTimeout(res, 2_500));
+      r.kill();
+      expect(existsSync(afterEof)).toBe(false);
+      expect(isAlive(bgPid as number)).toBe(false);
+    } finally {
+      llm.stop();
+      if (bgPid !== null) killPid(bgPid);
+    }
+  }, 40_000);
+});
+
+/* ================================================================== *
+ * N2 迭代上限判定
+ * ================================================================== */
+
+describe("N2 迭代上限判定", () => {
+  test("N2 最后一轮已正常作答时不得报 max_turn_requests", async () => {
+    const ws = workspace();
+    // 第 1 轮工具调用，第 2 轮正常收口作答 —— 迭代次数用满但已作答，不该报上限。
+    const llm = fakeLlm([
+      sseToolCallFrames("call-n2", "list_dir", { path: "." }),
+      sseTextFrames("final answer"),
+    ]);
+    try {
+      const dir = project(llm.baseUrl);
+      patchSettings(dir, { max_tool_iterations: 2 });
+      const r = await runClient(dir, { cwd: ws, promptBlocks: [{ type: "text", text: "列目录再回答" }] });
+      const resp = await r.waitFor((m) => m.id === 3 && (m.result !== undefined || m.error !== undefined), 15_000);
+      r.kill();
+      expect(resp).not.toBeNull();
+      expect(stopReasonOf(resp)).toBe("end_turn");
+    } finally {
+      llm.stop();
+    }
+  }, 40_000);
+});
+
+/* ================================================================== *
+ * N3 session/new 握手中 EOF
+ * ================================================================== */
+
+describe("N3 session/new 握手中 EOF", () => {
+  test("N3 session/new 仍在等 MCP 握手时 EOF，已启动的 MCP 子进程须回收", async () => {
+    const ws = workspace();
+    const marker = join(ws, "n3-mcp.pid");
+    const fakeMcp = join(ws, "n3-mcp.ts");
+    // 写 pid 后永不回应 initialize，且忽略 stdin 关闭：只能靠 dispose 的 kill 回收。
+    writeFileSync(fakeMcp, minimalMcpSource(marker, { answerHandshake: false }), "utf8");
+    const llm = fakeLlm([sseTextFrames("ok")]);
+    let mcpPid: number | null = null;
+    let started = false;
+    let eofSent = false;
+    let sessionNewBeforeEof = false;
+    try {
+      const dir = project(llm.baseUrl);
+      const r = await runClient(dir, {
+        cwd: ws,
+        mcpServers: [{ name: "n3probe", command: process.execPath, args: [fakeMcp], env: [] }],
+        // id=1 回来后 session/new 已发出：等 MCP 子进程 pid 落盘（它不回 initialize，
+        // session/new 仍卡在握手、4s 超时前），然后 EOF。
+        onMessage: async (msg, _state, api) => {
+          if (msg.id === 2 && !eofSent) sessionNewBeforeEof = true;
+          if (msg.id !== 1) return;
+          started = await waitForFile(marker, 3_000);
+          eofSent = true;
+          await api.closeStdin();
+        },
+      });
+      mcpPid = readPid(marker);
+      expect(started).toBe(true);
+      expect(sessionNewBeforeEof).toBe(false);
+      expect(mcpPid).not.toBeNull();
+      // 等 neo 退出（握手超时 4s 内应被 EOF 打断），再给 500ms 观察子进程。
+      for (let i = 0; i < 400 && !r.exited(); i++) await new Promise((res) => setTimeout(res, 20));
+      await new Promise((res) => setTimeout(res, 500));
+      r.kill();
+      expect(isAlive(mcpPid as number)).toBe(false);
+    } finally {
+      llm.stop();
+      if (mcpPid !== null) killPid(mcpPid);
     }
   }, 40_000);
 });
