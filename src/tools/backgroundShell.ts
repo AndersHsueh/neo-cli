@@ -9,6 +9,9 @@
  *  - `shell_output` 工具按 id 读后续输出与退出码；用户用 `/ps` 列出/停止；
  *  - 会话退出 `killAll()`，不留孤儿。
  *
+ * 终止按**进程组**（issue #75）：`start()` 用 `detached: true` 让 shell 自成一组
+ * （pgid = pid），kill 时打 `-pid`，`sh -c` 派生的孙进程一并收掉，不再残留写盘。
+ *
  * 会话内唯一实例：模块级单例（与 TOOLS 注册表同口径），测试用 `resetBackgroundShells()` 隔离。
  */
 
@@ -62,6 +65,88 @@ export interface BackgroundShellOptions {
 
 export const DEFAULT_SHELL_MAX = 5;
 const DEFAULT_KEEP_CHARS = 64 * 1024;
+
+/** 进程组是否还有成员（ESRCH = 组已不存在）。 */
+function groupAlive(pid: number): boolean {
+  try {
+    process.kill(-pid, 0);
+    return true;
+  } catch (e) {
+    return (e as NodeJS.ErrnoException)?.code !== "ESRCH";
+  }
+}
+
+/**
+ * 按进程组终止（issue #75）：先 SIGTERM 整组，再升级 SIGKILL。
+ *
+ * 只杀 shell 本身不够 —— `sh -c '… & wait'` 派生的孙进程不在 shell 的 pid 上，
+ * 会继续跑、继续写盘。`start()` 用 `detached: true` 让 shell 自成一组（pgid = pid），
+ * 这里打 `-pid` 才能连孙进程一起收掉。
+ *
+ * `sync: true` 用于「之后进程就退出了」的路径（会话退出 / cleanupEphemeral）：
+ * 异步的 setTimeout 升级根本来不及跑，必须同步轮询等组消失再 SIGKILL。
+ */
+export function terminateGroup(proc: ShellProc, opts: { sync: boolean }): void {
+  const pid = typeof proc.pid === "number" && proc.pid > 0 ? proc.pid : null;
+  if (pid === null) {
+    // 测试里的假 proc 没有 pid：保持原行为，只杀它自己。
+    try {
+      proc.kill(9);
+    } catch {
+      /* 已退出 */
+    }
+    return;
+  }
+  let groupGone = false;
+  try {
+    process.kill(-pid, "SIGTERM");
+  } catch (e) {
+    const code = (e as NodeJS.ErrnoException)?.code;
+    if (code === "ESRCH") {
+      groupGone = true; // 组已不存在（进程早退出了）
+    } else {
+      // EPERM 等：组还在但我们发不了信号，退回到只杀 shell 本身。
+      try {
+        proc.kill(9);
+      } catch {
+        /* 已退出 */
+      }
+    }
+  }
+
+  if (!groupGone) {
+    if (opts.sync) {
+      // 同步轮询最多约 200ms，仍在就 SIGKILL 整组。
+      for (let waited = 0; waited < 200; waited += 20) {
+        if (!groupAlive(pid)) break;
+        Bun.sleepSync(20);
+      }
+      if (groupAlive(pid)) {
+        try {
+          process.kill(-pid, "SIGKILL");
+        } catch {
+          /* ESRCH：组已消失 */
+        }
+      }
+    } else {
+      const timer = setTimeout(() => {
+        try {
+          process.kill(-pid, "SIGKILL");
+        } catch {
+          /* ESRCH：组已消失 */
+        }
+      }, 500);
+      (timer as unknown as { unref?: () => void }).unref?.();
+    }
+  }
+
+  // 兜底：shell 本身（例如它已脱离原进程组）。
+  try {
+    proc.kill(9);
+  } catch {
+    /* 已退出 */
+  }
+}
 
 export class BackgroundShells {
   private jobs: Job[] = [];
@@ -130,7 +215,14 @@ export class BackgroundShells {
     }
     let proc: ShellProc;
     try {
-      proc = Bun.spawn(argv, { cwd, stdout: "pipe", stderr: "pipe", env }) as unknown as ShellProc;
+      proc = Bun.spawn(argv, {
+        cwd,
+        stdout: "pipe",
+        stderr: "pipe",
+        env,
+        // issue #75：自成进程组（pgid = pid），终止时才能连孙进程一起收掉。
+        detached: true,
+      }) as unknown as ShellProc;
     } catch (e) {
       return { ok: false, error: `无法启动 shell：${(e as Error).message}` };
     }
@@ -192,11 +284,7 @@ export class BackgroundShells {
     for (const job of [...this.jobs]) {
       if (target !== "all" && job.id !== target) continue;
       if (job.status === "running" || job.status === "timeout") {
-        try {
-          job.proc.kill(9);
-        } catch {
-          /* 已退出 */
-        }
+        terminateGroup(job.proc, { sync: false });
         job.status = "killed";
         n += 1;
       }
@@ -210,17 +298,17 @@ export class BackgroundShells {
     return n;
   }
 
-  /** 会话退出时调用。 */
+  /**
+   * 会话退出时调用（TUI cleanup / ACP dispose 都会走它，之后进程就退出）。
+   *
+   * issue #75：**同步**按进程组终止，且对**所有** job 都做 —— 状态已 exited 的
+   * 外层 shell 早退了，但它的孙进程可能还在同一进程组里活着（`sh -c '… &'`）。
+   * 组不存在时 ESRCH 安静吞掉。
+   */
   killAll(): void {
     for (const job of this.jobs) {
-      if (job.status === "running" || job.status === "timeout") {
-        try {
-          job.proc.kill(9);
-        } catch {
-          /* 已退出 */
-        }
-        job.status = "killed";
-      }
+      terminateGroup(job.proc, { sync: true });
+      if (job.status === "running" || job.status === "timeout") job.status = "killed";
     }
     this.jobs = [];
   }

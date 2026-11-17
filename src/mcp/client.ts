@@ -179,6 +179,7 @@ export class McpManager {
             });
 
     this.connecting.add(rpc);
+    let failed = false;
     try {
       if (rpc instanceof StdioRpc) rpc.start();
       // issue #44：SSE 必须先建长连接拿到 endpoint，否则第一个 request 无处可 POST。
@@ -214,10 +215,15 @@ export class McpManager {
     } catch (e) {
       // 握手失败：进程收掉，状态记 error。此时一个工具都还没注册，
       // 不存在「状态 error 但工具还在注册表里可调」的矛盾状态。
+      failed = true;
       rpc.close();
       return { ok: false, cfg, error: describeError(cfg, e, rpc), connectMs: Date.now() - started };
     } finally {
-      this.connecting.delete(rpc);
+      // issue #75：**成功**的握手不从 connecting 删 —— 它此刻既不在 live 里、
+      // 也不在 connecting 里，closeAll 就会漏掉这个子进程（并行握手时快的那条）。
+      // 成功路径的 rpc 在 registerAll 移入 live 时才从 connecting 移除；
+      // 失败路径上面已经 close 过，这里照旧删掉。
+      if (failed) this.connecting.delete(rpc);
     }
   }
 
@@ -230,6 +236,20 @@ export class McpManager {
    * 其它工具的命名。
    */
   private registerAll(handshakes: Handshake[]): void {
+    // issue #75：closeAll 之后才结算的握手结果一律关连接、不注册 ——
+    // 否则「已关闭」的 manager 会把子进程重新挂进 live，退出后留孤儿。
+    if (this.closed) {
+      for (const h of handshakes) {
+        if (!h.ok) continue;
+        try {
+          h.rpc.close();
+        } catch {
+          /* 已关闭 */
+        }
+        this.connecting.delete(h.rpc);
+      }
+      return;
+    }
     const live = handshakes.filter((h): h is Extract<Handshake, { ok: true }> => h.ok);
     const names = computeMcpNames(
       live.flatMap((h) => h.tools.map((t) => ({ server: h.cfg.name, tool: t.name }))),
@@ -272,6 +292,9 @@ export class McpManager {
         }
       }
       this.live.set(h.cfg.name, { cfg: h.cfg, rpc: h.rpc, tools: h.tools, entries });
+      // issue #75：移入 live 之后才从 connecting 摘掉（握手成功时留在里面，
+      // 保证「已握手、未注册」的空档期 closeAll 也能收掉它）。
+      this.connecting.delete(h.rpc);
       this.states.set(h.cfg.name, {
         name: h.cfg.name,
         transport: h.cfg.transport,
