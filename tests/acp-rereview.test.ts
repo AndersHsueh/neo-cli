@@ -771,9 +771,11 @@ describe("R3 stdin EOF 必须停止在途工作", () => {
             api.write(permissionResponse(msg.id, msg.params, "allow_once"));
             return;
           }
-          // 第二个 = write_file：不回应，直接 EOF。
+          // 第二个 = write_file：不回应；等后台 shell 真的跑起来（pid 落盘）再 EOF，
+          // 否则 EOF 可能抢在 bash 写 pid 之前，「子进程已回收」就无从断言。
           if (closed) return;
           closed = true;
+          await waitForFile(pidFile, 3_000);
           await api.closeStdin();
         },
       });
@@ -1116,6 +1118,8 @@ describe("N1 EOF 回收后台 shell", () => {
       const resp = await r.waitFor((m) => m.id === 3 && (m.result !== undefined || m.error !== undefined), 15_000);
       expect(resp).not.toBeNull();
       expect(stopReasonOf(resp)).toBe("end_turn");
+      // background:true 立刻返回，pid 可能晚于 end_turn 落盘。
+      await waitForFile(pidFile, 1_000);
       bgPid = readPid(pidFile);
       expect(bgPid).not.toBeNull();
       // EOF：后台 shell 必须被回收，不得继续写盘。
