@@ -66,13 +66,26 @@ export interface BackgroundShellOptions {
 export const DEFAULT_SHELL_MAX = 5;
 const DEFAULT_KEEP_CHARS = 64 * 1024;
 
+/**
+ * 向进程组发信号。返回 false 表示组已不存在（ESRCH）；其它错误（EPERM 等）照常抛出。
+ */
+function signalGroup(pid: number, sig: NodeJS.Signals | 0): boolean {
+  try {
+    process.kill(-pid, sig);
+    return true;
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException)?.code === "ESRCH") return false;
+    throw e;
+  }
+}
+
 /** 进程组是否还有成员（ESRCH = 组已不存在）。 */
 function groupAlive(pid: number): boolean {
   try {
-    process.kill(-pid, 0);
+    return signalGroup(pid, 0);
+  } catch {
+    // EPERM 等：组还在，只是我们发不了信号。
     return true;
-  } catch (e) {
-    return (e as NodeJS.ErrnoException)?.code !== "ESRCH";
   }
 }
 
@@ -86,7 +99,7 @@ function groupAlive(pid: number): boolean {
  * `sync: true` 用于「之后进程就退出了」的路径（会话退出 / cleanupEphemeral）：
  * 异步的 setTimeout 升级根本来不及跑，必须同步轮询等组消失再 SIGKILL。
  */
-export function terminateGroup(proc: ShellProc, opts: { sync: boolean }): void {
+function terminateGroup(proc: ShellProc, opts: { sync: boolean }): void {
   const pid = typeof proc.pid === "number" && proc.pid > 0 ? proc.pid : null;
   if (pid === null) {
     // 测试里的假 proc 没有 pid：保持原行为，只杀它自己。
@@ -99,18 +112,13 @@ export function terminateGroup(proc: ShellProc, opts: { sync: boolean }): void {
   }
   let groupGone = false;
   try {
-    process.kill(-pid, "SIGTERM");
-  } catch (e) {
-    const code = (e as NodeJS.ErrnoException)?.code;
-    if (code === "ESRCH") {
-      groupGone = true; // 组已不存在（进程早退出了）
-    } else {
-      // EPERM 等：组还在但我们发不了信号，退回到只杀 shell 本身。
-      try {
-        proc.kill(9);
-      } catch {
-        /* 已退出 */
-      }
+    groupGone = !signalGroup(pid, "SIGTERM");
+  } catch {
+    // EPERM 等：组还在但我们发不了信号，退回到只杀 shell 本身。
+    try {
+      proc.kill(9);
+    } catch {
+      /* 已退出 */
     }
   }
 
@@ -123,17 +131,17 @@ export function terminateGroup(proc: ShellProc, opts: { sync: boolean }): void {
       }
       if (groupAlive(pid)) {
         try {
-          process.kill(-pid, "SIGKILL");
+          signalGroup(pid, "SIGKILL");
         } catch {
-          /* ESRCH：组已消失 */
+          /* 发不了信号：交给下面的兜底 */
         }
       }
     } else {
       const timer = setTimeout(() => {
         try {
-          process.kill(-pid, "SIGKILL");
+          signalGroup(pid, "SIGKILL");
         } catch {
-          /* ESRCH：组已消失 */
+          /* 发不了信号：交给下面的兜底 */
         }
       }, 500);
       (timer as unknown as { unref?: () => void }).unref?.();

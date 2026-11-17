@@ -179,7 +179,6 @@ export class McpManager {
             });
 
     this.connecting.add(rpc);
-    let failed = false;
     try {
       if (rpc instanceof StdioRpc) rpc.start();
       // issue #44：SSE 必须先建长连接拿到 endpoint，否则第一个 request 无处可 POST。
@@ -213,17 +212,14 @@ export class McpManager {
         connectMs: Date.now() - started,
       };
     } catch (e) {
-      // 握手失败：进程收掉，状态记 error。此时一个工具都还没注册，
+      // 握手失败：进程收掉、从 connecting 摘掉，状态记 error。此时一个工具都还没注册，
       // 不存在「状态 error 但工具还在注册表里可调」的矛盾状态。
-      failed = true;
+      // issue #75：**成功**路径不在这里删 connecting —— 它此刻既不在 live 里、
+      // 也不在 connecting 里，closeAll 就会漏掉这个子进程（并行握手时快的那条）；
+      // 成功的 rpc 由 registerAll 移入 live 时才摘掉。
       rpc.close();
+      this.connecting.delete(rpc);
       return { ok: false, cfg, error: describeError(cfg, e, rpc), connectMs: Date.now() - started };
-    } finally {
-      // issue #75：**成功**的握手不从 connecting 删 —— 它此刻既不在 live 里、
-      // 也不在 connecting 里，closeAll 就会漏掉这个子进程（并行握手时快的那条）。
-      // 成功路径的 rpc 在 registerAll 移入 live 时才从 connecting 移除；
-      // 失败路径上面已经 close 过，这里照旧删掉。
-      if (failed) this.connecting.delete(rpc);
     }
   }
 
