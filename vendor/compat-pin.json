@@ -1,0 +1,14 @@
+{
+  "schema": "neo-core-compat-pin@1",
+  "archive": "vendor/neo-core-compat-v1.tgz",
+  "sha256": "d1cd54b14e42263a9aa1dbe511f94142c3efc989e5d03d2abea3518f8dfcb83a",
+  "coreCandidate": "f90a50ee3b708410658ff68143c1808d7fc4a49f",
+  "coreLockSha256": "5dce79b4509e79e3e0f17a20912f162b17a05be4337ed2915b9396fd2cfd225a",
+  "entrySha256": "a0995cb125b2ac56c1d0de732350f43e0ba9747447ea068d2fd5abff743e3bdc",
+  "dtsSha256": "814e6f44db7107728ba1b2e1621970857ffda29b6aa16dc6c572bee8837708b3",
+  "indexSha256": "a9c9dbed0ce5a3c0f8262472169e3dcb9d9b229826a31efd1c8977760ed0ad7e",
+  "toolchain": {
+    "bun": "1.3.0",
+    "sha256": "70ce58104a5d2a81b254f5b5c77bbd890dcdb1ef3499c554472f6625199e1df9"
+  }
+}
