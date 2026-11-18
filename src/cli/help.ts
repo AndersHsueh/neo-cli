@@ -26,6 +26,16 @@ ${c.bold("选项")}
       --output-format <fmt>  -p 输出格式：text（默认）| json（stdout 单行）| stream-json（stdout JSONL，仅 -p）
                         stream-json 只能与 -p 同用：stdout 纯 JSONL（每行一个事件信封），
                         Console/诊断/提示一律走 stderr；缺 -p 为用法错误 2
+      --json-schema <schema>  仅 -p：把最终答案约束成符合该 JSON Schema 的 JSON 值
+                        <schema> 可以是 inline JSON（以 { 或 [ 开头）或文件路径（@path 亦可，
+                        相对 -C 指定的目录）；非法 / 读不到 / 不可编译 → 用法错误 2，不发请求
+                        json：校验通过时多一个 structured_output（answer 仍是原文）；
+                        text：stdout 只打那份紧凑单行 JSON，进度改走 stderr；
+                        stream-json：只有最终 result 带该字段
+                        只校验进程级最终答案；不合规把诊断回喂再跑，最多 2 次（共 3 次尝试）。
+                        回喂在 drive 循环之外：不计入 --max、不重跑检查命令，但可能再调工具、
+                        改变工作区（仍受既有权限 / -y 约束）；drive 退出来源仍按循环结束时计算。
+                        回喂耗尽仍不合规时省略该字段，原本会是 0 的退出码改为 1
       --fallback <provider>:<model>  主模型故障时的有序备用链（可重复，出现顺序即优先级）
                         任一项出现即完整替换 settings.model_fallback；最多 8 项
       --no-fallback     本次禁用备用链（与 --fallback 互斥）

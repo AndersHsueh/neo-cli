@@ -30,6 +30,12 @@ export interface Args {
   noFallback: boolean;
   /** --worktree <name>：在托管 worktree 里开会话（issue #9）。 */
   worktree: string | null;
+  /**
+   * #77：`--json-schema` 的原始取值（inline JSON 或 `@path` / 路径），未 trim。
+   * null = 没给这个旗标；空串 = 给了旗标但缺值（用法错误 2）。
+   * 读取与编译在 bootstrap 里做，因为路径要相对 `args.cwd` 解析。
+   */
+  jsonSchema: string | null;
   /** 参数值非法（如 --output-format bogus）：main 直接返回 2。 */
   badArgs: boolean;
   rest: string[];
@@ -55,6 +61,7 @@ export function parseArgs(argv: string[]): Args {
     fallbackArgs: [],
     noFallback: false,
     worktree: null,
+    jsonSchema: null,
     badArgs: false,
     rest: [],
   };
@@ -74,6 +81,10 @@ export function parseArgs(argv: string[]): Args {
       } else {
         a.outputFormat = val;
       }
+      continue;
+    }
+    if (v.startsWith("--json-schema=")) {
+      a.jsonSchema = v.slice("--json-schema=".length);
       continue;
     }
     switch (v) {
@@ -162,6 +173,11 @@ export function parseArgs(argv: string[]): Args {
       }
       case "--no-fallback":
         a.noFallback = true;
+        break;
+      // #77：结构化输出。等号形式（--json-schema=<inline|path>）与空格形式等价；
+      // 取值是否合法（缺值 / 读不到 / 不是可编译的 schema）由 bootstrap 判定。
+      case "--json-schema":
+        a.jsonSchema = argv[++i] ?? "";
         break;
       default:
         a.rest.push(v);

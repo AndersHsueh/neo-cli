@@ -30,6 +30,7 @@ import { CheckpointStore } from "../checkpoint.ts";
 import { formatGapLogLine, formatProbeIntent, makeOverBudgetReporter, formatWindowNotice, formatWritebackNotice, logBootDiagnostic } from "../bootDiagnostics.ts";
 import type { PromptSelection } from "../prompt/select.ts";
 import { parseArgs, HELP, streamJsonUsageError } from "./args.ts";
+import { loadJsonSchema, type CompiledSchema } from "../structuredOutput.ts";
 import { acpUsageError, reportAcpUsageError } from "../acp/entry.ts";
 import type { SharedMut } from "./session.ts";
 
@@ -61,6 +62,12 @@ export async function bootstrap() {
   // 会先撞上「stream-json 需要 -p」，报出与 ACP 无关的错误。
   const acpError = acpUsageError(args);
   if (acpError !== null) return reportAcpUsageError(acpError);
+  // #77：`--json-schema` 与 `acp` 互斥。不能改 src/acp/*，必须在启动服务端之前拦下。
+  // 与 `acp -p` 同口径：互斥判定优先于 `acp --help` / `-v`。
+  if (args.rest[0] === "acp" && args.jsonSchema !== null) {
+    console.error(c.err("✖ --json-schema 只能与 -p/--print 同用，不能与 acp 同时使用"));
+    return 2;
+  }
   // `neo acp --help` / `-v` 是元请求：打印既有文本后退出 0，绝不启动服务端。
   // 位置必须在互斥判定之后（`acp -p x --help` 仍是用法错误 2），
   // 又必须早于 stream-json 校验（否则 `acp --output-format stream-json --help` 会先撞 -p 规则）。
@@ -87,6 +94,14 @@ export async function bootstrap() {
     return await streamJsonUsageError(
       "--output-format stream-json 只能与 -p/--print 同用（交互模式与 neo <prompt> 非 -p 形式均不支持）",
     );
+  }
+  // #77：`--json-schema` 只服务 `-p` 的最终答案。无 -p（含 `neo acp …`，ACP 走上面
+  // 更早的互斥判定）一律用法错误 2，且一次模型请求都不发。
+  if (args.jsonSchema !== null && args.print === null && !args.help && !args.version) {
+    const message = "--json-schema 只能与 -p/--print 同用（交互模式与 neo <prompt> 非 -p 形式均不支持）";
+    if (args.outputFormat === "stream-json") return await streamJsonUsageError(message);
+    console.error(c.err(`✖ ${message}`));
+    return 2;
   }
   if (args.name !== null && (args.name.trim() === "" || args.name.startsWith("-"))) {
     console.error(c.err("✖ --name 需要一个名字（不能为空或以 - 开头）"));
@@ -124,6 +139,19 @@ export async function bootstrap() {
   if (args.version) {
     console.log(c.accent(`neo v${VERSION}`));
     return 0;
+  }
+
+  // #77：schema 在发任何模型请求之前读入并编译。缺值 / 读不到 / 不是合法 JSON /
+  // 不是可编译的 schema 都是用法错误 2；stream-json 走既有 error+result 收口。
+  let jsonSchema: CompiledSchema | null = null;
+  if (args.jsonSchema !== null) {
+    const loaded = loadJsonSchema(args.jsonSchema, args.cwd);
+    if (!loaded.ok) {
+      if (args.outputFormat === "stream-json") return await streamJsonUsageError(loaded.error);
+      console.error(c.err(`✖ ${loaded.error}`));
+      return 2;
+    }
+    jsonSchema = loaded.schema;
   }
 
   const overrides: Partial<Config> = {};
@@ -269,7 +297,9 @@ export async function bootstrap() {
    */
   const jsonMode = args.print !== null && args.outputFormat === "json";
   const streamJsonMode = args.print !== null && args.outputFormat === "stream-json";
-  const structuredMode = jsonMode || streamJsonMode;
+  // #77：带 --json-schema 的 text 模式同样要把进度/工具挤到 stderr ——
+  // stdout 只留那份校验通过的紧凑 JSON，否则 jq 消费不了。
+  const structuredMode = jsonMode || streamJsonMode || jsonSchema !== null;
   const ui = new Console(
     cfg.theme === "matrix",
     cfg.toolcallInfoDetails,
@@ -735,6 +765,7 @@ export async function bootstrap() {
     jsonMode,
     streamJsonMode,
     structuredMode,
+    jsonSchema,
     ui,
     maybeProbeOutputLimit,
     announcedCapabilityGap,

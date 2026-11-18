@@ -27,6 +27,7 @@
   },
   "dependencies": {
     "@agentclientprotocol/sdk": "^2.7.0",
-    "@neo/core-compat": "file:vendor/neo-core-compat-v1.tgz"
+    "@neo/core-compat": "file:vendor/neo-core-compat-v1.tgz",
+    "ajv": "8.17.1"
   }
 }

@@ -9,6 +9,12 @@ import { makeDriveJudge } from "../driveJudge.ts";
 import { parseDriveArgs, driveExitCode, formatDriveSummary, type DriveRunResult } from "../oneshotDrive.ts";
 import type { AppSession } from "./sessionStart.ts";
 import { installFatalSignalHandlers } from "../signals.ts";
+import {
+  MAX_SCHEMA_FEEDBACK,
+  checkAgainstSchema,
+  feedbackMessage,
+  type CompiledSchema,
+} from "../structuredOutput.ts";
 
 /**
  * -p / 非交互 `neo <prompt>` 路径。若不是这些模式，返回 null，交给交互 REPL。
@@ -20,6 +26,7 @@ export async function runOneshotOrPiped(s: AppSession): Promise<number | null> {
     jsonMode,
     streamJsonMode,
     structuredMode,
+    jsonSchema,
     sess,
     streamWriter,
     memory,
@@ -109,6 +116,9 @@ export async function runOneshotOrPiped(s: AppSession): Promise<number | null> {
     let stats: Awaited<ReturnType<typeof agent.send>>;
     // issue #51：驱动终态（普通 -p 为 null）。
     let driveResult: DriveRunResult | null = null;
+    // #77：进程级最终答案的校验结果。回喂必须在卸载信号、清理子进程之前做完。
+    let structuredOutput: unknown;
+    let structuredDiagnostic: string | null = null;
     // #64：--drive 的一次输入跨多轮内部 send —— 宿主持有同一条用户输入的 boundary，
     // 最终 endUserTurn() 收口（含 UPS 临时上下文）。默认 agent.send 会为每条真实输入
     // 自动建/结束 boundary；这里显式持有，内部轮沿用同一份额度（UPS 一次、Stop 一次）。
@@ -241,6 +251,19 @@ export async function runOneshotOrPiped(s: AppSession): Promise<number | null> {
         }
         driveResult = final;
       }
+
+      // #77：只校验进程级最终答案。失败把诊断回喂再跑，最多 MAX_SCHEMA_FEEDBACK 次。
+      // 回喂在 DriveManager 之外：不计入 --max、不重跑检查命令；可能再调工具，
+      // 因此必须在 cleanup / uninstallSignals 之前完成。SIGINT 中止回喂按 130 收口。
+      if (jsonSchema) {
+        const outcome = await validateFinalAnswer(agent, stats, jsonSchema, streamBeginTurn);
+        if (outcome.aborted) {
+          stats = { ...stats, aborted: true };
+        } else {
+          structuredOutput = outcome.value;
+          structuredDiagnostic = outcome.diagnostic;
+        }
+      }
     } catch (e) {
       // 异常退出路径：agent.send 抛错时不能把 MCP 子进程留在后面当孤儿。
       // 收完再原样抛出，让外层（main 的 catch / 进程退出）按原语义处理。
@@ -287,6 +310,9 @@ export async function runOneshotOrPiped(s: AppSession): Promise<number | null> {
       streamWriter?.dispose();
     }
 
+    // #77：字段仍缺失且原本会是 0 → 改 1（不借用 2 与 3）。回喂已在 cleanup 前完成。
+    if (jsonSchema && structuredOutput === undefined && exitCode === 0) exitCode = 1;
+
     if (jsonMode) {
       // 失败/中断/阻断时不要回填历史里的旧 assistant（--resume 场景会误导编排器）。
       const answer =
@@ -320,6 +346,8 @@ export async function runOneshotOrPiped(s: AppSession): Promise<number | null> {
         provider: cfg.providerName,
         session_id: sess.meta.id,
         tier_switch: stats.tierSwitch,
+        // #77：只有校验通过才出现该键；answer 保留原文（不套 hadError 置 null 的规则）。
+        ...(structuredOutput === undefined ? {} : { structured_output: structuredOutput }),
       };
       process.stdout.write(`${JSON.stringify(payload)}\n`);
       return exitCode;
@@ -349,7 +377,10 @@ export async function runOneshotOrPiped(s: AppSession): Promise<number | null> {
             ? "model_done"
             : driveResult && driveExitCode(driveResult) !== 0
               ? "failed"
-              : "completed";
+              : // #77：因 schema 把 0 改成 1 时不能报 completed（避免 completed 配 exit_code=1）。
+                exitCode !== 0
+                ? "failed"
+                : "completed";
       streamWriter.emitResult({
         status: resultStatus,
         exit_code: exitCode as StreamResultExitCode,
@@ -371,6 +402,8 @@ export async function runOneshotOrPiped(s: AppSession): Promise<number | null> {
             }
           : null,
         error: stats.errorMessage,
+        // #77：只在校验通过时出现该键；无旗标时保持既有 7 键形状。
+        ...(structuredOutput === undefined ? {} : { structured_output: structuredOutput }),
       });
       // 等有界 flush 再从 main() 返回，不用 process.exit() 截断缓冲。
       await streamWriter.flush();
@@ -382,6 +415,17 @@ export async function runOneshotOrPiped(s: AppSession): Promise<number | null> {
     // 此处再校正一次，保证「stdout 写失败 → 强制 exit 1」对所有写入时点成立。
     // writer 已 closed，不再写 stdout，也不会产生第二个 result。
     if (s.stdoutClosed) exitCode = 1;
+
+    // #77 text（默认格式）+ --json-schema：stdout 只打校验通过的紧凑单行 JSON。
+    // 不合规时 stdout 什么都不打（不把原始叙述或半段 JSON 漏出去），靠非 0 退出码 +
+    // stderr 诊断。无旗标时这条分支不生效，text 形状完全不变。
+    if (jsonSchema && !streamJsonMode && !s.stdoutClosed) {
+      if (structuredOutput !== undefined) {
+        process.stdout.write(`${JSON.stringify(structuredOutput)}\n`);
+      } else if (structuredDiagnostic) {
+        console.error(c.err(`✖ ${structuredDiagnostic}`));
+      }
+    }
 
     return exitCode;
   }
@@ -409,4 +453,51 @@ export async function runOneshotOrPiped(s: AppSession): Promise<number | null> {
 
 
   return null;
+}
+
+/**
+ * #77：取进程级最终答案（最后一条无 tool_calls 的非空助手文本）并校验。
+ *
+ * 不合规就把诊断作为一条后续用户消息回喂再跑，最多 MAX_SCHEMA_FEEDBACK 次。
+ * 回喂在 DriveManager 之外：不计入 --max、不重跑检查命令；若回喂又调工具，
+ * 仍走既有权限 / -y。SIGINT 中止回喂时返回 aborted（调用方按 130 收口）。
+ */
+async function validateFinalAnswer(
+  agent: AppSession["agent"],
+  stats: Awaited<ReturnType<AppSession["agent"]["send"]>>,
+  schema: CompiledSchema,
+  beginTurn: () => void,
+): Promise<{ value?: unknown; diagnostic: string | null; aborted: boolean }> {
+  // 硬错误 / 中断 / 阻断时没有可信的最终答案，不校验也不回喂。
+  if (stats.aborted || stats.hadError || stats.blocked === true) {
+    return { diagnostic: null, aborted: false };
+  }
+  const finalAnswer = (): string => {
+    const last = [...agent.messages]
+      .reverse()
+      .find(
+        (m) =>
+          m.role === "assistant" &&
+          !m.tool_calls &&
+          (contentText(m.content) ?? "").trim() !== "",
+      );
+    return last ? (contentText(last.content) ?? "") : "";
+  };
+  let check = checkAgainstSchema(schema, finalAnswer());
+  for (let round = 0; !check.ok && round < MAX_SCHEMA_FEEDBACK; round++) {
+    beginTurn();
+    let next: Awaited<ReturnType<AppSession["agent"]["send"]>>;
+    try {
+      next = await agent.send(feedbackMessage(check.diagnostic));
+    } catch {
+      // 回喂请求本身失败：保留已有诊断，不再重试（退出码仍由原 stats 决定）。
+      return { diagnostic: check.diagnostic, aborted: false };
+    }
+    if (next.aborted) return { diagnostic: null, aborted: true };
+    if (next.hadError || next.blocked === true) return { diagnostic: check.diagnostic, aborted: false };
+    check = checkAgainstSchema(schema, finalAnswer());
+  }
+  return check.ok
+    ? { value: check.value, diagnostic: null, aborted: false }
+    : { diagnostic: check.diagnostic, aborted: false };
 }

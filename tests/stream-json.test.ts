@@ -521,4 +521,41 @@ describe("stream-json v1 JsonlWriter", () => {
     expect(data.drive).toBeNull();
     expect(data.error).toBeNull();
   });
+
+  test("M #77 result 白名单保留 structured_output，无值时不输出该键；中间事件键集不变", () => {
+    const { writer, sink } = createHarness();
+    writer.emitResult(resultData);
+    const without = parseLine(sink.lines[0]!).data as StreamResultData;
+    expect(Object.keys(without).sort()).toEqual(
+      ["drive", "error", "exit_code", "model", "provider", "status", "usage"].sort(),
+    );
+    expect("structured_output" in without).toBe(false);
+
+    const { writer: w2, sink: s2 } = createHarness();
+    w2.emitResult({ ...resultData, structured_output: { ok: true } } as StreamResultData & {
+      structured_output: { ok: boolean };
+    });
+    const withObj = parseLine(s2.lines[0]!).data as unknown as Record<string, unknown>;
+    expect(withObj["structured_output"]).toEqual({ ok: true });
+    expect(Object.keys(withObj).sort()).toEqual(
+      ["drive", "error", "exit_code", "model", "provider", "status", "structured_output", "usage"].sort(),
+    );
+
+    const { writer: w3, sink: s3 } = createHarness();
+    w3.emitResult({ ...resultData, structured_output: [1, 2, 3] } as StreamResultData & {
+      structured_output: number[];
+    });
+    const withArr = parseLine(s3.lines[0]!).data as unknown as Record<string, unknown>;
+    expect(withArr["structured_output"]).toEqual([1, 2, 3]);
+
+    // 中间事件不得因为 result 白名单改动而多出 structured_output
+    const { writer: w4, sink: s4 } = createHarness();
+    w4.emitInit(initData);
+    w4.emitAssistantMessage(assistantMessageData);
+    w4.emitDriveFinished(driveFinishedData);
+    for (const line of s4.lines) {
+      const env = parseLine(line);
+      expect("structured_output" in (env.data as object)).toBe(false);
+    }
+  });
 });

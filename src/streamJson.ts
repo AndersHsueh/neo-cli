@@ -199,6 +199,11 @@ export interface StreamResultData {
   usage: StreamUsageSummary;
   drive: StreamResultDrive | null;
   error: string | null;
+  /**
+   * #77：`-p --json-schema` 校验通过的最终值（对象/数组/其它 JSON 值）。
+   * 无旗标或最终不合规时**不出现该键**（不是 null）—— 编排器须先检查键是否存在。
+   */
+  structured_output?: unknown;
 }
 
 /** type → data 的严格映射；每个 data 恒为 JSON object，不允许 null/数组/缺省。 */
@@ -652,6 +657,8 @@ function normalizeEventData<T extends StreamEventType>(
                 elapsed_ms: finiteNumber(drive.elapsed_ms),
               },
         error: nullableString(d.error),
+        // #77：只在有值时出现该键；无旗标 / 最终不合规时保持既有 7 键形状。
+        ...(d.structured_output === undefined ? {} : { structured_output: d.structured_output }),
       } as unknown as StreamEventData[T];
     }
     default:
