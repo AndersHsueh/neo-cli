@@ -692,7 +692,7 @@ deepseek-flash · balanced · ask · ⎇ main · ctx ▓▓░░░ 42% · 0:42
   本轮已跑时长 / 累计 tok；忙碌时顶线标题带「运行中」，排队有提示。宽度不足按优先级降级，不折行。
 - 输入框：上下横线、无左右边框；`Enter` 提交，`Ctrl+J` / `Shift+Enter` / `Alt+Enter` /
   `Ctrl+Enter` 换行；超过 8 行滚动窗口；退格按码点（中文一次一个字）。
-- 历史 ↑↓（前缀搜索）、`Tab` 补全、`Ctrl+V` 贴图、`Ctrl+G` 外部编辑器撰写提示词、大段粘贴折叠 chip；
+- 历史 ↑↓（前缀搜索）、`Ctrl+R` 反向检索历史、`Ctrl+S` 暂存/恢复草稿（含光标、粘贴 chip、`!` shell 模式）、`Tab` 补全、`Ctrl+V` 贴图、`Ctrl+G` 外部编辑器撰写提示词、大段粘贴折叠 chip；
 - `/btw <问题>` 旁支提问：基于当前上下文回答，**不入历史、不调工具、不打断主轮次**；
   审批问题显示在框上方、输入框不卸载；选择菜单在 live 帧内渲染。
 - **不换渲染模型**：不 alt-screen，历史留在 scrollback；非 TTY（`-p` / 管道 / CI）走原 readline 路径。

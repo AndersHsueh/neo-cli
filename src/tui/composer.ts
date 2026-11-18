@@ -67,7 +67,15 @@ import {
   pasteImage,
   editInExternal,
   armPasteTimer,
-  finishPaste
+  finishPaste,
+  openHistorySearch,
+  updateHistorySearch,
+  searchOlder,
+  acceptHistorySearch,
+  cancelHistorySearch,
+  handleHistorySearchKey,
+  stashDraft,
+  restoreStash
 } from "./composerInput.ts";
 
 /** 状态行数据源（index.ts 提供闭包；width/queueCount 由 Composer 补）。 */
@@ -158,6 +166,31 @@ export interface AskUserSession {
   resolve: (a: AskUserAnswer) => void;
 }
 
+/**
+ * Ctrl+R 反向检索会话（issue #74）。
+ *
+ * 打开时把输入框草稿整份存进 `draft`（Esc/无匹配取消时原样还原），之后输入框正文
+ * 变成「预览区」：每次查询变化或再按 Ctrl+R 都重写 `composer.buf`。
+ */
+export interface HistorySearchSession {
+  /** 打开检索前的草稿快照（文本/光标/附件/shell 模式）。 */
+  draft: { text: string; cursor: number; attachments: unknown[]; shellMode: boolean };
+  /** 检索查询（子串、区分大小写；空 = 匹配全部）。 */
+  query: string;
+  /** 当前预览的匹配条目；null = 无匹配。 */
+  match: string | null;
+  /** 当前匹配在 `history.search(query)` 结果（从新到旧）中的下标；无匹配为 -1。 */
+  matchIndex: number;
+}
+
+/** Ctrl+S 草稿暂存槽（issue #74，单槽）。 */
+export interface StashSlot {
+  text: string;
+  cursor: number;
+  attachments: unknown[];
+  shellMode: boolean;
+}
+
 export interface TabCycle {
   start: number;
   matches: string[];
@@ -207,6 +240,10 @@ export class Composer {
   select: SelectSession | null = null;
   askState: AskState | null = null;
   askUserState: AskUserSession | null = null;
+  /** Ctrl+R 反向检索会话（issue #74）：null = 不在检索态。 */
+  search: HistorySearchSession | null = null;
+  /** Ctrl+S 单槽草稿暂存（issue #74）：null = 空槽。 */
+  stash: StashSlot | null = null;
   hint: string | null = null;
   tabCycle: TabCycle | null = null;
   noticeText: string | null = null;
@@ -832,6 +869,14 @@ export class Composer {
   editInExternal = editInExternal;
   armPasteTimer = armPasteTimer;
   finishPaste = finishPaste;
+  openHistorySearch = openHistorySearch;
+  updateHistorySearch = updateHistorySearch;
+  searchOlder = searchOlder;
+  acceptHistorySearch = acceptHistorySearch;
+  cancelHistorySearch = cancelHistorySearch;
+  handleHistorySearchKey = handleHistorySearchKey;
+  stashDraft = stashDraft;
+  restoreStash = restoreStash;
   // ---------------------------------------------------------------- 模态
 
   /** 审批问句：在帧里显示问题，Enter 返回输入内容、Esc 返回空串。 */

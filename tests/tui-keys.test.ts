@@ -167,6 +167,11 @@ describe("K1d Ctrl/Meta 组合", () => {
     expect(act({ name: "right", meta: true })).toEqual({ type: "word-right" });
   });
 
+  test("K1d issue #74 Ctrl+R / Ctrl+S 映射 ctrl-r / ctrl-s", () => {
+    expect(act({ name: "r", ctrl: true, sequence: "\x12" })).toEqual({ type: "ctrl-r" });
+    expect(act({ name: "s", ctrl: true, sequence: "\x13" })).toEqual({ type: "ctrl-s" });
+  });
+
   test("K1d 未定义的 ctrl 组合返回 null（不误插控制字符）", () => {
     expect(act({ ch: "\x0c", name: "l", ctrl: true })).toBeNull();
   });

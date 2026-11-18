@@ -282,6 +282,11 @@ export function finishAsk(this: Composer): void {
 }
 
 export function handleNormalAction(this: Composer, action: KeyAction): void {
+  // issue #74：检索态优先分发（普通插入/退格改的是查询，不是草稿）。
+  if (this.search) {
+    this.handleHistorySearchKey(action);
+    return;
+  }
   // issue #31：先按当前缓冲区同步菜单状态，菜单打开时优先吃掉它的导航/接受键。
   this.syncCommandMenu();
   if (this.menu && this.handleMenuKey(action)) return;
@@ -380,6 +385,12 @@ export function handleNormalAction(this: Composer, action: KeyAction): void {
       return;
     case "ctrl-g":
       void this.editInExternal();
+      return;
+    case "ctrl-r":
+      this.openHistorySearch();
+      return;
+    case "ctrl-s":
+      this.stashDraft();
       return;
     case "up":
     case "down":
@@ -728,6 +739,194 @@ export async function editInExternal(this: Composer): Promise<void> {
   }
   // 光标落在末尾：编辑器里写的内容通常是「写完就发」，末尾最顺手。
   this.buf.setText(r.text, r.text.length);
+  this.scheduleRender();
+}
+
+/**
+ * Ctrl+R 反向检索（issue #74）。
+ *
+ * 打开时把草稿整份快照进会话，输入框正文变成「预览区」；查询初始为空 = 立即预览
+ * 最新一条历史。状态提示走 `hint`（**不用 notice()**，那会启动 #76 的 tick 心跳）。
+ */
+export function openHistorySearch(this: Composer): void {
+  if (this.search) return;
+  this.search = {
+    draft: {
+      text: this.buf.text,
+      cursor: this.buf.cursor,
+      attachments: this.attachments.slice(),
+      shellMode: this.shellMode,
+    },
+    query: "",
+    match: null,
+    matchIndex: -1,
+  };
+  // 检索期间菜单/补全 hint 一律让位，避免 `/` 菜单把按键吃掉。
+  this.menu = null;
+  this.menuDismissedFor = null;
+  this.tabCycle = null;
+  this.updateHistorySearch();
+}
+
+/**
+ * 按当前查询从最新匹配重新定位（查询变化 / 打开检索时调用）。
+ *
+ * 有匹配 → 输入框预览该条目（光标在末尾）；无匹配 → 输入框清空，hint 写明「无匹配」，
+ * 已保存的草稿原样不动（Esc/Enter 时还原）。
+ */
+export function updateHistorySearch(this: Composer): void {
+  const s = this.search;
+  if (!s) return;
+  const matches = this.history.search(s.query);
+  const match = matches[0] ?? null;
+  s.match = match;
+  s.matchIndex = match === null ? -1 : 0;
+  if (match === null) {
+    this.buf.clear();
+    this.hint = `反向检索：${s.query}（无匹配 · Enter/Esc 取消）`;
+  } else {
+    this.buf.setText(match, match.length);
+    this.hint = `反向检索：${s.query}（Ctrl+R 更早 · Enter 接受 · Esc 取消）`;
+  }
+  this.scheduleRender();
+}
+
+/** 同一查询下再按 Ctrl+R：跳到更早的匹配；到头停留（不循环）。 */
+export function searchOlder(this: Composer): void {
+  const s = this.search;
+  if (!s) return;
+  const matches = this.history.search(s.query);
+  if (matches.length === 0) {
+    s.match = null;
+    s.matchIndex = -1;
+    this.buf.clear();
+    this.hint = `反向检索：${s.query}（无匹配 · Enter/Esc 取消）`;
+    this.scheduleRender();
+    return;
+  }
+  // 用下标而不是 indexOf：历史里可以有非连续的重复文本，indexOf 会永远命中最新那条，
+  // 再按 Ctrl+R 就会在「最新重复项」和它前面一条之间打转，走不到更早的同一文本。
+  const nextIndex = Math.min((s.matchIndex < 0 ? 0 : s.matchIndex + 1), matches.length - 1);
+  const next = matches[nextIndex] as string;
+  s.matchIndex = nextIndex;
+  s.match = next;
+  this.buf.setText(next, next.length);
+  this.hint = `反向检索：${s.query}（Ctrl+R 更早 · Enter 接受 · Esc 取消）`;
+  this.scheduleRender();
+}
+
+/** Enter：接受当前匹配回填输入框并退出检索，**不提交**；无匹配等同取消（恢复草稿）。 */
+export function acceptHistorySearch(this: Composer): void {
+  const s = this.search;
+  if (!s) return;
+  const match = s.match;
+  if (match === null) {
+    this.cancelHistorySearch();
+    return;
+  }
+  this.search = null;
+  this.hint = null;
+  this.tabCycle = null;
+  this.menu = null;
+  // 接受的是历史里的纯文本：回到普通态，不把打开检索前的 shell 模式/附件带走。
+  this.shellMode = false;
+  this.attachments = [];
+  this.buf.setText(match, match.length);
+  this.scheduleRender();
+}
+
+/**
+ * Esc / 无匹配 Enter：恢复打开检索前的草稿（文本、光标、附件、shell 模式）并退出。
+ *
+ * 必须绕开 handleNormalAction 里「非空缓冲按 Esc 清空」那条分支 —— 检索态在
+ * 分发前就被 handleHistorySearchKey 截住了，所以不会走到那里。
+ */
+export function cancelHistorySearch(this: Composer): void {
+  const s = this.search;
+  if (!s) return;
+  this.search = null;
+  this.hint = null;
+  this.tabCycle = null;
+  this.menu = null;
+  this.buf.setText(s.draft.text, s.draft.cursor);
+  this.attachments = s.draft.attachments.slice();
+  this.shellMode = s.draft.shellMode;
+  this.scheduleRender();
+}
+
+/** 检索态按键：插入/退格改查询，Ctrl+R 向更早跳，Enter 接受，Esc 取消。 */
+export function handleHistorySearchKey(this: Composer, action: KeyAction): void {
+  const s = this.search;
+  if (!s) return;
+  switch (action.type) {
+    case "insert":
+      s.query += action.text;
+      this.updateHistorySearch();
+      return;
+    case "backspace":
+      if (s.query !== "") {
+        s.query = Array.from(s.query).slice(0, -1).join("");
+        this.updateHistorySearch();
+      }
+      return;
+    case "ctrl-r":
+      this.searchOlder();
+      return;
+    case "submit":
+      this.acceptHistorySearch();
+      return;
+    case "escape":
+    case "escape-escape":
+    case "ctrl-c":
+      this.cancelHistorySearch();
+      return;
+    default:
+      // 其余键（方向键、Tab…）在检索态无意义，吞掉避免误改草稿。
+      return;
+  }
+}
+
+/**
+ * Ctrl+S 草稿暂存（issue #74，单槽）。
+ *
+ * 有内容 → 存进槽里并清空输入框（含附件、退出 shell 模式）；空框 → 从槽里恢复
+ * （文本、光标、附件拷贝、shell 模式）；空框 + 空槽 → 空操作。
+ * 再次暂存覆盖上一份，于是「暂存 → 立刻再按」等于开关。
+ */
+export function stashDraft(this: Composer): void {
+  if (this.buf.text !== "") {
+    this.stash = {
+      text: this.buf.text,
+      cursor: this.buf.cursor,
+      attachments: this.attachments.slice(),
+      shellMode: this.shellMode,
+    };
+    this.buf.clear();
+    this.attachments = [];
+    this.shellMode = false;
+    this.tabCycle = null;
+    this.hint = null;
+    this.menu = null;
+    this.menuDismissedFor = null;
+    this.inputScroll = 0;
+    this.scheduleRender();
+    return;
+  }
+  this.restoreStash();
+}
+
+/** 从单槽恢复草稿（空槽时什么也不做）。附件用拷贝，避免与槽共享引用被后续清空误伤。 */
+export function restoreStash(this: Composer): void {
+  const slot = this.stash;
+  if (!slot) return;
+  this.stash = null;
+  this.buf.setText(slot.text, slot.cursor);
+  this.attachments = slot.attachments.slice();
+  this.shellMode = slot.shellMode;
+  this.tabCycle = null;
+  this.hint = null;
+  this.menu = null;
+  this.menuDismissedFor = null;
   this.scheduleRender();
 }
 

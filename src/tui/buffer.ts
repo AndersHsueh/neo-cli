@@ -437,6 +437,21 @@ export class InputHistory {
     this.resetNav();
   }
 
+  /**
+   * 子串匹配（区分大小写，空查询匹配全部），结果**从新到旧**（issue #74）。
+   *
+   * 与 `up`/`down` 的 prefix+startsWith 语义是两套：那边是「按已输入前缀翻历史」，
+   * 这里是「按任意子串检索」，互不影响。
+   */
+  search(query: string): string[] {
+    const out: string[] = [];
+    for (let i = this.entries.length - 1; i >= 0; i -= 1) {
+      const entry = this.entries[i] as string;
+      if (query === "" || entry.includes(query)) out.push(entry);
+    }
+    return out;
+  }
+
   up(current: string): string | null {
     if (this.prefix === null) {
       this.prefix = current;

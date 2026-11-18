@@ -49,6 +49,8 @@ export type KeyAction =
   | { type: "ctrl-o" }
   | { type: "ctrl-v" }
   | { type: "ctrl-g" }
+  | { type: "ctrl-r" }
+  | { type: "ctrl-s" }
   | { type: "page-up" }
   | { type: "page-down" }
   | { type: "paste-start" }
@@ -103,6 +105,10 @@ export function mapKey(k: RawKey): KeyAction | null {
       case "v": return { type: "ctrl-v" };
       // issue #62：Ctrl+G 调起外部编辑器撰写提示词（与 Ctrl+V 贴图同级的独立动作）。
       case "g": return { type: "ctrl-g" };
+      // issue #74：Ctrl+R 历史反向检索、Ctrl+S 草稿暂存（raw mode 下由 keypress 到达，
+      // 不依赖终端流控；XOFF 语义在 raw mode 里不生效）。
+      case "r": return { type: "ctrl-r" };
+      case "s": return { type: "ctrl-s" };
       case "j": return { type: "newline" };
       case "a": return { type: "home" };
       case "e": return { type: "end" };
