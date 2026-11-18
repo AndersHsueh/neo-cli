@@ -46,10 +46,9 @@ export async function handleSystemCommands(cmd: string, arg: string, rest: strin
         isSubagent: agent.opt.isSubagent === true,
         planning: agent.planning,
       });
-      const names =
-        codeModeOn && !baseNames.includes(CODE_MODE_TOOL_NAME)
-          ? [...baseNames, CODE_MODE_TOOL_NAME]
-          : baseNames;
+      const names = codeModeOn
+        ? (baseNames.includes(CODE_MODE_TOOL_NAME) ? baseNames : [...baseNames, CODE_MODE_TOOL_NAME])
+        : baseNames.filter((n) => n !== CODE_MODE_TOOL_NAME);
       // issue #68：MCP 延迟加载下，注册表里的 MCP 工具分两种命运 ——
       // 带完整 schema 进请求（已装入 / alwaysLoad），或只出现在系统提示的目录短节里。
       // 混在一行里列出来会让人以为「列了就能调」，所以分两段显示。

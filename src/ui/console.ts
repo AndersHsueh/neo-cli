@@ -82,7 +82,7 @@ export class Console {
   private spinnerLineActive = false;
   /** 当前打开的流式块类型（null = 无）。 */
   private streamKind: StreamKind | null = null;
-  private asker: ((prompt: string) => Promise<string>) | null = null;
+  private asker: ((prompt: string, signal?: AbortSignal) => Promise<string>) | null = null;
   /** 紧凑工具行模式（默认；toolcall_info_details=true 时走旧版详情块）。 */
   private readonly toolCompact: boolean;
   private toolLineActive = false;
@@ -595,8 +595,9 @@ export class Console {
    * 非 TTY（管道 / CI / -p 重定向）下无法交互，一律拒绝并说明原因 ——
    * 挂起等待输入比直接失败糟糕得多。脚本里要放行请用 -y。
    */
-  async confirm(question: string): Promise<boolean> {
+  async confirm(question: string, signal?: AbortSignal): Promise<boolean> {
     this.stopSpinner();
+    if (signal?.aborted) throw abortError();
     if (!this.stdinIsTTY()) {
       this.line(
         `${c.warn("✖ 非交互模式")} ${c.dim("无法征求批准")} ${c.warn(question)}\n` +
@@ -611,18 +612,44 @@ export class Console {
     }
 
     this.blank();
-    const answer = await asker(`${c.warn("?")} ${c.warn(question)} ${c.dim("[y/N]")} `);
-    this.blank();
-    return /^(y|yes|是|好|ok|allow)$/i.test(answer.trim());
+    const prompt = `${c.warn("?")} ${c.warn(question)} ${c.dim("[y/N]")} `;
+    try {
+      const answer = await new Promise<string>((resolve, reject) => {
+        const onAbort = (): void => {
+          reject(abortError());
+        };
+        if (signal) signal.addEventListener("abort", onAbort, { once: true });
+        void Promise.resolve(asker(prompt, signal)).then(
+          (a) => {
+            signal?.removeEventListener("abort", onAbort);
+            resolve(a);
+          },
+          (err) => {
+            signal?.removeEventListener("abort", onAbort);
+            reject(err);
+          },
+        );
+      });
+      this.blank();
+      return /^(y|yes|是|好|ok|allow)$/i.test(answer.trim());
+    } catch (err) {
+      this.blank();
+      throw err;
+    }
   }
 
   /**
    * 注册问句函数。必须由持有 readline 的一方向注入，
    * 这样输入只被 readline 消费一次。
+   * 可选的 AbortSignal 由 confirm 透传，供 TUI / readline 取消进行中的问句。
    */
-  setAsker(fn: ((prompt: string) => Promise<string>) | null): void {
+  setAsker(fn: ((prompt: string, signal?: AbortSignal) => Promise<string>) | null): void {
     this.asker = fn;
   }
+}
+
+function abortError(): DOMException {
+  return new DOMException("The operation was aborted.", "AbortError");
 }
 
 // ---------- 单行读取 ----------

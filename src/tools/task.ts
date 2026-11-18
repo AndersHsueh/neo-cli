@@ -122,8 +122,8 @@ class SilentConsole implements AgentIO {
   writeStream(): void {}
   endStream(): void {}
   ensureStreamClosed(): void {}
-  confirm(question: string): Promise<boolean> {
-    return this.main.confirm(question);
+  confirm(question: string, signal?: AbortSignal): Promise<boolean> {
+    return this.main.confirm(question, signal);
   }
   get width(): number {
     return this.main.width;
@@ -233,7 +233,7 @@ export interface SubagentRunOptions {
   /** 逐次工具白名单：schema 与 dispatch 两层同时收窄（职责收窄，不是安全边界）。 */
   toolAllowlist?: readonly string[];
   /** 子代理审批（不传 = 旧行为：委托主 console）。worker 传恒拒。 */
-  approve?: (tool: string, detail: string) => Promise<boolean>;
+  approve?: (tool: string, detail: string, signal?: AbortSignal) => Promise<boolean>;
   /** wiki_write 的跨进程写锁（只有后台 wiki 维护 worker 传）。 */
   wikiWriteLock?: ToolCtx["wikiWriteLock"];
   /** true：子代理 stats.aborted 或 hadError 时抛 Error（而不是返回文本）。 */

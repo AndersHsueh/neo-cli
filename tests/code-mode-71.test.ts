@@ -42,6 +42,7 @@
  * 运行：bun test tests/code-mode-71.test.ts
  */
 import { afterAll, afterEach, describe, expect, test } from "bun:test";
+import { EventEmitter } from "node:events";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -55,8 +56,10 @@ import { parseHooksConfig } from "../src/hooks/index.ts";
 import type { StreamResult, ToolCall, ToolSpec } from "../src/llm.ts";
 import { makeMcpTool } from "../src/mcp/tool.ts";
 import { WIKI_WORKER_TOOLS } from "../src/memory/wikiMaintainer.ts";
+import { COMMANDS } from "../src/input/commands.ts";
 import { PromptManager } from "../src/prompt/manager.ts";
 import { buildSystemPrompt } from "../src/system-prompt.ts";
+import { Composer, type ComposerDeps, type ComposerStatus } from "../src/tui/composer.ts";
 import {
   dispatch,
   isParallelizable,
@@ -399,6 +402,59 @@ async function runJs(cfg: Config, code: string, over: Partial<ToolCtx> = {}, app
   return dispatch("run_js", JSON.stringify({ code }), ctx);
 }
 
+
+function isAbortError(e: unknown): boolean {
+  return (e as { name?: string } | undefined)?.name === "AbortError";
+}
+
+async function expectAborted(p: Promise<unknown>): Promise<void> {
+  let settled: { ok: true; value: unknown } | { ok: false; error: unknown };
+  try {
+    settled = { ok: true, value: await p };
+  } catch (error) {
+    settled = { ok: false, error };
+  }
+  expect(settled.ok).toBe(false);
+  if (!settled.ok) expect(isAbortError(settled.error)).toBe(true);
+}
+
+function makeComposer(): Composer {
+  const stdin = new EventEmitter() as unknown as NodeJS.ReadStream & {
+    setRawMode: (v: boolean) => void;
+    isRaw: boolean;
+    isTTY: boolean;
+  };
+  (stdin as unknown as { isTTY: boolean }).isTTY = true;
+  (stdin as unknown as { setRawMode: (v: boolean) => void }).setRawMode = () => {};
+  (stdin as unknown as { isRaw: boolean }).isRaw = false;
+  const status: ComposerStatus = {
+    version: "0.4.94",
+    model: "deepseek-flash",
+    tier: "balanced",
+    mode: "ask",
+    branch: "main",
+    ctxUsage: 0.1,
+    elapsedMs: 0,
+    active: true,
+    tokensTotal: 0,
+  };
+  const deps: ComposerDeps = {
+    stdin: stdin as unknown as NodeJS.ReadStream,
+    stdout: { write: () => {}, columns: 100, rows: 24 },
+    columns: () => 100,
+    rows: () => 24,
+    getStatus: () => status,
+    getTitle: () => "neo · test",
+    commands: COMMANDS,
+    files: () => [],
+    onSubmit: () => {},
+    onExit: () => {},
+  };
+  const composer = new Composer(deps);
+  composer.start();
+  return composer;
+}
+
 /* ------------------------------------------------------------------ */
 /* 关闭时零行为差                                                      */
 /* ------------------------------------------------------------------ */
@@ -611,8 +667,22 @@ describe("#71 只开交互 TUI", () => {
       const text = buildSystemPrompt(cfg, { mailbox: false, askUser: false });
       expect(availableLine(text)).toContain("run_js");
       expect(hasCodeModeSection(text)).toBe(true);
-      const pm = new PromptManager();
+      // 交互 TUI bootstrap 显式传入 nonInteractive: false；缺省改为 fail-closed。
+      const pm = new PromptManager({ nonInteractive: false });
       expect(availableLine(pm.render(cfg).text)).toContain("run_js");
+      expect(hasCodeModeSection(pm.render(cfg).text)).toBe(true);
+    });
+  });
+
+  test("开启后 PromptManager 缺省 / 省略 nonInteractive 为 fail-closed：不列 run_js，也没有用法段", async () => {
+    await withEnv({ NEO_EXPERIMENTAL_CODE_MODE: "1" }, () => {
+      const cfg = baseCfg();
+      const omitted = new PromptManager();
+      expect(availableLine(omitted.render(cfg).text)).not.toContain("run_js");
+      expect(hasCodeModeSection(omitted.render(cfg).text)).toBe(false);
+      const partial = new PromptManager({ mailbox: false, askUser: false });
+      expect(availableLine(partial.render(cfg).text)).not.toContain("run_js");
+      expect(hasCodeModeSection(partial.render(cfg).text)).toBe(false);
     });
   });
 
@@ -631,6 +701,27 @@ describe("#71 只开交互 TUI", () => {
       agent.enterPlan("ask");
       expect(agent.planning).toBe(true);
       expect(namesOf(agent.toolSpecsFor())).not.toContain("run_js");
+    });
+  });
+
+  test("关闭时规划态 /tools 不列 run_js（不得走全量 toolNames 把 run_js 漏出来）", async () => {
+    const agent = makeAgent(baseCfg(), { planBaseMode: "ask" });
+    agent.enterPlan("ask");
+    expect(agent.planning).toBe(true);
+    const cap = captureConsole();
+    await dispatchCommand("/tools", cmdCtx(agent, cap.ui));
+    expect(cap.out()).not.toContain("run_js");
+  });
+
+  test("开启后规划态 /tools 与 toolSpecsFor 都不列 run_js", async () => {
+    await withEnv({ NEO_EXPERIMENTAL_CODE_MODE: "1" }, async () => {
+      const agent = makeAgent(baseCfg(), { planBaseMode: "ask" });
+      agent.enterPlan("ask");
+      expect(agent.planning).toBe(true);
+      expect(namesOf(agent.toolSpecsFor())).not.toContain("run_js");
+      const cap = captureConsole();
+      await dispatchCommand("/tools", cmdCtx(agent, cap.ui));
+      expect(cap.out()).not.toContain("run_js");
     });
   });
 
@@ -1040,6 +1131,100 @@ describe("#71 超时 / 上限 / 并行 / 事件 / Ctrl+C", () => {
       expect(isParallelizable("run_js")).toBe(false);
     });
   });
+});
+
+
+/* ------------------------------------------------------------------ */
+/* P2：生产 Console.confirm 必须响应 AbortSignal                         */
+/* ------------------------------------------------------------------ */
+
+describe("#71 P2 production Console.confirm 响应 AbortSignal", () => {
+  test("无 signal 时用户 Yes/No 行为不变", async () => {
+    const cap = captureConsole({ stdinIsTTY: true });
+    cap.ui.setAsker(async () => "y");
+    expect(await cap.ui.confirm("允许执行？")).toBe(true);
+    cap.ui.setAsker(async () => "n");
+    expect(await cap.ui.confirm("允许执行？")).toBe(false);
+  });
+
+  test("signal 保持开放时用户 Yes/No 仍有效", async () => {
+    const ac = new AbortController();
+    const cap = captureConsole({ stdinIsTTY: true });
+    cap.ui.setAsker(async () => "yes");
+    expect(await cap.ui.confirm("允许执行？", ac.signal)).toBe(true);
+    cap.ui.setAsker(async () => "N");
+    expect(await cap.ui.confirm("允许执行？", ac.signal)).toBe(false);
+  });
+
+  test("已中止的 signal 不调用 asker，并以 abort 语义结束（不是用户说 No）", async () => {
+    const ac = new AbortController();
+    ac.abort();
+    const cap = captureConsole({ stdinIsTTY: true });
+    let called = 0;
+    cap.ui.setAsker(async () => {
+      called += 1;
+      return "y";
+    });
+    await expectAborted(cap.ui.confirm("允许执行？", ac.signal));
+    expect(called).toBe(0);
+  });
+
+  test("等待中 signal 中止时 confirm 以 abort 语义结束并释放 asker，不是当作用户说 No", async () => {
+    const ac = new AbortController();
+    const cap = captureConsole({ stdinIsTTY: true });
+    let asked = false;
+    let lateResolve: ((v: string) => void) | undefined;
+    cap.ui.setAsker(() => {
+      asked = true;
+      return new Promise<string>((resolve) => {
+        lateResolve = resolve;
+      });
+    });
+    const p = cap.ui.confirm("允许执行？", ac.signal);
+    for (let i = 0; i < 40 && !asked; i++) await new Promise((r) => setTimeout(r, 5));
+    expect(asked).toBe(true);
+    ac.abort();
+    await expectAborted(p);
+    lateResolve?.("y");
+    await Promise.resolve();
+  }, 2000);
+
+  test("makeCtx 把 signal 传给 ui.confirm；中止时生产确认框以 abort 语义结束", async () => {
+    const ac = new AbortController();
+    const cap = captureConsole({ stdinIsTTY: true });
+    let asked = false;
+    cap.ui.setAsker(() => {
+      asked = true;
+      return new Promise<string>(() => {});
+    });
+    const agent = makeAgent(baseCfg(), { console: cap.ui, mode: "ask" });
+    const p = agent.makeCtx(ac.signal).approve("run_js", "return 1;");
+    for (let i = 0; i < 40 && !asked; i++) await new Promise((r) => setTimeout(r, 5));
+    expect(asked).toBe(true);
+    ac.abort();
+    await expectAborted(p);
+  }, 2000);
+
+  test("生产 TUI ask 模态：confirm 等待中 abort 必须关掉 [y/N]、askState 不残留", async () => {
+    const composer = makeComposer();
+    try {
+      const cap = captureConsole({ stdinIsTTY: true });
+      cap.ui.setAsker((q, signal) => composer.ask(q, signal));
+      const ac = new AbortController();
+      const p = cap.ui.confirm("允许执行？", ac.signal);
+      for (let i = 0; i < 40 && composer.mode !== "ask"; i++) {
+        await new Promise((r) => setTimeout(r, 5));
+      }
+      expect(composer.mode).toBe("ask");
+      expect(composer.askState).not.toBeNull();
+      ac.abort();
+      await expectAborted(p);
+      expect(composer.mode).toBe("normal");
+      expect(composer.askState).toBeNull();
+    } finally {
+      composer.stop();
+    }
+  }, 2000);
 });
 
 /* ------------------------------------------------------------------ */

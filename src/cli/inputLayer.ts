@@ -212,7 +212,7 @@ export async function runInteractive(s: AppSession): Promise<number> {
     repl.titleAnimator = new TitleAnimator({});
     repl.titleAnimator.setName(s.sessionLabel ?? "neo");
     repl.composer.setTitleAnimator(repl.titleAnimator);
-    ui.setAsker((q: string) => repl.composer!.ask(q));
+    ui.setAsker((q: string, signal?: AbortSignal) => repl.composer!.ask(q, signal));
     repl.selectDeps = {
       isTTY: true,
       router: { on: ((_k, _fn) => () => {}) as SelectDeps["router"]["on"] },
@@ -458,12 +458,29 @@ export async function runInteractive(s: AppSession): Promise<number> {
      * question 会自动挂起/恢复 line 事件，因此外层队列不会被问句污染。
      * questionPending 供粘贴热键 C1 判定：问句中 rl.write(chip) 会污染问句缓冲。
      */
-    ui.setAsker((q: string) => new Promise<string>((resolve) => {
-      repl.questionPending = true;
-      rl.question(q, (a) => {
+    ui.setAsker((q: string, signal?: AbortSignal) => new Promise<string>((resolve, reject) => {
+      let settled = false;
+      const finish = (fn: () => void): void => {
+        if (settled) return;
+        settled = true;
         repl.questionPending = false;
-        resolve(a);
-      });
+        fn();
+      };
+      if (signal?.aborted) {
+        finish(() => reject(abortError()));
+        return;
+      }
+      const onAbort = (): void => {
+        finish(() => reject(abortError()));
+      };
+      if (signal) signal.addEventListener("abort", onAbort, { once: true });
+      repl.questionPending = true;
+      const cb = (a: string): void => {
+        signal?.removeEventListener("abort", onAbort);
+        finish(() => resolve(a));
+      };
+      if (signal) rl.question(q, { signal }, cb);
+      else rl.question(q, cb);
     }));
 
     // Ctrl+C 双击退出（模仿 Claude Code）：第一次按下闪现橙色提示，
@@ -692,3 +709,7 @@ export async function runInteractive(s: AppSession): Promise<number> {
   return 0;
 }
 
+
+function abortError(): DOMException {
+  return new DOMException("The operation was aborted.", "AbortError");
+}

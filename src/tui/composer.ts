@@ -190,6 +190,8 @@ export interface AskState {
   question: string;
   buf: TextBuffer;
   resolve: (v: string) => void;
+  /** abort 确认框时用；普通 Yes/No / Esc 仍走 resolve。 */
+  reject?: (err: unknown) => void;
 }
 
 /** askUser 模态（v0.4.1 B2）：选项/多选/自由输入三合一。 */
@@ -809,19 +811,45 @@ export class Composer {
   // ---------------------------------------------------------------- 模态
 
   /** 审批问句：在帧里显示问题，Enter 返回输入内容、Esc 返回空串。 */
-  ask(question: string): Promise<string> {
+  ask(question: string, signal?: AbortSignal): Promise<string> {
     if (this.askState) return Promise.resolve("");
+    if (signal?.aborted) return Promise.reject(askAbortError());
     // Console.confirm 的 asker 参数是「已着色 + 带 ?/[y/N]」的整串提示；
     // 自绘模态自己负责 ? 与占位提示，这里还原成纯问题。
     const plain = stripAnsi(question)
       .replace(/^\?\s*/, "")
       .replace(/\s*\[y\/N\]\s*$/i, "")
       .trim();
-    return new Promise<string>((resolve) => {
-      this.askState = { question: plain, buf: new TextBuffer(), resolve };
+    return new Promise<string>((resolve, reject) => {
+      const onAbort = (): void => {
+        this.cancelAsk();
+      };
+      if (signal) signal.addEventListener("abort", onAbort, { once: true });
+      const settle = (fn: () => void): void => {
+        signal?.removeEventListener("abort", onAbort);
+        fn();
+      };
+      this.askState = {
+        question: plain,
+        buf: new TextBuffer(),
+        resolve: (v) => settle(() => resolve(v)),
+        reject: (err) => settle(() => reject(err)),
+      };
       this.mode = "ask";
       this.scheduleRender();
     });
+  }
+
+  /**
+   * 取消进行中的 confirm/`ask` 模态（复用 finishAsk）：关掉 [y/N] 帧、
+   * 清空 askState，并以 AbortError reject，不是「用户说了 No」。
+   */
+  cancelAsk(): void {
+    const ask = this.askState;
+    if (!ask) return;
+    this.finishAsk();
+    if (ask.reject) ask.reject(askAbortError());
+    else ask.resolve("");
   }
 
   /** 选择菜单：↑↓/Enter/Esc，返回 null = 取消。 */
@@ -905,3 +933,6 @@ function paintRole(role: StatusSegment["role"], text: string): string {
   }
 }
 
+function askAbortError(): DOMException {
+  return new DOMException("The operation was aborted.", "AbortError");
+}

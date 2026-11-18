@@ -428,7 +428,7 @@ export function createRepl(s: AppSession): ReplState {
                     const ctrl = new AbortController();
                     const ctx: ToolCtx = {
                       cfg,
-                      approve: (_tool, detail) => ui.confirm(detail),
+                      approve: (_tool, detail, signal) => ui.confirm(detail, signal),
                       checkpoint: checkpoints,
                       signal: ctrl.signal,
                     };

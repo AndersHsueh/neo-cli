@@ -42,7 +42,7 @@ export interface AgentIO {
   ensureStreamClosed(): void;
   /** 与 Console 共享的输出通道（正文经 StreamFormatter 写入时用）。 */
   writeRaw?(s: string): void;
-  confirm(question: string): Promise<boolean>;
+  confirm(question: string, signal?: AbortSignal): Promise<boolean>;
   readonly width: number;
 }
 
@@ -210,7 +210,7 @@ export interface AgentOptions {
    * 不传 = 仍走 `ui.confirm`（TUI / -p 的默认路径，行为不变）。
    * 返回 false = 拒绝；宿主自行决定「取消」如何映射（ACP 里 cancel 也返回 false）。
    */
-  approve?: (tool: string, detail: string) => Promise<boolean>;
+  approve?: (tool: string, detail: string, signal?: AbortSignal) => Promise<boolean>;
   /**
    * 交互式规划工作流（issue #14）：进入规划态前的权限模式。
    *

@@ -50,7 +50,7 @@ export interface CheckpointSink {
 export interface ToolCtx {
   cfg: Config;
   /** 敏感操作审批，返回 true 才执行。 */
-  approve: (tool: string, detail: string) => Promise<boolean>;
+  approve: (tool: string, detail: string, signal?: AbortSignal) => Promise<boolean>;
   /**
    * 写盘前的检查点入口（可选）。write_file / edit_file 在审批通过后调用；
    * 不传 = 不做快照（测试裸 ctx / 子代理未接线时）。

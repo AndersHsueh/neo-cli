@@ -287,8 +287,8 @@ export function makeCtx(this: Agent, signal: AbortSignal): ToolCtx {
         "permission_prompt",
       );
       return this.opt.approve
-        ? this.opt.approve(tool, detail)
-        : ui.confirm(`${tool} — ${detail}`);
+        ? this.opt.approve(tool, detail, signal)
+        : ui.confirm(`${tool} — ${detail}`, signal);
     },
     onNotice: (m) => ui.info(m),
     // issue #71：Code Mode 内部工具调用补打 tool_start / tool_end（形状与顶层一致）。
