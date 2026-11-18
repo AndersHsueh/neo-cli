@@ -10,6 +10,7 @@ import { clipboardImagePlatform, readClipboardImage } from "../clipboard.ts";
 import type { SelectDeps } from "../ui/select.ts";
 import { Composer, type ComposerStatus } from "../tui/composer.ts";
 import { getBranch } from "../git.ts";
+import { createThrottledStatusFields } from "./statusCache.ts";
 import { TitleAnimator } from "../tui/title.ts";
 import { banner, c } from "../ui/theme.ts";
 import { applyMatch, completeLine, formatCandidateHint, triggerAt } from "../input/completion.ts";
@@ -88,6 +89,12 @@ export async function runInteractive(s: AppSession): Promise<number> {
   const repl = createRepl(s);
   // ---- 输入源二选一：TTY 用 composer（底部 live 帧）；非 TTY 保留 v0.2.4 readline ----
   if (interactiveTTY) {
+    // issue #76：branch（git spawn）与 ctxUsage（遍历 messages）各自 TTL 缓存，
+    // 状态行每帧问 getStatus 时不再重复做昂贵工作。
+    const statusFields = createThrottledStatusFields({
+      getBranch: () => getBranch(cfg.cwd),
+      ctxUsage: () => repl.ctxUsage(),
+    });
     repl.composer = new Composer({
       stdin: process.stdin as unknown as NodeJS.ReadStream,
       stdout: process.stdout,
@@ -99,8 +106,8 @@ export async function runInteractive(s: AppSession): Promise<number> {
           args.mode === "auto-edit" ? "edit" : args.mode === "auto-all" ? "yolo" : args.mode,
         // 规划态（issue #14）单独显示，避免与 /mode plan 的只读闸门混淆。
         planning: agent.planning,
-        branch: getBranch(cfg.cwd),
-        ctxUsage: repl.ctxUsage(),
+        branch: statusFields.branch(),
+        ctxUsage: statusFields.ctxUsage(),
         elapsedMs: repl.turnActive ? Math.max(0, Date.now() - repl.turnStartedAt) : repl.lastTurnMs,
         active: repl.turnActive,
         tokensTotal: agent.cumulative.prompt + agent.cumulative.completion,

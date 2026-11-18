@@ -280,9 +280,29 @@ export class Composer {
     // 异常退出兜底：进程退出时同步还原终端（raw off / 光标 / bracketed paste）。
     process.once("exit", this.restoreOnExit);
     this.scheduleRender();
-    this.tickTimer = setInterval(() => this.tick(), 250);
-    this.tickTimer.unref?.();
+    // issue #76：空闲时不再空转 250ms tick —— 由 syncTickTimer 按需启停。
+    this.syncTickTimer();
     this.titleAnimator?.start(() => this.scheduleRender());
+  }
+
+  /**
+   * issue #76：tick 只在「有东西要刷新」时跑。
+   *
+   * 需要 250ms 心跳的只有三件事：busy（状态行时钟/spinner 跟随）、activity（活动行）、
+   * notice（到期自动清）。三者都为空时停掉定时器，空闲会话不再每 250ms 醒一次。
+   */
+  private syncTickTimer(): void {
+    const needed = !this.stopped && (this.busy || this.activity !== null || this.noticeText !== null);
+    if (needed) {
+      if (this.tickTimer) return;
+      this.tickTimer = setInterval(() => this.tick(), 250);
+      this.tickTimer.unref?.();
+      return;
+    }
+    if (this.tickTimer) {
+      clearInterval(this.tickTimer);
+      this.tickTimer = null;
+    }
   }
 
   /** exit 事件里只能同步写，不碰定时器/异步。 */
@@ -328,6 +348,8 @@ export class Composer {
     if (this.noticeText && this.now() >= this.noticeUntil) {
       this.noticeText = null;
       this.scheduleRender();
+      // issue #76：通知清掉后可能已无任何需要心跳的东西 → 停掉 tick。
+      this.syncTickTimer();
       return;
     }
     if (this.busy || this.activity !== null || this.noticeText) this.scheduleRender();
@@ -353,6 +375,7 @@ export class Composer {
   setBusy(busy: boolean): void {
     if (this.busy === busy) return;
     this.busy = busy;
+    this.syncTickTimer();
     this.scheduleRender();
   }
 
@@ -442,12 +465,14 @@ export class Composer {
   setActivity(text: string | null, _persist: boolean): void {
     // 提交/丢弃由 dock 决定（它持有 persist 语义）；composer 只负责把文本画在帧里。
     this.activity = text;
+    this.syncTickTimer();
     this.scheduleRender();
   }
 
   commitActivity(): void {
     const text = this.activity;
     this.activity = null;
+    this.syncTickTimer();
     if (text) {
       this.frame.commitAboveAndRender(wrapAnsi(text, this.cols()), this.compose());
     }
@@ -455,6 +480,7 @@ export class Composer {
 
   clearActivity(): void {
     this.activity = null;
+    this.syncTickTimer();
     this.scheduleRender();
   }
 
@@ -466,10 +492,12 @@ export class Composer {
       this.noticeTimer = null;
       if (this.noticeText !== null && this.now() >= this.noticeUntil) {
         this.noticeText = null;
+        this.syncTickTimer();
         this.scheduleRender();
       }
     }, Math.max(100, ms) + 20);
     this.noticeTimer.unref?.();
+    this.syncTickTimer();
     this.scheduleRender();
   }
 

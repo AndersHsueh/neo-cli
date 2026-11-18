@@ -569,3 +569,71 @@ describe("E9/E10 Ctrl+G 外部编辑器（issue #62）", () => {
     h.composer.stop();
   });
 });
+
+describe("issue #76 空闲时按需启停 composer tick", () => {
+  test("#76a 空闲 start 后 tickTimer 为 null（无 250ms 空转）", () => {
+    const h = makeHarness();
+    expect(h.composer.busy).toBe(false);
+    expect(h.composer.activity).toBeNull();
+    expect(h.composer.noticeText).toBeNull();
+    expect(h.composer.tickTimer).toBeNull();
+    h.composer.stop();
+  });
+
+  test("#76b setBusy(true) 启动 tick，setBusy(false) 且无活动时停掉", () => {
+    const h = makeHarness();
+    h.composer.setBusy(true);
+    expect(h.composer.tickTimer).not.toBeNull();
+    h.composer.setBusy(false);
+    expect(h.composer.tickTimer).toBeNull();
+    h.composer.stop();
+  });
+
+  test("#76c setActivity 启动 tick，clearActivity 后停掉", () => {
+    const h = makeHarness();
+    h.composer.setActivity("running ls", false);
+    expect(h.composer.tickTimer).not.toBeNull();
+    h.composer.clearActivity();
+    expect(h.composer.tickTimer).toBeNull();
+    h.composer.stop();
+  });
+
+  test("#76d notice 启动 tick；tick 到期清空后停掉", () => {
+    const h = makeHarness();
+    h.setNow(1_000_000);
+    h.composer.notice("ok", 200);
+    expect(h.composer.noticeText).toBe("ok");
+    expect(h.composer.tickTimer).not.toBeNull();
+    h.setNow(1_000_250);
+    h.composer.tick();
+    expect(h.composer.noticeText).toBeNull();
+    expect(h.composer.tickTimer).toBeNull();
+    h.composer.stop();
+  });
+
+  test("#76e busy 期间 notice 到期不停 tick；busy 结束后才停", () => {
+    const h = makeHarness();
+    h.setNow(1_000_000);
+    h.composer.setBusy(true);
+    h.composer.notice("ok", 200);
+    expect(h.composer.tickTimer).not.toBeNull();
+    h.setNow(1_000_250);
+    h.composer.tick();
+    expect(h.composer.noticeText).toBeNull();
+    expect(h.composer.tickTimer).not.toBeNull();
+    h.composer.setBusy(false);
+    expect(h.composer.tickTimer).toBeNull();
+    h.composer.stop();
+  });
+
+  test("#76f activity 仍在时 setBusy(false) 不停 tick", () => {
+    const h = makeHarness();
+    h.composer.setBusy(true);
+    h.composer.setActivity("tool", false);
+    h.composer.setBusy(false);
+    expect(h.composer.tickTimer).not.toBeNull();
+    h.composer.clearActivity();
+    expect(h.composer.tickTimer).toBeNull();
+    h.composer.stop();
+  });
+});
