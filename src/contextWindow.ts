@@ -14,7 +14,7 @@ function windowSourceOf(source: ModelContextInfo["source"]): Exclude<WindowSourc
 export function resolveContextWindow(
   configured: number, model: string, env?: ModelContextInfo | null, configuredExplicit = true,
 ): ResolvedWindow {
-  const result = resolveCoreWindow(configured, model, env ? { ...env, source: windowSourceOf(env.source) } : env);
+  const result = resolveCoreWindow(configured, model, env ? { contextWindow: env.contextWindow, source: windowSourceOf(env.source), updatedAt: env.updatedAt } : env);
   // Keep the original (possibly frozen/extended) record, never the normalization copy.
   if (result.env && env) return { ...result, env };
   return { tokens: result.tokens, source: result.source === "config" && !configuredExplicit ? "default" : result.source };

@@ -47,3 +47,11 @@ test("K01-C06 parser and known table behavior remains available", () => {
   expect(parseContextLimitFromError("context window is 200k tokens")).toBe(200000);
   expect(isContextOverflowError({ message: "context length exceeded", status: 413 })).toBe(true);
 });
+
+test("K01-C07 inherited window fields preserve legacy env semantics", () => {
+  const env = Object.create({ contextWindow: 32768, source: "behavior_probe", updatedAt: "t" }) as ModelContextInfo;
+  const r = resolveContextWindow(512000, "unknown", env, false);
+  expect(r.tokens).toBe(32768);
+  expect(r.source).toBe("models_api");
+  expect(r.env).toBe(env);
+});
