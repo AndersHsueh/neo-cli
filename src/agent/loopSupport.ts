@@ -1,3 +1,4 @@
+import { reportLifecycle } from "./lifecycle.ts";
 /** Agent 回合支持方法：日志、钩子、路径与收尾。 */
 import { contentText, type Message, type StreamResult } from "../llm.ts";
 import { toolKindOf } from "../tools/index.ts";
@@ -14,7 +15,9 @@ import {
   dispatchHooks,
   describeOutcome,
   hasAnyHook,
+  type DispatchMatchOptions,
   type HookEvent,
+  type HookOutcome,
   type HookPayload,
   type NotificationReason,
 } from "../hooks/index.ts";
@@ -347,10 +350,11 @@ export async function runHooks(this: Agent,
   extra: Record<string, unknown>,
   signal?: AbortSignal,
   reason: NotificationReason | null = null,
-): Promise<{ blocked: boolean; reason: string }> {
+  match: DispatchMatchOptions = {},
+): Promise<{ blocked: boolean; reason: string; outcomes: HookOutcome[] }> {
   const cfg = this.opt.hooks;
-  if (!cfg || !hasAnyHook(cfg)) return { blocked: false, reason: "" };
-  if (this.effectiveMode === "plan") return { blocked: false, reason: "" };
+  if (!cfg || !hasAnyHook(cfg)) return { blocked: false, reason: "", outcomes: [] };
+  if (this.effectiveMode === "plan") return { blocked: false, reason: "", outcomes: [] };
 
   const base = {
     session_id: this.opt.sessionId ?? "unknown",
@@ -363,23 +367,37 @@ export async function runHooks(this: Agent,
 
   let r;
   try {
-    r = await dispatchHooks(cfg, event, payload, tool, this.opt.cfg, signal ? { signal } : {}, reason);
+    r = await dispatchHooks(
+      cfg,
+      event,
+      payload,
+      tool,
+      this.opt.cfg,
+      signal ? { signal } : {},
+      reason,
+      match,
+    );
   } catch (e) {
     // dispatchHooks 内部已收敛，这里只是最后一道保险。
     this.opt.console.warn(`${event} hook 分发异常（已忽略）：${(e as Error).message}`);
-    return { blocked: false, reason: "" };
+    return { blocked: false, reason: "", outcomes: [] };
   }
 
-  if (cfg.verbose) {
+  const lifecycle = ["SessionStart", "UserPromptSubmit", "Stop", "PreCompact"].includes(event);
+  if (cfg.verbose || lifecycle) {
     for (const o of r.outcomes) {
-      if (o.kind === "ok") continue;
-      this.opt.console.warn(describeOutcome(o));
+      if (o.kind === "ok") {
+        if (lifecycle && cfg.verbose && o.stderr.trim()) reportLifecycle(this, `${event} hook：${o.stderr.trim()}`);
+        continue;
+      }
+      if (lifecycle) reportLifecycle(this, describeOutcome(o));
+      else this.opt.console.warn(describeOutcome(o));
     }
   }
   if (r.blocked && tool !== null) {
     this.opt.console.warn(`${event} hook 阻断了 ${tool}：${r.reason}`);
   }
-  return { blocked: r.blocked, reason: r.reason };
+  return { blocked: r.blocked, reason: r.reason, outcomes: r.outcomes };
 }
 
 /**

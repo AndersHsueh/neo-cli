@@ -505,10 +505,7 @@ export async function startSession(s: BootstrapSession) {
   // 生命周期 hooks（issue #3）：启动时把加载结果与配置告警摆出来。
   // 写错的条目已在解析期丢弃 —— 这里必须说清楚，不能让用户以为 hook 生效了。
   if (cfg.hooks.enabled) {
-    const n =
-      cfg.hooks.hooks.PreToolUse.length +
-      cfg.hooks.hooks.PostToolUse.length +
-      cfg.hooks.hooks.TurnEnd.length;
+    const n = Object.values(cfg.hooks.hooks).reduce((total, hooks) => total + hooks.length, 0);
     if (n > 0) ui.info(`hooks：已加载 ${n} 条生命周期 hook（/hooks 查看）`);
   }
   for (const w of cfg.hooks.warnings) ui.warn(`hooks 配置：${w}`);
@@ -568,6 +565,16 @@ export async function startSession(s: BootstrapSession) {
   }
   // 上次进程遗留的 journal：启动时有界恢复（不阻塞主流程）
   memory.recoverPending();
+
+  // #64 SessionStart：历史恢复与 memory.startup 之后、任何真实输入之前触发一次。
+  //  - new：本进程新开会话（-p 同样算 new —— 它是一次真实会话开始）；
+  //  - resume：--resume / --continue 命中了历史。
+  // 历史回放**不算**用户提交，所以这里只发 SessionStart，不发 UserPromptSubmit。
+  // 失败只诊断：会话已经开始，把 SessionStart 的失败当阻断等于让用户开不了工。
+  // 诊断走 stderr：-p 下 stdout 是结果通道，不能混进 hook 文本。
+  await agent.runSessionStart(restored !== null ? "resume" : "new");
+
+
 
   // v0.4.0 平台适配层：环境快照落用户级 wiki。
   // -p / 非交互模式只注入不落盘（用户裁决）；失败非致命，不阻塞会话。

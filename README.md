@@ -119,9 +119,9 @@ Windows 启动用 `neo.cmd`（需要 Bun 在 PATH）；Linux/macOS 用 `neo.sh` 
 | `shell` | 跨平台 shell 覆盖（`path` / `login` / `args`），见下 |
 | `env` | 环境探测与注入（`enabled` / `probe_ttl_hours` / `prompt` / `wiki_page`），见下 |
 | `mcpServers` | 外部 MCP server（stdio），工具动态注册为 `mcp__<server>__<tool>`，见下 |
-| `hooks` | 生命周期 hooks（PreToolUse / PostToolUse / TurnEnd / Notification），见下 |
+| `hooks` | 生命周期 hooks（工具、会话、用户提交、停止与压缩事件），见下 |
 
-### hooks —— 生命周期脚本（issue #3 / #56）
+### hooks —— 生命周期脚本（issue #3 / #56 / #64）
 
 **先说定位：hooks 不是权限系统。** 它不定义 allow/deny 规则、不做命令策略表、不提供沙箱。
 它只是「在几个固定时机，跑你自己写的脚本」。权限判定（`ask` / `auto-edit` / `auto-all` / `plan`）
@@ -146,11 +146,11 @@ Windows 启动用 `neo.cmd`（需要 Bun 在 PATH）；Linux/macOS 用 `neo.sh` 
 | --- | --- | --- |
 | `enabled` | 否 | 缺省 `false` —— 不配就是零开销，也不会有人被意外阻断 |
 | `verbose` | 否 | 缺省 `true`：阻断/失败/超时都打到 UI；`false` 只保留阻断提示 |
-| `PreToolUse` / `PostToolUse` / `TurnEnd` / `Notification` | — | 每个事件一个数组，按配置顺序执行 |
+| `PreToolUse` / `PostToolUse` / `TurnEnd` / `Notification` / `SessionStart` / `UserPromptSubmit` / `Stop` / `PreCompact` | — | 每个事件一个数组，按配置顺序执行 |
 | `command` | 是 | shell 命令，经与 `shell` 工具同一套平台解析执行（`shell` 段配置同样生效） |
-| `matcher` | 否 | 工具名匹配（`Notification` 是**触发原因**匹配），见下。缺省 = 全部（`TurnEnd` 无匹配对象，恒匹配） |
+| `matcher` | 否 | 工具事件匹配工具名；`Notification` 匹配原因，`PreCompact` 匹配 `manual` / `auto`。其余事件恒匹配 |
 | `timeout` | 否 | 秒，缺省 30，上限 600（超上限截断并 warning） |
-| `onFailure` | 否 | `continue`（缺省）/ `block`，仅 PostToolUse / TurnEnd 有意义（Notification 恒不阻断） |
+| `onFailure` | 否 | `continue`（缺省）/ `block`：PostToolUse / TurnEnd / UserPromptSubmit / PreCompact 的失败策略。SessionStart / Stop 失败仅诊断，Notification 恒不阻断 |
 
 `matcher` 三种写法：精确名（`shell`、`write_file`）、末尾通配（`mcp__*`、`mcp__fs__*`）、
 正则（`/^mcp__/`）。注意**不支持** `write_file|edit_file` 这种竖线写法 —— 那是正则语法的一部分，
@@ -167,6 +167,26 @@ Windows 启动用 `neo.cmd`（需要 Bun 在 PATH）；Linux/macOS 用 `neo.sh` 
 | `PostToolUse` | 工具执行完成后（成功与失败都触发） | 不能撤销，只能把失败原因交给模型 |
 | `TurnEnd` | 一轮 agent 回合结束（模型给出最终答复，含 `-p` 单次模式） | 能让该轮以出错结束 |
 | `Notification` | ① 主代理**弹审批框之前**（`permission_prompt`）② 一轮结束（`turn_end`） | **不能**（恒不阻断） |
+
+#### 会话与用户边界（#64）
+
+交互、`-p`、ACP 主会话支持以下四事件；子代理与 wiki worker 不触发，未配置时行为不变。
+
+| 事件 | 时机与输出 |
+| --- | --- |
+| `SessionStart` | 仅 `new` / `resume` / `clear`；exit 0 上下文给主模型，失败诊断后继续 |
+| `UserPromptSubmit` | 每条真实用户输入一次，先于历史写入与模型请求；exit 2 阻断，原因可见 |
+| `Stop` | 模型正常结束而非工具迭代；仅 exit 0 JSON `{"decision":"block","reason":"非空原因"}` 请求一次续跑 |
+| `PreCompact` | 手动/自动压缩之前；exit 2 保留原历史与快照，自动路径停止本轮且不重试 |
+
+`SessionStart` / `UserPromptSubmit` / `PreCompact` 的 exit 0 stdout 可以是纯文本，或
+`{"additionalContext":"附加指令"}`（只注入字段值，不重复注入 JSON 原串）。PreCompact 指令
+**只给摘要器**，不落主历史。Stop 普通 stdout 不续跑；续跑共享原预算、取消信号与总迭代上限，
+每条真实输入最多一次，drive/loop 内部轮不重置额度；abort/error 不续跑，最终收口不重复发
+TurnEnd / Notification。ACP 诊断不写 stdout。
+
+完整字段、失败策略、入口边界和验收见 [生命周期 hooks 规格](docs/lifecycle-hooks-prd[done].md)。
+这是 neo 的事件子集，**不宣称完全兼容竞品**：不支持 fork / ENV_FILE，compact 不发 SessionStart。
 
 **为什么 PreToolUse 在审批之后**：如果 hook 跑在审批之前，用户点「拒绝」时 hook 已经执行过
 （副作用不可撤回），而且 hook 的「放行」会变成权限旁路。所以顺序被固化成
@@ -231,9 +251,10 @@ hook 从 **stdin** 收一行 JSON，字段：
 
 环境变量（可选，便于脚本直接取）：`NEO_HOOK_EVENT`、`NEO_HOOK_SESSION`、`NEO_HOOK_MODE`、
 `NEO_HOOK_TOOL`（TurnEnd 无；Notification 仅在 `permission_prompt` 时有）、
-`NEO_HOOK_REASON`（仅 Notification：触发原因）。cwd 是 neo 的工作目录。
+`NEO_HOOK_REASON`（仅 Notification：触发原因）、`NEO_HOOK_SOURCE`（SessionStart）、
+`NEO_HOOK_TRIGGER`（PreCompact）。四个新事件的 stdin 字段见上方规格。cwd 是 neo 的工作目录。
 
-**退出码约定**：
+**旧工具/TurnEnd 事件退出码约定**（四个新事件的差异见上方规格）：
 
 | 退出码 | 含义 |
 | --- | --- |

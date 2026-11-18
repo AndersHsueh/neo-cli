@@ -41,6 +41,9 @@ export interface AcpTurnDeps {
  */
 function stopReasonOf(stats: TurnStats, deps: AcpTurnDeps): AcpStopReason {
   if (deps.cancelled() || stats.aborted) return "cancelled";
+  // #64：UserPromptSubmit 阻断不是引擎失败 —— 用户策略明确拒绝了这条输入，
+  // 客户端该看到一个合法 stopReason（refusal），而不是 -32603 内部错误。
+  if (stats.blocked === true) return "refusal";
   const hitIterationLimit =
     stats.iterations >= deps.maxToolIterations && stats.toolCalls > 0 && !deps.answeredLastIteration();
   if (hitIterationLimit) return "max_turn_requests";

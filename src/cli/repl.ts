@@ -90,6 +90,7 @@ export interface ReplState {
  * 队列 / drain / shutdown / idle tick。输入源在 inputLayer 里接上。
  */
 export function createRepl(s: AppSession): ReplState {
+  let userBoundary: import("../agent/lifecycle.ts").UserTurnState | null = null;
   const {
     cfg,
     ui,
@@ -491,6 +492,21 @@ export function createRepl(s: AppSession): ReplState {
             source: origin === "user" && !q.loop ? "human" : "auto",
           });
           let turnStats: Awaited<ReturnType<typeof agent.send>> | null = null;
+          // #64：只有「真人亲手敲的输入」开启新的用户 boundary（UPS 一次、Stop 额度一次）。
+          // drive / loop / 技能 / mailbox / notice 这些内部合成轮沿用当前 boundary，
+          // 不得重置 Stop 额度，也不得再发一次 UserPromptSubmit。
+          const humanInput = origin === "user" && q.loop !== true;
+          if (humanInput) {
+            userBoundary = agent.beginUserTurn(resolved.text);
+          } else {
+            if (!userBoundary) {
+              userBoundary = agent.beginUserTurn();
+              // 无真人发起的合成输入不触发 UPS，也不新发放 Stop 额度。
+              userBoundary.result = { blocked: false, reason: "", context: "", continue: false };
+              userBoundary.stopContinued = true;
+            }
+            agent.userTurn = userBoundary;
+          }
           try {
             // ESC 回滚语义（PRD §4.11 裁决 A）：人类输入的 turn 保留回滚；
             // 由 mailbox / 状态通知触发的自动 turn 只停不删（否则会连任务消息与已完成结果一起抹掉）。
@@ -530,10 +546,13 @@ export function createRepl(s: AppSession): ReplState {
             if (resolved.images.length > 0) ui.line(c.dim("  当前 provider 可能不支持图片输入"));
             if (process.env["NEO_DEBUG"]) console.error(e);
           } finally {
+            // 每次持久化前摘除临时上下文，但保留额度对象供同链内部轮复用。
+            agent.endUserTurn();
             repl.turnActive = false;
             s.composerRef?.setBusy(false);
             // issue #25：self 节奏循环在「每轮结束」后排下一拍（interval 模式自己在定时器里排）。
-            repl.loopScheduler.onTurnEnd();
+            if (turnStats?.blocked || turnStats?.compactBlocked || turnStats?.aborted) repl.loopScheduler.stop();
+            else repl.loopScheduler.onTurnEnd();
             // issue #24：目标驱动续跑 —— 每轮结束跑检查命令，未通过则自动再排一轮。
             // issue #50：把最近一轮的工具输出摘要交给 judge（截断并标注，PRD §2.3）。
             // issue #50：只取**本轮**的工具输出（turnStats.toolCalls 条）；0 工具轮给空，避免混入上一轮尾巴。
@@ -550,7 +569,9 @@ export function createRepl(s: AppSession): ReplState {
               recentToolOutput.length > 2_000
                 ? `${recentToolOutput.slice(-2_000)}\n…[已截断，只保留最近 2000 字符]`
                 : recentToolOutput;
-            void repl.drive
+            if (turnStats?.blocked || turnStats?.compactBlocked || turnStats?.aborted) {
+              repl.drive.stop(turnStats.errorMessage ?? "本轮已停止");
+            } else void repl.drive
               .onTurnEnd({ toolCalls: turnStats?.toolCalls ?? 0, recentOutput: clipped })
               .catch((e: unknown) => {
                 ui.warn(`自动续跑检查失败：${(e as Error).message}`);

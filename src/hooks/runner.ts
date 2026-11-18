@@ -21,13 +21,17 @@ import type { Config } from "../config.ts";
 import {
   matchReason,
   matchTool,
+  matchTrigger,
+  type CompactTrigger,
   type HookDef,
   type HookDispatchResult,
   type HookEvent,
   type HookOutcome,
   type HookPayload,
+  type HookAdditionalContext,
   type HooksConfig,
   type NotificationReason,
+  type StopBlockRequest,
 } from "./types.ts";
 
 /** 诊断里保留的 stdout/stderr 尾部长度。 */
@@ -67,17 +71,28 @@ export function extractReason(stdout: string, stderr: string, fallback: string):
 /**
  * 该事件下这一条 hook 是否匹配本次调用。
  *
- * 三种匹配对象，刻意分开写（见 types.ts 的 matchReason 注释）：
+ * 匹配对象随事件而变，刻意分开写（见 types.ts 的 matchReason 注释）：
  *  - PreToolUse / PostToolUse：工具名；
  *  - Notification：触发原因（`reason`，缺省 = 全部原因）；
- *  - TurnEnd：无匹配对象，恒匹配。
+ *  - PreCompact（#64）：压缩来源（`trigger`，缺省 = 全部来源）；
+ *  - TurnEnd / SessionStart / Stop（#64）：无匹配对象，恒匹配。
  */
-export function hookMatches(hook: HookDef, tool: string | null, reason: NotificationReason | null = null): boolean {
+export function hookMatches(
+  hook: HookDef,
+  tool: string | null,
+  reason: NotificationReason | null = null,
+  trigger: CompactTrigger | null = null,
+): boolean {
   switch (hook.event) {
     case "Notification":
       // 没给原因（不该发生）时按不匹配处理：宁可少发一条通知，也不误发。
       return reason !== null && matchReason(hook.matcher, reason);
+    case "PreCompact":
+      // 没给来源（不该发生）时按不匹配处理：压缩是破坏性动作，宁可不跑。
+      return trigger !== null && matchTrigger(hook.matcher, trigger);
     case "TurnEnd":
+    case "SessionStart":
+    case "Stop":
       return true;
     default:
       if (tool === null) return true;
@@ -90,6 +105,17 @@ export interface RunHookOptions {
   signal?: AbortSignal;
   /** 注入点（测试用）：默认用真实 spawn。 */
   spawnFn?: typeof spawn;
+}
+
+/**
+ * 分发一个事件时可额外指定「匹配对象」（#64）。
+ *
+ * 旧签名把 `reason` 放在最后，为了不破坏既有调用点，新增的 `trigger` 走这个
+ * 可选对象；两者互斥（Notification 用 reason，PreCompact 用 trigger）。
+ */
+export interface DispatchMatchOptions {
+  /** PreCompact 的匹配对象（manual / auto）。 */
+  trigger?: CompactTrigger;
 }
 
 /**
@@ -133,7 +159,12 @@ export async function runHook(
     // 通知脚本最常按原因分流，单独给一个环境变量，省得每次解析 stdin。
     env["NEO_HOOK_REASON"] = payload.reason;
     if (payload.tool_name !== undefined) env["NEO_HOOK_TOOL"] = payload.tool_name;
-  } else if (payload.event !== "TurnEnd") {
+  } else if (payload.event === "PreCompact") {
+    // #64：压缩来源是 PreCompact 的 matcher 对象，同样给一份环境变量。
+    env["NEO_HOOK_TRIGGER"] = payload.trigger;
+  } else if (payload.event === "SessionStart") {
+    env["NEO_HOOK_SOURCE"] = payload.source;
+  } else if (payload.event !== "TurnEnd" && payload.event !== "Stop" && payload.event !== "UserPromptSubmit") {
     env["NEO_HOOK_TOOL"] = payload.tool_name;
   }
 
@@ -252,15 +283,66 @@ export async function runHook(
   });
 }
 
+/**
+ * 解析退出码 0 的 hook 输出里的「附加上下文」（#64）。
+ *
+ * 两种写法都接受：
+ *  - 纯文本 stdout → 整段就是附加上下文；
+ *  - JSON `{"additionalContext": "..."}` → **只取该字段**，不把原 JSON 串再注入一次
+ *    （否则模型会同时看到 `{"additionalContext":...}` 和正文，等于重复注入）。
+ *
+ * 半截 JSON 退化成纯文本；合法对象字段类型不对则忽略上下文，均不抛错。
+ * 纯文本是默认路径 —— hook 作者写 `echo "注意：..."` 就该生效，不必先学 JSON。
+ */
+export function parseHookOutput(stdout: string): HookAdditionalContext {
+  const out = stdout.trim();
+  if (out === "") return { text: "", from: "text" };
+  if (out.startsWith("{")) {
+    try {
+      const obj = JSON.parse(out) as Record<string, unknown>;
+      const ctx = obj["additionalContext"];
+      if (typeof ctx === "string") return { text: ctx.trim(), from: "json" };
+      // 合法 JSON 但没有 additionalContext（例如 Stop 的 decision/reason）：
+      // 这不是附加上下文，别把结构化输出当正文塞给模型。
+      return { text: "", from: "json" };
+    } catch {
+      // 不是合法 JSON：按纯文本处理（不能崩会话）
+    }
+  }
+  return { text: out, from: "text" };
+}
+
+/**
+ * 解析退出码 0 的 Stop 输出（#64）：只有 `{"decision":"block","reason":"<非空>"}`
+ * 才请求续跑。普通 stdout（哪怕写着 "please continue"）、`{"decision":"block"}`
+ * 无 reason、半截 JSON 一律不续跑 —— 续跑会多花一次模型请求，误判的代价不对称。
+ */
+export function parseStopOutput(stdout: string): StopBlockRequest {
+  const out = stdout.trim();
+  if (!out.startsWith("{")) return { block: false, reason: "" };
+  try {
+    const obj = JSON.parse(out) as Record<string, unknown>;
+    if (obj["decision"] !== "block") return { block: false, reason: "" };
+    const reason = obj["reason"];
+    if (typeof reason !== "string") return { block: false, reason: "" };
+    const text = reason.trim();
+    if (text === "") return { block: false, reason: "" };
+    return { block: true, reason: text.slice(0, REASON_LIMIT) };
+  } catch {
+    return { block: false, reason: "" };
+  }
+}
+
 /** 该事件下所有匹配的 hook（保持配置顺序）。 */
 export function hooksFor(
   cfg: HooksConfig,
   event: HookEvent,
   tool: string | null,
   reason: NotificationReason | null = null,
+  trigger: CompactTrigger | null = null,
 ): HookDef[] {
   if (!cfg.enabled) return [];
-  return cfg.hooks[event].filter((h) => hookMatches(h, tool, reason));
+  return cfg.hooks[event].filter((h) => hookMatches(h, tool, reason, trigger));
 }
 
 /**
@@ -282,8 +364,9 @@ export async function dispatchHooks(
   runtime: Config,
   opts: RunHookOptions = {},
   reason: NotificationReason | null = null,
+  match: DispatchMatchOptions = {},
 ): Promise<HookDispatchResult> {
-  const list = hooksFor(cfg, event, tool, reason);
+  const list = hooksFor(cfg, event, tool, reason, match.trigger ?? null);
   const outcomes: HookOutcome[] = [];
   if (list.length === 0) return { blocked: false, reason: "", outcomes };
 
@@ -293,6 +376,9 @@ export async function dispatchHooks(
     if (r.kind === "aborted") break;
     // 通知永不阻断：退出码 2 与 onFailure=block 都不生效，失败只留给调用方做诊断。
     if (event === "Notification") continue;
+    // #64：SessionStart 失败只诊断 —— 会话已经开始，把它当阻断等于让用户开不了工。
+    // 退出码 2 在这里同样降级为诊断（runSessionStart 会把原因显示出来）。
+    if (event === "SessionStart") continue;
     if (r.kind === "block") {
       return { blocked: true, reason: r.reason, outcomes };
     }
@@ -318,8 +404,12 @@ export async function dispatchHooks(
  * 所以那一栏写 `reason=`；它恒不阻断，也不显示 onFailure。
  */
 export function describeHook(hook: HookDef): string {
-  const label = hook.event === "Notification" ? "reason" : "matcher";
-  const extra = hook.event === "PreToolUse" || hook.event === "Notification" ? "" : ` · onFailure=${hook.onFailure}`;
+  const label =
+    hook.event === "Notification" ? "reason" : hook.event === "PreCompact" ? "trigger" : "matcher";
+  const extra =
+    hook.event === "PreToolUse" || hook.event === "Notification" || hook.event === "SessionStart" || hook.event === "Stop"
+      ? ""
+      : ` · onFailure=${hook.onFailure}`;
   return `${hook.event} · ${label}=${hook.matcher ?? "*"} · timeout=${hook.timeout}s${extra} · ${hook.command}`;
 }
 

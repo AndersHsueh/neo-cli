@@ -287,6 +287,16 @@ export interface TurnStats {
   contextUsage: number;
   /** 本轮因分类而发生的档位切换，无则 null。 */
   tierSwitch: { from: ModelTier; to: ModelTier; reason: string; degraded?: string } | null;
+  /**
+   * #64：本轮被 UserPromptSubmit hook 阻断（用户策略拒绝这条输入）。
+   *
+   * 与 `hadError` 刻意分开：阻断是**用户的决定**，不是模型失败 ——
+   * 所以 `hadError` 仍为 false，但宿主（`-p` / ACP）必须据此以非零退出码 /
+   * 合法 JSON-RPC 错误响应收口，不能当成正常完成。原因在 `errorMessage`。
+   */
+  blocked?: boolean;
+  /** #64：自动压缩被 hook 拒绝，宿主不得再排本条输入的内部续跑。 */
+  compactBlocked?: boolean;
 }
 
 /** 给测试和将来的宿主看的循环表面。Agent 类隐式满足它。 */

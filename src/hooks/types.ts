@@ -15,14 +15,38 @@ import type { PermissionMode } from "../agent/types.ts";
  * 四个事件。PreToolUse 可阻断；PostToolUse / TurnEnd 默认不阻断（onFailure 可配）；
  * Notification 恒不阻断（issue #56，见下）。
  */
-export type HookEvent = "PreToolUse" | "PostToolUse" | "TurnEnd" | "Notification";
+export type HookEvent =
+  | "PreToolUse"
+  | "PostToolUse"
+  | "TurnEnd"
+  | "Notification"
+  /** #64：会话开始（new / resume / clear）。宿主显式触发，历史回放不算。 */
+  | "SessionStart"
+  /** #64：真实用户输入提交（-p 一次输入 / ACP 每次 session/prompt / 交互每条输入）。 */
+  | "UserPromptSubmit"
+  /** #64：模型正常终止后（不是每次工具迭代）。可 JSON block 请求一次续跑。 */
+  | "Stop"
+  /** #64：压缩前（手动 / 自动），在任何破坏历史的动作之前。 */
+  | "PreCompact";
 
 export const HOOK_EVENTS: readonly HookEvent[] = [
   "PreToolUse",
   "PostToolUse",
   "TurnEnd",
   "Notification",
+  "SessionStart",
+  "UserPromptSubmit",
+  "Stop",
+  "PreCompact",
 ];
+
+/** #64：会话开始来源。只认这三种 —— 没有 fork / ENV_FILE。 */
+export type SessionStartSource = "new" | "resume" | "clear";
+
+export const SESSION_START_SOURCES: readonly SessionStartSource[] = ["new", "resume", "clear"];
+
+/** #64：压缩来源（PreCompact 的 matcher 匹配对象）。 */
+export type CompactTrigger = "manual" | "auto";
 
 /**
  * Notification 的触发原因（issue #56）。
@@ -79,7 +103,16 @@ export function emptyHooksConfig(): HooksConfig {
   return {
     enabled: false,
     verbose: true,
-    hooks: { PreToolUse: [], PostToolUse: [], TurnEnd: [], Notification: [] },
+    hooks: {
+      PreToolUse: [],
+      PostToolUse: [],
+      TurnEnd: [],
+      Notification: [],
+      SessionStart: [],
+      UserPromptSubmit: [],
+      Stop: [],
+      PreCompact: [],
+    },
     warnings: [],
   };
 }
@@ -115,6 +148,14 @@ export function matchTool(matcher: string | undefined, tool: string): boolean {
  */
 export function matchReason(matcher: string | undefined, reason: NotificationReason): boolean {
   return matchPattern(matcher, reason);
+}
+
+/**
+ * #64：PreCompact 的 matcher 匹配对象是压缩来源（manual / auto）。
+ * 语法与 matchTool / matchReason 一致（精确 / 末尾通配 / 正则 / 缺省=全部）。
+ */
+export function matchTrigger(matcher: string | undefined, trigger: CompactTrigger): boolean {
+  return matchPattern(matcher, trigger);
 }
 
 /** matchTool / matchReason 共用的语法实现（两者语义不同，只有语法相同）。 */
@@ -305,11 +346,94 @@ export interface NotificationPayload extends HookPayloadBase {
   tool_input?: unknown;
 }
 
+/**
+ * #64 SessionStart 载荷。
+ *
+ * `source` 只认 new / resume / clear —— 没有 fork / ENV_FILE（与竞品差异，见 README）。
+ * 历史回放（`--resume` 读盘）不是「用户提交」，所以这里没有 prompt 字段。
+ */
+export interface SessionStartPayload extends HookPayloadBase {
+  event: "SessionStart";
+  source: SessionStartSource;
+}
+
+/**
+ * #64 UserPromptSubmit 载荷。
+ *
+ * 只在**真实用户输入**时触发：`-p` 一次输入一次、ACP 每次 `session/prompt` 一次、
+ * 交互每条输入一次。内部 drive/loop 轮与 Stop 续跑不触发（否则会递归）。
+ */
+export interface UserPromptSubmitPayload extends HookPayloadBase {
+  event: "UserPromptSubmit";
+  /** 用户提交的原始文本（图片等非文本部分不在载荷里）。 */
+  prompt: string;
+}
+
+/**
+ * #64 Stop 载荷。
+ *
+ * 只在模型**正常终止**时触发，不是每次工具迭代之后。`stop_hook_active` 表示
+ * 本轮已经因 Stop 续跑过一次 —— hook 据此可以避免自己把自己拖进循环。
+ */
+export interface StopPayload extends HookPayloadBase {
+  event: "Stop";
+  /** 本轮是否已经续跑过一次（每条用户输入最多一次）。 */
+  stop_hook_active: boolean;
+}
+
+/**
+ * #64 PreCompact 载荷。
+ *
+ * 在任何破坏历史的动作（摘要请求、快照、裁剪）**之前**触发。
+ * `trigger` 是 matcher 的匹配对象（manual / auto）。
+ */
+export interface PreCompactPayload extends HookPayloadBase {
+  event: "PreCompact";
+  trigger: CompactTrigger;
+  /** 压缩前非 system 消息条数（诊断用，不含正文）。 */
+  message_count: number;
+}
+
 export type HookPayload =
   | PreToolUsePayload
   | PostToolUsePayload
   | TurnEndPayload
-  | NotificationPayload;
+  | NotificationPayload
+  | SessionStartPayload
+  | UserPromptSubmitPayload
+  | StopPayload
+  | PreCompactPayload;
+
+/* ------------------------------------------------------------------ */
+/* 退出码 0 的输出解析（#64）                                          */
+/* ------------------------------------------------------------------ */
+
+/**
+ * 一条 hook 在退出码 0 时给出的「附加上下文」。
+ *
+ * 两种写法都接受（见 runner.ts 的 parseHookOutput）：
+ *  - 纯文本 stdout → 整段就是附加上下文；
+ *  - JSON `{"additionalContext": "..."}` → 只取该字段，**不把原 JSON 串再注入一次**。
+ *
+ * 解析失败（半截 JSON、字段类型不对）不抛错：退化成纯文本，会话照常继续。
+ */
+export interface HookAdditionalContext {
+  /** 附加上下文正文（已 trim；空串表示没有）。 */
+  text: string;
+  /** 来源形态：纯文本 / JSON 的 additionalContext 字段。 */
+  from: "text" | "json";
+}
+
+/**
+ * 退出码 0 的 Stop 输出：只有 `{"decision":"block","reason":"<非空>"}` 才请求续跑。
+ * 普通 stdout（哪怕写着 "please continue"）一律不续跑。
+ */
+export interface StopBlockRequest {
+  /** 是否请求续跑。 */
+  block: boolean;
+  /** 续跑原因（block=true 时恒非空）。 */
+  reason: string;
+}
 
 /* ------------------------------------------------------------------ */
 /* 执行结果                                                            */

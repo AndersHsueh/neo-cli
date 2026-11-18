@@ -380,6 +380,11 @@ export async function createAcpSession(opts: CreateAcpSessionOptions): Promise<A
     log(`环境快照落盘失败 ${(e as Error).message}（session 不阻塞）`);
   }
 
+  // ---- SessionStart（#64）：历史恢复与 memory.startup 之后、任何真实输入之前触发一次。
+  // new = 本进程新开会话；resume = session/load 接管了历史。回放历史不算用户提交，
+  // 所以这里只发 SessionStart。失败只诊断（runSessionStart 自身恒不阻断）。
+  await agent.runSessionStart(opts.resume ? "resume" : "new");
+
   const meta: SessionMeta = sess.meta;
 
   return {

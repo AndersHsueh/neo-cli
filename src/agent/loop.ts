@@ -16,6 +16,7 @@ import { ToolError } from "../tools/types.ts";
 import { formatModelLine } from "../prompt/modelLine.ts";
 import { isRecallMessage } from "../memory/port.ts";
 import { applyCompaction, planCompaction } from "./compact.ts";
+import { CompactBlockedError } from "./lifecycle.ts";
 import {
   PlanSession,
   PLAN_CONTROL_TOOLS,
@@ -33,6 +34,7 @@ import type {
   UsageBucket,
 } from "./types.ts";
 import type { RuleMatch } from "../rules/index.ts";
+import type { CompactTrigger } from "../hooks/index.ts";
 import { hasAnyHook } from "../hooks/index.ts";
 
 import { sendTurn } from "./sendTurn.ts";
@@ -55,6 +57,17 @@ import {
   emitTurnEndHooks,
   requestPlanApproval
 } from "./loopSupport.ts";
+import {
+  beginUserTurn,
+  endUserTurn,
+  ensureUserPromptSubmit,
+  runPreCompact,
+  runSessionStart,
+  runStopHooks,
+  submitUserPrompt,
+  type UserTurnState,
+} from "./lifecycle.ts";
+export { CompactBlockedError } from "./lifecycle.ts";
 
 export type {
   AgentEvent,
@@ -128,6 +141,12 @@ export class Agent {
   loadedRules: RuleMatch[] = [];
   /** 当前在历史里的 scoped 规则临时消息（命中集合变化/轮末时摘除）。 */
   scopedRulesMsg: Message | null = null;
+  /**
+   * #64：当前这条**真实用户输入**的生命周期额度（UserPromptSubmit 是否已发、
+   * Stop 是否已续跑一次）。null = 下一条 `send()` 视为新的真实用户输入。
+   * 宿主（drive/loop/`-p`/ACP）用 `beginUserTurn()` 显式声明同一条输入的内部轮。
+   */
+  userTurn: UserTurnState | null = null;
 
   constructor(readonly opt: AgentOptions) {
     this.mode = opt.mode;
@@ -444,18 +463,31 @@ export class Agent {
    * 工具循环中途调用会拆散配对，下一轮请求会被服务端以协议错误拒绝。
    * 抛错式：失败向上传，由调用方决定如何呈现。
    */
-  async compactNow(opts: { from?: number } = {}): Promise<{ beforeTokens: number; afterTokens: number }> {
+  async compactNow(
+    opts: { from?: number; compactTrigger?: CompactTrigger } = {},
+  ): Promise<{ beforeTokens: number; afterTokens: number }> {
+    // #64：PreCompact 必须在任何破坏历史/快照的动作之前跑（含 planCompaction 的
+    // 切分与摘要请求）。拒绝 → 抛专用错误，调用方原样保留历史与 lastCompact。
+    if (!this.abort || (!this.userTurn && this.abort.signal.aborted)) this.abort = new AbortController();
+    const signal = this.abort.signal;
+    const pre = await this.runPreCompact(opts.compactTrigger ?? "manual");
+    signal.throwIfAborted();
+    if (pre.blocked) throw new CompactBlockedError(pre.reason);
     const plan = planCompaction(this.messages, opts);
     const budget = Math.min(12_000, Math.floor(this.opt.cfg.contextWindow * 0.2));
+    // 附加上下文只喂摘要器：拼在摘要提示之后，不落历史。
+    const prompt = pre.context === "" ? plan.prompt : `${plan.prompt}\n\n【hook 附加指令】\n${pre.context}`;
     const res = await this.streamFn(
       { ...this.opt.cfg, maxTokens: budget, temperature: 0.2 },
       [
         { role: "system", content: "你是压缩器，只输出结构化摘要。" },
-        { role: "user", content: plan.prompt },
+        { role: "user", content: prompt },
       ],
       [],
       {},
+      signal,
     );
+    signal.throwIfAborted();
     if (!res.content.trim()) {
       throw new ToolError("压缩器返回了空摘要");
     }
@@ -501,7 +533,7 @@ export class Agent {
    * 压缩入口（薄壳，保持旧契约）：太短或失败返回 false，不抛错。
    * /compact 命令与自动压缩走这里；工具触发的压缩走 compactNow + 标记收口。
    */
-  async compact(opts: { from?: number } = {}): Promise<boolean> {
+  async compact(opts: { from?: number; compactTrigger?: CompactTrigger } = {}): Promise<boolean> {
     try {
       await this.compactNow(opts);
       return true;
@@ -592,7 +624,14 @@ export class Agent {
     userInput: string | { text: string; images: string[] },
     opts: { rollbackOnAbort?: boolean } = {},
   ): Promise<TurnStats> {
-    return sendTurn.call(this, userInput, opts);
+    const ownsBoundary = this.userTurn === null;
+    if (ownsBoundary) this.beginUserTurn();
+    this.abort = this.userTurn!.controller;
+    try {
+      return await sendTurn.call(this, userInput, opts);
+    } finally {
+      if (ownsBoundary) this.endUserTurn();
+    }
   }
 
   writeTurnLog = writeTurnLog;
@@ -612,4 +651,19 @@ export class Agent {
   runHooks = runHooks;
   emitTurnEndHooks = emitTurnEndHooks;
   requestPlanApproval = requestPlanApproval;
+
+  /* ---------------- 生命周期 hooks（#64） ---------------- */
+  // 会话/用户边界上的四个事件。**不在 constructor 触发 SessionStart**：
+  // 构造 Agent 不等于会话开始，宿主必须显式调用 runSessionStart。
+  runSessionStart = runSessionStart;
+  runStopHooks = runStopHooks;
+  runPreCompact = runPreCompact;
+  /** 宿主声明「接下来是一条真实用户输入」（内部轮沿用同一份额度）。 */
+  beginUserTurn = beginUserTurn;
+  /** 一条真实用户输入的生命周期结束。 */
+  endUserTurn = endUserTurn;
+  /** 显式入口（-p / ACP）在发请求前提交 UserPromptSubmit，幂等。 */
+  submitUserPrompt = submitUserPrompt;
+  /** sendTurn 在分类器之前补发 UserPromptSubmit（幂等）。 */
+  ensureUserPromptSubmit = ensureUserPromptSubmit;
 }

@@ -109,6 +109,10 @@ export async function runOneshotOrPiped(s: AppSession): Promise<number | null> {
     let stats: Awaited<ReturnType<typeof agent.send>>;
     // issue #51：驱动终态（普通 -p 为 null）。
     let driveResult: DriveRunResult | null = null;
+    // #64：--drive 的一次输入跨多轮内部 send —— 宿主持有同一条用户输入的 boundary，
+    // 最终 endUserTurn() 收口（含 UPS 临时上下文）。默认 agent.send 会为每条真实输入
+    // 自动建/结束 boundary；这里显式持有，内部轮沿用同一份额度（UPS 一次、Stop 一次）。
+    if (oneShotDrive) agent.beginUserTurn(prompt);
     try {
       if (!oneShotDrive) {
         streamBeginTurn();
@@ -156,6 +160,24 @@ export async function runOneshotOrPiped(s: AppSession): Promise<number | null> {
           streamBeginTurn();
           stats = await agent.send(prompt);
           round += 1;
+          // #64：hook 阻断 / 用户中断时不得继续花模型
+          // （不跑检查命令、不问 judge、不再排下一轮）。终态按「未达成」收口，
+          // 退出码由下面的 abort > hadError > drive 优先级决定。
+          if (stats.blocked === true || stats.compactBlocked === true || stats.aborted) {
+            final = {
+              status: "idle-stop",
+              source: null,
+              rounds: dm.state?.rounds ?? 0,
+              elapsedMs: Date.now() - t0,
+              reason:
+                stats.blocked === true
+                  ? `UserPromptSubmit hook 阻断了本次输入：${stats.errorMessage ?? ""}`
+                  : stats.aborted
+                    ? "本轮被中断，自动续跑已停止"
+                    : `本轮失败，自动续跑已停止：${stats.errorMessage ?? "未知原因"}`,
+            };
+            break;
+          }
           const thisTurnToolCalls = stats.toolCalls;
           const recentToolOutput =
             thisTurnToolCalls > 0
@@ -226,6 +248,8 @@ export async function runOneshotOrPiped(s: AppSession): Promise<number | null> {
       throw e;
     } finally {
       uninstallSignals();
+      // #64：--drive 的 boundary 与 --drive 同寿 —— 成功/失败/中断都在这里收口。
+      if (oneShotDrive) agent.endUserTurn();
     }
     // 正常结束（含 hadError / aborted）：先收子进程再落盘退出。
     // -p 是「跑完就退」的一次性进程，子进程没有第二次机会被回收。
@@ -241,11 +265,12 @@ export async function runOneshotOrPiped(s: AppSession): Promise<number | null> {
     // 退出码约定（P0-6）：0 成功 / 1 LLM 或 agent 失败 / 2 用法错误 / 130 用户中断
     // issue #51：`-p --drive` 时退出码由驱动终态决定（达成 0 / 未达成 1），
     // 但 SIGINT 仍优先 130、LLM 硬错误仍 1（驱动跑完但模型报错不能报成功）。
-    let exitCode = stats.aborted ? 130 : stats.hadError ? 1 : 0;
+    // #64：UserPromptSubmit 阻断按「被拒绝」收口为 1（不是成功，也不是用法错误）。
+    let exitCode = stats.aborted ? 130 : stats.hadError || stats.blocked === true ? 1 : 0;
     if (driveResult) {
       // #52 固定优先级：abort > hadError > drive。检查碰巧通过也不能覆盖 LLM/Agent 硬错误。
       if (stats.aborted) exitCode = 130;
-      else if (stats.hadError) exitCode = 1;
+      else if (stats.hadError || stats.blocked === true) exitCode = 1;
       else exitCode = driveExitCode(driveResult);
       // PRD §2.4：结束摘要走 stderr（stdout 保持 -p 现有风格）。
       console.error(formatDriveSummary(driveResult));
@@ -263,9 +288,9 @@ export async function runOneshotOrPiped(s: AppSession): Promise<number | null> {
     }
 
     if (jsonMode) {
-      // 失败/中断时不要回填历史里的旧 assistant（--resume 场景会误导编排器）。
+      // 失败/中断/阻断时不要回填历史里的旧 assistant（--resume 场景会误导编排器）。
       const answer =
-        stats.hadError || stats.aborted
+        stats.hadError || stats.aborted || stats.blocked === true
           ? null
           : [...agent.messages]
               .reverse()
@@ -318,7 +343,7 @@ export async function runOneshotOrPiped(s: AppSession): Promise<number | null> {
       // （#52 优先级 abort > hadError > drive 是唯一来源），writer 内不重算。
       const resultStatus: StreamResultStatus = stats.aborted
         ? "aborted"
-        : stats.hadError
+        : stats.hadError || stats.blocked === true
           ? "failed"
           : driveResult && driveResult.source === "model"
             ? "model_done"

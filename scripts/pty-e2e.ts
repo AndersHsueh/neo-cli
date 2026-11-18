@@ -34,7 +34,7 @@
  * 退出码：全部 PASS → 0，否则 → 1。
  */
 import { closeSync, constants as fsConstants, openSync, readdirSync, readFileSync, statSync, writeSync } from "node:fs";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import type { Subprocess } from "bun";
@@ -2096,6 +2096,224 @@ async function scenarioS19(tmpRoot: string): Promise<void> {
 /* 主流程                                                              */
 /* ------------------------------------------------------------------ */
 
+/**
+ * #64 生命周期 hooks 的 TTY 场景夹具：把 hook 事件名追加到 marks 文件。
+ *
+ * 为什么必须走真 PTY：hook 的触发顺序（SessionStart → UserPromptSubmit → …）
+ * 与「阻断是否可见」都是事件时序问题，fake IO 测不出真实 TTY 下的顺序与渲染。
+ */
+async function hooksFixture(
+  tmpRoot: string,
+  name: string,
+  events: string[],
+  extra: Record<string, unknown> = {},
+): Promise<{ dirs: RunDirs; mark: string; settings: Record<string, unknown> }> {
+  const dirs = await makeDirs(tmpRoot, name);
+  await writeFile(join(dirs.work, "a.txt"), "hello\n", "utf8");
+  const mark = join(dirs.root, "marks.txt");
+  const rec = join(dirs.root, "rec.sh");
+  await writeFile(rec, `#!/bin/sh\ncat >/dev/null\necho $NEO_HOOK_EVENT >> '${mark}'\n`, { mode: 0o755 });
+  const hooks: Record<string, unknown> = { enabled: true };
+  for (const ev of events) hooks[ev] = [{ command: rec }];
+  return {
+    dirs,
+    mark,
+    settings: {
+      ...PTY_SETTINGS,
+      providers: [{ ...(PTY_SETTINGS.providers[0] as Record<string, unknown>) }],
+      ...extra,
+      hooks,
+    },
+  };
+}
+
+/** 读 marks 文件（不存在 = 空）。 */
+async function readMarks(path: string): Promise<string[]> {
+  try {
+    return (await readFile(path, "utf8")).trim().split("\n").filter((l) => l !== "");
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * #64 S31：交互 new 会话的事件顺序 + 阻断可见。
+ *
+ * 断言：SessionStart 先于 UserPromptSubmit；阻断原因在屏幕上可见；
+ * 阻断后回到提示符（会话没挂），且不产生任何模型请求（fake-llm 无正文输出）。
+ */
+async function scenarioS31(tmpRoot: string): Promise<void> {
+  const { dirs, mark, settings } = await hooksFixture(tmpRoot, "s31-hooks", ["SessionStart", "UserPromptSubmit"]);
+  const block = join(dirs.root, "block.sh");
+  await writeFile(block, `#!/bin/sh\ncat >/dev/null\necho UserPromptSubmit >> '${mark}'\necho 'S31 阻断原因可见' >&2\nexit 2\n`, { mode: 0o755 });
+  (settings["hooks"] as Record<string, unknown>)["UserPromptSubmit"] = [{ command: block }];
+  const fake = await startFake("tool-then-answer");
+  const run = await startNeo({ fake, dirs, name: "s31", args: BASE_ARGS, cols: DEFAULT_COLS, rows: DEFAULT_ROWS, settings });
+  try {
+    await waitPrompt(run);
+    await run.type("被阻断的输入");
+    await waitFor(() => run.screen.text().includes("S31 阻断原因可见"), {
+      label: "屏幕出现 UserPromptSubmit 的阻断原因",
+      run,
+    });
+    // 阻断后仍能继续交互（会话没挂）：再发一条 /hooks 看得到全部新事件。
+    await waitPrompt(run, "阻断后回到提示符");
+    const events = await readMarks(mark);
+    check(events[0] === "SessionStart", `首个事件应为 SessionStart，实际 ${events.join(",")}`, run.screen);
+    check(
+      events.filter((e) => e === "UserPromptSubmit").length === 1,
+      `UserPromptSubmit 应恰好一次，实际 ${events.join(",")}`,
+      run.screen,
+    );
+    await run.type("/hooks");
+    await waitFor(() => run.screen.text().includes("PreCompact"), {
+      label: "/hooks 列出 PreCompact",
+      run,
+    });
+    maybeDumpScreen(run.screen);
+    await run.type("/exit");
+    await run.waitExit();
+  } catch (e) {
+    throw attachScreen(e, run.screen, run.stderr);
+  } finally {
+    await run.close();
+    await fake.stop();
+  }
+}
+
+/**
+ * #64 S32：`--resume` 会话只触发 SessionStart 一次，回放历史不算用户提交。
+ */
+async function scenarioS32(tmpRoot: string): Promise<void> {
+  const { dirs, mark, settings } = await hooksFixture(tmpRoot, "s32-hooks", ["SessionStart", "UserPromptSubmit"]);
+  const fake = await startFake("tool-then-answer");
+  const first = await startNeo({
+    fake,
+    dirs,
+    name: "s32-a",
+    autoName: false,
+    args: [...BASE_ARGS, "--name", "HooksResume"],
+    cols: DEFAULT_COLS,
+    rows: DEFAULT_ROWS,
+    settings,
+  });
+  let sessionId: string | null = null;
+  try {
+    await waitPrompt(first);
+    await first.type("读一下 a.txt");
+    await waitFor(() => first.screen.text().includes("读完了：内容是 hello。"), {
+      label: "首轮完成",
+      run: first,
+    });
+    await waitPrompt(first, "首轮结束");
+    sessionId = (() => {
+      const p = latestSessionFile(dirs.sessions);
+      return p ? (p.split("/").pop() ?? "").replace(/\.json$/, "") : null;
+    })();
+    await first.type("/exit");
+    await first.waitExit();
+  } finally {
+    await first.close();
+  }
+  check(sessionId !== null, "首轮会话应已落盘", first.screen);
+  const before = (await readMarks(mark)).length;
+  const resumed = await startNeo({
+    fake,
+    dirs,
+    name: "s32-b",
+    autoName: false,
+    args: [...BASE_ARGS, "--resume", sessionId!],
+    cols: DEFAULT_COLS,
+    rows: DEFAULT_ROWS,
+    settings,
+  });
+  try {
+    await waitPrompt(resumed);
+    const after = await readMarks(mark);
+    check(
+      after.length === before + 1 && after.at(-1) === "SessionStart",
+      `resume 只应新增一次 SessionStart，实际新增 ${after.slice(before).join(",") || "无"}`,
+      resumed.screen,
+    );
+    await resumed.type("/exit");
+    await resumed.waitExit();
+  } catch (e) {
+    throw attachScreen(e, resumed.screen, resumed.stderr);
+  } finally {
+    await resumed.close();
+    await fake.stop();
+  }
+}
+
+/**
+ * #64 S33：Stop 续跑在真实 TTY 下只发生一次，且 TurnEnd/Notification 各一次。
+ */
+async function scenarioS33(tmpRoot: string): Promise<void> {
+  const { dirs, mark, settings } = await hooksFixture(tmpRoot, "s33-hooks", ["Stop", "TurnEnd", "Notification"]);
+  const stop = join(dirs.root, "stop.sh");
+  await writeFile(stop, `#!/bin/sh\ncat >/dev/null\necho Stop >> '${mark}'\necho '{"decision":"block","reason":"S33 再确认一次"}'\n`, {
+    mode: 0o755,
+  });
+  (settings["hooks"] as Record<string, unknown>)["Stop"] = [{ command: stop }];
+  const fake = await startFake("tool-then-answer");
+  const run = await startNeo({ fake, dirs, name: "s33", args: BASE_ARGS, cols: DEFAULT_COLS, rows: DEFAULT_ROWS, settings });
+  try {
+    await waitPrompt(run);
+    await run.type("读一下 a.txt");
+    await waitFor(() => run.screen.text().includes("读完了：内容是 hello。"), {
+      label: "首轮完成",
+      run,
+    });
+    await waitPrompt(run, "续跑结束后回到提示符");
+    const events = await readMarks(mark);
+    check(events.filter((e) => e === "TurnEnd").length === 1, `TurnEnd 应一次，实际 ${events.join(",")}`, run.screen);
+    check(
+      events.filter((e) => e === "Notification").length === 1,
+      `Notification 应一次，实际 ${events.join(",")}`,
+      run.screen,
+    );
+    check(events.filter((e) => e === "Stop").length === 2, `Stop 应两次（原轮 + 一次续跑），实际 ${events.join(",")}`, run.screen);
+    await run.type("/exit");
+    await run.waitExit();
+  } catch (e) {
+    throw attachScreen(e, run.screen, run.stderr);
+  } finally {
+    await run.close();
+    await fake.stop();
+  }
+}
+
+/** #64 真实交互 drive 内部轮共用额度，clear 单独触发 SessionStart。 */
+async function scenarioS34(tmpRoot: string): Promise<void> {
+  const {dirs,mark,settings}=await hooksFixture(tmpRoot,"s34-hooks",["UserPromptSubmit","TurnEnd"]);
+  const stop=join(dirs.root,"stop.sh");
+  const start=join(dirs.root,"start.sh");
+  await writeFile(stop,`#!/bin/sh\ncat >/dev/null\necho Stop >> '${mark}'\necho '{"decision":"block","reason":"核对一次"}'\n`,{mode:0o755});
+  await writeFile(start,`#!/bin/sh\ncat >/dev/null\necho "SessionStart:$NEO_HOOK_SOURCE" >> '${mark}'\n`,{mode:0o755});
+  Object.assign(settings["hooks"] as Record<string,unknown>,{Stop:[{command:stop}],SessionStart:[{command:start}]});
+  const fake=await startFake("tool-then-answer");
+  const run=await startNeo({fake,dirs,name:"s34",args:BASE_ARGS,cols:DEFAULT_COLS,rows:DEFAULT_ROWS,settings});
+  try {
+    await waitPrompt(run);
+    await run.type("/drive --max 2 false -- 再核对");
+    await waitFor(()=>run.screen.text().includes("已启动自动续跑"),{label:"启动 drive",run});
+    await waitPrompt(run);
+    await run.type("读一下 a.txt");
+    await waitFor(()=> readFileSync(mark,"utf8").split("\n").filter(e=>e==="TurnEnd").length===3,{label:"原输入与 drive 两轮结束",run});
+    await waitPrompt(run);
+    const events=await readMarks(mark);
+    check(events.filter(e=>e==="UserPromptSubmit").length===1,`drive 内部轮重复提交：${events}`,run.screen);
+    check(events.filter(e=>e==="Stop").length===4,`Stop 额度被重置：${events}`,run.screen);
+    await run.type("/clear");
+    await waitFor(()=> readFileSync(mark,"utf8").split("\n").includes("SessionStart:clear"),{label:"clear 生命周期事件",run});
+    check((await readMarks(mark)).filter(e=>e.startsWith("SessionStart:")).length===2,"clear 应恰好一次",run.screen);
+    await waitPrompt(run);
+    await run.type("/exit");
+    await run.waitExit();
+  } catch(e) {throw attachScreen(e,run.screen,run.stderr);}
+  finally {await run.close();await fake.stop();}
+}
+
 interface Scenario {
   /** 场景 id（也可用于命令行过滤，如 s1/s2）。 */
   id: string;
@@ -2953,6 +3171,7 @@ async function scenarioS30(tmpRoot: string): Promise<void> {
 }
 
 const SCENARIOS: Scenario[] = [
+  {id:"s34", title:"#64 drive 内部轮共享额度与 clear 生命周期",fn:scenarioS34,focus:["已启动自动续跑","上下文已清空"]},
   {
     id: "s1",
     title: "S1 narration：两轮正文都有行首 ● 前缀",
@@ -3144,6 +3363,24 @@ const SCENARIOS: Scenario[] = [
     title: "S30 Esc Esc 打开 rewind 菜单：选轮次/选模式/执行/取消",
     fn: scenarioS30,
     focus: ["回滚到哪一轮之前？", "回滚什么？", "已回滚"],
+  },
+  {
+    id: "s31",
+    title: "#64 交互 new：SessionStart 先于 UserPromptSubmit，阻断原因可见",
+    fn: scenarioS31,
+    focus: ["S31 阻断原因可见", "SessionStart", "PreCompact"],
+  },
+  {
+    id: "s32",
+    title: "#64 --resume：只触发 SessionStart，回放历史不算用户提交",
+    fn: scenarioS32,
+    focus: ["SessionStart", "读完了：内容是 hello。"],
+  },
+  {
+    id: "s33",
+    title: "#64 Stop 续跑一次：TurnEnd/Notification 各一次",
+    fn: scenarioS33,
+    focus: ["读完了：内容是 hello。", "Stop", "TurnEnd"],
   },
 ];
 

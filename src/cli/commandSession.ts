@@ -54,6 +54,9 @@ export async function handleSessionCommands(cmd: string, arg: string, rest: stri
 
     case "clear":
       agent.reset();
+      // #64 SessionStart(clear)：/clear 是一次真实的会话开始（历史被清空、上下文重来）。
+      // 失败只诊断 —— 用户已经清空了上下文，不能因为 hook 失败就卡住。
+      await agent.runSessionStart("clear");
       ui.success("上下文已清空。");
       return true;
 

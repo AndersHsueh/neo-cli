@@ -3,8 +3,9 @@ import { estimateTokens, LLMError, type Message, type ToolSpec } from "../llm.ts
 import { StreamFormatter } from "../ui/stream.ts";
 import { renderMarkdown } from "../ui/render.ts";
 import { c, colorEnabled } from "../ui/theme.ts";
-import { dispatch, isParallelizable } from "../tools/index.ts";
+import { dispatch, isParallelizable, toolSpecs } from "../tools/index.ts";
 import { isContextOverflowError, parseContextLimitFromError } from "../contextWindow.ts";
+import { CompactBlockedError, reportLifecycle } from "./lifecycle.ts";
 import { previewArgs } from "./render.ts";
 import type {
   ToolEndEventData,
@@ -34,12 +35,46 @@ export async function sendTurn(
 ): Promise<TurnStats> {
   const started = Date.now();
   this.turnCounter += 1;
-  this.lastCompact = null;
-  this.abort = new AbortController();
+  const previousCompact = this.lastCompact;
+  this.abort ??= new AbortController();
   const signal = this.abort.signal;
 
   const text = typeof userInput === "string" ? userInput : userInput.text;
   const images = typeof userInput === "string" ? [] : userInput.images;
+
+  // ---- #64 UserPromptSubmit：必须在**分类器之前**、写历史之前 ----
+  // 阻断时零模型请求（含分类器）、history 一个字节都不动，原因可见。
+  // 幂等：宿主（-p / ACP）已提前 submitUserPrompt 过，或这是同一条用户输入的
+  // 内部轮（drive/loop/Stop 续跑），都不会再执行 hook。
+  // 阻断结果留在 userTurn.blocked 上：宿主重复 send 同一条输入时直接复用，
+  // 不会因为「再 send 一次」就绕过用户策略。
+  const ups = await this.ensureUserPromptSubmit(text);
+  if (ups.blocked || signal.aborted) {
+    const msg = signal.aborted ? null : `UserPromptSubmit hook 阻断了本次输入：${ups.reason}`;
+    if (msg) reportLifecycle(this, msg);
+    if (signal.aborted) this.opt.onEvent?.({ type: "aborted" });
+    this.lastStats = {
+      durationMs: Date.now() - started,
+      promptTokens: 0,
+      completionTokens: 0,
+      reasoningTokens: 0,
+      toolCalls: 0,
+      iterations: 0,
+      finishReason: signal.aborted ? "aborted" : "blocked",
+      aborted: signal.aborted,
+      // 阻断不是模型失败：hadError 保持 false，宿主据 `blocked` 决定退出码。
+      hadError: false,
+      errorMessage: msg,
+      emptyResponse: false,
+      contextUsage: estimateTokens(this.messages, toolSpecs(this.opt.cfg)) / this.opt.cfg.contextWindow,
+      tierSwitch: null,
+      blocked: !signal.aborted,
+    };
+    this.writeTurnLog(this.lastStats);
+    return this.lastStats;
+  }
+
+  this.lastCompact = null;
 
   // 分类在消息入队之前完成，这样本轮从一开始就用对模型
   const tierSwitch = await this.classifyTurn(text);
@@ -111,7 +146,10 @@ export async function sendTurn(
   let answered = false;
   /** 轮次内是否因用户 abort 退出（循环顶部 break 路径）。 */
   let abortedFlag = false;
-
+  /** #64：Stop 续跑是否已用掉（每条用户输入最多一次，额度挂在 userTurn 上）。 */
+  let stopContinued = this.userTurn?.stopContinued === true;
+  /** #64：自动压缩被 PreCompact 拒绝 —— 本轮明确停止，不 trim、不重试。 */
+  let compactBlocked: string | null = null;
   for (let iter = 0; iter < maxIter; iter++) {
     iterations++;
     if (signal.aborted) {
@@ -123,7 +161,18 @@ export async function sendTurn(
     const usage = estimateTokens(this.messages, specs) / this.opt.cfg.contextWindow;
     if (usage > this.opt.cfg.compactThreshold && this.messages.length > 6) {
       this.opt.console.info(`上下文使用率 ${(usage * 100).toFixed(0)}%，自动压缩中…`);
-      await this.compact();
+      // #64：PreCompact 拒绝 ≠ 压缩失败。拒绝是用户的决定，本轮必须明确停下，
+      // 不得退化为裁剪/重试（那两条都会破坏历史），也不得下一轮重复跑 hook。
+      try {
+        await this.compactNow({ compactTrigger: "auto" });
+      } catch (e) {
+        if (signal.aborted) { abortedFlag = true; break; }
+        if (e instanceof CompactBlockedError) {
+          compactBlocked = e.reason;
+          break;
+        }
+        // 普通压缩失败（历史太短 / 摘要器空）沿用旧语义：不中断本轮。
+      }
     }
 
     // A2：接近窗口上限（含本次 maxTokens 预留）时提前压缩。配置窗口可能偏大，
@@ -134,7 +183,18 @@ export async function sendTurn(
         this.opt.cfg.contextWindow * 0.98
     ) {
       this.opt.console.info("上下文接近窗口上限，压缩后继续…");
-      const ok = await this.compact();
+      let ok: boolean;
+      try {
+        await this.compactNow({ compactTrigger: "auto" });
+        ok = true;
+      } catch (e) {
+        if (signal.aborted) { abortedFlag = true; break; }
+        if (e instanceof CompactBlockedError) {
+          compactBlocked = e.reason;
+          break;
+        }
+        ok = false;
+      }
       if (!ok) this.trimOldToolOutputs();
     }
 
@@ -330,6 +390,33 @@ export async function sendTurn(
           });
           answered = true;
           retryMaxTokens = null;
+          if (signal.aborted) {
+            abortedFlag = true;
+            break;
+          }
+          // Stop 属于模型的正常终态，不是工具轮或截断响应；续跑仍在原 for 内。
+          if (res.finishReason === "stop") {
+            const stop = await this.runStopHooks(stopContinued);
+            if (signal.aborted) {
+              abortedFlag = true;
+              break;
+            }
+            if (stop.continue) {
+              if (stopContinued) {
+                reportLifecycle(this, `Stop hook 续跑已达每条用户输入一次的上限：${stop.reason}`);
+              } else if (iter + 1 >= maxIter) {
+                reportLifecycle(this, "Stop hook 请求续跑，但原迭代预算已用尽。");
+              } else {
+                stopContinued = true;
+                if (this.userTurn) this.userTurn.stopContinued = true;
+                this.messages.push({ role: "user", content: stop.reason });
+                answered = false;
+                continue;
+              }
+            } else if (stop.reason) {
+              reportLifecycle(this, `Stop hook 未请求续跑（仅诊断）：${stop.reason}`);
+            }
+          }
           break;
         }
 
@@ -541,9 +628,15 @@ export async function sendTurn(
         }
         let compacted = false;
         try {
-          await this.compactNow();
+          await this.compactNow({ compactTrigger: "auto" });
           compacted = true;
-        } catch {
+        } catch (e) {
+          // #64：PreCompact 拒绝时不得退化为裁剪（那是破坏历史），本轮明确停止。
+          if (signal.aborted) { abortedFlag = true; break; }
+        if (e instanceof CompactBlockedError) {
+            compactBlocked = e.reason;
+            break;
+          }
           // 历史太短/压缩失败：退化为裁剪旧工具输出
         }
         if (!compacted) {
@@ -601,6 +694,16 @@ export async function sendTurn(
     );
   }
 
+  // #64：自动压缩被 PreCompact 拒绝 —— 本轮明确停止（不 trim、不重试、不换轮）。
+  // 历史与 lastCompact 原样保留；原因必须可见，且按「本轮失败」收口。
+  if (compactBlocked !== null) {
+    if (this.lastCompact === null) this.lastCompact = previousCompact;
+    hadError = true;
+    errorMessage = `PreCompact hook 拒绝了自动压缩，本轮已停止：${compactBlocked}`;
+    this.opt.console.error(errorMessage);
+    this.opt.onEvent?.({ type: "error", data: errorMessage });
+  }
+
   // 收口兜底：循环结束却没有最终正文（例：最后一次迭代恰好触发溢出恢复/迭代上限），
   // 不能静默返回 ok —— 这正是 A1 要消灭的「最后一轮没回复、没报错」。
   if (!answered && !hadError && !emptyResponse && !abortedFlag && !signal.aborted) {
@@ -611,10 +714,15 @@ export async function sendTurn(
     this.opt.onEvent?.({ type: "error", data: errorMessage });
   }
 
+  // 临时召回消息只服务于本轮：轮末摘除，不进历史、不污染后续轮次
+  if (recallMsg) this.dropTransientMessage(recallMsg);
+  this.dropScopedRulesMessage();
+
   this.totalPrompt += promptTokens;
   this.totalCompletion += completionTokens;
   this.totalReasoning += reasoningTokens;
 
+  abortedFlag ||= signal.aborted;
   this.lastStats = {
     durationMs: Date.now() - started,
     promptTokens,
@@ -629,11 +737,8 @@ export async function sendTurn(
     emptyResponse,
     contextUsage: estimateTokens(this.messages, specs) / this.opt.cfg.contextWindow,
     tierSwitch,
+    ...(compactBlocked !== null ? { compactBlocked: true } : {}),
   };
-
-  // 临时召回消息只服务于本轮：轮末摘除，不进历史、不污染后续轮次
-  if (recallMsg) this.dropTransientMessage(recallMsg);
-  this.dropScopedRulesMessage();
 
   this.opt.onEvent?.({ type: "turn_end", data: this.lastStats });
   this.emitMemoryCapture(turnStart, "turn");
