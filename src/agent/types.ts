@@ -241,6 +241,13 @@ export interface AgentOptions {
    */
   toolAllowlist?: readonly string[];
   /**
+   * 父会话的 MCP 已加载集合（issue #68，仅子代理派生时传）。
+   *
+   * 子代理**拷贝**父会话当时的集合（新 Set），自带 `tool_search`；
+   * 子代理里再搜索只改它自己那份，不写回父会话。不传 = 空集合（新会话只留 alwaysLoad）。
+   */
+  mcpLoaded?: import("../mcp/toolSearch.ts").McpLoadState;
+  /**
    * wiki_write 的跨进程写锁（issue #53）：只有后台 wiki 维护 worker 传，
    * 由 makeCtx 透传进 ToolCtx。不传 = 主会话路径行为不变。
    */

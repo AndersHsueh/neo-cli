@@ -3,7 +3,7 @@ import { estimateTokens, LLMError, type Message, type ToolSpec } from "../llm.ts
 import { StreamFormatter } from "../ui/stream.ts";
 import { renderMarkdown } from "../ui/render.ts";
 import { c, colorEnabled } from "../ui/theme.ts";
-import { dispatch, isParallelizable, toolSpecs } from "../tools/index.ts";
+import { dispatch, isParallelizable } from "../tools/index.ts";
 import { isContextOverflowError, parseContextLimitFromError } from "../contextWindow.ts";
 import { CompactBlockedError, reportLifecycle } from "./lifecycle.ts";
 import { previewArgs } from "./render.ts";
@@ -66,7 +66,7 @@ export async function sendTurn(
       hadError: false,
       errorMessage: msg,
       emptyResponse: false,
-      contextUsage: estimateTokens(this.messages, toolSpecs(this.opt.cfg)) / this.opt.cfg.contextWindow,
+      contextUsage: estimateTokens(this.messages, this.toolSpecsFor()) / this.opt.cfg.contextWindow,
       tierSwitch: null,
       blocked: !signal.aborted,
     };
@@ -116,7 +116,7 @@ export async function sendTurn(
       : { role: "user", content: text },
   );
 
-  const specs: ToolSpec[] = this.toolSpecsFor();
+  let specs: ToolSpec[] = this.toolSpecsFor();
   const maxIter = this.opt.cfg.maxToolIterations;
   let toolCalls = 0;
   let finishReason: string | null = null;
@@ -156,6 +156,12 @@ export async function sendTurn(
       abortedFlag = true;
       break;
     }
+
+    // issue #68：工具清单按**每次请求**重算。
+    // tool_search 装入的 MCP schema 必须在下一轮请求里就出现；上一轮工具循环里
+    // 也可能因直接点名而记账。清单是纯函数（toolSpecsFor 读会话已加载集合），
+    // 重算成本远低于多发一份过期 schema 或漏发刚装入的 schema。
+    specs = this.toolSpecsFor();
 
     // 上下文超阈值 → 自动压缩
     const usage = estimateTokens(this.messages, specs) / this.opt.cfg.contextWindow;

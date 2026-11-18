@@ -10,6 +10,11 @@
  */
 import type { Config } from "../config.ts";
 import { mainToolNames, toolNames, toolSpecs } from "../tools/index.ts";
+import {
+  TOOL_SEARCH_NAME,
+  classifyMcpTools,
+  toolSearchEnabled,
+} from "../mcp/toolSearch.ts";
 import { buildSystemPrompt } from "../system-prompt.ts";
 import { renderCore } from "./render.ts";
 import {
@@ -27,6 +32,25 @@ import {
   visibilityPriority,
   type ToolVisibility,
 } from "./visibility.ts";
+
+/**
+ * issue #68：该工具名在当前 cfg 下是否会**带 schema 进请求**。
+ *
+ * 只对 MCP 工具与 `tool_search` 有判断，其余第一方工具一律 true。
+ * 判据与 `Agent.deferMcpSpecs()` 同源（延迟启用 + alwaysLoad + 无已加载集合），
+ * 差别只在「已加载集合为空」—— 本模块拿不到会话状态，按新会话第一轮计量。
+ */
+function mcpVisibleInRequest(cfg: Config, name: string): boolean {
+  const all = toolSpecs(cfg);
+  const enabled = toolSearchEnabled(cfg, all);
+  if (name === TOOL_SEARCH_NAME) return enabled;
+  if (!name.startsWith("mcp__")) return true;
+  if (!enabled) return true;
+  const cls = classifyMcpTools(cfg, all).find((t) => t.name === name);
+  // 反解不出 server 的 mcp__* 不归延迟管（与 Agent.deferMcpSpecs 同口径）。
+  if (!cls || cls.server === null) return true;
+  return cls.alwaysLoad;
+}
 
 export interface PromptManagerOptions {
   mailbox: boolean;
@@ -103,7 +127,12 @@ export class PromptManager {
     const rendered = this.render(cfg);
     // 候选集 = 正常模式下模型实际能看到的工具（mainToolNames 去掉 plan-only）：
     // 与「## 工具」节里列出的说明行一一对应，成本模型才对得上。
-    const all = mainToolNames(cfg);
+    // issue #68：MCP 延迟加载下，「实际能看到」= 实际会发送的 specs ——
+    // 未装入的延迟 MCP 只有目录短节、没有 schema，不能进候选集，
+    // 否则 dry-run 会按全量 schema 计量，报出一个永远不会发生的开销。
+    // 这里按「无会话已加载集合」计量（本方法只拿得到 cfg）：
+    // 第一方 + tool_search + alwaysLoad，正是新会话第一轮请求的形状。
+    const all = mainToolNames(cfg).filter((n) => mcpVisibleInRequest(cfg, n));
     const measure = (names: readonly string[], trimDynamic: boolean): number => {
       const want = new Set(names);
       // schema 按注册表顺序（与请求里发出的一致）。

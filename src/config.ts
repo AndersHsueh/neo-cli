@@ -43,6 +43,7 @@ import {
   resolveModelFallback,
   resolveOutputProbe,
   resolveParallelToolCalls,
+  resolveMcpConfig,
   resolveRepoMapConfig,
   type Config,
   type McpServerConfig,
@@ -255,8 +256,8 @@ export function parseMcpServers(raw: unknown): { servers: McpServerConfig[]; war
       const enabled = bool(r["enabled"], true);
       servers.push(
         transport === "sse"
-          ? { name, transport: "sse", url, headers, enabled }
-          : { name, transport: "http", url, headers, enabled },
+          ? { name, transport: "sse", url, headers, enabled, ...(bool(r["alwaysLoad"], false) ? { alwaysLoad: true } : {}) }
+          : { name, transport: "http", url, headers, enabled, ...(bool(r["alwaysLoad"], false) ? { alwaysLoad: true } : {}) },
       );
       continue;
     }
@@ -292,6 +293,7 @@ export function parseMcpServers(raw: unknown): { servers: McpServerConfig[]; war
       env,
       cwd: cwdRaw === "" ? undefined : cwdRaw,
       enabled: bool(r["enabled"], true),
+      ...(bool(r["alwaysLoad"], false) ? { alwaysLoad: true } : {}),
     });
   }
   return { servers, warnings };
@@ -711,6 +713,7 @@ export function loadConfig(overrides: Partial<Config> = {}, options: LoadConfigO
     shell: resolveShellConfig(raw["shell"]),
     // MCP 只认本地 settings.json：模板里的示例 server 不该在用户机器上被启动。
     mcpServers: parseMcpServers(raw["mcpServers"]).servers,
+    mcp: resolveMcpConfig(raw["mcp"]).config,
     // hooks 同理只认本地：模板里的示例 hook 不该在用户机器上被执行。
     hooks: parseHooksConfig(raw["hooks"]),
     env: resolveEnvConfig(raw["env"]),

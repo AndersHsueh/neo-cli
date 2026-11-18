@@ -38,9 +38,29 @@ export async function handleSystemCommands(cmd: string, arg: string, rest: strin
       // 规划态控制工具只在规划态可见（issue #14），平时不列出来 ——
       // 否则用户会以为现在就能调 submit_plan。
       const names = agent.planning ? toolNames(cfg) : mainToolNames(cfg);
+      // issue #68：MCP 延迟加载下，注册表里的 MCP 工具分两种命运 ——
+      // 带完整 schema 进请求（已装入 / alwaysLoad），或只出现在系统提示的目录短节里。
+      // 混在一行里列出来会让人以为「列了就能调」，所以分两段显示。
+      const inCtx = new Set(agent.toolSpecsFor().map((s) => s.function.name));
+      const loadedMcp = names.filter((n) => n.startsWith("mcp__") && inCtx.has(n));
+      const catalogOnly = names.filter((n) => n.startsWith("mcp__") && !inCtx.has(n));
+      const plain = names.filter((n) => !n.startsWith("mcp__"));
       ui.blank();
       ui.kv("可用工具", String(names.length));
-      for (const t of names) ui.line(`  ${c.tool("⚡")} ${c.text(t)}`);
+      for (const t of plain) ui.line(`  ${c.tool("⚡")} ${c.text(t)}`);
+      if (loadedMcp.length > 0) {
+        ui.line(
+          `  ${c.tool("⚡")} ${c.text("MCP")} ${c.dim(`已装入上下文 ${loadedMcp.length} 个（带完整 schema）`)}`,
+        );
+        for (const t of loadedMcp) ui.line(`    ${c.text(t)}`);
+      }
+      if (catalogOnly.length > 0) {
+        ui.line(
+          `  ${c.dim("◇")} ${c.text("MCP")} ${c.dim(`仅目录 ${catalogOnly.length} 个（只有名字与简述，没有 schema）`)}`,
+        );
+        for (const t of catalogOnly) ui.line(`    ${c.dim(t)}`);
+        ui.line(c.dim(`  未装入的工具用 tool_search 搜索装入，或直接点名调用（照走审批并自动装入）。`));
+      }
       if (agent.planning) {
         ui.line(c.dim("  当前在规划态：只读工具 + submit_plan / exit_plan_mode"));
       } else {

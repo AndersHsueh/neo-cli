@@ -19,6 +19,12 @@ import type { Message } from "../llm.ts";
 import { applyTier, normalizeTierName, tierAvailable, type Config, type ModelTier } from "../config.ts";
 import { resolveAndApplyModelWindow } from "../env/modelWindows.ts";
 import { PLAN_ONLY_TOOL_NAMES, TOOL_NAMES_EXCLUDED_FOR_SUBAGENT, toolSpecs } from "./index.ts";
+import {
+  McpLoadState,
+  TOOL_SEARCH_NAME,
+  classifyMcpTools,
+  toolSearchEnabled,
+} from "../mcp/toolSearch.ts";
 import { TIER_ORDER } from "../classifier/types.ts";
 import { getEnvForPrompt } from "../env/probe.ts";
 import { formatEnvPrompt } from "../env/render.ts";
@@ -27,6 +33,42 @@ import { ToolError, type ToolCtx, type ToolImpl } from "./types.ts";
 
 /** 子代理迭代上限。子代理是单一任务，跑满主代理的 80 次迭代意味着早已跑偏。 */
 const SUB_MAX_ITERATIONS = 24;
+
+/**
+ * 子代理实际可见的工具 schema（预算与提示词「## 工具」节共用这一份）。
+ *
+ * 与 `Agent.toolSpecsFor()` 同口径：排除表 → plan-only → 白名单 → MCP 延迟裁剪
+ * （issue #68）。MCP 部分按**子代理拷贝来的**已加载集合裁 —— 未装入的 MCP
+ * 只有目录条目，不能按全量 schema 计预算，也不能出现在可见清单里。
+ */
+function subagentVisibleSpecs(
+  cfg: Config,
+  loaded: McpLoadState,
+  allowlist: readonly string[] | undefined,
+): ReturnType<typeof toolSpecs> {
+  const all = toolSpecs(cfg);
+  const kept = all.filter(
+    (t) =>
+      !TOOL_NAMES_EXCLUDED_FOR_SUBAGENT.includes(t.function.name) &&
+      !PLAN_ONLY_TOOL_NAMES.includes(t.function.name) &&
+      (!allowlist || allowlist.includes(t.function.name)),
+  );
+  const narrowed = allowlist ? kept.filter((t) => allowlist.includes(t.function.name)) : kept;
+  if (!toolSearchEnabled(cfg, all)) {
+    return narrowed.filter((t) => t.function.name !== TOOL_SEARCH_NAME);
+  }
+  const keep = new Set<string>();
+  for (const c of classifyMcpTools(cfg, all)) {
+    if (c.alwaysLoad || loaded.has(c.name)) keep.add(c.name);
+  }
+  return narrowed.filter((t) => {
+    const name = t.function.name;
+    if (!name.startsWith("mcp__")) return true;
+    if (keep.has(name)) return true;
+    // 名字反解不出 server 的 mcp__* 不归延迟管（与 Agent.deferMcpSpecs 同口径）。
+    return !classifyMcpTools(cfg, [t]).some((c) => c.server !== null);
+  });
+}
 
 /**
  * 子代理的动态正文：报告格式、环境、任务。不含身份与安全核心——
@@ -262,14 +304,18 @@ export async function runSubagent(
       subEnvText = "";
     }
   }
+  // issue #68：子代理拷贝父会话**当时**的已加载集合（新 Set，不共享引用）。
+  // 理由：父代理已经为这些 schema 付过 token，子代理重搜一遍纯属浪费；
+  // 而共享引用会让子代理的搜索写回父会话 —— 隔离性是子代理的核心契约。
+  // 自带 tool_search（Agent.toolSpecsFor 在延迟加载启用时总会加上它），
+  // 所以子代理仍能自己装入更多，只是那些装入只活在子代理里。
+  const subMcpLoaded = new McpLoadState();
+  for (const name of main.mcpLoadedNames()) subMcpLoaded.mark(name);
+
   // 子代理实际可见的工具 schema 计入预算（排除表与 Agent.toolSpecsFor 一致）。
   // issue #53：传了 toolAllowlist 时同样收窄 —— 预算必须按真实可见集算。
-  const subTools = toolSpecs(subCfg).filter(
-    (t) =>
-      !TOOL_NAMES_EXCLUDED_FOR_SUBAGENT.includes(t.function.name) &&
-      !PLAN_ONLY_TOOL_NAMES.includes(t.function.name) &&
-      (!opts?.toolAllowlist || opts.toolAllowlist.includes(t.function.name)),
-  );
+  // issue #68：MCP schema 同样按「已装入」收窄 —— 预算不能按全量目录算。
+  const subTools = subagentVisibleSpecs(subCfg, subMcpLoaded, opts?.toolAllowlist);
   const subPrompt = renderSubagentPrompt({
     parentSessionName: main.sessionName,
     window: subCfg.contextWindow,
@@ -311,6 +357,8 @@ export async function runSubagent(
     // TurnEnd 则在 Agent.emitTurnEndHooks 里按 isSubagent 跳过：
     // 子代理的回合不是用户眼里的回合，一次请求触发 N+1 次没有意义。
     hooks: main.hooksConfig,
+    // issue #68：拷贝来的已加载集合（Agent 构造时再 copy 一次，两边都不共享引用）。
+    mcpLoaded: subMcpLoaded,
     // 不传 classifier：子代理任务短，内部切档收益趋近于零，
     // 且分类器依赖连续失败计数等主循环状态，子代理里没有意义。
   });

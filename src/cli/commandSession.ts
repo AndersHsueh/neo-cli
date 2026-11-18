@@ -23,6 +23,7 @@ import {
   resolveAndApplyModelWindow,
 } from "../env/modelWindows.ts";
 import { rulesReport } from "../rules/index.ts";
+import { toolNames } from "../tools/index.ts";
 import { repoMapSummary } from "../prompt/repoMap.ts";
 import { listModels } from "../llm.ts";
 import type { PromptSelection } from "../prompt/select.ts";
@@ -201,6 +202,26 @@ export async function handleSessionCommands(cmd: string, arg: string, rest: stri
               : `  当前预算连 0 个工具都容不下；收窄尚未启用，当前仍暴露全部 ${vis.total} 个工具。`,
           ),
         );
+      }
+      // issue #68：MCP 工具在「已装入上下文」与「仅目录」之间的分布。
+      // 与 /tools 同口径：已装入 = 真的带 schema 进请求（toolSpecsFor），
+      // 仅目录 = 只出现在系统提示的目录短节里。没有 MCP 时整段不出现。
+      {
+        const inCtx = new Set(agent.toolSpecsFor().map((s) => s.function.name));
+        const mcpNames = toolNames(cfg).filter((n) => n.startsWith("mcp__"));
+        if (mcpNames.length > 0) {
+          const loadedMcp = mcpNames.filter((n) => inCtx.has(n));
+          const catalogOnly = mcpNames.filter((n) => !inCtx.has(n));
+          ui.kv(
+            "MCP",
+            `已装入上下文 ${loadedMcp.length} 个 · 仅目录 ${catalogOnly.length} 个 ${c.dim(`(共 ${mcpNames.length} 个)`)}`,
+          );
+          if (catalogOnly.length > 0) {
+            ui.line(
+              c.dim("  仅目录的工具只有名字与简述，没有 schema；用 tool_search 装入后才会出现在请求里。"),
+            );
+          }
+        }
       }
       // issue #15：仓库地图状态（命中缓存，不重复扫描）。
       try {

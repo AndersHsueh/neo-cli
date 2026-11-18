@@ -12,6 +12,13 @@ import { chatStream, estimateTokens, type Message, type ToolSpec, type Usage } f
 import type { Classifier } from "../classifier/index.ts";
 import { applyTier, type Config } from "../config.ts";
 import { toolSpecs, TOOL_NAMES_EXCLUDED_FOR_SUBAGENT } from "../tools/index.ts";
+import {
+  McpLoadState,
+  TOOL_SEARCH_NAME,
+  classifyMcpTools,
+  isAlwaysLoadServer,
+  toolSearchEnabled,
+} from "../mcp/toolSearch.ts";
 import { ToolError } from "../tools/types.ts";
 import { formatModelLine } from "../prompt/modelLine.ts";
 import { isRecallMessage } from "../memory/port.ts";
@@ -147,6 +154,15 @@ export class Agent {
    * 宿主（drive/loop/`-p`/ACP）用 `beginUserTurn()` 显式声明同一条输入的内部轮。
    */
   userTurn: UserTurnState | null = null;
+  /**
+   * MCP 工具按需发现（issue #68）：本会话已装入上下文的 MCP 工具名。
+   *
+   * 只活在内存里 —— 工具表是**进程级全局表**（ACP 一进程可有多会话），
+   * 所以「装了什么」必须挂在会话上，不能靠从全局表注销实现。
+   * 生命周期：成功压缩、`reset()`（/clear）、会话结束即丢；不写 session meta，
+   * resume 回来只保留 alwaysLoad 的工具（需要再搜一次）。
+   */
+  private mcpLoaded = new McpLoadState();
 
   constructor(readonly opt: AgentOptions) {
     this.mode = opt.mode;
@@ -154,6 +170,8 @@ export class Agent {
     // 规划态由宿主显式开启（/plan）。--plan / /mode plan 不设 planBaseMode，
     // 因此只读闸门不会顺带把会话拖进交互规划工作流。
     if (opt.planBaseMode) this.planSession = new PlanSession(opt.planBaseMode);
+    // issue #68：子代理派生时拷贝父会话当时的已加载集合（新 Set，变更不写回父会话）。
+    if (opt.mcpLoaded) this.mcpLoaded = opt.mcpLoaded.copy();
   }
 
   /* ---------------- 交互式规划工作流（issue #14） ---------------- */
@@ -363,13 +381,64 @@ export class Agent {
     };
     // 规划态（issue #14）：只给只读工具 + 提交/退出方案两个控制工具。
     // 写盘/执行类工具从清单里摘掉，模型不会「先试着调一下再被拒」。
+    // issue #68：规划态同样不暴露 MCP 与 tool_search（白名单里本来就没有它们）。
     if (this.planning) return narrow(filterPlanTools(all));
     // 非规划态不把规划控制工具交给模型：平时调不通，留在清单里只会诱使误调。
     // 主代理仍拿其余全量工具（含运行时注册的 task/wiki/remember 等）。
     // v0.2.0 曾把子代理排除表误用于主代理，导致那些工具从未出现。
     const withoutPlan = all.filter((s) => !PLAN_CONTROL_TOOLS.includes(s.function.name));
-    if (!this.opt.isSubagent) return narrow(withoutPlan);
-    return narrow(withoutPlan.filter((s) => !TOOL_NAMES_EXCLUDED_FOR_SUBAGENT.includes(s.function.name)));
+    const base = this.opt.isSubagent
+      ? withoutPlan.filter((s) => !TOOL_NAMES_EXCLUDED_FOR_SUBAGENT.includes(s.function.name))
+      : withoutPlan;
+    return narrow(this.deferMcpSpecs(base));
+  }
+
+  /**
+   * MCP 工具按需发现（issue #68）：按本会话的已加载集合裁剪 MCP schema。
+   *
+   * 只裁 **MCP** 工具（`mcp__*`）：第一方工具始终全量，含 `tool_search` 本身。
+   * 未启用延迟加载时原样返回（今日行为），连 `tool_search` 也不加 ——
+   * 没有目录可搜的工具留在清单里只会诱使模型搜空气。
+   *
+   * 保留的 MCP 工具 = alwaysLoad（server 级配置）+ 本会话已装入的。
+   */
+  private deferMcpSpecs(specs: ToolSpec[]): ToolSpec[] {
+    const cfg = this.opt.cfg;
+    if (!toolSearchEnabled(cfg, specs)) {
+      return specs.filter((s) => s.function.name !== TOOL_SEARCH_NAME);
+    }
+    const loaded = new Set(this.mcpLoaded.snapshot());
+    const keep = new Set<string>();
+    for (const t of classifyMcpTools(cfg, specs)) {
+      if (t.alwaysLoad || loaded.has(t.name)) keep.add(t.name);
+    }
+    return specs.filter((s) => {
+      const name = s.function.name;
+      if (!name.startsWith("mcp__")) return true;
+      if (keep.has(name)) return true;
+      // 名字反解不出 server 的 mcp__* 不归我们延迟（保持可见，宁可多花 token）。
+      return !classifyMcpTools(cfg, [s]).some((t) => t.server !== null);
+    });
+  }
+
+  /** issue #68：把一个 MCP 工具记进本会话的已加载集合（tool_search / 直接点名都走这里）。 */
+  markMcpLoaded(name: string): boolean {
+    return this.mcpLoaded.mark(name);
+  }
+
+  /** issue #68：本会话已装入上下文的 MCP 工具名（/tools、/context、子代理拷贝用）。 */
+  mcpLoadedNames(): string[] {
+    return this.mcpLoaded.snapshot();
+  }
+
+  /** issue #68：当前是否启用 MCP 延迟加载（/tools 文案与目录节共用同一判据）。 */
+  get mcpDeferralActive(): boolean {
+    return toolSearchEnabled(this.opt.cfg, toolSpecs(this.opt.cfg));
+  }
+
+  /** issue #68：该 server 的工具是否常驻（alwaysLoad）。 */
+  isMcpServerAlwaysLoad(server: string): boolean {
+    return isAlwaysLoadServer(this.opt.cfg, server);
   }
 
   cancel(): void {
@@ -453,6 +522,9 @@ export class Agent {
   reset(keepSystem = true): void {
     const sys = this.messages[0];
     this.messages = keepSystem && sys?.role === "system" ? [sys] : [];
+    // issue #68：/clear 是一次真实的会话重来 —— 已装入的 MCP 工具跟着丢，
+    // 只留 alwaysLoad（它们由配置决定，不在这里）。
+    this.mcpLoaded.clear();
   }
 
   /**
@@ -510,6 +582,10 @@ export class Agent {
     }
 
     this.messages = applyCompaction(this.messages, res.content.trim(), plan);
+    // issue #68：压缩成功落地后，已装入的 MCP 工具跟着丢（发现它们的消息已被摘要替换，
+    // 模型需要重新搜索）。**只在这里清** —— PreCompact 阻断与压缩失败都在上面抛错，
+    // 走不到这一行，历史与已加载集合都原样保留。
+    this.mcpLoaded.clear();
     // issue #39：压缩把 head 换成 1 条摘要，后续消息整体前移 —— 通知宿主平移轮次下标。
     // issue #46：定点压缩时 head 之前还有 kept 段，被删区间与摘要位置都要跟着后移。
     // 区间取 applyCompaction 的真实形状：system(0) + kept + 摘要 + tail。
@@ -544,7 +620,9 @@ export class Agent {
 
   /** 上下文使用率 0..1。 */
   contextUsage(): number {
-    const used = estimateTokens(this.messages, toolSpecs(this.opt.cfg));
+    // issue #68：与**实际发出去的**工具清单同口径（延迟且未装入的 MCP 不算），
+    // 否则压缩点会虚高，模型没用到那么多上下文却被提前压缩。
+    const used = estimateTokens(this.messages, this.toolSpecsFor());
     return used / this.opt.cfg.contextWindow;
   }
 

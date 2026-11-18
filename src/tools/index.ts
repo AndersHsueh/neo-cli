@@ -17,6 +17,7 @@ import { webSearchTool } from "./webSearch.ts";
 import { submitPlanTool, exitPlanModeTool } from "./plan.ts";
 import { toolTmpDir } from "../runtimeTmp.ts";
 import { compactCtx } from "./compactCtx.ts";
+import { toolSearchTool } from "../mcp/toolSearchTool.ts";
 import { grepTool } from "./grep.ts";
 import { globTool } from "./glob.ts";
 import { listDir } from "./listDir.ts";
@@ -53,6 +54,9 @@ export const TOOLS: ToolImpl[] = [
   webSearchTool,
   useSkill,
   compactCtx,
+  // MCP 工具按需发现（issue #68）：注册但只在延迟加载启用时进入工具清单，
+  // 见 Agent.toolSpecsFor() 与 src/mcp/toolSearch.ts 的 toolSearchEnabled。
+  toolSearchTool,
   // 规划态控制工具（issue #14）：注册但只在规划态进入工具清单，
   // 见 agent/plan-mode.ts 的 PLAN_CONTROL_TOOLS 与 Agent.toolSpecsFor()。
   submitPlanTool,
@@ -158,13 +162,24 @@ export function toolNames(cfg?: Config): string[] {
  * 规划态控制工具（submit_plan / exit_plan_mode）只在规划态进入工具清单，
  * 但它们在注册表里是常驻的 —— 系统提示与 banner 用它，避免把两个
  * 平时调不通的工具名教给模型。
+ *
+ * issue #68：`tool_search` 同理 —— 它只在启用 MCP 延迟加载时进入清单，
+ * 平时列出来只会让模型去搜一个没有目录的工具。
  */
 export function mainToolNames(cfg?: Config): string[] {
-  return toolNames(cfg).filter((n) => !PLAN_ONLY_TOOL_NAMES.includes(n));
+  return toolNames(cfg).filter(
+    (n) => !PLAN_ONLY_TOOL_NAMES.includes(n) && !CONDITIONAL_TOOL_NAMES.includes(n),
+  );
 }
 
 /** 只在规划态可见的工具（与 agent/plan-mode.ts 的 PLAN_CONTROL_TOOLS 同口径）。 */
 export const PLAN_ONLY_TOOL_NAMES: readonly string[] = ["submit_plan", "exit_plan_mode"];
+
+/**
+ * 只在特定条件下可见的工具（issue #68）：`tool_search` 只在 MCP 延迟加载启用时出现。
+ * 与 PLAN_ONLY_TOOL_NAMES 分开：它们的可见条件不同，混在一起会让两边都说不清。
+ */
+export const CONDITIONAL_TOOL_NAMES: readonly string[] = ["tool_search"];
 
 /**
  * 工具调用闸门（issue #53；#84 复用）。

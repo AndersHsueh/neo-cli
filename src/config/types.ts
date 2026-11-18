@@ -497,6 +497,13 @@ export interface Config {
    */
   mcpServers?: McpServerConfig[];
   /**
+   * MCP 工具按需发现（issue #68）。settings.json 顶层 `mcp` 段。
+   *
+   * 只延迟 **MCP** 工具的 inputSchema；第一方工具始终全量装入。
+   * 缺省 = `{ toolSearch: "auto", toolSearchThreshold: 10 }`（见 DEFAULT_MCP_CONFIG）。
+   */
+  mcp?: McpConfig;
+  /**
    * 生命周期 hooks（issue #3）。settings.json 顶层 `hooks` 段。
    *
    * 定位：用户自配的生命周期脚本，**不是权限系统**。它只能阻断或放行到既有
@@ -588,6 +595,14 @@ export interface McpServerBase {
   name: string;
   /** false = 跳过连接（保留配置但不启动）。 */
   enabled: boolean;
+  /**
+   * 该 server 的**全部**工具常驻上下文（issue #68）：即使启用了 MCP 延迟加载，
+   * 它们的完整 schema 也始终在请求里。缺省 false。
+   *
+   * 粒度是 server 级，不做按工具名单 —— 一个 server 的工具通常同源同用途，
+   * 按工具挑只会让配置更难解释。
+   */
+  alwaysLoad?: boolean;
 }
 
 /** 本地进程传输（issue #2）。 */
@@ -629,6 +644,63 @@ export interface McpSseServerConfig extends McpServerBase {
 }
 
 export type McpServerConfig = McpStdioServerConfig | McpHttpServerConfig | McpSseServerConfig;
+
+/**
+ * MCP 工具按需发现配置（issue #68）。settings.json 顶层 `mcp` 段。
+ *
+ * - `tool_search`：`"auto"`（默认，按条数阈值判定）/ `true`（强制启用）/ `false`（关闭，全量装入）。
+ * - `tool_search_threshold`：`auto` 下的阈值 —— 可延迟 MCP 工具数 ≥ 它才启用延迟加载。
+ *
+ * 刻意**不**读 `ENABLE_TOOL_SEARCH` 环境变量，也不按上下文窗口百分比判定：
+ * 条数可测、可讲，窗口百分比随模型与估算漂移，验收讲不清。
+ */
+export interface McpConfig {
+  toolSearch: "auto" | boolean;
+  toolSearchThreshold: number;
+}
+
+/** `mcp` 段缺省值：auto + 阈值 10。 */
+export const DEFAULT_MCP_CONFIG: McpConfig = { toolSearch: "auto", toolSearchThreshold: 10 };
+
+/**
+ * 解析 settings.mcp（issue #68）。
+ *
+ * 放在 types.ts 而不是 config.ts：本函数只依赖 McpConfig 与默认值，
+ * 与 loadConfig 无关；留在 config.ts 会把那个文件顶过 1000 行工作上限。
+ * 运行时不从 config.ts 重新导出它 —— config.ts 的运行时导出表是拆分前的快照。
+ *
+ * 非法值一律告警并回退默认（延迟加载是优化项，配置写错不能拖垮启动）：
+ *  - `tool_search` 只接受 "auto" / true / false；
+ *  - `tool_search_threshold` 必须是 ≥ 1 的整数（0 或负数会让「总是延迟」变成隐式默认，
+ *    想强制启用请写 `tool_search: true`）。
+ */
+export function resolveMcpConfig(raw: unknown): { config: McpConfig; warnings: string[] } {
+  const out: McpConfig = { ...DEFAULT_MCP_CONFIG };
+  const warnings: string[] = [];
+  if (raw === undefined || raw === null) return { config: out, warnings };
+  if (typeof raw !== "object" || Array.isArray(raw)) {
+    warnings.push("mcp 必须是对象，已忽略该段（tool_search 回退 auto / 阈值 10）。");
+    return { config: out, warnings };
+  }
+  const r = raw as Record<string, unknown>;
+  const mode = r["tool_search"];
+  if (mode === "auto" || typeof mode === "boolean") {
+    out.toolSearch = mode;
+  } else if (mode !== undefined) {
+    warnings.push(
+      `mcp.tool_search=${JSON.stringify(mode)} 不是 auto / true / false，已回退 auto。`,
+    );
+  }
+  const threshold = r["tool_search_threshold"];
+  if (typeof threshold === "number" && Number.isFinite(threshold) && threshold >= 1) {
+    out.toolSearchThreshold = Math.floor(threshold);
+  } else if (threshold !== undefined) {
+    warnings.push(
+      `mcp.tool_search_threshold=${JSON.stringify(threshold)} 不是 ≥1 的整数，已回退 ${DEFAULT_MCP_CONFIG.toolSearchThreshold}。`,
+    );
+  }
+  return { config: out, warnings };
+}
 
 /**
  * 语言服务器配置（issue #23）。

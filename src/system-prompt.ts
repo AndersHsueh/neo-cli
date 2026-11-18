@@ -5,7 +5,8 @@
 import { existsSync, readdirSync, readFileSync, type Dirent } from "node:fs";
 import { join, relative, sep } from "node:path";
 import type { Config } from "./config.ts";
-import { mainToolNames } from "./tools/index.ts";
+import { mainToolNames, toolSpecs } from "./tools/index.ts";
+import { buildMcpCatalogSection } from "./mcp/toolSearch.ts";
 import { buildSkillIndex, discoverSkills, isRealDir } from "./skills.ts";
 import { resolveUserWikiLayout, resolveWikiLayout } from "./wiki/paths.ts";
 import { getEnvForPrompt } from "./env/probe.ts";
@@ -77,6 +78,9 @@ export function buildSystemPrompt(cfg: Config, opts: { mailbox?: boolean; askUse
   }
 
   const tools = mainToolNames(cfg).join(", ");
+  // issue #68：MCP 工具延迟加载时，把「未装入」的工具以目录短节（名字 + 约 80 字描述，
+  // 不含 schema）告诉模型。未启用延迟加载时返回空串，提示词与今日完全一致。
+  const mcpCatalogText = buildMcpCatalogSection(cfg, toolSpecs(cfg), new Set());
   const lspToolLine = cfg.lsp?.enabled === true
     ? "- lsp：只读符号导航（definition / references / hover），需在 settings.lsp.servers 配好语言服务器；比全文 grep 准且省 token。\n"
     : "";
@@ -136,7 +140,7 @@ ${opts.askUser ? "- ask_user：向用户提问（单选/多选/自由输入，Es
 - todo_write：写入/更新本会话的结构化待办（整表替换；同时最多一项 in_progress）。长任务用它维持清单，压缩上下文后清单仍在，用户可用 /todos 查看。
 - compact_ctx：请求压缩对话上下文（历史→结构化摘要）。大范围探索完成、进入下一阶段前可主动调用；实际压缩在当前工具批次结束后执行。
 - 规划态（用户用 /plan 进入）时工具清单会收窄为只读集合，并额外出现 submit_plan / exit_plan_mode：先澄清范围与取舍，用 submit_plan 提交「步骤 / 风险 / 涉及文件」，用户确认后才恢复写盘与执行。
-${opts.mailbox ? "- send_message：给另一个存活的 neo 会话投递纯文本消息（派活/回信）；回信时把原任务消息 id 传给 reply_to。\n- list_peers：列出存活会话及其状态机摘要（空闲/工作中/等待人类/在等别人/停滞/已死）；带 target 查单个。\n" : ""}${skillText}${wikiText}${mailboxText}
+${opts.mailbox ? "- send_message：给另一个存活的 neo 会话投递纯文本消息（派活/回信）；回信时把原任务消息 id 传给 reply_to。\n- list_peers：列出存活会话及其状态机摘要（空闲/工作中/等待人类/在等别人/停滞/已死）；带 target 查单个。\n" : ""}${skillText}${wikiText}${mcpCatalogText}${mailboxText}
 ## 环境
 
 - 工作目录：${cfg.cwd}

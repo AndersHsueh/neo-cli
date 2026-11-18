@@ -41,6 +41,7 @@
 import type { ToolSpec } from "../llm.ts";
 import { ToolError, gateTool, notExecuted, type ToolImpl } from "../tools/types.ts";
 import type { McpToolInfo } from "./client.ts";
+import { markMcpLoadedOn } from "./toolSearch.ts";
 
 /** 工具名前缀。权限、展示、/mcp 都按它识别外部工具。 */
 export const MCP_TOOL_PREFIX = "mcp__";
@@ -311,6 +312,10 @@ export function makeMcpTool(deps: McpToolDeps): ToolImpl {
       // 没执行必须走 notExecuted（异常通道），否则 dispatch 会误跑 PostToolUse。
       const denied = await gateTool(ctx, name, args, detail);
       if (denied !== null) notExecuted(denied);
+      // issue #68：走到这里说明审批已通过、即将执行 —— 把它记进本会话的已加载集合，
+      // 下一次模型请求就带上完整 schema。模型「直接点名」一个只在目录里的工具时，
+      // 这一步就是它被装入的唯一途径（不强制先 tool_search）。
+      markMcpLoadedOn(ctx.host, name);
       try {
         // 始终用远端原始工具名调 tools/call —— 注册名只是本地合法化后的别名。
         return await deps.call(info.name, args);
