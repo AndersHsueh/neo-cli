@@ -706,3 +706,209 @@ test("#64 cancellation during automatic PreCompact prevents summarizer requests"
     expect(JSON.stringify(agent.messages.slice(0,-1))).toBe(before);
   } finally {clearTimeout(timer);}
 },5000);
+
+
+/* #64 B1/P2 独立复审反例：语义载荷不能消费诊断 tail。 */
+for (const event of ["SessionStart", "UserPromptSubmit", "PreCompact"] as const) {
+  test(`#64 B1 ${event} parses 1200-character JSON context before diagnostic truncation`, async () => {
+    const text = "BEGIN-CONTEXT-" + "x".repeat(1200) + "-END-CONTEXT";
+    const raw = JSON.stringify({ additionalContext: text });
+    const { agent, seen } = setup({ [event]: [hook(raw)] }, [{ content: "answer or summary" }]);
+    if (event === "SessionStart") await agent.runSessionStart("new");
+    if (event === "PreCompact") { history(agent); await agent.compactNow(); }
+    else await agent.send("real input");
+    expect(seen.length).toBe(1);
+    const request = seen[0]!.map((m) => typeof m.content === "string" ? m.content : JSON.stringify(m.content)).join("\n");
+    expect(request.includes(text)).toBe(true);
+    expect(request.split(text).length - 1).toBe(1);
+    expect(request.includes(raw)).toBe(false);
+    expect(request.includes("…")).toBe(false);
+    if (event === "PreCompact") expect(JSON.stringify(agent.messages).includes(text)).toBe(false);
+  });
+
+  test(`#64 B1 ${event} ignores long valid JSON with only unknown metadata`, async () => {
+    const marker = "MUST-NOT-REACH-MODEL";
+    const raw = JSON.stringify({ diagnosticMetadata: "z".repeat(1200) + marker });
+    const { agent, seen } = setup({ [event]: [hook(raw)] }, [{ content: "answer or summary" }]);
+    if (event === "SessionStart") await agent.runSessionStart("new");
+    if (event === "PreCompact") { history(agent); await agent.compactNow(); }
+    else await agent.send("real input");
+    expect(seen.length).toBe(1);
+    expect(JSON.stringify(seen).includes(marker)).toBe(false);
+    expect(JSON.stringify(agent.messages).includes(marker)).toBe(false);
+  });
+}
+
+for (const length of [1007, 3007]) {
+  test(`#64 B1 Stop parses a ${length}-character reason before applying the 2000-character field limit`, async () => {
+    const reason = "verify-" + "r".repeat(length - 7);
+    const { agent, seen } = setup(
+      { Stop: [hook(JSON.stringify({ decision: "block", reason }))] },
+      [{ content: "first" }, { content: "second" }],
+    );
+    await agent.send("real input");
+    expect(seen.length).toBe(2);
+    const resumed = JSON.stringify(seen[1]);
+    expect(resumed.includes(reason.slice(0, 2000))).toBe(true);
+    if (length > 2000) expect(resumed.includes(reason)).toBe(false);
+    expect(resumed.includes('\"decision\"')).toBe(false);
+  });
+}
+
+for (const event of ["SessionStart", "UserPromptSubmit", "PreCompact", "Stop"] as const) {
+  test(`#64 B1 ${event} explicitly diagnoses oversized semantic output without text fallback or continuation`, async () => {
+    const marker = "OVERSIZED-MUST-NOT-REACH-MODEL";
+    const text = marker + "z".repeat(4 * 1024 * 1024) + marker;
+    const output = JSON.stringify(event === "Stop" ? { decision: "block", reason: text } : { additionalContext: text });
+    const file = join(SANDBOX, `oversize-${serial++}.json`);
+    writeFileSync(file, output);
+    const command = script(`cat >/dev/null\ncat '${file}'`);
+    const { agent, seen, io } = setup({ [event]: [{ command }] }, [{ content: "answer or summary" }, { content: "unexpected continuation" }]);
+    if (event === "SessionStart") await agent.runSessionStart("new");
+    if (event === "PreCompact") { history(agent); await agent.compactNow(); }
+    else await agent.send("real input");
+    expect(seen.length).toBe(1);
+    expect(JSON.stringify(seen).includes(marker)).toBe(false);
+    expect(JSON.stringify(agent.messages).includes(marker)).toBe(false);
+    expect(io.warns.join("\n")).toMatch(/上限|超限|超出|过大|too large|limit|overflow/i);
+  });
+}
+
+for (const event of ["PreToolUse", "PostToolUse", "TurnEnd", "Notification"] as const) {
+  for (const code of [0, 2, 7]) {
+    test(`#64 B1 old ${event} retains diagnostic tail and exit-${code} failure policy`, async () => {
+      const { dispatchHooks } = await import("../src/hooks/index.ts");
+      const output = "BEGIN-OLD-" + "x".repeat(1200) + "-END-OLD";
+      const cfg = parseHooksConfig({ enabled: true, [event]: [{ ...hook(output, code), onFailure: "block" }] });
+      const payload = { event, session_id: "test", cwd: SANDBOX, mode: "auto-all", subagent: false,
+        turn: 1, tool_name: "shell", tool_input: {}, reason: "turn_end" } as import("../src/hooks/index.ts").HookPayload;
+      const r = await dispatchHooks(cfg, event, payload, "shell", makeCfg(), {}, event === "Notification" ? "turn_end" : null);
+      const outcome = r.outcomes[0]!;
+      expect(outcome.stdout).toBe("…" + output.slice(-800));
+      expect(outcome.kind).toBe(code === 0 ? "ok" : code === 2 ? "block" : "error");
+      const blocked = event !== "Notification" && (code === 2 || (code === 7 && event !== "PreToolUse"));
+      expect(r.blocked).toBe(blocked);
+      if (code !== 0) expect(outcome.reason.startsWith("BEGIN-OLD-")).toBe(true);
+    });
+  }
+}
+
+
+for (const event of ["UserPromptSubmit", "PreCompact"] as const) {
+  test(`#64 B1 ${event} oversized stdout must not downgrade an explicit exit2 refusal`, async () => {
+    const file = join(SANDBOX, `oversize-exit2-${serial++}.txt`);
+    writeFileSync(file, "deny-" + "z".repeat(4 * 1024 * 1024));
+    const command = script(`cat >/dev/null\ncat '${file}'\nexit 2`);
+    const { agent, seen } = setup({ [event]: [{ command }] }, [{ content: "must not run" }]);
+    if (event === "PreCompact") {
+      history(agent);
+      const before = JSON.stringify(agent.messages);
+      const snapshot = JSON.stringify(agent.lastCompact);
+      expect(await agent.compact()).toBe(false);
+      expect(JSON.stringify(agent.messages)).toBe(before);
+      expect(JSON.stringify(agent.lastCompact)).toBe(snapshot);
+    } else {
+      const before = JSON.stringify(agent.messages);
+      const stats = await agent.send("refused");
+      expect(stats.blocked).toBe(true);
+      expect(JSON.stringify(agent.messages)).toBe(before);
+    }
+    expect(seen.length).toBe(0);
+  });
+}
+
+
+/* 有界协议的确定性分块回归：通过已有spawnFn注入点，不mock模块、不受OS读块偶然性影响。 */
+async function semanticChunks(chunks: Buffer[], event: import("../src/hooks/index.ts").HookEvent = "SessionStart", code = 0) {
+  const { EventEmitter } = await import("node:events");
+  const { runHook } = await import("../src/hooks/index.ts");
+  const child = new EventEmitter();
+  const stdout = new EventEmitter();
+  const stderr = new EventEmitter();
+  const stdin = Object.assign(new EventEmitter(), { end() {
+    queueMicrotask(() => { for (const chunk of chunks) stdout.emit("data", chunk); child.emit("close", code); });
+  }});
+  Object.assign(child, { stdout, stderr, stdin });
+  const hooks = parseHooksConfig({ enabled: true, [event]: [{ command: "unused" }] });
+  return await runHook(hooks.hooks[event][0]!, {
+    event, source: "new", session_id: "chunks", cwd: SANDBOX,
+    mode: "auto-all", subagent: false, turn: 0, tool_name: "shell", reason: "turn_end",
+  } as import("../src/hooks/index.ts").HookPayload, makeCfg(), { spawnFn: (() => child) as never });
+}
+
+test("#64 B1 semantic transport preserves UTF-8 split in the middle of every codepoint", async () => {
+  const raw = JSON.stringify({ additionalContext: "中文🙂完整上下文" });
+  const chunks = [...Buffer.from(raw)].map((byte) => Buffer.from([byte]));
+  const r = await semanticChunks(chunks);
+  expect(r.kind).toBe("ok");
+  expect(r.semantic?.overflow).toBe(false);
+  expect(r.semantic?.raw).toBe(raw);
+});
+
+test("#64 B1 documented MiB ceiling counts raw UTF-8 bytes rather than UTF-16 characters", async () => {
+  const { HOOK_SEMANTIC_OUTPUT_LIMIT } = await import("../src/hooks/index.ts");
+  const raw = JSON.stringify({ diagnosticMetadata: "中".repeat(Math.ceil(HOOK_SEMANTIC_OUTPUT_LIMIT / 3) + 1) });
+  expect(Buffer.byteLength(raw)).toBeGreaterThan(HOOK_SEMANTIC_OUTPUT_LIMIT);
+  expect(raw.length).toBeLessThan(HOOK_SEMANTIC_OUTPUT_LIMIT);
+  const r = await semanticChunks([Buffer.from(raw)]);
+  expect(r.semantic?.overflow).toBe(true);
+  expect(r.semantic?.raw.length).toBe(0);
+});
+
+for (const extra of [0, 1]) {
+  test(`#64 B1 semantic byte ceiling exact-boundary +${extra} cannot produce partial text`, async () => {
+    const { HOOK_SEMANTIC_OUTPUT_LIMIT } = await import("../src/hooks/index.ts");
+    const data = Buffer.alloc(HOOK_SEMANTIC_OUTPUT_LIMIT + extra, "x");
+    const r = await semanticChunks([data.subarray(0, 100), data.subarray(100)]);
+    expect(r.semantic?.overflow).toBe(extra === 1);
+    expect(r.semantic?.raw.length).toBe(extra === 1 ? 0 : HOOK_SEMANTIC_OUTPUT_LIMIT);
+  });
+}
+
+for (const event of ["SessionStart", "UserPromptSubmit", "PreCompact"] as const) {
+  test(`#64 B1 ${event} applies an explicit context field limit after parsing the JSON object`, async () => {
+    const text = "FIELD-BEGIN-" + "x".repeat(100_000) + "-FIELD-END";
+    const { agent, seen } = setup({ [event]: [hook(JSON.stringify({ additionalContext: text }))] }, [{ content: "answer or summary" }]);
+    if (event === "SessionStart") await agent.runSessionStart("new");
+    if (event === "PreCompact") { history(agent); await agent.compactNow(); }
+    else await agent.send("real input");
+    const context = seen[0]!.map((m) => typeof m.content === "string" ? m.content : "").find((s) => s.includes("FIELD-BEGIN-"));
+    expect(context).toBeDefined();
+    // 留出摘要器原有prompt的空间；字段必须有独立限长，而不是把1MiB原始载荷直接喂模型。
+    expect(context!.length).toBeLessThan(40_000);
+    expect(context!.includes("FIELD-END")).toBe(false);
+    expect(context!.includes("additionalContext")).toBe(false);
+  });
+}
+
+
+for (const event of ["PreToolUse", "PostToolUse", "TurnEnd", "Notification", "SessionStart"] as const) {
+  test(`#64 B1 ${event} preserves the actual diagnostic tail beyond the semantic ceiling`, async () => {
+    const output = "PREFIX-" + "x".repeat(1024 * 1024 + 300) + "-ACTUAL-END";
+    const data = Buffer.from(output);
+    const r = await semanticChunks([data.subarray(0, 1000), data.subarray(1000)], event);
+    expect(r.stdout).toBe("…" + output.slice(-800));
+  });
+}
+
+for (const event of ["PreToolUse", "PostToolUse", "TurnEnd", "Notification"] as const) {
+  test(`#64 B1 old ${event} preserves complete JSON failure reason beyond semantic ceiling`, async () => {
+    const raw = JSON.stringify({ diagnosticMetadata: "x".repeat(1024 * 1024 + 300), reason: "EXACT-LEGACY-REASON" });
+    const data = Buffer.from(raw);
+    const r = await semanticChunks([data.subarray(0, 1000), data.subarray(1000)], event, 2);
+    expect(r.kind).toBe("block");
+    expect(r.reason).toBe("EXACT-LEGACY-REASON");
+    expect(r.semantic).toBeUndefined();
+  });
+}
+
+
+test("#64 B1 streaming diagnostics match full trim/tail even across long trailing whitespace", async () => {
+  for (const text of ["  hello  ", "hello" + " ".repeat(3000), "hello" + " ".repeat(3000) + "end", " ".repeat(3000), "x".repeat(800), "x".repeat(801)]) {
+    const data = Buffer.from(text);
+    const chunks = [data.subarray(0, 3), data.subarray(3, 500), data.subarray(500)];
+    const r = await semanticChunks(chunks);
+    const trimmed = text.trim();
+    expect(r.stdout).toBe(trimmed.length <= 800 ? trimmed : "…" + trimmed.slice(-800));
+  }
+});

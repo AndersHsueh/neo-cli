@@ -4,7 +4,7 @@
  * 全部真起子进程（`bun src/index.ts`）+ 本地假 OpenAI SSE 端点，不触网、不读真实
  * settings.json / ~/.neo。断言重点是入口级事实，fake IO 测不出来：
  *  - `-p` 一次输入只触发一次 UserPromptSubmit，SessionStart 一次；
- *  - UserPromptSubmit exit2 在 -p 下零模型请求、退出码 2、原因走 stderr；
+ *  - UserPromptSubmit exit2 在 -p 下零模型请求、退出码 1、原因走 stderr；
  *  - ACP：stdout 只有 JSON-RPC，诊断走 stderr；阻断返回合法响应不挂起；
  *  - ACP `session/prompt` 每次一次 UserPromptSubmit，`session/load` 回放不算提交；
  *  - `/hooks` 列出全部新事件。
@@ -31,13 +31,13 @@ const SSE =
   "data: [DONE]\n\n";
 const server = Bun.serve({
   port: 0,
-  fetch(req) {
+  async fetch(req) {
     const url = new URL(req.url);
     if (url.pathname.endsWith("/models")) {
       return Response.json({ object: "list", data: [{ id: "fake-model" }] });
     }
     if (url.pathname.endsWith("/chat/completions")) {
-      requests.push("chat");
+      requests.push(await req.text());
       return new Response(SSE, { headers: { "content-type": "text/event-stream" } });
     }
     return new Response("not found", { status: 404 });
@@ -469,8 +469,9 @@ describe("#64 ACP 入口", () => {
     const messages = parseNdjson(r.out);
     const resp = findResponse(messages, 3);
     expect(resp).toBeDefined();
-    // 合法响应：要么是 result（stopReason），要么是 JSON-RPC 错误 —— 不能是半截输出。
-    expect(resp?.result !== undefined || resp?.error !== undefined).toBe(true);
+    // 策略拒绝不是内部错误，必须返回明确 refusal。
+    expect(resp?.error).toBeUndefined();
+    expect(resp?.result).toEqual({ stopReason: "refusal" });
     expect(r.err).toContain("acp blocked");
   }, 40_000);
 
@@ -536,3 +537,44 @@ test("#64 CLI resume of an empty saved session still has source resume", async()
   expect(next.code).toBe(0);
   expect(marks(mark)).toEqual(["new","resume"]);
 },40000);
+
+
+for (const event of ["SessionStart", "UserPromptSubmit"] as const) {
+  test(`#64 B1 real ACP ${event} long metadata-only JSON never reaches model context`, async () => {
+    const dir = project();
+    const marker = "MUST-NOT-REACH-MODEL";
+    const raw = JSON.stringify({ diagnosticMetadata: "metadata-prefix-" + "z".repeat(1100) + marker });
+    const command = hookScript(dir, "metadata.sh", `cat >/dev/null\nprintf '%s' '${raw}'`);
+    writeSettings(dir, { enabled: true, [event]: [{ command }] });
+    const before = requests.length;
+    const r = await runAcpSession(dir, "check metadata isolation");
+    expect(r.timedOut).toBe(false);
+    expect(r.code).toBe(0);
+    const messages = parseNdjson(r.out);
+    expect(messages.every((m) => m.jsonrpc === "2.0")).toBe(true);
+    expect(findResponse(messages, 3)?.result).toEqual({ stopReason: "end_turn" });
+    expect(requests.length - before).toBe(1);
+    expect(requests.slice(before).join("\n").includes(marker)).toBe(false);
+  }, 40_000);
+}
+
+test("#64 P3 ACP refusal is exact, spends zero requests and subsequent prompt recovers", async () => {
+  const dir = project();
+  const marker = "BLOCKED-INPUT-MUST-NOT-REACH-MODEL";
+  const command = hookScript(dir, "conditional.sh", `body=$(cat)\ncase "$body" in *${marker}*) echo 'acp blocked' >&2; exit 2;; esac`);
+  writeSettings(dir, { enabled: true, UserPromptSubmit: [{ command }] });
+  const before = requests.length;
+  const r = await runAcpSession(dir, [marker, "allowed-after-refusal"]);
+  expect(r.timedOut).toBe(false);
+  expect(r.code).toBe(0);
+  const messages = parseNdjson(r.out);
+  expect(messages.every((m) => m.jsonrpc === "2.0")).toBe(true);
+  expect(findResponse(messages, 3)?.error).toBeUndefined();
+  expect(findResponse(messages, 3)?.result).toEqual({ stopReason: "refusal" });
+  expect(findResponse(messages, 4)?.error).toBeUndefined();
+  expect(findResponse(messages, 4)?.result).toEqual({ stopReason: "end_turn" });
+  expect(requests.length - before).toBe(1);
+  expect(requests[before]!.includes(marker)).toBe(false);
+  expect(requests[before]!).toContain("allowed-after-refusal");
+  expect(r.err).toContain("acp blocked");
+}, 40_000);

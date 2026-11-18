@@ -415,13 +415,27 @@ export type HookPayload =
  *  - 纯文本 stdout → 整段就是附加上下文；
  *  - JSON `{"additionalContext": "..."}` → 只取该字段，**不把原 JSON 串再注入一次**。
  *
- * 解析失败（半截 JSON、字段类型不对）不抛错：退化成纯文本，会话照常继续。
+ * 坏JSON不抛错并按纯文本回退；合法对象无字段/字段类型不对则忽略，不注入原串。
  */
 export interface HookAdditionalContext {
-  /** 附加上下文正文（已 trim；空串表示没有）。 */
+  /** 附加上下文正文（已 trim 并按 `HOOK_CONTEXT_FIELD_LIMIT` 限长；空串表示没有）。 */
   text: string;
   /** 来源形态：纯文本 / JSON 的 additionalContext 字段。 */
   from: "text" | "json";
+  /**
+   * #64 B1：语义载荷本身超限（原始输出超过 `HOOK_SEMANTIC_OUTPUT_LIMIT` 字节）。
+   *
+   * 超限时 `text` 恒为空 —— 截断的载荷既不能当 JSON 解析，也不能降格成纯文本
+   * 注入（那会把半截指令喂给模型）。调用方必须把它当**诊断**显示出来。
+   */
+  overflow?: boolean;
+  /**
+   * #64 B1 自修：载荷合法且已解析，但正文超过 `HOOK_CONTEXT_FIELD_LIMIT` 被裁剪。
+   *
+   * 与 `overflow` 刻意分开：`overflow` 是「整段载荷不可信，语义作废」，
+   * 这里是「字段本身太长，保留前 N 字符」。裁剪后仍注入，但必须留诊断。
+   */
+  truncated?: boolean;
 }
 
 /**
@@ -433,6 +447,62 @@ export interface StopBlockRequest {
   block: boolean;
   /** 续跑原因（block=true 时恒非空）。 */
   reason: string;
+  /**
+   * #64 B1：语义载荷本身超限（原始输出超过 `HOOK_SEMANTIC_OUTPUT_LIMIT` 字节）。
+   *
+   * 超限时 `block` 恒为 false —— 截断的输出无法判断 decision/reason，
+   * 既不能续跑也不能当成「明确不续跑」，只能作为诊断告知用户。
+   */
+  overflow?: boolean;
+  /** #64 B1 自修：reason 超过 `REASON_LIMIT`（2000 字符）被裁剪（续跑请求仍有效，仍受预算/额度约束）。 */
+  truncated?: boolean;
+}
+
+/**
+ * #64 B1：生命周期语义输出的原始上限（1 MiB，**按原始字节计**）。
+ *
+ * 为什么需要它：`HookOutcome.stdout` 是**诊断尾部**（800 字符，见 runner.ts 的
+ * `TAIL_LIMIT`），生命周期事件要消费的是**语义载荷**（additionalContext / Stop 的
+ * decision+reason）。两者混用会把合法长 JSON 截成半截再当纯文本注入。
+ *
+ * 计限口径是**原始 stdout 的字节数**（`Buffer.byteLength`），不是 JS 字符串的
+ * `length`：UTF-8 下一个汉字占 3 字节，按 UTF-16 码元计会让「1 MiB」实际放到 3 MiB。
+ * 恰好等于上限成功，多 1 字节整体拒绝（不做部分保留）。
+ *
+ * 判限发生在**接收缓冲**阶段：累积字节超限即停止累积语义（同时继续 drain 管道，
+ * 见 runner.ts），不靠「先收完无限字符串再判限」。
+ */
+export const HOOK_SEMANTIC_OUTPUT_LIMIT = 1024 * 1024;
+
+/**
+ * #64 B1 自修：附加上下文**字段**的独立上限（32000 字符）。
+ *
+ * 与 `HOOK_SEMANTIC_OUTPUT_LIMIT` 是两道不同的闸：前者限「原始输出能不能信」，
+ * 这里限「解析出来的正文能喂多少给模型」。1 MiB 的合法 JSON 里塞 30 万字的
+ * additionalContext 一样会把主模型/摘要器的上下文挤爆，所以字段必须单独限长。
+ *
+ * 超限保留前32000字符并留诊断；该数值收敛单字段体积，不替代主模型自身预算。
+ */
+export const HOOK_CONTEXT_FIELD_LIMIT = 32_000;
+
+/** 新生命周期stderr的完整原因接收上限；诊断tail始终流式保留最后800字符。 */
+export const HOOK_DIAGNOSTIC_BUFFER_LIMIT = 1024 * 1024;
+
+/**
+ * 生命周期语义输出的接收结果（#64 B1）。
+ *
+ * 与 `HookOutcome.stdout`（诊断尾部）刻意分开：语义解析只看这里。
+ */
+export interface HookSemanticOutput {
+  /**
+   * 完整原始 stdout（仅在未超限时有意义）。
+   *
+   * 语义解析必须用它，不能用 `HookOutcome.stdout` —— 后者是截断过的诊断尾部。
+   * 分块接收时用流式 UTF-8 解码拼接，跨块的半个码点不会被解成替换符。
+   */
+  raw: string;
+  /** 原始输出是否超过 `HOOK_SEMANTIC_OUTPUT_LIMIT`（超限时 `raw` 为空）。 */
+  overflow: boolean;
 }
 
 /* ------------------------------------------------------------------ */
@@ -458,10 +528,23 @@ export interface HookOutcome {
   code: number | null;
   /** 阻断原因（kind=block）或诊断信息（kind=error/timeout）。 */
   reason: string;
-  /** stdout 尾部（诊断用，已截断）。 */
+  /** stdout 尾部（诊断用，已截断到 800 字符）。**不是**语义载荷，见 `semantic`。 */
   stdout: string;
-  /** stderr 尾部（诊断用，已截断）。 */
+  /** stderr 尾部（诊断用，已截断到 800 字符）。 */
   stderr: string;
+  /**
+   * 新生命周期stdout/stderr的完整接收缓冲超限。仍更新真实诊断尾部并排空管道，
+   * 不杀进程、不改变退出码；失败描述会明确指出超限。旧四事件不设此标记。
+   */
+  outputTruncated?: boolean;
+  /**
+   * #64 B1：生命周期语义解析用的完整输出（与诊断尾部分离）。
+   *
+   * 只有生命周期事件（SessionStart / UserPromptSubmit / Stop / PreCompact）的
+   * 退出码 0 结果才有值；旧四事件恒为 undefined —— 它们只消费诊断尾部，
+   * 行为与 #64 之前完全一致。
+   */
+  semantic?: HookSemanticOutput;
   durationMs: number;
 }
 

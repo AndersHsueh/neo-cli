@@ -16,9 +16,13 @@
  *  - 启动失败（shell 不存在）与运行失败分开表述，用户能一眼看出该改什么。
  */
 import { spawn } from "node:child_process";
+import { StringDecoder } from "node:string_decoder";
 import { getShell, prepareShellInvocation } from "../shell.ts";
 import type { Config } from "../config.ts";
 import {
+  HOOK_CONTEXT_FIELD_LIMIT,
+  HOOK_DIAGNOSTIC_BUFFER_LIMIT,
+  HOOK_SEMANTIC_OUTPUT_LIMIT,
   matchReason,
   matchTool,
   matchTrigger,
@@ -29,6 +33,7 @@ import {
   type HookOutcome,
   type HookPayload,
   type HookAdditionalContext,
+  type HookSemanticOutput,
   type HooksConfig,
   type NotificationReason,
   type StopBlockRequest,
@@ -40,9 +45,72 @@ const TAIL_LIMIT = 800;
 /** 回给模型的阻断原因上限（太长会挤掉上下文）。 */
 const REASON_LIMIT = 2000;
 
-function tail(s: string, n = TAIL_LIMIT): string {
-  const t = s.trim();
-  return t.length <= n ? t : `…${t.slice(-n)}`;
+/**
+ * #64 B1：需要**语义载荷**（而不是诊断尾部）的事件。
+ *
+ * 这四个事件的退出码 0 输出是给宿主消费的结构化结果（附加上下文 / Stop 续跑请求），
+ * 必须用完整原文解析，再按字段限长。旧四事件（PreToolUse / PostToolUse / TurnEnd /
+ * Notification）只消费诊断尾部，行为不变。
+ */
+const SEMANTIC_EVENTS: readonly HookEvent[] = ["SessionStart", "UserPromptSubmit", "Stop", "PreCompact"];
+
+interface CapturedOutput {
+  raw: string;
+  reason: string;
+  diagnostic: string;
+  overflow: boolean;
+}
+
+/**
+ * 新生命周期输出保留有界完整载荷，同时流式维护真正的诊断尾部。
+ * 旧四事件不传limit，保留原有完整JSON失败原因契约，不引入新上限。
+ * 超限只丢弃语义缓冲，仍解码/排空流以保留末尾诊断和真实退出码。
+ */
+function captureOutput(limit?: number) {
+  const decoder = new StringDecoder("utf8");
+  let raw = "";
+  let bytes = 0;
+  let overflow = false;
+  let prefix = "";
+  let view = "";
+  let pendingWhitespace = "";
+  let viewLength = 0;
+  let result: CapturedOutput | undefined;
+
+  const append = (text: string): void => {
+    if (!overflow) raw += text;
+    if (prefix.length < REASON_LIMIT) prefix = (prefix + text).trimStart().slice(0, REASON_LIMIT);
+    // 保留末尾空白待下一块；EOF时舍弃，等价于原先全文trim后再tail。
+    const content = text.trimEnd();
+    if (content) {
+      const next = viewLength === 0 ? content.trimStart() : pendingWhitespace + content;
+      viewLength = Math.min(TAIL_LIMIT + 1, viewLength + next.length);
+      view = (view + next).slice(-TAIL_LIMIT);
+      pendingWhitespace = "";
+    }
+    pendingWhitespace = (pendingWhitespace + text.slice(content.length)).slice(-TAIL_LIMIT);
+  };
+
+  return {
+    push(chunk: Buffer): void {
+      if (limit !== undefined && !overflow) {
+        bytes += chunk.length;
+        if (bytes > limit) { overflow = true; raw = ""; }
+      }
+      append(decoder.write(chunk));
+    },
+    finish(): CapturedOutput {
+      if (result) return result;
+      append(decoder.end());
+      result = {
+        raw,
+        reason: overflow ? prefix : raw,
+        diagnostic: (viewLength > TAIL_LIMIT ? "…" : "") + view,
+        overflow,
+      };
+      return result;
+    },
+  };
 }
 
 /**
@@ -169,11 +237,14 @@ export async function runHook(
   }
 
   const spawnFn = opts.spawnFn ?? spawn;
+  // #64 B1：生命周期事件要保留完整语义载荷，所以接收阶段就按上限判限。
+  const wantsSemantic = SEMANTIC_EVENTS.includes(payload.event);
 
   return await new Promise<HookOutcome>((resolve) => {
     let settled = false;
-    let stdout = "";
-    let stderr = "";
+    // 仅新生命周期载荷设接收上限；诊断尾部独立更新，旧四事件契约不变。
+    const outSink = captureOutput(wantsSemantic ? HOOK_SEMANTIC_OUTPUT_LIMIT : undefined);
+    const errSink = captureOutput(wantsSemantic ? HOOK_DIAGNOSTIC_BUFFER_LIMIT : undefined);
     let timedOut = false;
     let aborted = false;
     let child: ReturnType<typeof spawn>;
@@ -183,15 +254,22 @@ export async function runHook(
       settled = true;
       clearTimeout(timer);
       opts.signal?.removeEventListener("abort", onAbort);
-      resolve({
+      const stdout = outSink.finish();
+      const stderr = errSink.finish();
+      const outcome: HookOutcome = {
         ...base,
         kind,
         code,
         reason,
-        stdout: tail(stdout),
-        stderr: tail(stderr),
+        stdout: stdout.diagnostic,
+        stderr: stderr.diagnostic,
         durationMs: Date.now() - started,
-      });
+      };
+      if (stdout.overflow || stderr.overflow) outcome.outputTruncated = true;
+      if (wantsSemantic && kind === "ok") {
+        outcome.semantic = { raw: stdout.raw, overflow: stdout.overflow };
+      }
+      resolve(outcome);
     };
 
     /** 杀整个进程组：detached 起的 shell 是组长，kill(-pid) 连带子进程。 */
@@ -233,11 +311,13 @@ export async function runHook(
       return;
     }
 
+    // 诊断尾部与语义载荷各走一个有界接收器；超限后仍继续读管道（不杀进程），
+    // 否则 exit 2 会被「被终止」吞掉，放过本该阻断的 UPS / PreCompact。
     child.stdout?.on("data", (d: Buffer) => {
-      stdout += d.toString();
+      outSink.push(d);
     });
     child.stderr?.on("data", (d: Buffer) => {
-      stderr += d.toString();
+      errSink.push(d);
     });
 
     child.on("error", (e: Error) => {
@@ -260,13 +340,13 @@ export async function runHook(
         return;
       }
       if (c === 2) {
-        finish("block", 2, extractReason(stdout, stderr, "hook 以退出码 2 阻断，但没有给出原因"));
+        finish("block", 2, extractReason(outSink.finish().reason, errSink.finish().reason, "hook 以退出码 2 阻断，但没有给出原因"));
         return;
       }
       finish(
         "error",
         c,
-        extractReason(stdout, stderr, `hook 以退出码 ${c} 失败（未提供原因）`),
+        extractReason(outSink.finish().reason, errSink.finish().reason, `hook 以退出码 ${c} 失败（未提供原因）`),
       );
     });
 
@@ -293,32 +373,54 @@ export async function runHook(
  *
  * 半截 JSON 退化成纯文本；合法对象字段类型不对则忽略上下文，均不抛错。
  * 纯文本是默认路径 —— hook 作者写 `echo "注意：..."` 就该生效，不必先学 JSON。
+ *
+ * #64 B1：入参是**完整语义载荷**（`HookOutcome.semantic.raw`），不是诊断尾部。
+ * 超限（`overflow`）时直接返回空上下文并标记 `overflow` —— 截断载荷既不能解析，
+ * 也不能降格成纯文本注入。
+ *
+ * #64 B1 自修：**先完整 parse，再按字段限长**。`additionalContext` 与纯文本两条路径
+ * 都受 `HOOK_CONTEXT_FIELD_LIMIT`（32000 字符）约束 —— 1 MiB 的合法 JSON 里塞 30 万字
+ * 正文一样会挤爆主模型/摘要器。裁剪保留前 N 字符并标记 `truncated`（调用方留诊断）。
  */
-export function parseHookOutput(stdout: string): HookAdditionalContext {
-  const out = stdout.trim();
+export function parseHookOutput(semantic: HookSemanticOutput | undefined): HookAdditionalContext {
+  if (semantic === undefined) return { text: "", from: "text" };
+  if (semantic.overflow) return { text: "", from: "json", overflow: true };
+  const out = semantic.raw.trim();
   if (out === "") return { text: "", from: "text" };
   if (out.startsWith("{")) {
     try {
       const obj = JSON.parse(out) as Record<string, unknown>;
       const ctx = obj["additionalContext"];
-      if (typeof ctx === "string") return { text: ctx.trim(), from: "json" };
+      if (typeof ctx === "string") return limitContext(ctx.trim(), "json");
       // 合法 JSON 但没有 additionalContext（例如 Stop 的 decision/reason）：
-      // 这不是附加上下文，别把结构化输出当正文塞给模型。
+      // 这不是附加上下文，别把结构化输出当正文塞给模型。未知字段再大也一样。
       return { text: "", from: "json" };
     } catch {
       // 不是合法 JSON：按纯文本处理（不能崩会话）
     }
   }
-  return { text: out, from: "text" };
+  return limitContext(out, "text");
+}
+
+/** 字段级限长：纯文本与 JSON additionalContext 共用同一条上限。 */
+function limitContext(text: string, from: "text" | "json"): HookAdditionalContext {
+  if (text.length <= HOOK_CONTEXT_FIELD_LIMIT) return { text, from };
+  return { text: text.slice(0, HOOK_CONTEXT_FIELD_LIMIT), from, truncated: true };
 }
 
 /**
  * 解析退出码 0 的 Stop 输出（#64）：只有 `{"decision":"block","reason":"<非空>"}`
  * 才请求续跑。普通 stdout（哪怕写着 "please continue"）、`{"decision":"block"}`
  * 无 reason、半截 JSON 一律不续跑 —— 续跑会多花一次模型请求，误判的代价不对称。
+ *
+ * #64 B1：入参是**完整语义载荷**（`HookOutcome.semantic.raw`）。先解析再按
+ * REASON_LIMIT 限长 —— 否则 1000 字出头的合法 reason 会在诊断截断后连 JSON
+ * 包装都保不住，续跑被静默吞掉。超限时标记 `overflow` 且不续跑（诊断由调用方显示）。
  */
-export function parseStopOutput(stdout: string): StopBlockRequest {
-  const out = stdout.trim();
+export function parseStopOutput(semantic: HookSemanticOutput | undefined): StopBlockRequest {
+  if (semantic === undefined) return { block: false, reason: "" };
+  if (semantic.overflow) return { block: false, reason: "", overflow: true };
+  const out = semantic.raw.trim();
   if (!out.startsWith("{")) return { block: false, reason: "" };
   try {
     const obj = JSON.parse(out) as Record<string, unknown>;
@@ -327,10 +429,31 @@ export function parseStopOutput(stdout: string): StopBlockRequest {
     if (typeof reason !== "string") return { block: false, reason: "" };
     const text = reason.trim();
     if (text === "") return { block: false, reason: "" };
-    return { block: true, reason: text.slice(0, REASON_LIMIT) };
+    if (text.length <= REASON_LIMIT) return { block: true, reason: text };
+    return { block: true, reason: text.slice(0, REASON_LIMIT), truncated: true };
   } catch {
     return { block: false, reason: "" };
   }
+}
+
+/** #64 B1：语义载荷超限时给人看的一句话（诊断，不是语义）。 */
+export function describeSemanticOverflow(event: HookEvent, hook: HookDef): string {
+  return `${event} hook（${hook.origin}）的输出超过语义载荷上限 ${HOOK_SEMANTIC_OUTPUT_LIMIT} 字节，已忽略其语义（不注入上下文、不续跑）。`;
+}
+
+/**
+ * #64 B1 自修：字段被裁剪时的诊断。
+ *
+ * 与「整段载荷超限」分开说：这里语义是可信的，只是正文太长被截到上限，
+ * 用户需要知道「hook 生效了，但只喂了前 N 字符」。
+ */
+export function describeContextTruncation(event: HookEvent, hook: HookDef): string {
+  return `${event} hook（${hook.origin}）的附加上下文超过字段上限 ${HOOK_CONTEXT_FIELD_LIMIT} 字符，已截断（只注入前 ${HOOK_CONTEXT_FIELD_LIMIT} 字符）。`;
+}
+
+/** #64 B1 自修：Stop reason 被裁剪时的诊断（仍然续跑，只是理由变短）。 */
+export function describeReasonTruncation(event: HookEvent, hook: HookDef): string {
+  return `${event} hook（${hook.origin}）的续跑理由超过 ${REASON_LIMIT} 字符，已截断（续跑请求不变）。`;
 }
 
 /** 该事件下所有匹配的 hook（保持配置顺序）。 */
@@ -415,7 +538,7 @@ export function describeHook(hook: HookDef): string {
 
 /** 诊断行：把一次 outcome 转成给人看的一句话。 */
 export function describeOutcome(o: HookOutcome): string {
-  const where = `${o.hook.event} hook（${o.hook.origin}）`;
+  const where = `${o.hook.event} hook（${o.hook.origin}）${o.outputTruncated ? "（输出超过接收上限，诊断仅保留尾部）" : ""}`;
   switch (o.kind) {
     case "ok":
       return `${where} 通过（${o.durationMs}ms）`;

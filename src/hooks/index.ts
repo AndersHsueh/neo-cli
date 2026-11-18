@@ -6,7 +6,10 @@
  */
 export {
   DEFAULT_HOOK_TIMEOUT_SECONDS,
+  HOOK_CONTEXT_FIELD_LIMIT,
+  HOOK_DIAGNOSTIC_BUFFER_LIMIT,
   HOOK_EVENTS,
+  HOOK_SEMANTIC_OUTPUT_LIMIT,
   MAX_HOOK_TIMEOUT_SECONDS,
   NOTIFICATION_REASONS,
   SESSION_START_SOURCES,
@@ -25,6 +28,7 @@ export {
   type HookOutcome,
   type HookPayload,
   type HookPayloadBase,
+  type HookSemanticOutput,
   type HooksConfig,
   type NotificationPayload,
   type NotificationReason,
@@ -40,8 +44,11 @@ export {
 } from "./types.ts";
 
 export {
+  describeContextTruncation,
   describeHook,
   describeOutcome,
+  describeReasonTruncation,
+  describeSemanticOverflow,
   dispatchHooks,
   extractReason,
   hookMatches,

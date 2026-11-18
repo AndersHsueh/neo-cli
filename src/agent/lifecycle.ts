@@ -17,9 +17,13 @@
  */
 import type { Message } from "../llm.ts";
 import {
+  describeContextTruncation,
+  describeReasonTruncation,
+  describeSemanticOverflow,
   parseHookOutput,
   parseStopOutput,
   type CompactTrigger,
+  type HookOutcome,
   type SessionStartSource,
   type StopBlockRequest,
 } from "../hooks/index.ts";
@@ -93,7 +97,7 @@ export async function runSessionStart(
   if (!this.abort || this.abort.signal.aborted) this.abort = new AbortController();
   const r = await this.runHooks("SessionStart", null, { source }, this.abort?.signal);
   // dispatchHooks 对 SessionStart 恒不阻断；这里再兜一层，语义写在类型上。
-  const context = collectContext(r.outcomes.map((o) => (o.kind === "ok" ? o.stdout : "")));
+  const context = collectContext(this, r.outcomes);
   if (context !== "") appendLifecycleContext(this, context);
   return { blocked: false, reason: r.reason, context, continue: false };
 }
@@ -116,7 +120,7 @@ async function runUserPromptSubmit(
 
   const r = await this.runHooks("UserPromptSubmit", null, { prompt }, this.abort?.signal);
   if (r.blocked) return { blocked: true, reason: r.reason, context: "", continue: false };
-  const context = collectContext(r.outcomes.map((o) => (o.kind === "ok" ? o.stdout : "")));
+  const context = collectContext(this, r.outcomes);
   if (context !== "") appendLifecycleContext(this, context);
   return { blocked: false, reason: "", context, continue: false };
 }
@@ -145,7 +149,7 @@ export async function runStopHooks(
   if (skipForSubagent(this)) return EMPTY;
 
   const r = await this.runHooks("Stop", null, { stop_hook_active: alreadyContinued }, this.abort?.signal);
-  const request: StopBlockRequest = lastStopRequest(r.outcomes);
+  const request: StopBlockRequest = lastStopRequest(this, r.outcomes);
   // 诊断文本：exit2 / 失败 / 无 reason 的 block 都留下可读原因，但都不续跑。
   const diagnostic = r.reason !== "" ? r.reason : firstOutcomeReason(r.outcomes);
   return {
@@ -199,26 +203,52 @@ export async function runPreCompact(
     reportLifecycle(this, `PreCompact hook 拒绝了本次压缩（${trigger}）：${r.reason}`);
     return { blocked: true, reason: r.reason, context: "", continue: false };
   }
-  const context = collectContext(r.outcomes.map((o) => (o.kind === "ok" ? o.stdout : "")));
+  const context = collectContext(this, r.outcomes);
   return { blocked: false, reason: "", context, continue: false };
 }
 
-/** 把多条 hook 的附加上下文拼成一段（保持配置顺序，空段丢弃）。 */
-function collectContext(stdouts: string[]): string {
+/**
+ * 把多条 hook 的附加上下文拼成一段（保持配置顺序，空段丢弃）。
+ *
+ * #64 B1：只消费**语义载荷**（`outcome.semantic`，完整原文），不消费诊断尾部。
+ * 超限的 hook 不贡献上下文，但必须留下诊断 —— 否则用户看到「hook 跑了却没生效」
+ * 却不知道为什么。
+ *
+ * #64 B1 自修：字段级裁剪（`truncated`）同样留诊断 —— 语义可信但正文被截，
+ * 用户要知道「只喂了前 N 字符」。
+ */
+function collectContext(agent: Agent, outcomes: HookOutcome[]): string {
   const parts: string[] = [];
-  for (const out of stdouts) {
-    const parsed = parseHookOutput(out);
+  for (const o of outcomes) {
+    if (o.kind !== "ok") continue;
+    const parsed = parseHookOutput(o.semantic);
+    if (parsed.overflow) {
+      reportLifecycle(agent, describeSemanticOverflow(o.hook.event, o.hook));
+      continue;
+    }
+    if (parsed.truncated) reportLifecycle(agent, describeContextTruncation(o.hook.event, o.hook));
     if (parsed.text !== "") parts.push(parsed.text);
   }
   return parts.join("\n\n");
 }
 
-/** 取最后一条「请求续跑」的 Stop 输出（多条 hook 时后者覆盖前者，与执行顺序一致）。 */
-function lastStopRequest(outcomes: Array<{ kind: string; stdout: string }>): StopBlockRequest {
+/**
+ * 取最后一条「请求续跑」的 Stop 输出（多条 hook 时后者覆盖前者，与执行顺序一致）。
+ *
+ * #64 B1：同样只消费语义载荷。超限的 Stop 输出无法判断 decision/reason，
+ * 既不续跑也不当成「明确不续跑」—— 必须显式诊断，不能让 Stop 静默失效。
+ * reason 被裁剪到 2000 字符时仍续跑，但留一条诊断。
+ */
+function lastStopRequest(agent: Agent, outcomes: HookOutcome[]): StopBlockRequest {
   let request: StopBlockRequest = { block: false, reason: "" };
   for (const o of outcomes) {
     if (o.kind !== "ok") continue;
-    const parsed = parseStopOutput(o.stdout);
+    const parsed = parseStopOutput(o.semantic);
+    if (parsed.overflow) {
+      reportLifecycle(agent, describeSemanticOverflow(o.hook.event, o.hook));
+      continue;
+    }
+    if (parsed.truncated) reportLifecycle(agent, describeReasonTruncation(o.hook.event, o.hook));
     if (parsed.block) request = parsed;
   }
   return request;

@@ -91,6 +91,46 @@ exit 2 或其它失败都不会凭输出/失败原因发起续跑，只诊断。
 第二次 block 只诊断上限，没有第三轮。Stop 扩展不额外产生 TurnEnd / Notification：最终收口各一次，
 原有 drive 每轮的旧事件口径不变。
 
+### 语义载荷与诊断尾部分离（B1 复审修复）
+
+生命周期事件的 exit 0 输出是**语义载荷**，与旧四事件（PreToolUse / PostToolUse / TurnEnd /
+Notification）的**诊断尾部**是两条通道，不能混用：
+
+- 诊断尾部：`HookOutcome.stdout` / `stderr`，保留末尾 800 字符（超出加 `…` 前缀），只给人看。
+- 语义载荷：`HookOutcome.semantic`，仅生命周期事件 exit 0 时有值，保存**完整原始 stdout**。
+  additionalContext 与 Stop 的 decision/reason 一律从它解析，**先完整 parse 再按字段限长**。
+- 原始语义输出上限 **1 MiB = 1048576 字节**（`HOOK_SEMANTIC_OUTPUT_LIMIT`），
+  **按原始 UTF-8 字节计**（`Buffer.byteLength`），不按 JS `string.length`：
+  否则 1 MiB 的中文实际能到约 3 MiB。恰好等于上限成功，多 1 字节整体拒绝（不做部分保留）。
+- 判限发生在**接收缓冲**阶段：累积字节超限即停止累积语义，不靠「先收完无限字符串再判限」。
+  分块接收用流式 UTF-8 解码（`StringDecoder`），码点跨块不会被解成替换符；
+  语义载荷因此与原始合法 JSON 逐字相等。
+- **新生命周期接收有界**：stdout完整缓冲限1 MiB，stderr完整原因缓冲也限1 MiB
+  （`HOOK_DIAGNOSTIC_BUFFER_LIMIT`）；诊断尾部独立流式保留真正的最后800字符，不是首1 MiB的尾巴。
+  超限后丢弃完整缓冲、置 `HookOutcome.outputTruncated`，但继续更新尾部、排空管道并等待退出，
+  不杀进程；exit2仍阻断，失败诊断明确标注接收超限。
+- **字段级上限**（`HOOK_CONTEXT_FIELD_LIMIT` = **32000 字符**）：`additionalContext` 字段与
+  纯文本 stdout 两条路径共用同一上限。1 MiB 的合法 JSON 里塞 30 万字正文一样会挤爆主模型
+  与摘要器，所以字段必须单独限长。超限保留前 32000 字符（仍注入），并给一条裁剪诊断
+  （`describeContextTruncation`，含「字段上限」字样）。
+- Stop 的 `reason` 沿用既有 **2000 字符**上限：先 parse 出 reason 再裁剪，裁剪后**续跑请求仍有效**，
+  另给一条 `describeReasonTruncation` 诊断；续跑仍受原额度、预算与取消约束。
+- 超限 = 显式诊断 + 拒绝其语义：不注入上下文、不续跑，也不把截断输出降格成纯文本。
+  诊断文案含「上限」字样并走 stderr（交互为 console.warn）。
+- 合法 JSON 对象没有 `additionalContext` 时一律忽略，**不论未知字段多大**（例如
+  `diagnosticMetadata` 长 1100 字符也不得进模型上下文）。
+- 坏 JSON 维持既有非崩溃语义：上下文路径按纯文本回退，Stop 路径不续跑。
+- 旧四事件不受影响：保留完整输出解析JSON失败原因，再单独保留800字符诊断尾部；
+  不给旧事件新增原始接收上限，exit / onFailure 策略不变。
+
+| 项 | 常量 | 数值 | 计限口径 | 超限行为 |
+| --- | --- | --- | --- | --- |
+| 语义载荷 | `HOOK_SEMANTIC_OUTPUT_LIMIT` | 1048576 | 原始字节 | 丢弃语义 + 诊断，不注入/不续跑 |
+| 新生命周期stderr完整原因 | `HOOK_DIAGNOSTIC_BUFFER_LIMIT` | 1048576 | 原始字节 | 丢弃完整缓冲、保留原因前缀/诊断尾部、继续drain |
+| 上下文字段 | `HOOK_CONTEXT_FIELD_LIMIT` | 32000 | 字符（parse 后） | 保留前 32000 字符 + 裁剪诊断 |
+| Stop reason | `REASON_LIMIT`（runner 内部） | 2000 | 字符（parse 后） | 保留前 2000 字符 + 裁剪诊断，续跑请求不变 |
+| 诊断尾部 | `TAIL_LIMIT`（runner 内部） | 800 | 字符 | 加 `…` 前缀 |
+
 ### 失败策略
 
 | 事件 | exit 2 | 其它失败/超时 |
@@ -117,8 +157,13 @@ PreCompact 在任何破坏历史/快照动作、摘要器请求前运行。拒�
 测试名称包含 #64：
 
 - `tests/lifecycle-hooks-64.test.ts`：基础输入阻断、上下文、Stop 上限及手动/自动压缩。
-- `tests/lifecycle-hooks-64-agent.test.ts`：来源、分类前零调用、取消、工具轮、共享额度、快照不变和子代理排除。
-- `tests/lifecycle-hooks-64-entry.test.ts`：真实 -p / ACP / /hooks、协议 stdout、入口次数与可见拒绝。
+- `tests/lifecycle-hooks-64-agent.test.ts`：来源、分类前零调用、取消、工具轮、共享额度、快照不变和子代理排除；
+  以及 B1 复审反例（1200 字 additionalContext、1100 字未知字段、1007/3007 字 Stop reason、
+  4 MiB 超限诊断、旧四事件诊断尾部不变），以及 B1 自修反例（逐字节分块的 UTF-8 语义载荷、
+  按原始字节计的 1 MiB 上限与恰好边界、三事件 10 万字的字段级限长、
+  超载 stdout 下 exit 2 仍阻断 UserPromptSubmit / PreCompact、超1MiB旧事件的真实tail/JSON失败原因）。
+- `tests/lifecycle-hooks-64-entry.test.ts`：真实 -p / ACP / /hooks、协议 stdout、入口次数与可见拒绝；
+  以及 B1 真实 ACP 长 metadata-only JSON 不进模型请求。
 - 真 PTY S31/S32/S33/S34：交互事件顺序与阻断、resume 一次、Stop 续跑与最终事件计数、交互 drive 额度和 clear 事件。
 - 旧 hooks / Notification / compact / drive 测试继续回归；官方闸门为 tsc → bun test → PTY。
 
