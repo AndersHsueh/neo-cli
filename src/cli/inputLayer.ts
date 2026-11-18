@@ -40,7 +40,6 @@ interface TabCycle {
  */
 export async function runInteractive(s: AppSession): Promise<number> {
   const {
-    args,
     cfg,
     interactiveTTY,
     preComposerRows,
@@ -102,8 +101,11 @@ export async function runInteractive(s: AppSession): Promise<number> {
         version: VERSION,
         model: cfg.model,
         tier: tierDisplayName(cfg.modelTier),
+        // issue #79：状态条与输入框强调色要跟随运行中的 agent.mode
+        //（/mode 与 Shift+Tab 会改它）。启动时的 args.mode 会过时。
+        // 显示名仍把 auto-edit / auto-all 写成 edit / yolo（现有口径）。
         mode:
-          args.mode === "auto-edit" ? "edit" : args.mode === "auto-all" ? "yolo" : args.mode,
+          agent.mode === "auto-edit" ? "edit" : agent.mode === "auto-all" ? "yolo" : agent.mode,
         // 规划态（issue #14）单独显示，避免与 /mode plan 的只读闸门混淆。
         planning: agent.planning,
         branch: statusFields.branch(),
@@ -116,6 +118,28 @@ export async function runInteractive(s: AppSession): Promise<number> {
       commands: COMMANDS,
       files: () => repl.fileIndex.list(),
       onSubmit: (text, attachments) => repl.submitUserLine(text, attachments as Attachment[]),
+      onCycleMode: (next) => {
+        agent.mode = next;
+        try {
+          s.mailbox?.setMode(next);
+        } catch {
+          // 状态同步失败不影响模式切换
+        }
+      },
+      onRecallQueue: () => {
+        for (let i = repl.queue.length - 1; i >= 0; i--) {
+          const item = repl.queue[i];
+          if (!item || item.origin !== "user") continue;
+          repl.queue.splice(i, 1);
+          s.composerRef?.setQueueCount(repl.queue.length);
+          return { text: item.text, attachments: item.attachments ?? [] };
+        }
+        return null;
+      },
+      onFlushQueue: () => {
+        s.composerRef?.setQueueCount(repl.queue.length);
+        repl.runDrainSafely();
+      },
       // issue #30：输入态 shell 模式 → 入队标记 shell，由 drain 直接跑 shell（与 `?` 悬浮态解耦）
       onShellCommand: (command) => {
         repl.queue.push({ text: command, attachments: [], origin: "user", shell: true });

@@ -343,19 +343,20 @@ describe("B3 编辑操作", () => {
     expect(first.cursor).toBe(0);
   });
 
-  test("B3j Ctrl+W 中文只删一个字而不是整句", () => {
+  test("B3j Ctrl+W 删到上一空白：无空白时整段（含中文）一次删掉", () => {
+    // issue #79：Ctrl+W 与 Alt+D 等按词删除分开；Ctrl+W 一次可吃掉整段路径/整句。
     const single = new TextBuffer("中文");
     single.deleteWordLeft();
-    expect(single.text).toBe("中");
-    expect(single.cursor).toBe(1);
+    expect(single.text).toBe("");
+    expect(single.cursor).toBe(0);
 
     const mixed = new TextBuffer("中文abc");
     mixed.deleteWordLeft();
-    expect(mixed.text).toBe("中文");
-    expect(mixed.cursor).toBe(2);
+    expect(mixed.text).toBe("");
+    expect(mixed.cursor).toBe(0);
   });
 
-  test("B3k Ctrl+W 删 ASCII 连续段，标点单独成词", () => {
+  test("B3k Ctrl+W 删到上一空白，路径与标点一并吃掉", () => {
     const ascii = new TextBuffer("hello world");
     ascii.deleteWordLeft();
     expect(ascii.text).toBe("hello ");
@@ -363,8 +364,13 @@ describe("B3 编辑操作", () => {
 
     const punct = new TextBuffer("abc,def");
     punct.deleteWordLeft();
-    expect(punct.text).toBe("abc,");
-    expect(punct.cursor).toBe(4);
+    expect(punct.text).toBe("");
+    expect(punct.cursor).toBe(0);
+
+    const path = new TextBuffer("see src/tui/keys.ts");
+    path.deleteWordLeft();
+    expect(path.text).toBe("see ");
+    expect(path.cursor).toBe(4);
   });
 
   test("B3l Ctrl+W 跳过空白再删前一个词", () => {
@@ -387,17 +393,18 @@ describe("B3 编辑操作", () => {
     buffer.move("word-right", 100);
     expect(buffer.cursor).toBe(11);
 
+    // issue #79：中日文连续字按词移动（不再一字一词）；标点仍分隔。
     const cjk = new TextBuffer("中文");
     cjk.cursor = 2;
     cjk.move("word-left", 100);
-    expect(cjk.cursor).toBe(1);
+    expect(cjk.cursor).toBe(0);
     cjk.move("word-right", 100);
     expect(cjk.cursor).toBe(2);
 
     const punct = new TextBuffer("ab,cd");
     punct.cursor = 5;
     punct.move("word-left", 100);
-    expect(punct.cursor).toBe(3); // 跳过 def 段
+    expect(punct.cursor).toBe(3); // 跳过 cd 段
     punct.move("word-left", 100);
     expect(punct.cursor).toBe(2); // 逗号单独成词
   });

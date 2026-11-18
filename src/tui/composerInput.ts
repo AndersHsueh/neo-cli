@@ -19,6 +19,7 @@ import {
 import { TextBuffer, layoutBuffer } from "./buffer.ts";
 import { truncateAnsi, wrapAnsi } from "./ansi.ts";
 import { mapKey, type RawKey, type KeyAction } from "./keys.ts";
+import { stripInvisible } from "./sanitizeInput.ts";
 import { shouldFold } from "../paste.ts";
 import {
   REWIND_MODE_QUESTION,
@@ -281,173 +282,7 @@ export function finishAsk(this: Composer): void {
   this.scheduleRender();
 }
 
-export function handleNormalAction(this: Composer, action: KeyAction): void {
-  // issue #74：检索态优先分发（普通插入/退格改的是查询，不是草稿）。
-  if (this.search) {
-    this.handleHistorySearchKey(action);
-    return;
-  }
-  // issue #31：先按当前缓冲区同步菜单状态，菜单打开时优先吃掉它的导航/接受键。
-  this.syncCommandMenu();
-  if (this.menu && this.handleMenuKey(action)) return;
-  // issue #30：shell 模式下空缓冲区再删 = 退出模式（不执行、不残留）。
-  if (
-    (action.type === "backspace" || action.type === "delete") &&
-    this.shellMode &&
-    this.buf.text === ""
-  ) {
-    this.exitShellMode();
-    return;
-  }
-  switch (action.type) {
-    case "insert":
-      // issue #30：空缓冲区键入 `!` = 进入 shell 模式；`!` 是模式开关，不进正文。
-      // 缓冲区非空时按字面插入（避免把普通句子误切成 shell 命令）。
-      if (!this.shellMode && this.buf.text === "" && action.text === "!") {
-        this.enterShellMode();
-        return;
-      }
-      this.buf.insert(action.text);
-      this.resetTabIfEdited();
-      this.scheduleRender();
-      return;
-    case "submit":
-      this.submit();
-      return;
-    case "newline":
-      this.buf.newline();
-      this.resetTabIfEdited();
-      this.scheduleRender();
-      return;
-    case "tab":
-      // issue #30：shell 命令是外部语法，不套用 neo 的命令/文件补全。
-      if (this.shellMode) {
-        this.hint = null;
-        this.scheduleRender();
-        return;
-      }
-      this.tabComplete();
-      return;
-    case "escape":
-    case "escape-escape": {
-      const doubleEsc = action.type === "escape-escape";
-      // issue #47：终端/readline 会把连按两下 Esc 合并成一个事件（sequence 是两个 ESC 字节）
-      // → keys.ts 映射成 escape-escape。只在「Esc 本来无事可做」（空闲 + 空缓冲 + 非 shell 模式）
-      // 才打开 rewind 菜单；其它状态退回单 Esc 语义（不多做任何事）。
-      if (
-        doubleEsc &&
-        !this.busy &&
-        !this.shellMode &&
-        this.buf.text === "" &&
-        this.deps.rewind &&
-        !this.rewindMenuOpen
-      ) {
-        void this.openRewindMenu();
-        return;
-      }
-      if (this.busy) {
-        this.deps.onCancelTurn?.();
-        this.notice("已请求取消本轮");
-      } else if (this.shellMode) {
-        this.exitShellMode();
-        this.buf.clear();
-        this.history.reset();
-        this.tabCycle = null;
-        this.hint = null;
-      } else if (this.buf.text !== "") {
-        this.buf.clear();
-        this.history.reset(); // 清空后 ↓ 不能把 ↑ 之前的草稿复活
-        this.tabCycle = null;
-        this.hint = null;
-      } else if (!doubleEsc && this.deps.rewind && !this.rewindMenuOpen) {
-        // issue #47：只有「Esc 本来无事可做」（空闲 + 空缓冲 + 无 shell 模式）才武装双击。
-        // 上面三条分支各自 return 前都不武装 —— 单 Esc 的 5 种语义一律不变。
-        if (this.escDouble.arm(this.now())) {
-          void this.openRewindMenu();
-          return;
-        }
-      }
-      this.scheduleRender();
-      return;
-    }
-    case "ctrl-c":
-      this.handleCtrlC();
-      return;
-    case "ctrl-d":
-      if (this.buf.text === "") this.deps.onExit();
-      else { this.buf.delete(); this.scheduleRender(); }
-      return;
-    case "ctrl-o":
-      this.notice("transcript 视图将在 v0.3.1 提供");
-      return;
-    case "ctrl-v":
-      void this.pasteImage();
-      return;
-    case "ctrl-g":
-      void this.editInExternal();
-      return;
-    case "ctrl-r":
-      this.openHistorySearch();
-      return;
-    case "ctrl-s":
-      this.stashDraft();
-      return;
-    case "up":
-    case "down":
-      if (this.moveLineOrHistory(action.type)) return;
-      return;
-    default:
-      this.applyEditAction(action, this.buf);
-      this.resetTabIfEdited();
-      this.scheduleRender();
-  }
-}
 
-/** ↑↓：在视觉行内移动；到首/末行时走历史。 */
-export function moveLineOrHistory(this: Composer, dir: "up" | "down"): boolean {
-  const width = this.contentWidth();
-  const layout = this.layoutFor(this.buf.text, this.buf.cursor, width);
-  if (dir === "up" && layout.cursorRow === 0) {
-    const entry = this.history.up(this.buf.text);
-    if (entry !== null) {
-      this.buf.setText(entry, entry.length);
-      this.scheduleRender();
-    }
-    return true;
-  }
-  if (dir === "down" && layout.cursorRow === layout.lines.length - 1) {
-    const entry = this.history.down(this.buf.text);
-    if (entry !== null) {
-      this.buf.setText(entry, entry.length);
-      this.scheduleRender();
-    }
-    return true;
-  }
-  this.applyEditAction({ type: dir }, this.buf);
-  this.resetTabIfEdited();
-  this.scheduleRender();
-  return true;
-}
-
-export function applyEditAction(this: Composer, action: KeyAction, buf: TextBuffer): void {
-  const width = this.contentWidth();
-  switch (action.type) {
-    case "backspace": buf.backspace(); return;
-    case "delete": buf.delete(); return;
-    case "left": buf.move("left", width); return;
-    case "right": buf.move("right", width); return;
-    case "up": buf.move("up", width); return;
-    case "down": buf.move("down", width); return;
-    case "home": buf.move("home", width); return;
-    case "end": buf.move("end", width); return;
-    case "word-left": buf.move("word-left", width); return;
-    case "word-right": buf.move("word-right", width); return;
-    case "kill-end": buf.killToEnd(); return;
-    case "kill-start": buf.killToStart(); return;
-    case "kill-word": buf.deleteWordLeft(); return;
-    default: return;
-  }
-}
 
 export function resetTabIfEdited(this: Composer): void {
   this.tabCycle = null;
@@ -461,6 +296,10 @@ export function submit(this: Composer): void {
     return;
   }
   let text = this.buf.text;
+  if (text.trim() === "") return;
+  // issue #79：提交前剥掉不可见 Unicode（ZWSP / BOM / bidi 标记 / 软连字符），
+  // 保留换行、空格、emoji ZWJ 与 variation selector。
+  text = stripInvisible(text);
   if (text.trim() === "") return;
   // 行尾反斜杠 = 续行（与 v0.2.4 兼容）
   if (text.endsWith("\\") && !text.endsWith("\\\\")) {
@@ -503,7 +342,8 @@ export function exitShellMode(this: Composer): void {
  * 空命令不执行，直接回普通态；宿主没接回调时退回旧语法 `!${cmd}` 交给 onSubmit。
  */
 export function submitShellCommand(this: Composer): void {
-  const command = this.buf.text.trim();
+  // issue #79：shell 命令同样剥掉不可见 Unicode（命令原文不该带零宽字符）。
+  const command = stripInvisible(this.buf.text).trim();
   if (command === "") {
     this.shellMode = false;
     this.buf.clear();
@@ -540,6 +380,22 @@ export function commitUserInput(this: Composer, text: string, firstPrefix = c.ac
 
 export function handleCtrlC(this: Composer): void {
   if (this.busy) this.deps.onCancelTurn?.();
+  // issue #79：输入框非空（或有附件 / 处于 shell 模式）时，第一次 Ctrl+C 把整份草稿
+  // 推进召回环再清空（不提交），随后照旧武装「再按一次退出」。
+  // 空框 Ctrl+C 保持原语义：双击退出，不进环。
+  if (this.buf.text !== "" || this.attachments.length > 0 || this.shellMode) {
+    this.pushDraftToRing();
+    this.buf.clear();
+    this.attachments = [];
+    this.shellMode = false;
+    this.tabCycle = null;
+    this.hint = null;
+    this.menu = null;
+    this.menuDismissedFor = null;
+    this.helpOpen = false;
+    this.inputScroll = 0;
+    this.edits.reset();
+  }
   const now = this.now();
   if (this.armedExit && now - this.lastCtrlCAt <= DOUBLE_CTRL_C_MS) {
     this.deps.onExit();
@@ -547,7 +403,7 @@ export function handleCtrlC(this: Composer): void {
   }
   this.armedExit = true;
   this.lastCtrlCAt = now;
-  this.notice("再按 Ctrl+C 退出", DOUBLE_CTRL_C_MS);
+  this.notice("再按 Ctrl+C 退出（清掉的草稿可按 ↑ 找回）", DOUBLE_CTRL_C_MS);
 }
 
 // ---------------------------------------------------------------- 命令菜单（issue #31）
@@ -642,11 +498,20 @@ export function acceptMenuCommand(this: Composer, execute: boolean): void {
   if (!menu || menu.items.length === 0) return;
   const item = menu.items[menu.index];
   if (!item) return;
-  const text = `/${item.name}`;
+  const inserted = `/${item.name}`;
   this.menu = null;
   this.hint = null;
   this.tabCycle = null;
-  this.buf.setText(text, text.length);
+  // issue #79：只替换触发 token（行首或句中 `/query`），不要把整行改成 `/help`。
+  const ctx = triggerAt(this.buf.text, this.buf.cursor);
+  if (ctx && ctx.kind === "command") {
+    const before = this.buf.text.slice(0, ctx.start);
+    const after = this.buf.text.slice(ctx.start + ctx.token.length);
+    const next = `${before}${inserted}${after}`;
+    this.buf.setText(next, Array.from(before + inserted).length);
+  } else {
+    this.buf.setText(inserted, Array.from(inserted).length);
+  }
   this.resetTabIfEdited();
   if (execute) this.submit();
   else this.scheduleRender();

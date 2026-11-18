@@ -81,9 +81,19 @@ function isBoundary(target: string, i: number): boolean {
 export function triggerAt(line: string, cursor = line.length): TriggerContext | null {
   const head = line.slice(0, Math.max(0, Math.min(cursor, line.length)));
 
-  // 命令：行首 `/` 且还没出现空白（正在敲命令名）
-  const cmd = /^\/([^\s]*)$/.exec(head);
-  if (cmd) return { kind: "command", token: head, query: cmd[1] ?? "", start: 0 };
+  // 命令：行首 `/` 或**空白之后**的 `/`，且还没出现空白（正在敲命令名）。
+  // issue #79：句中也能补全（`please /com`），但 token 只到 `/` 起、到光标止。
+  // 路径不误开菜单：token 里出现第二个 `/`（`/tmp/notes.md`）或带文件名点号扩展
+  //（`notes.md`）一律不当作命令。
+  const cmd = /(?:^|\s)\/([^\s]*)$/.exec(head);
+  if (cmd) {
+    const query = cmd[1] ?? "";
+    const start = head.length - query.length - 1;
+    const token = head.slice(start);
+    if (!looksLikePath(token, query)) {
+      return { kind: "command", token, query, start };
+    }
+  }
 
   // 文件：最后一个 `@`，前面必须是边界，`@` 之后到光标不能有空白
   const at = head.lastIndexOf("@");
@@ -92,6 +102,21 @@ export function triggerAt(line: string, cursor = line.length): TriggerContext | 
   const query = head.slice(at + 1);
   if (/\s/.test(query)) return null;
   return { kind: "file", token: head.slice(at), query, start: at };
+}
+
+/** 文件名点号扩展（`notes.md` / `a.tar.gz`）：命令名里不会出现这种形态。 */
+const FILE_EXT = /\.[A-Za-z][A-Za-z0-9]{0,5}$/;
+
+/**
+ * `/xxx` 更像路径而不是命令名？
+ *
+ * 判定：token 里还有第二个 `/`（`/tmp/notes.md`、`/usr/bin`），或者带文件名扩展
+ *（`/notes.md`）。`/mode`、`/help` 这类命令名保持可触发。
+ */
+function looksLikePath(token: string, query: string): boolean {
+  if (query.includes("/")) return true;
+  if (FILE_EXT.test(query)) return true;
+  return token.length > 1 && token.slice(1).includes("/");
 }
 
 /**

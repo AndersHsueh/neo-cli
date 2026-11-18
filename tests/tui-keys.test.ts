@@ -298,3 +298,40 @@ describe("E8 Ctrl+G（issue #62：外部编辑器）", () => {
     expect(mapKey({ ch: "g", name: "g" })).toEqual({ type: "insert", text: "g" });
   });
 });
+
+describe("issue #79 键位映射（不含 Vim，不改 Ctrl+R/S）", () => {
+  test("#79 mapKey：Ctrl+Y / Alt+Y / Ctrl+_ 映射 yank / yank-pop / undo", () => {
+    expect(act({ name: "y", ctrl: true, sequence: "\x19" })).toEqual({ type: "yank" });
+    expect(act({ name: "y", meta: true, sequence: "\x1by" })).toEqual({ type: "yank-pop" });
+    expect(act({ name: "_", ctrl: true, sequence: "\x1f" })).toEqual({ type: "undo" });
+    expect(act({ name: "-", ctrl: true, shift: true })).toEqual({ type: "undo" });
+    expect(act({ sequence: "\x1f" })).toEqual({ type: "undo" });
+  });
+
+  test("#79 mapKey：Alt+B/F/D 与 Ctrl+Backspace / Option+Delete", () => {
+    expect(act({ name: "b", meta: true, sequence: "\x1bb" })).toEqual({ type: "word-left" });
+    expect(act({ name: "f", meta: true, sequence: "\x1bf" })).toEqual({ type: "word-right" });
+    expect(act({ name: "d", meta: true, sequence: "\x1bd" })).toEqual({ type: "kill-word-right" });
+    expect(act({ name: "backspace", ctrl: true })).toEqual({ type: "kill-word-alnum" });
+    expect(act({ name: "backspace", meta: true })).toEqual({ type: "kill-word-alnum" });
+    expect(act({ name: "delete", meta: true })).toEqual({ type: "kill-word-alnum" });
+  });
+
+  test("#79 mapKey：Ctrl+P / Ctrl+N 是 ↑/↓ 别名；Ctrl+Enter 仍是换行", () => {
+    expect(act({ name: "p", ctrl: true, sequence: "\x10" })).toEqual({ type: "up" });
+    expect(act({ name: "n", ctrl: true, sequence: "\x0e" })).toEqual({ type: "down" });
+    expect(act({ name: "return", sequence: "\r", ctrl: true })).toEqual({ type: "newline" });
+  });
+
+  test("#79 mapKey：Shift+Tab / Alt+M 循环权限模式；普通 Tab 不变", () => {
+    expect(act({ name: "tab", shift: true, sequence: "\x1b[Z" })).toEqual({ type: "cycle-mode" });
+    expect(act({ name: "m", meta: true, sequence: "\x1bm" })).toEqual({ type: "cycle-mode" });
+    expect(act({ name: "tab" })).toEqual({ type: "tab" });
+  });
+
+  test("#79 mapKey：Ctrl+X 是和弦前缀；单独 Ctrl+S 仍是 ctrl-s（#74）", () => {
+    expect(act({ name: "x", ctrl: true, sequence: "\x18" })).toEqual({ type: "ctrl-x" });
+    expect(act({ name: "s", ctrl: true, sequence: "\x13" })).toEqual({ type: "ctrl-s" });
+    expect(act({ name: "r", ctrl: true, sequence: "\x12" })).toEqual({ type: "ctrl-r" });
+  });
+});

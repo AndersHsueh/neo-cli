@@ -41,6 +41,17 @@ export type KeyAction =
   | { type: "kill-end" }
   | { type: "kill-start" }
   | { type: "kill-word" }
+  // issue #79：按词删除（与 Ctrl+W 的「删到上一空白」区分）
+  | { type: "kill-word-alnum" }
+  | { type: "kill-word-right" }
+  // issue #79：kill ring 与撤销
+  | { type: "yank" }
+  | { type: "yank-pop" }
+  | { type: "undo" }
+  // issue #79：Shift+Tab / Alt+M 循环权限模式
+  | { type: "cycle-mode" }
+  // issue #79：Ctrl+X 和弦前缀（Ctrl+X Ctrl+S = 立即发送排队）
+  | { type: "ctrl-x" }
   | { type: "tab" }
   | { type: "escape" }
   | { type: "escape-escape" }
@@ -83,6 +94,12 @@ export function mapKey(k: RawKey): KeyAction | null {
   //      必须早于下面按 name=escape 的判定，否则会被当成单 Esc。
   if (k.sequence === "\x1b\x1b") return { type: "escape-escape" };
 
+  // 1.6) issue #79：Ctrl+_ 撤销。终端对它的编码不统一 ——
+  //      US(0x1F) 有时带 name="_"、有时带 name="-" + shift、有时 name 直接缺失，
+  //      所以先按 sequence 兜底，再按 name 判（放在 Enter/修饰键分支之前，避免被吞）。
+  if (k.sequence === "\x1f") return { type: "undo" };
+  if (k.ctrl && (k.name === "_" || (k.name === "-" && k.shift === true))) return { type: "undo" };
+
   // 2) 换行组合键：Shift+Enter（Kitty 协议）/ Ctrl+Enter / Alt+Enter。
   //    必须在 sequence "\r" 的提交判定之前 —— 否则它们会被当成提交。
   const enterName = k.name === "return" || k.name === "enter";
@@ -95,6 +112,15 @@ export function mapKey(k: RawKey): KeyAction | null {
 
   // 4) 保守：name=enter 但 sequence 不是 "\n"（\n 已在上面拦下）也按提交。
   if (k.name === "enter" && !k.ctrl && !k.meta && k.shift !== true) return { type: "submit" };
+
+  // 4.5) issue #79：Shift+Tab（CSI Z）循环权限模式。必须早于下面通用的 tab 判定，
+  //      否则 Shift+Tab 会被当成普通 Tab 去补全。
+  if (k.name === "tab" && (k.shift === true || k.sequence === "\x1b[Z")) return { type: "cycle-mode" };
+
+  // 4.6) issue #79：按词删除。Ctrl+Backspace / Alt+Backspace / Alt+Delete 都是
+  //      「删掉光标前一个字母数字词」，必须早于通用 backspace/delete 判定。
+  if (k.name === "backspace" && (k.ctrl === true || k.meta === true)) return { type: "kill-word-alnum" };
+  if (k.name === "delete" && k.meta === true) return { type: "kill-word-alnum" };
 
   // 5) Ctrl 组合键（信号语义由调用方兜底，这里只做编辑器语义）。
   if (k.ctrl) {
@@ -109,21 +135,39 @@ export function mapKey(k: RawKey): KeyAction | null {
       // 不依赖终端流控；XOFF 语义在 raw mode 里不生效）。
       case "r": return { type: "ctrl-r" };
       case "s": return { type: "ctrl-s" };
+      // issue #79：Ctrl+X 是和弦前缀（Ctrl+X Ctrl+S = 立即发送排队）。
+      case "x": return { type: "ctrl-x" };
+      // issue #79：kill ring / 撤销。
+      case "y": return { type: "yank" };
       case "j": return { type: "newline" };
       case "a": return { type: "home" };
       case "e": return { type: "end" };
       case "k": return { type: "kill-end" };
       case "u": return { type: "kill-start" };
       case "w": return { type: "kill-word" };
+      // issue #79：Ctrl+P / Ctrl+N 作为 ↑ / ↓ 别名（多行时先在框内移动，到首/末行再翻历史）。
+      case "p": return { type: "up" };
+      case "n": return { type: "down" };
       case "left": return { type: "word-left" };
       case "right": return { type: "word-right" };
       default: break;
     }
   }
 
-  // 6) Alt/⌥ + ←/→（macOS 终端常见）同样按词移动。
-  if (k.meta && k.name === "left") return { type: "word-left" };
-  if (k.meta && k.name === "right") return { type: "word-right" };
+  // 6) Alt/⌥ 组合键：←/→ 按词移动；B/F/D 是 emacs 同款按词移动/删除；Y 循环 kill ring；
+  //    M 循环权限模式（与 Shift+Tab 同义）。
+  if (k.meta) {
+    switch (k.name) {
+      case "left": return { type: "word-left" };
+      case "right": return { type: "word-right" };
+      case "b": return { type: "word-left" };
+      case "f": return { type: "word-right" };
+      case "d": return { type: "kill-word-right" };
+      case "y": return { type: "yank-pop" };
+      case "m": return { type: "cycle-mode" };
+      default: break;
+    }
+  }
 
   // 7) 无修饰（或未识别的修饰组合）的命名键。
   switch (k.name) {

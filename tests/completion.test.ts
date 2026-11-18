@@ -61,9 +61,9 @@ describe("C1a 触发识别", () => {
     expect(triggerAt("/pro")).toEqual({ kind: "command", token: "/pro", query: "pro", start: 0 });
   });
 
-  test("命令名之后有空格的不是命令补全；前导空格的 / 也不算", () => {
+  test("命令名之后有空格的不是命令补全；前导/句中空格后的 / 仍可触发（issue #79）", () => {
     expect(triggerAt("/provider x")).toBeNull();
-    expect(triggerAt("  /pro")).toBeNull();
+    expect(triggerAt("  /pro")).toEqual({ kind: "command", token: "/pro", query: "pro", start: 2 });
   });
 
   test("普通文本无触发", () => {

@@ -18,6 +18,7 @@
  */
 
 import { displayWidth, graphemeWidth, graphemes } from "../ui/theme.ts";
+import { whitespaceLeftIndex, wordLeftIndex, wordRightIndex } from "./wordBoundary.ts";
 
 /** 一条视觉行。start/end 是整段 text 的 code point 下标，`[start, end)`。 */
 export interface VisualLine {
@@ -44,20 +45,6 @@ function normalizeWidth(width: number): number {
   if (!Number.isFinite(width)) return 1;
   const w = Math.floor(width);
   return w >= 1 ? w : 1;
-}
-
-function isSpace(ch: string): boolean {
-  return ch === " " || ch === "\t" || ch === "\n" || ch === "\r";
-}
-
-/** ASCII 字母数字下划线连续段算一个词；CJK/标点各自单独成词。 */
-function isWordChar(ch: string): boolean {
-  return (
-    (ch >= "a" && ch <= "z") ||
-    (ch >= "A" && ch <= "Z") ||
-    (ch >= "0" && ch <= "9") ||
-    ch === "_"
-  );
 }
 
 /**
@@ -292,10 +279,24 @@ export class TextBuffer {
     this.replaceRange(this.logicalLineStart(), this.cursor);
   }
 
-  /** 等价 Ctrl+W。中文每次只删一个字，不吞整句。 */
+  /** 等价 Ctrl+W：删到上一空白（issue #79）。整段路径 `src/tui/keys.ts` 或无空白的中文整句一次删掉。 */
   deleteWordLeft(): void {
-    const target = this.wordLeftPos();
+    const target = whitespaceLeftIndex(toChars(this.text), this.cursor);
     if (target < this.cursor) this.replaceRange(target, this.cursor);
+    else this.goalCol = null;
+  }
+
+  /** 按词删光标前一个词（Alt+Backspace / Ctrl+Backspace）：字母数字段、CJK 段、单个标点。 */
+  deleteWordLeftAlnum(): void {
+    const target = wordLeftIndex(toChars(this.text), this.cursor);
+    if (target < this.cursor) this.replaceRange(target, this.cursor);
+    else this.goalCol = null;
+  }
+
+  /** 按词删光标后一个词（Alt+D），光标不动。 */
+  deleteWordRight(): void {
+    const target = wordRightIndex(toChars(this.text), this.cursor);
+    if (target > this.cursor) this.replaceRange(this.cursor, target);
     else this.goalCol = null;
   }
 
@@ -339,10 +340,14 @@ export class TextBuffer {
       col += cw;
       pos = next;
     }
-    // 左闭右开 + 边界归后一行行首：满宽视觉行的 end 会被映射到下一行，
-    // 直接落 end 会「按 ↑ 却停在原地」。退一格保证落在目标行内（行尾前一个槽位）。
+    // 左闭右开 + 边界归后一行行首：只有**软折行**（下一视觉行的 start 等于本行 end，
+    // 中间没有 \n）时，落在 end 会被映射到下一行行首，这时才退一格。
+    // 硬换行（`line1\nline2`）的行尾是合法停靠点，退一格会让 ↑ 到不了行尾。
     if (pos === line.end && targetRow < layout.lines.length - 1) {
-      pos = Math.max(line.start, pos - 1);
+      const nextLine = layout.lines[targetRow + 1];
+      if (nextLine && nextLine.start === line.end) {
+        pos = Math.max(line.start, pos - 1);
+      }
     }
     this.cursor = pos;
   }
@@ -361,33 +366,14 @@ export class TextBuffer {
     return i;
   }
 
-  /** 向左找「一个词」：先跳空白；ASCII 连续段整段跳过；CJK/标点各算一个词。 */
+  /** 向左找「一个词」：先跳空白，再按 wordBoundary 的同一套词类整段跳过。 */
   private wordLeftPos(): number {
-    const chars = toChars(this.text);
-    let i = this.cursor;
-    while (i > 0 && isSpace(chars[i - 1] as string)) i -= 1;
-    if (i <= 0) return 0;
-    const prev = chars[i - 1] as string;
-    if (isWordChar(prev)) {
-      while (i > 0 && isWordChar(chars[i - 1] as string)) i -= 1;
-    } else {
-      i -= 1;
-    }
-    return i;
+    return wordLeftIndex(toChars(this.text), this.cursor);
   }
 
-  /** 向右找「一个词」：先跳空白；ASCII 连续段整段跳过；CJK/标点各算一个词。 */
+  /** 向右找「一个词」：先跳空白，再按 wordBoundary 的同一套词类整段跳过。 */
   private wordRightPos(): number {
-    const chars = toChars(this.text);
-    let i = this.cursor;
-    while (i < chars.length && isSpace(chars[i] as string)) i += 1;
-    if (i >= chars.length) return chars.length;
-    if (isWordChar(chars[i] as string)) {
-      while (i < chars.length && isWordChar(chars[i] as string)) i += 1;
-    } else {
-      i += 1;
-    }
-    return i;
+    return wordRightIndex(toChars(this.text), this.cursor);
   }
 }
 
