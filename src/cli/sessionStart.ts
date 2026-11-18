@@ -136,7 +136,7 @@ export async function startSession(s: BootstrapSession) {
         }
       : {}),
     systemPrompt: promptManager.render(cfg).text,
-    renderSystemPrompt: () => promptManager.render(cfg).text,
+    renderSystemPrompt: () => promptManager.render(cfg, { mcpLoaded: agent.mcpLoadedNames() }).text,
     getSessionName: () => s.sessionLabel,
     classifier,
     // issue #17：路径作用域规则。loop 只拿回调，不 import rules 模块。

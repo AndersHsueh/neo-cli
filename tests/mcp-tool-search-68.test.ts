@@ -38,6 +38,7 @@ import type { ToolCtx } from "../src/tools/types.ts";
 import { dispatchCommand, wireCommands } from "../src/cli/commands.ts";
 import type { CommandContext } from "../src/cli/commands.ts";
 import { PromptManager } from "../src/prompt/manager.ts";
+import { countSystemTokens } from "../src/prompt/tokens.ts";
 import { captureConsole } from "./helpers.ts";
 
 const SANDBOX = mkdtempSync(join(tmpdir(), "neo-68-mcp-search-"));
@@ -275,6 +276,37 @@ function scripted(rounds: Array<{ calls?: ToolCall[]; content?: string }>, seenT
     }
     return { content: step.content ?? "done", reasoning: "", toolCalls: [], finishReason: "stop", usage: null, raw: null } as StreamResult;
   };
+}
+
+/** 系统提示里的 MCP 目录短节（不含「可用工具」那行名字清单）。 */
+function mcpCatalogOf(text: string): string {
+  const start = text.indexOf("## MCP 工具目录");
+  if (start < 0) return "";
+  const rest = text.slice(start);
+  const cut = rest.indexOf("\n## ", 1);
+  return cut >= 0 ? rest.slice(0, cut) : rest;
+}
+
+/** 往历史里垫消息，直到 usage 落在 [minUsage, maxUsage]（相对 contextWindow）。 */
+function padHistory(agent: Agent, minUsage: number, maxUsage = Number.POSITIVE_INFINITY): void {
+  const window = agent.opt.cfg.contextWindow;
+  const usage = (): number => estimateTokens(agent.messages, agent.toolSpecsFor()) / window;
+  let i = 0;
+  while (usage() < minUsage && i < 400) {
+    const remain = Math.max(40, Math.floor((minUsage - usage()) * window * 2));
+    const size = Math.min(1_200, remain);
+    agent.messages.push({ role: i % 2 ? "assistant" : "user", content: `old ${i} ` + "x".repeat(size) });
+    i++;
+  }
+  while (usage() > maxUsage && agent.messages.length > 2) {
+    const last = agent.messages[agent.messages.length - 1]!;
+    if (typeof last.content !== "string") break;
+    if (last.content.length <= 8) {
+      agent.messages.pop();
+      continue;
+    }
+    last.content = last.content.slice(0, Math.max(8, Math.floor(last.content.length * 0.7)));
+  }
 }
 
 function writeSettings(dir: string, extra: Record<string, unknown> = {}): void {
@@ -550,6 +582,33 @@ describe("#68 S tool_search", () => {
     expect(text).not.toContain("L".repeat(120));
     expect(text).not.toContain("schema-marker-big-echo_text".repeat(8));
   });
+
+  test("#68 S5 目录短节按当前会话已加载集合，已装入的工具不再写成尚未装入", async () => {
+    registerFakeMcp("big", manyBig(10));
+    const cfg = baseCfg({
+      mcp: { toolSearch: true, toolSearchThreshold: 10 },
+      mcpServers: serversFor({ big: true }),
+    });
+    const beforeCat = mcpCatalogOf(buildSystemPrompt(cfg));
+    expect(beforeCat).toContain("- mcp__big__widget_00：");
+    expect(beforeCat).toContain("- mcp__big__widget_01：");
+    expect(beforeCat).toMatch(/尚未装入上下文/);
+    expect(beforeCat).not.toContain("schema-marker-big-widget_00".repeat(8));
+
+    const agent = makeAgent(cfg);
+    await dispatch("tool_search", JSON.stringify({ query: "widget_00" }), toolCtx(agent));
+    expect(hasFullSchema(specOf(agent.toolSpecsFor(), "mcp__big__widget_00"), "schema-marker-big-widget_00")).toBe(true);
+    const after = buildSystemPrompt(cfg, { mcpLoaded: new Set(agent.mcpLoadedNames()) });
+    const afterCat = mcpCatalogOf(after);
+    expect(afterCat.length).toBeGreaterThan(0);
+    expect(afterCat).not.toContain("- mcp__big__widget_00：");
+    expect(afterCat).toContain("- mcp__big__widget_01：");
+    expect(afterCat).toMatch(/尚未装入上下文/);
+    expect(after).not.toContain("schema-marker-big-widget_00".repeat(8));
+    expect(after).not.toContain("schema-marker-big-widget_01".repeat(8));
+    // 未传已加载集合时仍按空集合（与 S4 / 新会话一致），不得悄悄用别的会话状态。
+    expect(mcpCatalogOf(buildSystemPrompt(cfg))).toContain("- mcp__big__widget_00：");
+  });
 });
 
 /* ------------------------------------------------------------------ */
@@ -715,6 +774,123 @@ describe("#68 L 已加载集合生命周期", () => {
     await dispatch("tool_search", JSON.stringify({ query: "widget_05" }), toolCtx(b));
     expect(hasFullSchema(specOf(a.toolSpecsFor(), "mcp__big__widget_05"), "schema-marker-big-widget_05")).toBe(false);
   });
+
+  test("#68 L5 自动压缩成功后，当轮实际请求不再含非 alwaysLoad schema", async () => {
+    registerFakeMcp("core", [{ name: "ping", description: "Core ping always loaded" }]);
+    registerFakeMcp("big", manyBig(10));
+    const cfg = baseCfg({
+      mcp: { toolSearch: true, toolSearchThreshold: 10 },
+      mcpServers: serversFor({ big: true, core: true }),
+      compactThreshold: 0.3,
+      contextWindow: 8_000,
+      maxTokens: 100,
+    });
+    const mainTools: ToolSpec[][] = [];
+    let compactCalls = 0;
+    const agent = new Agent({
+      cfg,
+      console: silentIO(),
+      mode: "auto-all",
+      systemPrompt: "sys",
+      // 压缩器走 chatStream；主流走 mainChatStream，互不混用，才能断言「当轮实际请求」。
+      chatStream: async () => {
+        compactCalls++;
+        return {
+          content: "摘要：一段足够长的压缩结果。".repeat(3),
+          reasoning: "",
+          toolCalls: [],
+          finishReason: "stop",
+          usage: null,
+          raw: null,
+        } as StreamResult;
+      },
+      mainChatStream: async (_cfg, _messages, tools) => {
+        mainTools.push(tools ?? []);
+        return {
+          content: "ok after auto compact",
+          reasoning: "",
+          toolCalls: [],
+          finishReason: "stop",
+          usage: null,
+          raw: null,
+        } as StreamResult;
+      },
+    });
+    await dispatch("tool_search", JSON.stringify({ query: "widget_00" }), toolCtx(agent));
+    expect(hasFullSchema(specOf(agent.toolSpecsFor(), "mcp__big__widget_00"), "schema-marker-big-widget_00")).toBe(true);
+    padHistory(agent, 0.35);
+    expect(agent.messages.length).toBeGreaterThan(6);
+    const stats = await agent.send("new question after threshold compact");
+    expect(stats.hadError).toBe(false);
+    expect(compactCalls).toBeGreaterThan(0);
+    expect(mainTools.length).toBeGreaterThan(0);
+    const sent = mainTools[0]!;
+    expect(hasFullSchema(specOf(sent, "mcp__big__widget_00"), "schema-marker-big-widget_00")).toBe(false);
+    expect(namesOf(sent).some((n) => n.startsWith("mcp__big__"))).toBe(false);
+    expect(hasFullSchema(specOf(sent, "mcp__core__ping"), "schema-marker-core-ping")).toBe(true);
+    expect(namesOf(sent)).toContain("tool_search");
+    expect(hasFullSchema(specOf(agent.toolSpecsFor(), "mcp__big__widget_00"), "schema-marker-big-widget_00")).toBe(false);
+  });
+
+  test("#68 L6 近窗压缩成功后，当轮实际请求不再含非 alwaysLoad schema", async () => {
+    registerFakeMcp("core", [{ name: "ping", description: "Core ping always loaded" }]);
+    registerFakeMcp("big", manyBig(10));
+    const cfg = baseCfg({
+      mcp: { toolSearch: true, toolSearchThreshold: 10 },
+      mcpServers: serversFor({ big: true, core: true }),
+      // 阈值路径不触发，只走「tokens + maxTokens > 0.98 * window」。
+      compactThreshold: 0.999,
+      contextWindow: 8_000,
+      maxTokens: 1_000,
+    });
+    const mainTools: ToolSpec[][] = [];
+    let compactCalls = 0;
+    const agent = new Agent({
+      cfg,
+      console: silentIO(),
+      mode: "auto-all",
+      systemPrompt: "sys",
+      chatStream: async () => {
+        compactCalls++;
+        return {
+          content: "摘要：一段足够长的压缩结果。".repeat(3),
+          reasoning: "",
+          toolCalls: [],
+          finishReason: "stop",
+          usage: null,
+          raw: null,
+        } as StreamResult;
+      },
+      mainChatStream: async (_cfg, _messages, tools) => {
+        mainTools.push(tools ?? []);
+        return {
+          content: "ok after near-window compact",
+          reasoning: "",
+          toolCalls: [],
+          finishReason: "stop",
+          usage: null,
+          raw: null,
+        } as StreamResult;
+      },
+    });
+    await dispatch("tool_search", JSON.stringify({ query: "widget_00" }), toolCtx(agent));
+    expect(hasFullSchema(specOf(agent.toolSpecsFor(), "mcp__big__widget_00"), "schema-marker-big-widget_00")).toBe(true);
+    // tokens ∈ (0.98*window - maxTokens, compactThreshold*window] = (6840, 7992]
+    padHistory(agent, (0.98 * 8_000 - 1_000) / 8_000 + 0.002, 0.999);
+    const usage = estimateTokens(agent.messages, agent.toolSpecsFor()) / cfg.contextWindow;
+    expect(usage).toBeLessThanOrEqual(cfg.compactThreshold);
+    expect(estimateTokens(agent.messages, agent.toolSpecsFor()) + cfg.maxTokens).toBeGreaterThan(cfg.contextWindow * 0.98);
+    expect(agent.messages.length).toBeGreaterThan(6);
+    const stats = await agent.send("new question after near-window compact");
+    expect(stats.hadError).toBe(false);
+    expect(compactCalls).toBeGreaterThan(0);
+    expect(mainTools.length).toBeGreaterThan(0);
+    const sent = mainTools[0]!;
+    expect(hasFullSchema(specOf(sent, "mcp__big__widget_00"), "schema-marker-big-widget_00")).toBe(false);
+    expect(namesOf(sent).some((n) => n.startsWith("mcp__big__"))).toBe(false);
+    expect(hasFullSchema(specOf(sent, "mcp__core__ping"), "schema-marker-core-ping")).toBe(true);
+    expect(namesOf(sent)).toContain("tool_search");
+  });
 });
 
 /* ------------------------------------------------------------------ */
@@ -854,6 +1030,44 @@ describe("#68 U 命令与用量口径", () => {
     const inflated = estimateTokens(agent.messages, toolSpecs(cfg)) / cfg.contextWindow;
     expect(inflated).toBeGreaterThan(expected);
     expect(agent.contextUsage()).toBeCloseTo(expected, 10);
+  });
+
+  test("#68 U4 PromptManager 选档按实际将发送的 specs 计开销，不把未装入 MCP schema 算进去", async () => {
+    registerFakeMcp("big", manyBig(10));
+    const cfg = baseCfg({
+      mcp: { toolSearch: true, toolSearchThreshold: 10 },
+      mcpServers: serversFor({ big: true }),
+    });
+    const pm = new PromptManager({ mailbox: false, askUser: false, sessionName: "t" });
+    const fresh = makeAgent(cfg);
+    const sentSpecs = fresh.toolSpecsFor();
+    const fullSpecs = toolSpecs(cfg);
+    expect(sentSpecs.some((s) => s.function.name.startsWith("mcp__big__"))).toBe(false);
+    expect(fullSpecs.some((s) => s.function.name.startsWith("mcp__big__"))).toBe(true);
+
+    const rendered = pm.render(cfg);
+    const withSent = countSystemTokens([rendered.text], sentSpecs).tokens;
+    const withFull = countSystemTokens([rendered.text], fullSpecs).tokens;
+    expect(withFull).toBeGreaterThan(withSent);
+    expect(rendered.selection.estimatedSystemTokens).toBe(withSent);
+
+    // #20 dry-run 仍按新会话第一轮发送集，不因本测试随后装入而把 MCP schema 算进候选。
+    const vis = pm.currentVisibility(cfg);
+    const candidates = [...vis.names, ...vis.hidden];
+    expect(candidates.some((n) => n.startsWith("mcp__big__"))).toBe(false);
+    expect(candidates).toContain("read_file");
+
+    const agent = makeAgent(cfg);
+    await dispatch("tool_search", JSON.stringify({ query: "widget_00" }), toolCtx(agent));
+    const loadedRendered = pm.render(cfg, { mcpLoaded: agent.mcpLoadedNames() });
+    const withLoaded = countSystemTokens([loadedRendered.text], agent.toolSpecsFor()).tokens;
+    expect(loadedRendered.selection.estimatedSystemTokens).toBe(withLoaded);
+    expect(withLoaded).toBeGreaterThan(withSent);
+    // 再问一次不带已加载集合的 render / currentVisibility，仍是第一轮口径（不要搞坏 U2）。
+    const again = pm.render(cfg);
+    expect(again.selection.estimatedSystemTokens).toBe(withSent);
+    const vis2 = pm.currentVisibility(cfg);
+    expect([...vis2.names, ...vis2.hidden].some((n) => n.startsWith("mcp__big__"))).toBe(false);
   });
 });
 

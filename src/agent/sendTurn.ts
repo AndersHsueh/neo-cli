@@ -150,8 +150,11 @@ export async function sendTurn(
   let stopContinued = this.userTurn?.stopContinued === true;
   /** #64：自动压缩被 PreCompact 拒绝 —— 本轮明确停止，不 trim、不重试。 */
   let compactBlocked: string | null = null;
+  /** issue #68：本次迭代内是否有压缩**成功落地**（决定是否重算 specs）。 */
+  let compactedThisIter = false;
   for (let iter = 0; iter < maxIter; iter++) {
     iterations++;
+    compactedThisIter = false;
     if (signal.aborted) {
       abortedFlag = true;
       break;
@@ -171,6 +174,7 @@ export async function sendTurn(
       // 不得退化为裁剪/重试（那两条都会破坏历史），也不得下一轮重复跑 hook。
       try {
         await this.compactNow({ compactTrigger: "auto" });
+        compactedThisIter = true;
       } catch (e) {
         if (signal.aborted) { abortedFlag = true; break; }
         if (e instanceof CompactBlockedError) {
@@ -193,6 +197,7 @@ export async function sendTurn(
       try {
         await this.compactNow({ compactTrigger: "auto" });
         ok = true;
+        compactedThisIter = true;
       } catch (e) {
         if (signal.aborted) { abortedFlag = true; break; }
         if (e instanceof CompactBlockedError) {
@@ -203,6 +208,14 @@ export async function sendTurn(
       }
       if (!ok) this.trimOldToolOutputs();
     }
+
+    // issue #68：上面的自动/近窗压缩一旦**成功落地**，`compactNow` 已清空本会话的
+    // MCP 已加载集合（历史里的发现记录已被摘要替换）。`specs` 还是压缩**之前**的快照，
+    // 直接发出去会让当轮请求仍带着非 alwaysLoad 的 MCP schema —— 与「压缩后要重新搜索」
+    // 的语义矛盾，也白花 token。所以这里重算一次。
+    // 只在压缩真的成功时重算：PreCompact 阻断已在上面 break，压缩失败/未触发时集合没变，
+    // 重算只是多一次纯函数调用（无害，但保持「失败不动清单」的语义更清楚）。
+    if (compactedThisIter) specs = this.toolSpecsFor();
 
     // ---- P1 跨会话消息注入（PRD v1.2 §4.4）----
     // 安全切点：本批 tool 结果已全部回填（上一轮迭代的工具循环已收口），

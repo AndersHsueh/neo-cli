@@ -61,7 +61,10 @@ function listFiles(root: string, depth = 2, max = 200): string[] {
  * 产出系统提示词的动态块（不含三档核心；核心由 PromptManager 渲染并置于最前）。
  * 保留旧函数名：测试与 skills 等调用方只关心动态内容。
  */
-export function buildSystemPrompt(cfg: Config, opts: { mailbox?: boolean; askUser?: boolean } = {}): string {
+export function buildSystemPrompt(
+  cfg: Config,
+  opts: { mailbox?: boolean; askUser?: boolean; mcpLoaded?: ReadonlySet<string> | Iterable<string> } = {},
+): string {
   const tree = existsSync(cfg.cwd) ? listFiles(cfg.cwd, 2, 120) : [];
   const treeText =
     tree.length > 0
@@ -80,7 +83,10 @@ export function buildSystemPrompt(cfg: Config, opts: { mailbox?: boolean; askUse
   const tools = mainToolNames(cfg).join(", ");
   // issue #68：MCP 工具延迟加载时，把「未装入」的工具以目录短节（名字 + 约 80 字描述，
   // 不含 schema）告诉模型。未启用延迟加载时返回空串，提示词与今日完全一致。
-  const mcpCatalogText = buildMcpCatalogSection(cfg, toolSpecs(cfg), new Set());
+  // 已装入集合由调用方给（PromptManager 传会话的已加载集合）：装入后该工具不再出现在
+  // 目录里 —— 它已经有 schema 了，再写「尚未装入」只会误导模型重复搜索。
+  // 不传 = 空集合（新会话第一轮口径）。
+  const mcpCatalogText = buildMcpCatalogSection(cfg, toolSpecs(cfg), new Set(opts.mcpLoaded ?? []));
   const lspToolLine = cfg.lsp?.enabled === true
     ? "- lsp：只读符号导航（definition / references / hover），需在 settings.lsp.servers 配好语言服务器；比全文 grep 准且省 token。\n"
     : "";
