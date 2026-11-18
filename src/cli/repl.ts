@@ -1,4 +1,6 @@
 import { dispatchCommand } from "./commands.ts";
+import { makePreviousCwdSlot } from "./cdWorkdir.ts";
+import { lspServers } from "../lsp/index.ts";
 import { persist, showStats } from "./sessions.ts";
 import { authorizeShell, executeShell, runShell } from "./shell.ts";
 import { bindAttachments, resolveLine, type Attachment, type QueuedLine } from "../attachments.ts";
@@ -112,6 +114,15 @@ export function createRepl(s: AppSession): ReplState {
     sessionTodos,
     mcpManager
   } = s;
+  const previousCwd = makePreviousCwdSlot();
+  const replaceProjectRules = (cwd: string, rules: typeof projectRules): void => {
+    void cwd;
+    projectRules.splice(0, projectRules.length, ...rules);
+    const scoped = rules.filter((r) => r.paths.length > 0);
+    const always = rules.filter((r) => r.paths.length === 0);
+    s.scopedRuleList.splice(0, s.scopedRuleList.length, ...scoped);
+    alwaysOnRules.splice(0, alwaysOnRules.length, ...always);
+  };
   const repl = {} as ReplState;
   // ---- 共享：队列 / drain / 输入源抽象（TTY composer 与 readline 共用）----
   repl.composer = null;
@@ -320,6 +331,15 @@ export function createRepl(s: AppSession): ReplState {
                 // /context 要展示「当前 cfg 下会选哪一档」：探针回写窗口后到下一轮边界之间，
                 // lastSelection 还是探针前的旧档，会和同一命令里的 window 行（读 cfg，已是新值）
                 // 自相矛盾。currentSelection 只算不写 —— 不碰 messages[0]，提示词何时生效不受影响。
+                promptManager,
+                persistSession: persist,
+                previousCwd,
+                fileIndex: repl.fileIndex,
+                turnActive: () => repl.turnActive,
+                replaceRules: replaceProjectRules,
+                restartLsp: async (c) => {
+                  await lspServers.configure(c);
+                },
                 promptSelection: () => promptManager.currentSelection(cfg),
                 // issue #17：规则条数与命中原因（/context 展示）。
                 rules: () => ({ alwaysOn: alwaysOnRules, loaded: agent.activeRules, total: projectRules.length }),

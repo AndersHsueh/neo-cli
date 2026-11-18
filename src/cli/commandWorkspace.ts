@@ -11,6 +11,7 @@ import { initProjectLevel as initProjectLevelImpl } from "../memory/init.ts";
 import { readProfile, sessionLiveness, renameSession, takenAliveNames } from "../mailbox/identity.ts";
 import { mailboxRoot } from "../mailbox/types.ts";
 import { chooseSessionName } from "../sessionName.ts";
+import { discoverProjectRules } from "../rules/index.ts";
 import {
   buildReviewPrompt,
   collectReviewDiff,
@@ -52,6 +53,11 @@ import { formatLintReport, lintWiki, resolveWikiDir } from "../wiki/lint.ts";
 import { resolveWikiLayout } from "../wiki/paths.ts";
 import { appendLog } from "../wiki/write.ts";
 import { printSessions, replayTranscript } from "./sessions.ts";
+import {
+  changeSessionCwd,
+  cwdSwitchBusyReason,
+  formatCwdForDisplay,
+} from "./cdWorkdir.ts";
 
 import type { CommandContext } from "./commandContext.ts";
 
@@ -209,6 +215,64 @@ export async function handleWorkspaceCommands(cmd: string, arg: string, rest: st
         appendLog(layout, "ingest", `${plan.mode} 编译 ${plan.files.length} 份 raw`);
       }
       ui.success(`ingest 完成（${plan.mode}）。`);
+      return true;
+    }
+
+    case "cd": {
+      // issue #69：交互换根（保留对话）。只改会话状态，不动 process.cwd。
+      // 与 -C（启动时定根）、shell.cwd（单条命令工作目录，不搬会话）、#63（额外目录）、#9（worktree）分工见
+      // docs/cd-workdir-prd.md 与 help。
+      if (!arg) {
+        ui.blank();
+        ui.kv("当前工作目录", formatCwdForDisplay(cfg.cwd));
+        ui.line(c.dim(`  ${cfg.cwd}`));
+        const prev = ctx.previousCwd?.get() ?? null;
+        if (prev) ui.line(c.dim(`  上一根：${formatCwdForDisplay(prev)}（/cd - 回去）`));
+        ui.blank();
+        return true;
+      }
+      if (!ctx.promptManager || !ctx.persistSession || !ctx.previousCwd) {
+        ui.warn("当前入口不支持 /cd（缺会话接线）；用 -C <dir> 启动时指定工作目录。");
+        return true;
+      }
+      const turnActive =
+        typeof ctx.turnActive === "function" ? ctx.turnActive() : ctx.turnActive === true;
+      const busyReason = cwdSwitchBusyReason({
+        turnActive,
+        wikiRunning: ctx.wikiMaintainer?.running === true,
+        backgroundTasks: (ctx.tasks?.list() ?? []).map((t) => ({ status: t.status, ...(t.kind ? { kind: t.kind } : {}) })),
+      });
+      const result = changeSessionCwd(arg, {
+        cfg,
+        meta,
+        messages: agent.messages,
+        persist: ctx.persistSession,
+        promptManager: ctx.promptManager,
+        refreshSystemPrompt: () => agent.refreshSystemPrompt(),
+        previousCwd: ctx.previousCwd,
+        ...(ctx.fileIndex ? { fileIndex: ctx.fileIndex } : {}),
+        ...(memory ? { memory } : {}),
+        ...(mailbox ? { mailbox } : {}),
+        ...(ctx.checkpoints ? { checkpoints: ctx.checkpoints } : {}),
+        replaceRules: (cwd) => {
+          const rules = discoverProjectRules(cwd);
+          ctx.replaceRules?.(cwd, rules);
+        },
+        ...(busyReason ? { busyReason } : {}),
+        ...(ctx.restartLsp ? { restartLsp: ctx.restartLsp } : {}),
+      });
+      if (!result.ok) {
+        ui.warn(result.error);
+        return true;
+      }
+      if (result.unchanged) {
+        ui.info(`已在该目录：${formatCwdForDisplay(result.cwd)}（未做任何刷新）`);
+        return true;
+      }
+      ui.success(`工作目录 → ${formatCwdForDisplay(result.cwd)}`);
+      ui.line(c.dim(`  ${result.cwd}（对话保留；/cd - 回上一根）`));
+      for (const w of result.warnings ?? []) ui.warn(w);
+      ui.info("新目录的 MCP / 本地 settings 需在该目录重新启动 neo 才生效（有意收窄）。");
       return true;
     }
 

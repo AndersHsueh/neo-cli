@@ -50,6 +50,7 @@ export const COMMANDS: CommandEntry[] = [
   { name: "review", description: "对照 git 改动做只读审查（/review [基线]；默认审未提交改动，不改文件）" },
   { name: "worktree", description: "托管 worktree：list 列出 / remove <name> [--force] 清理（创建用 --worktree <name>）" },
   { name: "init", description: "生成 AGENTS.md" },
+  { name: "cd", description: "切换本会话工作目录（保留对话）：/cd <目录> · /cd - 回上一根 · /cd 看当前" },
   { name: "memory", description: "记忆子命令族" },
   { name: "remember", description: "显式记忆" },
   { name: "history", description: "历史统计" },

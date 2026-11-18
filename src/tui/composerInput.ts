@@ -2,6 +2,7 @@
  * Composer 按键、命令菜单与粘贴/外部编辑。
  */
 import { c, displayWidth, truncate } from "../ui/theme.ts";
+import { completeCdLine } from "../cli/cdWorkdir.ts";
 import {
   formatCandidateHint,
   applyMatch,
@@ -529,6 +530,31 @@ export function tabComplete(this: Composer): void {
     this.hint = formatCandidateHint("file", cyc.matches);
     this.scheduleRender();
     return;
+  }
+  // issue #69：`/cd <路径>` 的目录补全必须在「以 / 开头则不做文件补全」之前处理。
+  const sessionCwd = this.deps.cwd?.();
+  if (sessionCwd) {
+    const cd = completeCdLine(line, cursor, sessionCwd);
+    if (cd && cd.matches.length > 0) {
+      const applied = applyMatch(line, cursor, cd.start, cd.matches[0] as string);
+      this.buf.setText(applied.line, applied.cursor);
+      this.tabCycle = {
+        start: cd.start,
+        matches: cd.matches,
+        index: 0,
+        applied: applied.line,
+        cursorAfter: applied.cursor,
+      };
+      this.hint = cd.matches.length > 1 ? formatCandidateHint("file", cd.matches) : null;
+      this.scheduleRender();
+      return;
+    }
+    if (cd) {
+      this.hint = "无候选";
+      this.tabCycle = null;
+      this.scheduleRender();
+      return;
+    }
   }
   const ctx = triggerAt(line, cursor);
   // issue #31：命令补全改走菜单（Tab 只接受高亮项），这里只剩文件补全。

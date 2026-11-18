@@ -14,6 +14,7 @@ import { createThrottledStatusFields } from "./statusCache.ts";
 import { TitleAnimator } from "../tui/title.ts";
 import { banner, c } from "../ui/theme.ts";
 import { applyMatch, completeLine, formatCandidateHint, triggerAt } from "../input/completion.ts";
+import { completeCdLine } from "./cdWorkdir.ts";
 import { COMMANDS } from "../input/commands.ts";
 import { appendContinuation, continuationPrompt, emptyContinuation, finishContinuation, isActiveContinuation, newlineKindsFromBytes, stripContinuationMarker, type Continuation } from "../input/multiline.ts";
 import { todosSummary } from "../tools/todo.ts";
@@ -117,6 +118,7 @@ export async function runInteractive(s: AppSession): Promise<number> {
       }),
       commands: COMMANDS,
       files: () => repl.fileIndex.list(),
+      cwd: () => cfg.cwd,
       onSubmit: (text, attachments) => repl.submitUserLine(text, attachments as Attachment[]),
       onCycleMode: (next) => {
         agent.mode = next;
@@ -363,6 +365,28 @@ export async function runInteractive(s: AppSession): Promise<number> {
         const index = (tabCycle.index + 1) % tabCycle.matches.length;
         const applied = applyLineMatches(line, cursor, tabCycle.start, tabCycle.matches, index);
         tabCycle = { ...tabCycle, index, applied: applied.line, cursorAfter: applied.cursor };
+        applyLine(applied.line, applied.cursor);
+        return;
+      }
+
+      const cd = completeCdLine(line, cursor, cfg.cwd);
+      if (cd) {
+        if (cd.matches.length === 0) {
+          if (line !== buf) applyLine(line, cursor);
+          tabCycle = null;
+          return;
+        }
+        const applied = applyLineMatches(line, cursor, cd.start, cd.matches, 0);
+        tabCycle = {
+          start: cd.start,
+          matches: cd.matches,
+          index: 0,
+          applied: applied.line,
+          cursorAfter: applied.cursor,
+        };
+        if (cd.matches.length > 1 && repl.queue.length === 0) {
+          process.stdout.write(`\n${c.dim(formatCandidates("file", cd.matches))}\n`);
+        }
         applyLine(applied.line, applied.cursor);
         return;
       }

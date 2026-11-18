@@ -73,6 +73,12 @@ export class MemoryBridge implements MemoryPort {
     });
   }
 
+  /** 换会话工作目录（issue #69 `/cd`）：项目级记忆改挂到新根；用户级不变。 */
+  setCwd(cwd: string): void {
+    this.opts.cwd = cwd;
+    this.engine.setCwd(cwd);
+  }
+
   /* ------------------------------------------------------------------ */
   /* 阶段信号（issue #53）                                                */
   /* ------------------------------------------------------------------ */

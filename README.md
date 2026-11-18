@@ -683,6 +683,7 @@ Zed 的 External Agent（Custom Agent）配置，写进 Zed 的 `settings.json`�
 /peers [name]  跨会话状态：列出存活会话 / 查单个
 /worktree list          列出 neo 托管的 worktree（名/路径/分支/脏/当前）
 /worktree remove <name> 清理托管 worktree（脏则拒绝；--force 需再确认一次）
+/cd [路径]              本会话切换工作目录（对话保留；/cd 打印当前；/cd - 回上一根；支持路径补全）
 /inbox     查看 held 消息；/inbox release <id> 放行一条
 /rename <name> 设置本会话名字（跨会话寻址；撞名自动加后缀）
 /history   历史统计        /save      导出会话
@@ -741,6 +742,7 @@ deepseek-flash · balanced · ask · ⎇ main · ctx ▓▓░░░ 42% · 0:42
 | 能力 | 用法 |
 |---|---|
 | 文件补全 | `@` + 路径前缀 + `Tab`：模糊匹配当前工作目录（走 `git ls-files`，尊重 `.gitignore`），多个候选连按 `Tab` 在同一批候选里循环，并打印候选提示行 |
+| `/cd` 目录补全 | `/cd ` 后 `Tab`：补当前层子目录（不递归、不列文件；跳过 `node_modules` / `.git`） |
 | 命令菜单 | 行首或空白后的 `/` **自动**打开纵向菜单（左命令名 / 右短说明，最多 8 行并提示剩余）：继续打字实时过滤，无匹配有明确空态；路径如 `/tmp/notes.md` 不会误开菜单；`↑↓`（`PageUp/PageDown` 一次 5 项）移动高亮；**`Tab` 接受高亮项写入输入框（不执行）**，**`Enter` 接受并立即执行**，`Esc` 关闭菜单并保留已输入文本。旧的「N 个命令候选…（继续按 Tab 循环）」单行 hint 在 TUI 里已移除（只保留给没有输入框的 readline 降级模式） |
 | 文件引用 | `@src/ui/console.ts`：提交时把文件内容附在消息末尾（≤5 个文件、单文件 ≤400 行、总 ≤60KB），失败只警告不阻断 |
 | 多行输入 | v0.3.0 起由输入框原生多行承载：`Ctrl+J` / `Shift+Enter` / `Alt+Enter` 换行，`Enter` 提交为一条含换行的消息；行尾 `\` 等价 |
@@ -755,6 +757,16 @@ deepseek-flash · balanced · ask · ⎇ main · ctx ▓▓░░░ 42% · 0:42
 
 `!cmd` 与模型工具调用走**同一套权限判定**：`--plan` 下两者都会被拒绝，
 `auto-all` 下两者都直接放行，`ask` / `auto-edit` 下都要审批。
+
+## 会话中切换工作目录（issue #69 `/cd`）
+
+交互会话里可以用 `/cd ../other-project` 把**主工作目录**搬走，对话历史保留。相对路径相对当前会话 cwd（不是进程 `process.cwd()`），支持 `~`，只存 realpath 后的规范绝对路径。`/cd` 无参打印当前根，`/cd -` 回到上一根。
+
+这和启动时的 `-C` / `--cwd`（会话开始时定根）、`shell` 工具的 `cwd` 参数（只影响那一条命令，不搬会话、不换项目指令）、`#63 --add-dir` / `/add-dir`（主根不变，只加额外范围；本版本尚未实现。**未来口径**：`/cd` 成功后应清空本会话已 add 的额外目录）、`#9 --worktree`（开**新**会话）、`#54` 嵌套 `AGENTS.md`（本命令只加载新根上那一个 `AGENTS.md` / `NEO.md` / `.neo.md`）都不是一回事。产品不做沙箱，也不对目录做信任询问；写文件和 shell 仍走既有审批。
+
+会话文件仍在全局 `~/.neo/sessions/`，只更新记录里的 `cwd`，不搬家、不改 session id。之后在新目录可以用同一 id `--resume` 找到这条会话。启动目录与记录目录不一致时只提示，不会偷偷切回去。这和 Claude Code「按项目目录搬家 transcript、`-c` 看当前目录最近一条」不是同一套存储模型，不要按「旧目录的 `-c` 不再命中」来理解。
+
+换根会重建系统提示里的项目记忆 / 目录树 / 仓库地图 / 路径规则，并改挂 `@` 补全、检查点、项目 wiki、信箱 profile；**settings.json、模型、hooks 定义、已连接的 MCP 进程、`process.cwd()`、用户级 wiki 不跟换**。要使用新项目的本地 settings 或 MCP，须在该目录重新启动 neo（有意收窄）。stream-json 事件里的相对路径本版本也不随 `/cd` 改写。`/mode plan` 与 `/plan` 规划态都允许 `/cd`。详见 `docs/cd-workdir-prd.md`。
 
 ## 路径作用域项目规则（issue #17）
 

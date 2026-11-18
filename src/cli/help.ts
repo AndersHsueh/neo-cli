@@ -80,6 +80,12 @@ ${c.bold("交互命令")}
                    /worktree remove <name> 清理；有未提交改动或未跟踪文件时拒绝，
                                            加 --force 需再确认一次；不能删当前所在
                    只碰 .neo/worktrees/ 下由 neo 创建的，不动你自己的其它 worktree
+  /cd [路径]       在本会话中切换工作目录（对话保留，不是开新会话）
+                   /cd                  打印当前会话工作目录
+                   /cd ../other         相对当前会话 cwd（不是进程 cwd）；支持 ~、路径补全
+                   /cd -                回到上一根（还没切换过则拒绝）
+                   与 -C（启动时定根）、shell.cwd（只影响单条命令）、#63 /add-dir（主根不变、加额外范围，本单未实现；未来 /cd 成功后应清空已 add 的额外目录）、#9 --worktree（开新会话）、#54 嵌套 AGENTS.md（只加载新根上那一个）不同。
+                   会话文件仍在全局 ~/.neo/sessions，只更新记录里的 cwd；在新目录可按同一 id --resume。这和 Claude 按项目搬家会话文件不是一回事。要新项目的 MCP / 本地 settings，须在该目录重新启动。
   /env [refresh]   环境快照（平台/shell/资源/工具链）；refresh 重采并写 wiki 页
   /peers [name]    跨会话状态：列出存活会话 / 查单个
   /inbox           查看 held 消息；/inbox release <id> 放行一条

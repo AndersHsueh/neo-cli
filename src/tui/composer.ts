@@ -121,6 +121,8 @@ export interface ComposerDeps {
   getTitle?: () => string | TitleView;
   commands: CommandEntry[];
   files: () => string[];
+  /** 当前会话工作目录（issue #69：`/cd ` 后的目录补全）。 */
+  cwd?: () => string;
   /** 提交一条消息（此时 buffer 已清空，attachments 是 chip 绑定列表）。 */
   onSubmit: (text: string, attachments: unknown[]) => void;
   /**

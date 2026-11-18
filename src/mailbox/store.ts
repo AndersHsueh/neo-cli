@@ -113,6 +113,15 @@ export class Mailbox {
     }, this.now());
   }
 
+  /** 同步当前工作目录到 profile（issue #69 `/cd` 换根后调用）。 */
+  setCwd(cwd: string): void {
+    const p = identity.readProfile(this.root, this.sessionId);
+    if (!p) throw new MailboxError("invalid_state", `会话 ${this.sessionId} 的 profile 不存在`);
+    p.cwd = cwd;
+    p.updated_at = st.isoNow(this.now());
+    identity.writeProfile(this.root, p);
+  }
+
   /**
    * 交互 /resume 切换 session-id 时迁移信箱身份：
    * 目录 / profile / state / `.alive` 一起改键，随后本实例改用新 id。

@@ -17,6 +17,9 @@ import type { PromptSelection } from "../prompt/select.ts";
 import type { ToolVisibility } from "../prompt/visibility.ts";
 import type { Envelope } from "../mailbox/types.ts";
 import type { Mailbox } from "../mailbox/store.ts";
+import type { Message } from "../llm.ts";
+import type { PromptManager } from "../prompt/manager.ts";
+import type { PreviousCwdSlot } from "./cdWorkdir.ts";
 import type { SessionMeta } from "../session.ts";
 import type { TodoItem } from "../tools/todo.ts";
 import type { SelectDeps } from "../ui/select.ts";
@@ -117,4 +120,18 @@ export interface CommandContext {
    * 不传 = 本进程没有接 MCP（单测裸 ctx），`/mcp` 会明确说明而不是显示空表。
    */
   mcp?: () => McpServerState[];
+  /**
+   * issue #69：交互 `/cd` 换根所需的可选接线。缺一项 = 该侧状态本入口没有
+   * （`-p` / 测试裸 ctx），不是「跳过刷新」的借口。
+   */
+  promptManager?: PromptManager;
+  persistSession?: (messages: Message[], meta: SessionMeta) => void;
+  previousCwd?: PreviousCwdSlot;
+  fileIndex?: { setCwd: (cwd: string) => void };
+  /** 本轮 turn / 工具循环是否在进行（`/cd` 忙碌判定）。 */
+  turnActive?: boolean | (() => boolean);
+  /** 换根后替换路径作用域规则（新根 .neo/rules）。 */
+  replaceRules?: (cwd: string, rules: ProjectRule[]) => void;
+  /** 换根后重启语言服务器；失败只警告、不回滚。 */
+  restartLsp?: (cfg: Config) => void | Promise<void>;
 }

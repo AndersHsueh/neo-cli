@@ -72,14 +72,18 @@ function sanitize(name: string): string {
 }
 
 export class CheckpointStore implements CheckpointSink {
-  readonly dir: string;
-  private readonly cwd: string;
+  dir: string;
+  private cwd: string;
   /** cwd 的真实路径（cwd 自身可能是软链，如 macOS 的 /var → /private/var）。 */
-  private readonly realCwd: string;
+  private realCwd: string;
+  private readonly sessionId: string;
+  private readonly customDir: boolean;
   private readonly maxEntries: number;
   private nextSeq: number | null = null;
 
   constructor(opts: CheckpointOptions) {
+    this.sessionId = opts.sessionId;
+    this.customDir = opts.dir !== undefined;
     this.cwd = resolve(opts.cwd);
     try {
       this.realCwd = realpathSync(this.cwd);
@@ -88,6 +92,22 @@ export class CheckpointStore implements CheckpointSink {
     }
     this.dir = opts.dir ?? join(opts.cwd, ".neo", "backups", opts.sessionId);
     this.maxEntries = Math.max(1, opts.maxEntries ?? DEFAULT_MAX_ENTRIES);
+  }
+
+  /**
+   * 换会话工作目录（issue #69 `/cd`）：检查点改挂到新根的
+   * `<cwd>/.neo/backups/<sessionId>`。显式传入的 dir 保持不动。
+   * 换根后 `/undo` 只作用于当前根内的写。
+   */
+  rebind(cwd: string): void {
+    this.cwd = resolve(cwd);
+    try {
+      this.realCwd = realpathSync(this.cwd);
+    } catch {
+      this.realCwd = this.cwd;
+    }
+    if (!this.customDir) this.dir = join(cwd, ".neo", "backups", this.sessionId);
+    this.nextSeq = null;
   }
 
   /**

@@ -204,6 +204,12 @@ export class FileIndex {
     this.loadedAt = this.now();
   }
 
+  /** 换会话工作目录（issue #69 `/cd`）：改根并立刻失效缓存。 */
+  setCwd(cwd: string): void {
+    this.opts.cwd = cwd;
+    this.invalidate();
+  }
+
   /** 让缓存立即失效（新建文件后调用；下一次 list 会 kick 刷新）。 */
   invalidate(): void {
     this.files = null;

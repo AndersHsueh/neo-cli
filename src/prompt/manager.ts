@@ -127,6 +127,10 @@ export class PromptManager {
     this.memory = memory;
   }
 
+  getProjectMemory(): ProjectMemory | null {
+    return this.memory;
+  }
+
   /** 丢弃缓存：技能/wiki 索引/环境等不在指纹里的输入变了时调用。 */
   invalidate(): void {
     this.cache = null;
@@ -215,6 +219,7 @@ export class PromptManager {
       cfg.contextWindowSource,
       cfg.systemPrompt,
       toolNames(cfg),
+      cfg.cwd,
       cfg.lsp?.enabled === true,
       cfg.repoMap?.enabled === true,
       this.opts.mailbox,
