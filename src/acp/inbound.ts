@@ -90,6 +90,16 @@ export function createInboundGate(
   let initialized = false;
   let closed = false;
 
+  const noteCancel = (line: string): void => {
+    const cancelId = sessionCancelId(line.trim());
+    if (cancelId === null) return;
+    try {
+      hooks?.onSessionCancel?.(cancelId);
+    } catch {
+      /* 闩失败不能打断入站泵 */
+    }
+  };
+
   const pump = (): void => {
     if (!controller) return;
     while (pending.length > 0) {
@@ -126,18 +136,12 @@ export function createInboundGate(
           pending.push(line);
           buffer = buffer.slice(lf + 1);
           // 先闩再 pump：同一块里随后的 allow 响应入队时，取消已经生效。
-          const cancelId = sessionCancelId(line.trim());
-          if (cancelId !== null) {
-            try {
-              hooks?.onSessionCancel?.(cancelId);
-            } catch {
-              /* 闩失败不能打断入站泵 */
-            }
-          }
+          noteCancel(line);
           pump();
         }
         if (buffer.length > MAX_LINE_BYTES) {
           pending.push(buffer);
+          noteCancel(buffer);
           buffer = "";
           pump();
         }
@@ -145,7 +149,9 @@ export function createInboundGate(
       buffer += decoder.decode();
       if (buffer !== "") {
         const last = buffer.endsWith("\r") ? buffer.slice(0, -1) : buffer;
-        if (last !== "") pending.push(`${last}\n`);
+        if (last !== "") { pending.push(`${last}
+`); noteCancel(`${last}
+`); }
       }
       closed = true;
       // 原始 stdin EOF：先通知上层统一 dispose（取消在途 shell / 权限），再 pump。
