@@ -179,7 +179,7 @@ export async function createAcpSession(opts: CreateAcpSessionOptions): Promise<A
   /** 本轮最后一次模型响应是否是无工具调用的正文收口（N2）。 */
   let answeredLastIteration = false;
   const permissionBridge = createPermissionBridge({
-    mode: () => mode,
+    mode,
     ui: opts.permissionUi ?? null,
     sessionId,
     isCancelled: () => cancelled,

@@ -30,11 +30,8 @@ export interface PermissionUi {
 export type PermissionOutcome = "allow" | "deny" | "cancel";
 
 export interface PermissionBridgeOptions {
-  /**
-   * 当前权限模式。既可以是值，也可以是取值函数 —— `session/set_mode`（issue #80）
-   * 会在会话中途切换档位，闭包必须读到**切换后**的模式，不能是构造时的快照。
-   */
-  mode: PermissionMode | (() => PermissionMode);
+  /** 初始权限模式。会话中途切换走 `setMode()`，不要再改这个字段。 */
+  mode: PermissionMode;
   /** 编辑器 UI；null = 客户端不支持，全部回退 settings。 */
   ui: PermissionUi | null;
   /** 本会话 id：`session/request_permission` 的 `sessionId` 必须是真实值，不能是空串。 */
@@ -82,8 +79,7 @@ export interface PermissionBridge {
 export function createPermissionBridge(opts: PermissionBridgeOptions): PermissionBridge {
   const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   /** 当前档位：初值是构造时传入的，之后由 `setMode()` 覆盖（issue #80）。 */
-  let mode: PermissionMode = typeof opts.mode === "function" ? opts.mode() : opts.mode;
-  /** 每次判定都现取：档位可在会话中途被 `session/set_mode` 改掉。 */
+  let mode: PermissionMode = opts.mode;
   const currentMode = (): PermissionMode => mode;
   /** 本 session 内的「总是允许/总是拒绝」记忆（按工具名）。 */
   const always = new Map<string, "allow" | "deny">();

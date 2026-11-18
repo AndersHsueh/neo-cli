@@ -36,7 +36,7 @@ import { createInboundGate } from "./inbound.ts";
 import { REQUEST_PERMISSION_METHOD } from "./permission.ts";
 import { toolCallEndOf, toolCallStartOf } from "./tools.ts";
 import { asPermissionMode, availableCommands, modeState } from "./followup.ts";
-import { adoptSession, applyRestored, loadSession as loadStoredSession, sessionsDir, type SessionMeta } from "../session.ts";
+import { adoptSession, loadSession as loadStoredSession, sessionsDir, type SessionMeta } from "../session.ts";
 import type { Message } from "../llm.ts";
 import { installFatalSignalHandlers } from "../signals.ts";
 
@@ -405,6 +405,15 @@ export async function runAcpServer(): Promise<number> {
     });
   };
 
+  /** session/new 与 session/load 共用：先赋 session，再发命令广告并排空通知。 */
+  const advertiseCommands = async (s: AcpSession): Promise<void> => {
+    sendNotification({
+      sessionId: s.sessionId,
+      update: { sessionUpdate: "available_commands_update", availableCommands: availableCommands() },
+    });
+    await flushNotifications();
+  };
+
   const app = agent({ name: "neo" })
     .onRequest(methods.agent.initialize, ({ params }) => {
         // 请求版本不是 1 也回 1（PRD §2.4）：由客户端决定是否断开，这里不报错。
@@ -446,14 +455,7 @@ export async function runAcpServer(): Promise<number> {
       const created = await assemble(cfg, cwd, clientMcpServers(params.mcpServers));
       session = created;
       log(`session/new：${created.sessionId}（工作区 ${cwd}）`);
-
-      // issue #80：先把 session 赋上再发通知（sendNotification 依赖它），
-      // 响应写出前 flushNotifications —— 客户端拿到 sessionId 时命令清单已经在了。
-      sendNotification({
-        sessionId: created.sessionId,
-        update: { sessionUpdate: "available_commands_update", availableCommands: availableCommands() },
-      });
-      await flushNotifications();
+      await advertiseCommands(created);
 
       const response: NewSessionResponse = { sessionId: created.sessionId, modes: modeState(created.currentMode()) };
       return response;
@@ -497,16 +499,11 @@ export async function runAcpServer(): Promise<number> {
       const adopted = adoptSession(stored.meta, cfg.model);
       const created = await assemble(cfg, cwd, clientMcpServers(params.mcpServers), {
         meta: adopted.meta,
-        messages: applyRestored(undefined, stored.messages),
+        messages: stored.messages,
       });
       session = created;
       log(`session/load：${created.sessionId}（工作区 ${cwd}，${stored.messages.length} 条消息）`);
-
-      sendNotification({
-        sessionId: created.sessionId,
-        update: { sessionUpdate: "available_commands_update", availableCommands: availableCommands() },
-      });
-      await flushNotifications();
+      await advertiseCommands(created);
 
       const response: LoadSessionResponse = { modes: modeState(created.currentMode()) };
       return response;
