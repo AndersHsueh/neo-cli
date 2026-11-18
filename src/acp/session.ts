@@ -15,10 +15,12 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Config, McpServerConfig } from "../config.ts";
+import type { Message } from "../llm.ts";
 import { Agent } from "../agent.ts";
 import type { AgentEvent, AssistantMessageEventData, PermissionMode, ToolEndEventData, ToolStartEventData } from "../agent/types.ts";
 import { createPermissionBridge, type PermissionUi } from "./permission.ts";
 import { isWriteTool, pathOfArgs, snapshotOldText, toolKind } from "./tools.ts";
+import { usageOf } from "./followup.ts";
 import { Console } from "../ui/console.ts";
 import { PromptManager } from "../prompt/manager.ts";
 import { createMemoryBridge, type MemoryBridge } from "../memory/bridge.ts";
@@ -33,7 +35,8 @@ import { makeRememberTool } from "../tools/memory.ts";
 import { makeTaskTool, runSubagent } from "../tools/task.ts";
 import { makeTodoWriteTool, type TodoItem } from "../tools/todo.ts";
 import { persist } from "../cli/sessions.ts";
-import { createSession, type SessionMeta } from "../session.ts";
+import { applyRestored, createSession, type SessionMeta } from "../session.ts";
+import type { UsageUpdate } from "@agentclientprotocol/sdk";
 import { CheckpointStore } from "../checkpoint.ts";
 import { McpManager } from "../mcp/index.ts";
 import { backgroundShells } from "../tools/backgroundShell.ts";
@@ -55,6 +58,18 @@ export interface AcpSession {
   prompt(text: string): Promise<{ stopReason: AcpStopReason }>;
   /** `session/cancel`：中止在途的模型请求与工具。 */
   cancel(): void;
+  /**
+   * 当前上下文用量（issue #80 的 `usage_update`）：`used` 是
+   * `estimateTokens(messages, 当前工具规格)`，`size` 是 `cfg.contextWindow`。
+   */
+  usage(): UsageUpdate;
+  /** 当前权限档位（`session/set_mode` 的 `currentModeId` 来源）。 */
+  currentMode(): PermissionMode;
+  /**
+   * 切换权限档位（`session/set_mode`）：权限桥与 `Agent.mode` **一起**改，
+   * 否则会出现「工具清单按旧档位、审批按新档位」的第二条旁路。
+   */
+  setMode(mode: PermissionMode): void;
   /**
    * 释放会话资源（复审 R3 / 第三轮 N1）：结束在途权限询问、中止在途模型请求与工具、
    * 收掉后台 shell（**都不能在 stdin 关闭后继续写盘**）、关闭 MCP 连接。幂等。
@@ -93,6 +108,13 @@ export interface CreateAcpSessionOptions {
    * 已拉起的 MCP 子进程也必须收掉（第三轮 N3）—— 此时还没有 AcpSession 可 dispose。
    */
   signal?: AbortSignal;
+  /**
+   * `session/load`（issue #80）：接管已有会话文件而不是新建。
+   *
+   * 由 server 用 `src/session.ts` 的 `loadSession()` 读出、`adoptSession()` 接管后传入。
+   * 传了就**沿用原 sessionId**、不再 `createSession`（不新建会话文件）。
+   */
+  resume?: { meta: SessionMeta; messages: Message[] };
 }
 
 /**
@@ -109,10 +131,14 @@ export async function createAcpSession(opts: CreateAcpSessionOptions): Promise<A
 
   // 权限模式：settings 的 permission_mode（server 从 loadConfig 选中的同一份 settings.json 读，工作区优先，复审 R4），
   // 缺省 "ask"（与 `neo` 默认一致）。绝不因为走 ACP 就悄悄放宽成 auto-all。
-  const mode: PermissionMode = opts.permissionMode ?? "ask";
+  // issue #80：`session/set_mode` 会在会话中途改它，所以是可变状态，权限桥读闭包。
+  let mode: PermissionMode = opts.permissionMode ?? "ask";
 
-  // 会话文件先建：记忆桥需要 sessionId 作为审计键（与 sessionStart 同一顺序）。
-  const sess = createSession(cfg.model, cwd);
+  // 会话文件：`session/load` 时接管已有文件（沿用原 id / path / createdAt，不新建），
+  // 否则新建。记忆桥需要 sessionId 作为审计键（与 sessionStart 同一顺序）。
+  const sess = opts.resume
+    ? { meta: opts.resume.meta, save: () => undefined }
+    : createSession(cfg.model, cwd);
   const sessionId = sess.meta.id;
 
   // 输出层：所有人类可读文本写 stderr。非 TTY 形态（stdoutIsTTY=false）避免
@@ -153,7 +179,7 @@ export async function createAcpSession(opts: CreateAcpSessionOptions): Promise<A
   /** 本轮最后一次模型响应是否是无工具调用的正文收口（N2）。 */
   let answeredLastIteration = false;
   const permissionBridge = createPermissionBridge({
-    mode,
+    mode: () => mode,
     ui: opts.permissionUi ?? null,
     sessionId,
     isCancelled: () => cancelled,
@@ -326,6 +352,11 @@ export async function createAcpSession(opts: CreateAcpSessionOptions): Promise<A
   }
 
   // R0：用户画像摘要注入 messages[1]（交互口径才有）。失败不阻塞会话。
+  // `session/load` 时先恢复历史再注入，画像与历史都保留。
+  if (opts.resume && opts.resume.messages.length > 0) {
+    agent.messages = applyRestored(agent.messages[0], opts.resume.messages);
+    log(`session/load：已恢复 ${opts.resume.messages.length} 条消息（${sessionId}）`);
+  }
   try {
     const slice = await memory.startup();
     if (slice) agent.messages.splice(1, 0, slice.message);
@@ -377,6 +408,20 @@ export async function createAcpSession(opts: CreateAcpSessionOptions): Promise<A
       // 先结束在途的权限询问：否则要等到超时（默认 300s）才生效。
       permissionBridge.abortPending();
       agent.cancel();
+    },
+    usage() {
+      // 真实计量：与 Agent.contextUsage() 同源（estimateTokens + 当前工具规格），
+      // 只是换成 ACP 要的「tokens / 窗口」两个整数。
+      return usageOf(agent.messages, agent.toolSpecsFor(), cfg.contextWindow);
+    },
+    currentMode() {
+      return mode;
+    },
+    setMode(next: PermissionMode) {
+      mode = next;
+      // 两处一起改：权限桥（审批口径）与 Agent.mode（只读闸门 / 工具清单 / hooks 载荷）。
+      permissionBridge.setMode(next);
+      agent.mode = next;
     },
     dispose() {
       // 顺序：先结束在途权限询问（否则工具会卡到超时），再中止模型请求与工具

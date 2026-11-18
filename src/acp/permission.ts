@@ -30,7 +30,11 @@ export interface PermissionUi {
 export type PermissionOutcome = "allow" | "deny" | "cancel";
 
 export interface PermissionBridgeOptions {
-  mode: PermissionMode;
+  /**
+   * 当前权限模式。既可以是值，也可以是取值函数 —— `session/set_mode`（issue #80）
+   * 会在会话中途切换档位，闭包必须读到**切换后**的模式，不能是构造时的快照。
+   */
+  mode: PermissionMode | (() => PermissionMode);
   /** 编辑器 UI；null = 客户端不支持，全部回退 settings。 */
   ui: PermissionUi | null;
   /** 本会话 id：`session/request_permission` 的 `sessionId` 必须是真实值，不能是空串。 */
@@ -52,6 +56,16 @@ export interface PermissionBridge {
     toolCall: { toolCallId: string; title: string; kind: RequestPermissionRequest["toolCall"]["kind"]; locations?: RequestPermissionRequest["toolCall"]["locations"] },
   ): Promise<PermissionOutcome>;
   /**
+   * 切换本会话的权限模式（`session/set_mode`，issue #80）。
+   *
+   * 只改桥自己的判定口径；Agent 侧的模式由调用方同步（两者必须一起改，
+   * 否则会出现「工具清单按旧档位、审批按新档位」的第二条旁路）。
+   * `always` 记忆不清：它是用户对**某个工具**的明确表态，与档位无关。
+   */
+  setMode(mode: PermissionMode): void;
+  /** 当前生效的权限模式。 */
+  currentMode(): PermissionMode;
+  /**
    * `session/cancel` 到来时调用：立刻结束正在等的 `session/request_permission`，
    * 以 `cancel` 收尾（不回退 settings —— 用户已经明确取消，不是客户端失败）。
    * 不这样做的话，取消要等到超时（默认 300s）才生效，D5 会挂死。
@@ -67,6 +81,10 @@ export interface PermissionBridge {
 
 export function createPermissionBridge(opts: PermissionBridgeOptions): PermissionBridge {
   const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+  /** 当前档位：初值是构造时传入的，之后由 `setMode()` 覆盖（issue #80）。 */
+  let mode: PermissionMode = typeof opts.mode === "function" ? opts.mode() : opts.mode;
+  /** 每次判定都现取：档位可在会话中途被 `session/set_mode` 改掉。 */
+  const currentMode = (): PermissionMode => mode;
   /** 本 session 内的「总是允许/总是拒绝」记忆（按工具名）。 */
   const always = new Map<string, "allow" | "deny">();
   /** 在途询问的取消钩子（一次只有一个：工具串行执行，审批不并发）。 */
@@ -75,14 +93,15 @@ export function createPermissionBridge(opts: PermissionBridgeOptions): Permissio
   let aborted = false;
 
   const fallback = (tool: string, why: string): PermissionOutcome => {
-    const decision = decidePermission(opts.mode, tool);
+    const mode = currentMode();
+    const decision = decidePermission(mode, tool);
     if (decision.allow) return "allow";
     if (decision.reason === "plan") {
       opts.log?.(`${why}；settings 权限模式 plan 拒绝 ${tool}`);
       return "deny";
     }
     // 回退到 ask：编辑器不在场时没有人能批准，按拒绝处理（不放宽）。
-    opts.log?.(`${why}；回退 settings 权限模式 ${opts.mode}，${tool} 未获批准`);
+    opts.log?.(`${why}；回退 settings 权限模式 ${mode}，${tool} 未获批准`);
     return "deny";
   };
 
@@ -91,7 +110,7 @@ export function createPermissionBridge(opts: PermissionBridgeOptions): Permissio
       const remembered = always.get(tool);
       if (remembered) return remembered;
 
-      const decision = decidePermission(opts.mode, tool);
+      const decision = decidePermission(currentMode(), tool);
       if (decision.allow) return "allow";
       if (decision.reason === "plan") {
         opts.log?.(`settings 权限模式 plan 拒绝 ${tool}`);
@@ -152,6 +171,10 @@ export function createPermissionBridge(opts: PermissionBridgeOptions): Permissio
       pendingAbort = null;
       abort?.();
     },
+    setMode(next: PermissionMode) {
+      mode = next;
+    },
+    currentMode,
     resetForTurn() {
       // 只复位「本轮已取消」：`always` 记忆是本 session 级的，不能在这里丢。
       aborted = false;

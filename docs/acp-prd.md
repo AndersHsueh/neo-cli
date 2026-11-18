@@ -63,14 +63,20 @@ ACP（Agent Client Protocol）是编辑器与 agent 之间的 JSON-RPC 协议：
 - 请求版本为 `1` → 回 `1`；请求版本不是 `1` → **仍回本实现支持的 `1`**，由客户端决定是否断开（不报错）。
 - `agentInfo`：`{ name: "neo", title: "neo", version: <VERSION> }`（`src/cli/version.ts`）。
 - `authMethods`：首期**空数组**（鉴权沿用 settings.json 的模型配置，不新做 OAuth/登录流）。
-- `agentCapabilities` 首期**只广告本次真做的能力**：
-  - `loadSession: false`（`session/load` 未做，见 §5）；
+- `agentCapabilities` **只广告本次真做的能力**：
+  - `loadSession: true`（issue #80）：`session/load` 复用 `--resume` 的 `loadSession` / `adoptSession` /
+    `applyRestored` 路径；本进程仍只服务一个 session，已有会话时再 load 回 `-32603`（与第二次
+    `session/new` 同口径）。不做 `session/list` / `session/delete` / 多 session；
   - `promptCapabilities`：`text` 与 **`resource_link` 都是 v1 必选、已做**。`embeddedContext: false`
     **只禁止**内嵌 `resource` 内容块，不得用来拒绝 `resource_link`。`image` / `audio` 未映射，显式 `false` 并列入 §5；
   - `mcpCapabilities`：官方 v1 规定所有 Agent **必须**支持 stdio MCP，该字段只用来广告 `http` / `sse`。
     本实现接入 settings 与客户端传入的 **stdio** MCP（见 §2.7），**不广告** http/sse（已知未做，见 §5）；
+  - **已广告（issue #80）**：`session/new` / `session/load` 响应带 `modes`（档位为 neo 已有的
+    `ask` / `auto-edit` / `auto-all` / `plan`，可用 `session/set_mode` 切换）；`session/new` 与
+    `session/load` 成功后发出 `available_commands_update`（命令清单仅来自现有 `/` 命令，不发明新命令）；
+    `session/prompt` 结束时发出 `usage_update`（`used` / `size` 为真实 token/上下文占用）。
   - **不广告**：`session/list`、`session/delete`、`sessionCapabilities.*`（resume/close/additionalDirectories/
-    systemPrompt）、`terminals`、session modes、config options、斜杠命令广告、`auth.logout`。
+    systemPrompt）、`terminals`、config options、`auth.logout`。
 - `initialize` 之前收到其它请求 → `-32600`。
 
 ### 2.5 `session/new`
@@ -128,6 +134,9 @@ message 含「只支持一个 session」），不得静默复用第一个 sessio
 | 工具调用开始 | `tool_call` | `toolCallId`、`title`、`name`、`kind`、`status: "pending"` |
 | 工具进展/结束 | `tool_call_update` | `toolCallId`、`status: "in_progress"/"completed"/"failed"`、`content`、`locations` |
 | 待办/计划 | `plan` | `entries: [{content, priority, status}]`（整表替换） |
+| 斜杠命令广告（issue #80） | `available_commands_update` | `availableCommands` 来自现有 `COMMANDS`，不发明新命令；在 `session/new` / `session/load` 成功后发出 |
+| 档位切换（issue #80） | `current_mode_update` | `currentModeId` 为 `ask` / `auto-edit` / `auto-all` / `plan` 之一；`session/set_mode` 成功后发出 |
+| 上下文占用（issue #80） | `usage_update` | `used` 为当前上下文 token 估算，`size` 为 `contextWindow`；在 `session/prompt` 结束、响应写出前发出 |
 
 - 数据源是现有 `AgentEvent`（`src/agent/types.ts`）：`text` → `agent_message_chunk`；`tool_start` → `tool_call`
   （`toolCallId` 直接用 `call_id`）；`tool_end` → `tool_call_update`（`status` 由 `ok` / `status` 映射：
@@ -194,6 +203,16 @@ ACP 是编辑器里的**交互会话**，记忆走交互模式：用户级 + 项
 }
 ```
 
+### 2.14 会话档位、恢复与用量（issue #80）
+
+- `session/set_mode`：`modeId` 必须是 neo 已有档位 `ask` / `auto-edit` / `auto-all` / `plan`，
+  不用 Claude 的 `acceptEdits` / `bypassPermissions` 等名称。非法值回 `-32602`。切换成功后本会话
+  权限策略立刻跟着变（权限桥与 `Agent.mode` 一起改），并发出 `current_mode_update`。
+- `session/load`：复用 `--resume`，按 `sessionId` 恢复同一会话文件；本进程仍然只有一个 session。
+  找不到文件回 `-32602`。工作区以本次请求的 `cwd` 为准（与 `--resume` 一致）。
+- `usage_update` 的数字必须来自现有计量（`estimateTokens` 与 `cfg.contextWindow`），不编数字。
+  不做 `session_info_update` / `notice` / compaction 相关 update。
+
 ## 3 验收
 
 测试文件：`tests/acp-protocol.test.ts`（管道级假客户端：真起子进程或等价管道，stdin 写 NDJSON、stdout 读 NDJSON；
@@ -248,13 +267,11 @@ ACP 是编辑器里的**交互会话**，记忆走交互模式：用户级 + 项
 
 - `session/list`、`session/delete`；
 - `terminals/*`（ACP 的终端能力）；
-- session modes（`session/set_mode`）与 config options；
-- 斜杠命令广告（`available_commands_update`）；
-- `session/load`（若能复用现有 `--resume` 且不扩范围可做，否则不做；首期 `loadSession: false`）；
-- 多 session（一进程一 session）；
+- config options（`session/set_config_option`）；
+- 多 session（一进程一 session；`session/load` 已做，但不能用来换掉已有会话）；
 - MCP 的 HTTP / SSE 传输（stdio 已做，不广告 http/sse）；
 - `promptCapabilities.image` / `audio` / 内嵌 `resource`（未映射，显式 `false`；`resource_link` 已做）；
-- `usage_update` / `session_info_update` / `notice` / compaction 相关 update 广告。
+- `session_info_update` / `notice` / compaction 相关 update 广告（`usage_update` 已做）。
 
 ## 6 参考
 
@@ -275,3 +292,5 @@ ACP 是编辑器里的**交互会话**，记忆走交互模式：用户级 + 项
 - 但 SDK 的 `Connection.receive()` 对入站消息不等待，初始化闸门只在 `initialize` 的 `respondWithResult` 里放行。同一批 stdin 里紧跟的 `session/new` 会被误判为未初始化。实现在 `src/acp/inbound.ts` 对喂给 SDK 的字节流排队：上一条带 id 的请求对应的响应写出后才放行下一条。未改 SDK 源码。
 - 客户端 `mcpServers`、工具/权限/cancel/diff 映射在后续步骤填写。
 - 2026-11-17（issue #75）：`SIGINT` / `SIGHUP` / `SIGTERM` 先 `dispose`（含按进程组回收后台 shell）再分别以 130 / 129 / 143 退出。模型 `shell` 工具已 setsid 脱组，信号不会自动传到子进程。
+- 2026-11-18（issue #80）：斜杠命令广告、`session/set_mode`（档位 ask / auto-edit / auto-all / plan）、
+  `session/load`（复用 `--resume`，仍单 session）、`usage_update`（真实 token/上下文占用）已做。

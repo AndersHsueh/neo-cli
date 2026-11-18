@@ -19,6 +19,7 @@ import type {
   Implementation,
   AgentConnection,
   InitializeResponse,
+  LoadSessionResponse,
   NewSessionResponse,
   PromptResponse,
   RequestPermissionRequest,
@@ -34,12 +35,17 @@ import { acpPromptError } from "./turn.ts";
 import { createInboundGate } from "./inbound.ts";
 import { REQUEST_PERMISSION_METHOD } from "./permission.ts";
 import { toolCallEndOf, toolCallStartOf } from "./tools.ts";
+import { asPermissionMode, availableCommands, modeState } from "./followup.ts";
+import { adoptSession, applyRestored, loadSession as loadStoredSession, sessionsDir, type SessionMeta } from "../session.ts";
+import type { Message } from "../llm.ts";
 import { installFatalSignalHandlers } from "../signals.ts";
 
 /**
  * 首期广告的能力（PRD §2.4）：只广告真做的。
  *
- * - `loadSession: false`：`session/load` 未做；
+ * - `loadSession: true`：`session/load` 已做（issue #80）—— 复用 `src/session.ts` 的
+ *   `loadSession()` / `adoptSession()` / `applyRestored()`，与 `--resume` 同一条恢复路径；
+ *   进程仍只服务一个 session，已有会话时再 load 回 `-32603`（与第二次 `session/new` 同口径）；
  * - `promptCapabilities`：`text` 是基线；`embeddedContext: false` 只禁 `resource` 内容块，
  *   `resource_link` 是 v1 必选、已做（复审 R6）；`image` / `audio` 尚未映射到
  *   `Agent.send()` 的图片通道，显式 false；
@@ -47,7 +53,7 @@ import { installFatalSignalHandlers } from "../signals.ts";
  *   HTTP/SSE 已知未做（PRD §5），不广告也不因此拒绝 session/new。
  */
 const CAPABILITIES: AgentCapabilities = {
-  loadSession: false,
+  loadSession: true,
   promptCapabilities: { image: false, audio: false, embeddedContext: false },
 };
 
@@ -324,6 +330,81 @@ export async function runAcpServer(): Promise<number> {
     cleanup: () => dispose(),
   });
 
+  /**
+   * 装配一个 ACP 会话（`session/new` 与 `session/load` 共用）。
+   *
+   * 两条路径的唯一差别是 `resume`：传了就是接管已有会话文件（沿用原 sessionId、
+   * 恢复历史），不传就新建。其余（模型配置、权限桥、MCP、通知回调）完全一致 ——
+   * 复制一份会让两条路径悄悄漂移。
+   */
+  const assemble = (
+    cfg: Config,
+    cwd: string,
+    mcpServers: McpServerConfig[],
+    resume?: { meta: SessionMeta; messages: Message[] },
+  ): Promise<AcpSession> => {
+    // 通知回调在装配完成前就要能引用 sessionId：先占位，装配后回填。
+    let created: AcpSession | null = null;
+    const sid = (): string => created?.sessionId ?? "";
+    return createAcpSession({
+      cfg,
+      cwd,
+      signal: hostGone.signal,
+      ...(resume ? { resume } : {}),
+      onText: (text) => {
+        // 助手文本 → agent_message_chunk（PRD §2.9）。通知先于 prompt 响应发出。
+        sendNotification({
+          sessionId: sid(),
+          update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text } },
+        });
+      },
+      onToolStart: (data: ToolStartEventData) => {
+        // tool_start → tool_call（PRD §2.9）：pending，编辑器据此显示「要做什么」。
+        const start = toolCallStartOf(data, cwd);
+        sendNotification({
+          sessionId: sid(),
+          update: {
+            sessionUpdate: "tool_call",
+            toolCallId: start.toolCallId,
+            title: start.title,
+            kind: start.kind,
+            status: start.status,
+            ...(start.locations ? { locations: start.locations } : {}),
+          },
+        });
+      },
+      onToolEnd: (data: ToolEndEventData, oldText: string | null, argsJson: string | undefined) => {
+        // tool_end → tool_call_update（PRD §2.10）：写工具带 diff，oldText/args 来自 tool_start 快照。
+        const end = toolCallEndOf(data, cwd, oldText, argsJson);
+        sendNotification({
+          sessionId: sid(),
+          update: {
+            sessionUpdate: "tool_call_update",
+            toolCallId: end.toolCallId,
+            status: end.status,
+            ...(end.content ? { content: end.content } : {}),
+            ...(end.locations ? { locations: end.locations } : {}),
+          },
+        });
+      },
+      // 权限询问（PRD §2.11）：直接转成对客户端的 JSON-RPC 请求。
+      permissionUi: {
+        request: (params: RequestPermissionRequest) =>
+          connection === null
+            ? Promise.reject(new Error("连接尚未建立"))
+            : connection.client.request<RequestPermissionResponse>(REQUEST_PERMISSION_METHOD, params),
+      },
+      // settings 的 permission_mode（与模型配置同一份 settings.json，工作区优先）：客户端不在/失败/超时时回退用。
+      permissionMode: readPermissionMode(cfg.settingsPath),
+      // 客户端在 session/new 里传入的 stdio MCP（PRD §2.7）：与 settings 的 mcpServers 合并。
+      clientMcpServers: mcpServers,
+      flushNotifications,
+    }).then((s) => {
+      created = s;
+      return s;
+    });
+  };
+
   const app = agent({ name: "neo" })
     .onRequest(methods.agent.initialize, ({ params }) => {
         // 请求版本不是 1 也回 1（PRD §2.4）：由客户端决定是否断开，这里不报错。
@@ -362,66 +443,98 @@ export async function runAcpServer(): Promise<number> {
       }
       requireApiKey(cfg);
 
-      const created = await createAcpSession({
-        cfg,
-        cwd,
-        signal: hostGone.signal,
-        onText: (text) => {
-          // 助手文本 → agent_message_chunk（PRD §2.9）。通知先于 prompt 响应发出。
-          sendNotification({
-            sessionId: created.sessionId,
-            update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text } },
-          });
-        },
-        onToolStart: (data: ToolStartEventData) => {
-          // tool_start → tool_call（PRD §2.9）：pending，编辑器据此显示「要做什么」。
-          const start = toolCallStartOf(data, cwd);
-          sendNotification({
-            sessionId: created.sessionId,
-            update: {
-              sessionUpdate: "tool_call",
-              toolCallId: start.toolCallId,
-              title: start.title,
-              kind: start.kind,
-              status: start.status,
-              ...(start.locations ? { locations: start.locations } : {}),
-            },
-          });
-        },
-        onToolEnd: (data: ToolEndEventData, oldText: string | null, argsJson: string | undefined) => {
-          // tool_end → tool_call_update（PRD §2.10）：写工具带 diff，oldText/args 来自 tool_start 快照。
-          const end = toolCallEndOf(data, cwd, oldText, argsJson);
-          sendNotification({
-            sessionId: created.sessionId,
-            update: {
-              sessionUpdate: "tool_call_update",
-              toolCallId: end.toolCallId,
-              status: end.status,
-              ...(end.content ? { content: end.content } : {}),
-              ...(end.locations ? { locations: end.locations } : {}),
-            },
-          });
-        },
-        // 权限询问（PRD §2.11）：直接转成对客户端的 JSON-RPC 请求。
-        permissionUi: {
-          request: (params: RequestPermissionRequest) =>
-            connection === null
-              ? Promise.reject(new Error("连接尚未建立"))
-              : connection.client.request<RequestPermissionResponse>(REQUEST_PERMISSION_METHOD, params),
-        },
-        // settings 的 permission_mode（与模型配置同一份 settings.json，工作区优先）：客户端不在/失败/超时时回退用。
-        permissionMode: readPermissionMode(cfg.settingsPath),
-        // 客户端在 session/new 里传入的 stdio MCP（PRD §2.7）：与 settings 的 mcpServers 合并。
-        clientMcpServers: clientMcpServers(params.mcpServers),
-        flushNotifications,
-      });
+      const created = await assemble(cfg, cwd, clientMcpServers(params.mcpServers));
       session = created;
       log(`session/new：${created.sessionId}（工作区 ${cwd}）`);
 
-      const response: NewSessionResponse = { sessionId: created.sessionId };
+      // issue #80：先把 session 赋上再发通知（sendNotification 依赖它），
+      // 响应写出前 flushNotifications —— 客户端拿到 sessionId 时命令清单已经在了。
+      sendNotification({
+        sessionId: created.sessionId,
+        update: { sessionUpdate: "available_commands_update", availableCommands: availableCommands() },
+      });
+      await flushNotifications();
+
+      const response: NewSessionResponse = { sessionId: created.sessionId, modes: modeState(created.currentMode()) };
       return response;
       }),
     )
+    .onRequest(methods.agent.session.load, async ({ params }) =>
+      serial(async () => {
+      // cwd 校验与 session/new 同一口径（PRD §2.5）；单 session 同样只允许一次（issue #80）。
+      const cwd = resolveWorkspace(params.cwd);
+      if (session) {
+        throw RequestError.internalError(
+          undefined,
+          `本进程只支持一个 session（已有 ${session.sessionId}）；session/load 不能替换它，请另起一个 neo acp 进程。`,
+        );
+      }
+      if (typeof params.sessionId !== "string" || params.sessionId === "") {
+        throw RequestError.invalidParams("session/load 需要 sessionId");
+      }
+
+      // 复用 `--resume` 的恢复路径：loadSession 读文件（含附件 hydrate）→ adoptSession 接管
+      // 原 id / path / createdAt（不新建文件）→ createAcpSession 里 applyRestored 恢复消息。
+      const stored = loadStoredSession(params.sessionId);
+      if (!stored) {
+        throw RequestError.invalidParams(`找不到会话 ${params.sessionId}（${sessionsDir()} 下没有匹配的会话文件）`);
+      }
+      // 工作区以本次请求的 cwd 为准（与 `--resume` 一致）：会话文件里的 cwd 只是历史记录，
+      // 不把「从另一个目录续上」当成错误。
+
+      let cfg: Config;
+      try {
+        cfg = loadConfig({ cwd }, { settingsDir: cwd });
+        resolveAndApplyModelWindow(cfg);
+      } catch (e) {
+        if (e instanceof ConfigError) {
+          throw RequestError.internalError(undefined, `配置错误：${e.message}`);
+        }
+        throw e;
+      }
+      requireApiKey(cfg);
+
+      const adopted = adoptSession(stored.meta, cfg.model);
+      const created = await assemble(cfg, cwd, clientMcpServers(params.mcpServers), {
+        meta: adopted.meta,
+        messages: applyRestored(undefined, stored.messages),
+      });
+      session = created;
+      log(`session/load：${created.sessionId}（工作区 ${cwd}，${stored.messages.length} 条消息）`);
+
+      sendNotification({
+        sessionId: created.sessionId,
+        update: { sessionUpdate: "available_commands_update", availableCommands: availableCommands() },
+      });
+      await flushNotifications();
+
+      const response: LoadSessionResponse = { modes: modeState(created.currentMode()) };
+      return response;
+      }),
+    )
+    .onRequest(methods.agent.session.setMode, async ({ params }) => {
+      // issue #80：档位只用 neo 已有的四个名字；Claude 的 acceptEdits / bypassPermissions
+      // 之类一律 -32602，不静默映射（映射等于替用户改主意）。
+      const current = session;
+      if (!current || current.sessionId !== params.sessionId) {
+        throw RequestError.sessionNotFound(params.sessionId);
+      }
+      const next = asPermissionMode(params.modeId);
+      if (next === null) {
+        throw RequestError.invalidParams(
+          `未知权限模式 ${JSON.stringify(params.modeId)}（可选：ask / auto-edit / auto-all / plan）`,
+        );
+      }
+      current.setMode(next);
+      log(`session/set_mode：${current.sessionId} → ${next}`);
+      // 先发通知再 flush：客户端拿到响应时 current_mode_update 已经在了。
+      sendNotification({
+        sessionId: current.sessionId,
+        update: { sessionUpdate: "current_mode_update", currentModeId: next },
+      });
+      await flushNotifications();
+      return {};
+    })
     .onRequest(methods.agent.session.prompt, async ({ params }) => {
       // R7：**不串 serial()**。串行化会让第二个 prompt 堵在队头，挡住其后的 cancel 与
       // 权限响应（队头阻塞）。重叠判定改为在入口同步置位 `prompting`：
@@ -439,6 +552,13 @@ export async function runAcpServer(): Promise<number> {
       try {
         const text = promptText(params.prompt);
         const { stopReason } = await current.prompt(text);
+        // issue #80：prompt 结束后用真实计量发 usage_update，再 flush，保证通知先于响应。
+        const usage = current.usage();
+        sendNotification({
+          sessionId: current.sessionId,
+          update: { sessionUpdate: "usage_update", used: usage.used, size: usage.size },
+        });
+        await flushNotifications();
         const response: PromptResponse = { stopReason };
         return response;
       } catch (e) {

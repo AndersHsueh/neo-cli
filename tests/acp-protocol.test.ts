@@ -357,11 +357,11 @@ describe("A2 initialize 协商 v1 与能力", () => {
     // 协议版本：请求 1 → 回 1。
     expect(result["protocolVersion"]).toBe(1);
 
-    // agentCapabilities：首期只广告真做的能力，loadSession 必须为 false。
+    // agentCapabilities：只广告真做的能力。issue #80 已做 session/load（仍单进程单 session）。
     const caps = result["agentCapabilities"] as Record<string, unknown>;
     expect(typeof caps).toBe("object");
     expect(caps).not.toBeNull();
-    expect(caps["loadSession"]).toBe(false);
+    expect(caps["loadSession"]).toBe(true);
 
     // agentInfo：name 为 neo（title/version 由实现按 src/cli/version.ts 填）。
     const info = result["agentInfo"] as Record<string, unknown>;
