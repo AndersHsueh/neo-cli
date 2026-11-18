@@ -629,6 +629,41 @@ describe("R1 入站队头阻塞", () => {
       llm.stop();
     }
   }, 40_000);
+
+  test("R1b 同一 stdin 块里 cancel 后紧跟迟到的 allow_once，写工具不得落盘", async () => {
+    const ws = workspace();
+    const target = join(ws, "r1b-blocked.txt");
+    const llm = fakeLlm([sseToolCallFrames("call-r1b", "write_file", { path: target, content: "不该写入\n" })]);
+    try {
+      const dir = project(llm.baseUrl);
+      let permissionSeen: JsonRpcMessage | null = null;
+      const r = await runClient(dir, {
+        cwd: ws,
+        policy: "ignore",
+        promptBlocks: [{ type: "text", text: "写文件" }],
+        onMessage: (msg, state, api) => {
+          if (msg.method !== "session/request_permission" || msg.id === undefined) return;
+          if (permissionSeen !== null) return;
+          permissionSeen = msg;
+          // 三个报文一次写出，强制进入「cancel 与 allow 同一入站块」的时序。
+          api.write(
+            promptRequest(4, state.sessionId as string, "第二个请求") +
+              cancelNotification(state.sessionId as string) +
+              permissionResponse(msg.id, msg.params, "allow_once"),
+          );
+        },
+      });
+      await r.waitFor((m) => m.method === "session/request_permission", 5_000);
+      expect(permissionSeen).not.toBeNull();
+      const first = await r.waitFor((m) => m.id === 3 && (m.result !== undefined || m.error !== undefined), 1_500);
+      r.kill();
+      expect(first).not.toBeNull();
+      expect(stopReasonOf(first as JsonRpcMessage)).toBe("cancelled");
+      expect(existsSync(target)).toBe(false);
+    } finally {
+      llm.stop();
+    }
+  }, 40_000);
 });
 
 /* ================================================================== *
