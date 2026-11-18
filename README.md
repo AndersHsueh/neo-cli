@@ -32,7 +32,7 @@ bun run src/index.ts -p "修到测试全绿" --drive "bun test" --max 5 --max-mi
 | 其它 POSIX（dash/ksh/fish） | 自动探测 | ✅ 解析器支持；fish 不吃登录 PATH preamble |
 | Windows 11 | `pwsh` → `powershell` → `cmd` | 🟡 **实验性，未实机验证**（见 PD-1） |
 
-> **v0.4.91 发布验证（Linux worktree）**：`bun x tsc --noEmit` exit 0；2262 pass / 3 skip / 0 fail（136 文件）；PTY 32/0；`bash scripts/verify.sh` **ALL GREEN**。表内 macOS 数字保留为历史记录，不代表本次在 macOS 复测。
+> **v0.4.92 发布验证（Linux worktree）**：`bun x tsc --noEmit` exit 0；2363 pass / 3 skip / 0 fail（139 文件）；PTY 36/0；`bash scripts/verify.sh` **ALL GREEN**。表内 macOS 数字保留为历史记录，不代表本次在 macOS 复测。
 
 Windows 启动用 `neo.cmd`（需要 Bun 在 PATH）；Linux/macOS 用 `neo.sh` 或 `bun run src/index.ts`。
 
@@ -56,6 +56,7 @@ Windows 启动用 `neo.cmd`（需要 Bun 在 PATH）；Linux/macOS 用 `neo.sh` 
 - **v0.4.89**：处理 v0.4.88 列出的后续项 —— 会话袋信箱状态改为实时值、输入历史 1000 条上限、修复粘贴图片 chip 编号为 `NaN` 的拆分回归；`ReplState` 改回显式类型，合并 6 组重复小工具函数，`tsconfig` 打开 `noUnusedLocals`。详见 `docs/release-notes/v0.4.89.md`。
 - **v0.4.90**：完成 v0.4.89 遗留的 `loopSupport.ts` 整文件缩进统一，一并收齐 `composerInput.ts`、`sendTurn.ts`、`repl.drain` 与 `inputLayer.ts` 同类缩进；归位 `writeTurnLog` 注释、压缩多余空行。仅格式与注释调整，无行为变更，测试基线不变。详见 `docs/release-notes/v0.4.90.md`。
 - **v0.4.91**：ACP 服务端落地 —— `neo acp` 作为 ACP v1 服务端供 Zed / JetBrains 拉起（工具事件、写文件 diff、编辑器权限 RPC、`session/cancel`），后续补斜杠命令广告、`session/set_mode`（映射 `ask` / `auto-edit` / `auto-all` / `plan`）、`session/load`、`usage_update`，并修掉取消后迟到批准仍写盘的竞态；取消/断连后后台 shell 按进程组回收、MCP 握手中断连回收，`SIGINT` / `SIGHUP` / `SIGTERM` 先 dispose 再退出；空闲时不再周期性唤醒 composer tick，`getStatus` 的 branch / ctxUsage 各自 500ms 节流；输入框补 `Ctrl+R` 历史反向检索与 `Ctrl+S` 草稿暂存，并按 Claude Code 对齐日常编辑能力（kill ring / 撤销 / 词级编辑 / 模式变色 / `Shift+Tab` 循环档位 / 排队收回，**不做 Vim**）；记忆侧新增轮末按需后台 wiki 自动增量维护（无活零模型调用，`memory.auto_maintain` 默认开）。详见 `docs/release-notes/v0.4.91.md`。
+- **v0.4.92**：hooks 扩到主会话生命周期 —— 交互 / `-p` / ACP 主会话新增 `SessionStart`（仅 new / resume / clear）、`UserPromptSubmit`（每条真实输入一次，exit 2 在写历史与首个模型请求前阻断）、`Stop`（仅正常终止，exit 0 JSON `{"decision":"block","reason":"非空原因"}` 才请求一次续跑，共享原预算与额度）、`PreCompact`（手动/自动压缩前，exit 2 保留原历史与快照）；子代理与 wiki worker 不触发，未配置时行为不变。同时把生命周期 exit 0 的**语义载荷**（完整原始 stdout，1 MiB 原始字节上限）与给人看的**诊断尾部**（800 字符）分成两条通道，字段级上限 32000 字符、Stop reason 2000 字符，超载显式诊断而非降格为纯文本。详见 `docs/release-notes/v0.4.92.md`。
 
 ## 配置
 
