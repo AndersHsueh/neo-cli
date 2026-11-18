@@ -32,7 +32,7 @@ bun run src/index.ts -p "修到测试全绿" --drive "bun test" --max 5 --max-mi
 | 其它 POSIX（dash/ksh/fish） | 自动探测 | ✅ 解析器支持；fish 不吃登录 PATH preamble |
 | Windows 11 | `pwsh` → `powershell` → `cmd` | 🟡 **实验性，未实机验证**（见 PD-1） |
 
-> **v0.4.94 发布验证（Linux worktree）**：`bun x tsc --noEmit` exit 0；2430 pass / 3 skip / 0 fail（144 文件）；PTY 36/0；`bash scripts/verify.sh` **ALL GREEN**。表内 macOS 数字保留为历史记录，不代表本次在 macOS 复测。
+> **v0.4.95 发布验证（Linux worktree）**：`bun x tsc --noEmit` exit 0；2479 pass / 3 skip / 0 fail（147 文件）；PTY 36/0；`bash scripts/verify.sh` **ALL GREEN**。表内 macOS 数字保留为历史记录，不代表本次在 macOS 复测。
 
 Windows 启动用 `neo.cmd`（需要 Bun 在 PATH）；Linux/macOS 用 `neo.sh` 或 `bun run src/index.ts`。
 
@@ -59,6 +59,7 @@ Windows 启动用 `neo.cmd`（需要 Bun 在 PATH）；Linux/macOS 用 `neo.sh` 
 - **v0.4.92**：hooks 扩到主会话生命周期 —— 交互 / `-p` / ACP 主会话新增 `SessionStart`（仅 new / resume / clear）、`UserPromptSubmit`（每条真实输入一次，exit 2 在写历史与首个模型请求前阻断）、`Stop`（仅正常终止，exit 0 JSON `{"decision":"block","reason":"非空原因"}` 才请求一次续跑，共享原预算与额度）、`PreCompact`（手动/自动压缩前，exit 2 保留原历史与快照）；子代理与 wiki worker 不触发，未配置时行为不变。同时把生命周期 exit 0 的**语义载荷**（完整原始 stdout，1 MiB 原始字节上限）与给人看的**诊断尾部**（800 字符）分成两条通道，字段级上限 32000 字符、Stop reason 2000 字符，超载显式诊断而非降格为纯文本。详见 `docs/release-notes/v0.4.92.md`。
 - **v0.4.93**：MCP 工具按需发现 —— 默认 `mcp.tool_search=auto`，可延迟 MCP 数达到阈值（默认 10）才启用，`true`/`false` 可强制；只延迟 MCP，第一方与 `tool_search` 始终全量。内置 `tool_search`（query + 可选 limit，默认 5、上限 10）按名字/描述大小写不敏感匹配，空查询/无命中返回空结果且不乱装；也可直接点名已注册未装入的 `mcp__*`（走现有审批并加入本会话已加载集合）。已加载集合只在会话内存，仅成功压缩 / `/clear` / 会话结束时丢弃，PreCompact 阻断不清；自动/近窗压缩成功后同一轮发给模型的 tools 会重算。同时把 legacy 上下文窗口算法委托给已 pin 的 `@neo/core-compat` 归档（#81 / K01），不改 ACP 协议。详见 `docs/release-notes/v0.4.93.md`。
 - **v0.4.94**：交互 slash `/cd` 切换会话工作目录（#69）——只做交互命令、不是模型工具；不 `process.chdir()`，就地改会话 `cfg.cwd`。无参打印当前根，`/cd -` 回上一根；必做改挂失败整单回滚（含磁盘 `meta.cwd`），LSP 重启失败只警告，P2 在返回前 await 并把警告交给用户。会话文件仍在全局 `~/.neo/sessions/`，不搬家、不改 id。详见 `docs/release-notes/v0.4.94.md`。
+- **v0.4.95**：实验性 Code Mode（`run_js`，#71）——默认关闭，仅交互 TUI 暴露；`NEO_EXPERIMENTAL_CODE_MODE=1` 开启，`=0` 一律获胜。P2 将 PromptManager 缺省改为 fail-closed，规划态 `/tools` 按暴露条件过滤，`confirm`/`approve` 响应 AbortSignal。同时纳入 #81 K45b：把纯叶适配委托给已 pin 的 `@neo/core-compat` 扩展归档（Agent 循环与带状态运行时仍留在 legacy 侧）。详见 `docs/release-notes/v0.4.95.md`。
 
 ## 配置
 
