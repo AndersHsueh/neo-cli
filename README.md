@@ -32,6 +32,8 @@ bun run src/index.ts -p "修到测试全绿" --drive "bun test" --max 5 --max-mi
 | 其它 POSIX（dash/ksh/fish） | 自动探测 | ✅ 解析器支持；fish 不吃登录 PATH preamble |
 | Windows 11 | `pwsh` → `powershell` → `cmd` | 🟡 **实验性，未实机验证**（见 PD-1） |
 
+> **v0.4.91 本地候选验证（Linux worktree）**：`bun x tsc --noEmit` exit 0；2262 pass / 3 skip / 0 fail（136 文件）；PTY 32/0；`bash scripts/verify.sh` **ALL GREEN**。表内 macOS 数字保留为历史记录，不代表本次在 macOS 复测。
+
 Windows 启动用 `neo.cmd`（需要 Bun 在 PATH）；Linux/macOS 用 `neo.sh` 或 `bun run src/index.ts`。
 
 ### v0.4.1 实战可靠性
@@ -53,6 +55,7 @@ Windows 启动用 `neo.cmd`（需要 Bun 在 PATH）；Linux/macOS 用 `neo.sh` 
 - **v0.4.88**：清理 v0.4.87 拆分残留（未用 import / 解构 / 死局部、挤行、错位 JSDoc），`src/config.ts` 公共 API 收回到拆分前；新增源码卫生守卫（config 导出清单、挤行、`tsc --noUnusedLocals` 在 src 下零告警）。无行为变化。详见 `docs/release-notes/v0.4.88.md`。
 - **v0.4.89**：处理 v0.4.88 列出的后续项 —— 会话袋信箱状态改为实时值、输入历史 1000 条上限、修复粘贴图片 chip 编号为 `NaN` 的拆分回归；`ReplState` 改回显式类型，合并 6 组重复小工具函数，`tsconfig` 打开 `noUnusedLocals`。详见 `docs/release-notes/v0.4.89.md`。
 - **v0.4.90**：完成 v0.4.89 遗留的 `loopSupport.ts` 整文件缩进统一，一并收齐 `composerInput.ts`、`sendTurn.ts`、`repl.drain` 与 `inputLayer.ts` 同类缩进；归位 `writeTurnLog` 注释、压缩多余空行。仅格式与注释调整，无行为变更，测试基线不变。详见 `docs/release-notes/v0.4.90.md`。
+- **v0.4.91（本地候选，未发布）**：ACP 服务端落地 —— `neo acp` 作为 ACP v1 服务端供 Zed / JetBrains 拉起（工具事件、写文件 diff、编辑器权限 RPC、`session/cancel`），后续补斜杠命令广告、`session/set_mode`（映射 `ask` / `auto-edit` / `auto-all` / `plan`）、`session/load`、`usage_update`，并修掉取消后迟到批准仍写盘的竞态；取消/断连后后台 shell 按进程组回收、MCP 握手中断连回收，`SIGINT` / `SIGHUP` / `SIGTERM` 先 dispose 再退出；空闲时不再周期性唤醒 composer tick，`getStatus` 的 branch / ctxUsage 各自 500ms 节流；输入框补 `Ctrl+R` 历史反向检索与 `Ctrl+S` 草稿暂存，并按 Claude Code 对齐日常编辑能力（kill ring / 撤销 / 词级编辑 / 模式变色 / `Shift+Tab` 循环档位 / 排队收回，**不做 Vim**）；记忆侧新增轮末按需后台 wiki 自动增量维护（无活零模型调用，`memory.auto_maintain` 默认开）。详见 `docs/release-notes/v0.4.91.md`。
 
 ## 配置
 
@@ -933,6 +936,26 @@ neo -w fix-9 -p "跑一下测试"  # 与 -p / --resume / -C 等入口兼容
 **`-p` 单次模式只用项目级记忆。** 该模式多用于服务器脚本，混入操作员个人记忆会造成混乱；因此系统提示、召回、工具三处同时降级为 project-only。
 
 **记忆写入绝不阻塞主流程。** 先落 journal 再调 LLM 提炼；失败只降级、不抛错；会话退出前 flush 有超时，未完成的记录下次启动自动恢复。完整规格见 `docs/001-memory-system-design[done].md` §7。
+
+**轮末按需后台 wiki 自动增量维护（issue #53）。** 交互会话一轮结束后，先做**代码侧 lint**（零模型成本），只有下面三类信号之一成立才在后台拉起一次 fast 档 worker，做完即退：
+
+- 本阶段有显式 `remember`（`/remember` 同路径）：**remember 之后必做一次代码侧 lint**，但**只有本阶段落过的页上真检出可修问题**（`broken` / `nosummary` / `nostamp`）才起 worker；lint 干净就到此为止，零模型调用。
+- `raw/` 相对上次 ingest 快照有增删：走**独立的有界增量判定** —— 有快照、快照未超 1 周、且新增 ≤ 10 份才自动增量编译。**已有 raw 增删不一定跑**：无快照（首次）、快照超 1 周、或新增超上限时**不派 worker**，每会话只提示一次用 `/ingest` 手动编译。
+- 本阶段落页体检出上述三类问题（同上，lint 干净则不起 worker）。
+
+**没有活就零模型调用** —— 不派子代理、不多一次模型调用、不阻塞你继续输入。worker 挂后台任务（`/tasks` 里显示为 `[wiki]`），不注入主会话、不占 3 个用户任务名额、不落 session meta；工具白名单只有 6 个（`wiki_search` / `wiki_write` / `read_file` / `list_dir` / `glob` / `grep`），审批恒拒，失败只降级（一行 dim 提示 + wiki `log.md` 记一条），不影响本轮回复、不改变 `-p` 退出码。`/ingest` 子代理失败时不再记成功（不写快照、不登 log）。
+
+**只接交互会话，不接 `-p` / ACP。** 维护器只在 `args.print === null` 的交互会话里构造，触发点是 REPL 轮末；`-p` 与 `neo acp` 都不接线。
+
+**开关：`memory.auto_maintain`，默认 `true`。** 写 `false` 即关闭（关闭后轮末直接返回，不 lint、不派 worker）：
+
+```json
+{
+  "memory": {
+    "auto_maintain": false
+  }
+}
+```
 
 ## 项目结构
 
