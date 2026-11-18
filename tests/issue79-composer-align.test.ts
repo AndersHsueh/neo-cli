@@ -207,6 +207,44 @@ describe("issue #79 P0.1 Kill ring 与撤销", () => {
     expect(h.composer.buf.cursor).toBe(cursor);
     h.composer.stop();
   });
+
+  test("#79a2 Backspace / Delete 不进 kill ring；Ctrl+Y 仍粘回上一次有意的 kill；Ctrl+D 也不进环", () => {
+    // Leo 探针：hello world → Ctrl+W 删掉 world → 键入 x → Backspace 修掉 → Ctrl+Y 必须粘回 world，不是 x
+    const h = makeHarness();
+    typeText(h, "hello world");
+    ctrl(h, "w", "\x17");
+    expect(h.composer.text).toBe("hello ");
+    typeText(h, "x");
+    special(h, { name: "backspace" });
+    expect(h.composer.text).toBe("hello ");
+    ctrl(h, "y", "\x19");
+    expect(h.composer.text).toBe("hello world");
+    h.composer.stop();
+
+    // Delete 只进撤销栈，不覆盖 kill ring
+    const h2 = makeHarness();
+    typeText(h2, "hello world");
+    ctrl(h2, "w", "\x17");
+    typeText(h2, "xy");
+    special(h2, { name: "left" });
+    special(h2, { name: "delete" });
+    expect(h2.composer.text).toBe("hello x");
+    ctrl(h2, "y", "\x19");
+    expect(h2.composer.text).toBe("hello xworld");
+    h2.composer.stop();
+
+    // Ctrl+D 与 Delete 对齐：不进环（也不改成开始进环）
+    const h3 = makeHarness();
+    typeText(h3, "hello world");
+    ctrl(h3, "w", "\x17");
+    typeText(h3, "xy");
+    special(h3, { name: "left" });
+    ctrl(h3, "d");
+    expect(h3.composer.text).toBe("hello x");
+    ctrl(h3, "y", "\x19");
+    expect(h3.composer.text).toBe("hello xworld");
+    h3.composer.stop();
+  });
 });
 
 describe("issue #79 P0.2 词边界与词级编辑", () => {

@@ -333,14 +333,24 @@ export function cyclePermissionMode(this: Composer): void {
 
 export function applyEditAction(this: Composer, action: KeyAction, buf: TextBuffer): void {
   const width = this.contentWidth();
-  // issue #79：删除类动作先把删掉的文本推进 kill ring（空删除不进环），
-  // 且都压一份撤销快照；移动类动作不碰 kill ring。
+  // issue #79：kill 类动作（Ctrl+K/U/W、Alt+D、Ctrl+Backspace）把删掉的文本推进
+  // kill ring（空删除不进环），且都压一份撤销快照；移动类动作不碰 kill ring。
   const main = buf === this.buf;
   switch (action.type) {
+    // issue #79 回归修复：普通 Backspace / Delete 只进撤销栈，**不进** kill ring ——
+    // 否则「Ctrl+W 删词 → 打字 → Backspace 修一个字 → Ctrl+Y」会粘回那个单字符，
+    // 而不是被删的那个词。空删除既不进环也不压空撤销。仍要 breakYank：
+    // 删过东西后 Alt+Y 不能再替换上一次 yank 的那段。
     case "backspace":
-      return void this.killBufferRange(buf, main, buf.cursor - 1, buf.cursor);
     case "delete":
-      return void this.killBufferRange(buf, main, buf.cursor, buf.cursor + 1);
+      if (buf.cursor <= 0 && action.type === "backspace") return;
+      if (buf.cursor >= buf.length && action.type === "delete") return;
+      // 模态缓冲（审批/自定义回答）只删字，不污染主输入框的撤销栈 / yank 链。
+      if (main) this.recordEdit();
+      if (action.type === "backspace") buf.backspace();
+      else buf.delete();
+      if (main) this.edits.breakYank();
+      return;
     case "left": buf.move("left", width); return;
     case "right": buf.move("right", width); return;
     case "up": buf.move("up", width); return;
