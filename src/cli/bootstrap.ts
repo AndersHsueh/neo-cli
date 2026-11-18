@@ -675,6 +675,8 @@ export async function bootstrap() {
   const promptManager = new PromptManager({
     mailbox: mailboxEnabled,
     askUser: interactiveTTY,
+    // issue #71：Code Mode 只开交互 TUI —— -p 的提示词里不能出现 run_js。
+    nonInteractive: args.print !== null,
     sessionName: s.sessionLabel,
     onSelection: onPromptSelection,
   });

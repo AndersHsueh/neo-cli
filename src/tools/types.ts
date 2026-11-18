@@ -67,6 +67,16 @@ export interface ToolCtx {
   planHost?: PlanHost;
   /** 取消信号（Ctrl+C）。 */
   signal?: AbortSignal;
+  /**
+   * 事件出口（issue #71）：Code Mode 的内部工具调用用它补打 `tool_start` / `tool_end`，
+   * 形状与顶层事件一致。由 makeCtx 转发 Agent 的 onEvent；不传 = 不发事件。
+   *
+   * 用结构化最小类型而不是 AgentEvent：types.ts 是叶子模块，不 import agent/types.ts。
+   */
+  onEvent?: (e: {
+    type: "tool_start" | "tool_end";
+    data: { name: string; [k: string]: unknown };
+  }) => void;
   /** plan 模式（只读）：禁止一切写盘副作用，包括工具输出落盘。 */
   readOnly?: boolean;
   /** 由 agent 注入，让工具能观察取消。 */

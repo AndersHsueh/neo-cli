@@ -21,6 +21,7 @@ import { HOOK_EVENTS, describeHook } from "../hooks/index.ts";
 import { renderMarkdown } from "../ui/render.ts";
 import { makeListPeersTool } from "../tools/mailbox.ts";
 import { mainToolNames, toolNames } from "../tools/index.ts";
+import { CODE_MODE_TOOL_NAME, codeModeExposed } from "../tools/codeMode.ts";
 import { formatTodos } from "../tools/todo.ts";
 import type { ToolCtx } from "../tools/types.ts";
 import { c } from "../ui/theme.ts";
@@ -37,7 +38,18 @@ export async function handleSystemCommands(cmd: string, arg: string, rest: strin
     case "tools": {
       // 规划态控制工具只在规划态可见（issue #14），平时不列出来 ——
       // 否则用户会以为现在就能调 submit_plan。
-      const names = agent.planning ? toolNames(cfg) : mainToolNames(cfg);
+      const baseNames = agent.planning ? toolNames(cfg) : mainToolNames(cfg);
+      // issue #71：Code Mode 只在交互 TUI 且实验开关打开时暴露。
+      // 不能只靠 CONDITIONAL_TOOL_NAMES —— mainToolNames 会把它滤掉。
+      const codeModeOn = codeModeExposed(cfg, {
+        nonInteractive: agent.opt.nonInteractive === true,
+        isSubagent: agent.opt.isSubagent === true,
+        planning: agent.planning,
+      });
+      const names =
+        codeModeOn && !baseNames.includes(CODE_MODE_TOOL_NAME)
+          ? [...baseNames, CODE_MODE_TOOL_NAME]
+          : baseNames;
       // issue #68：MCP 延迟加载下，注册表里的 MCP 工具分两种命运 ——
       // 带完整 schema 进请求（已装入 / alwaysLoad），或只出现在系统提示的目录短节里。
       // 混在一行里列出来会让人以为「列了就能调」，所以分两段显示。

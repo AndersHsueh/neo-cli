@@ -548,7 +548,7 @@ export function loadConfig(overrides: Partial<Config> = {}, options: LoadConfigO
       ? [join(spawnDir, "settings.json")]
       : []),
     join(pkgRoot, "settings.json"),
-    join(homedir(), ".neo", "settings.json"),
+    join(process.env["HOME"] || process.env["USERPROFILE"] || homedir(), ".neo", "settings.json"),
   ];
   const found = candidates.find((p) => existsSync(p)) ?? null;
   const raw = found ? (readJson(found) ?? {}) : {};
@@ -724,7 +724,7 @@ export function loadConfig(overrides: Partial<Config> = {}, options: LoadConfigO
     lspWarnings: resolveLspConfig(raw["lsp"]).warnings,
     modelFallback: resolveModelFallback(raw["model_fallback"], providers),
     mailbox: resolveMailboxSettings(raw),
-    crossSessionInbound: resolveInboundPolicy(raw["cross_session_inbound"]),
+    crossSessionInbound: resolveInboundPolicy(raw["cross_session_inbound"]), experimental: { codeMode: (raw["experimental"] as Raw | undefined)?.["code_mode"] === true },
     ...overrides,
   };
 

@@ -875,6 +875,7 @@ bun run verify  # 全量闸门：tsc → test → pty，证据落 docs/evidence/
 | `send_message` | 否 | 给另一个存活会话投递纯文本消息（可选 `reply_to`=任务号）；子代理不可见 |
 | `list_peers` | 否 | 列出存活会话的状态机摘要；带 `target` 查单个；子代理不可见 |
 | `mcp__<server>__<tool>` | 是 | 外部 MCP server 提供的工具（动态注册，`inputSchema` 透传）；未配置 `mcpServers` 时不存在 |
+| `run_js` | 是（与 `shell` 同桶） | 实验性 Code Mode：执行一段 JavaScript，在一次调用里完成多次工具调用。默认关闭，见下方专节 |
 
 MCP 工具与内置工具走**同一条**审批路径。两种「plan」要分开看：
 
@@ -884,6 +885,20 @@ MCP 工具与内置工具走**同一条**审批路径。两种「plan」要分�
 
 `auto-edit` 下 MCP 工具**仍需确认**（与 `shell` 同口径）；`auto-all` 放行。
 `/mcp` 查看已接入的 server、连接状态、工具数与失败原因。
+
+
+## 实验性 Code Mode（`run_js`，issue #71）
+
+给模型一种可选的工具编排方式：写一段 JavaScript，在一次模型往返里用 `await tools.read_file({ path })` 这类调用完成多次工具调用（循环、条件、把上一步结果喂给下一步）。与逐个 tool call 并存，不替换现有工具表。只接受 JavaScript，不翻译 TypeScript，也不模仿 Claude Code 的 `$` / `edit()` API。**与 Claude Code 不兼容。**
+
+**默认关闭。** 开启方式：
+
+- 环境变量 `NEO_EXPERIMENTAL_CODE_MODE=1` 打开；`=0` 在任何情况下都赢（包括覆盖用户 settings 里的 true）。
+- 或者仅当实际载入的 settings 路径是 `~/.neo/settings.json`，且其中 `experimental.code_mode` 为 `true`。工作区 `./settings.json`、启动目录、以及包装根/包内 `settings.json` 写了这个键也不能打开。不要指望改分层合并来绕过这条。
+
+只在**交互 TUI** 暴露（`/tools` 与提示词「可用工具」行会列出 `run_js`）。`-p`（即使带 `-y`）、ACP、规划态、子代理、wiki worker 都不暴露。权限上 `run_js` 与 `shell` 同桶：`ask` / `auto-edit` 要先审整段代码，`auto-all` 放行，`plan` 拒绝。脚本内的每次工具调用仍走既有审批、hooks，以及 `tool_start` / `tool_end`。
+
+**残余风险（予以接受，产品不做沙箱）：** 脚本跑在本进程，可能读到 `process.env`（含密钥），并直接使用宿主 API 绕过工具闸门。开关默认关闭、项目 settings 开不了、整段代码按 shell 口径审批、墙钟 10 分钟与输出上限，是缓解而不是隔离。
 
 ## 权限模式
 

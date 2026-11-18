@@ -27,6 +27,7 @@ import { shell, shellOutput } from "./shellTool.ts";
 import { useSkill } from "./useSkill.ts";
 import { webFetch } from "./webFetch.ts";
 import { editFile, writeFileTool } from "./writeFile.ts";
+import { runJsTool } from "./codeMode.ts";
 
 // 基础类型与注册表在 ./types.ts（叶子模块，解开 task → agent → tools 循环依赖）。
 // 这里 re-export 保持既有导入路径不变。
@@ -57,6 +58,10 @@ export const TOOLS: ToolImpl[] = [
   // MCP 工具按需发现（issue #68）：注册但只在延迟加载启用时进入工具清单，
   // 见 Agent.toolSpecsFor() 与 src/mcp/toolSearch.ts 的 toolSearchEnabled。
   toolSearchTool,
+  // 实验性 Code Mode（issue #71）：默认关闭，只在交互 TUI + 开关打开时进入工具清单，
+  // 见 agent/loop.ts 的 toolSpecsFor 与 tools/codeMode.ts 的 codeModeExposed。
+  // 必须放在规划态控制工具之前：core 测试锁死 submit_plan / exit_plan_mode 在注册表尾部。
+  runJsTool,
   // 规划态控制工具（issue #14）：注册但只在规划态进入工具清单，
   // 见 agent/plan-mode.ts 的 PLAN_CONTROL_TOOLS 与 Agent.toolSpecsFor()。
   submitPlanTool,
@@ -178,8 +183,12 @@ export const PLAN_ONLY_TOOL_NAMES: readonly string[] = ["submit_plan", "exit_pla
 /**
  * 只在特定条件下可见的工具（issue #68）：`tool_search` 只在 MCP 延迟加载启用时出现。
  * 与 PLAN_ONLY_TOOL_NAMES 分开：它们的可见条件不同，混在一起会让两边都说不清。
+ *
+ * issue #71：`run_js` 同理 —— 只在交互 TUI 且实验开关打开时进入清单。
+ * 注意：**光加进这里不够**，`/tools` 与提示词「可用工具」行要单独处理
+ * （mainToolNames 会把它滤掉，见 cli/commandSystem.ts 与 system-prompt.ts）。
  */
-export const CONDITIONAL_TOOL_NAMES: readonly string[] = ["tool_search"];
+export const CONDITIONAL_TOOL_NAMES: readonly string[] = ["tool_search", "run_js"];
 
 /**
  * 工具调用闸门（issue #53；#84 复用）。

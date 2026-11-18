@@ -8,6 +8,7 @@ import { decidePermission } from "./policy.ts";
 import { planModeMessage } from "./plan-mode.ts";
 import { budgetMessage as buildBudgetMessage, readGoalSafe } from "./steer.ts";
 import type {
+  AgentEvent,
   AssistantMessageEventData,
   TurnStats,
 } from "./types.ts";
@@ -290,6 +291,8 @@ export function makeCtx(this: Agent, signal: AbortSignal): ToolCtx {
         : ui.confirm(`${tool} — ${detail}`);
     },
     onNotice: (m) => ui.info(m),
+    // issue #71：Code Mode 内部工具调用补打 tool_start / tool_end（形状与顶层一致）。
+    onEvent: (e) => this.opt.onEvent?.(e as AgentEvent),
     onProgress: (m) => ui.updateSpinner(m),
     askUser: this.opt.askUser,
     cancelAskUser: this.opt.cancelAskUser,

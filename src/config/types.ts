@@ -523,6 +523,21 @@ export interface Config {
   lspWarnings: string[];
   /** #59 有序模型备用链；缺省空数组 = 禁用。与 model_routes.*.fallback_allowed 无关。 */
   modelFallback: ModelTarget[];
+  /**
+   * 实验性开关（issue #71）。settings.json 顶层 `experimental` 段。
+   *
+   * 目前只有 `code_mode`：Code Mode（`run_js`）。**光有这个布尔不够** ——
+   * 开启判定还要看 `settingsPath` 是否就是 `~/.neo/settings.json`
+   * （见 tools/codeMode.ts 的 codeModeEnabled）：工作区 / 启动目录 / 包内
+   * settings.json 写 true 都不能开，否则克隆来的仓库就能替用户打开它。
+   */
+  experimental?: ExperimentalConfig;
+}
+
+/** settings.json 顶层 `experimental` 段（issue #71）。 */
+export interface ExperimentalConfig {
+  /** Code Mode（`run_js`）。默认关闭。 */
+  codeMode?: boolean;
 }
 
 /**

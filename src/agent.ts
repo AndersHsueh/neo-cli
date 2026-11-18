@@ -11,6 +11,8 @@ export {
   type AgentIO,
   type AgentOptions,
   type PermissionMode,
+  type ToolEndEventData,
+  type ToolStartEventData,
   type TurnStats,
 } from "./agent/loop.ts";
 export { toolNames } from "./tools/index.ts";

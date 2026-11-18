@@ -6,6 +6,7 @@ import { existsSync, readdirSync, readFileSync, type Dirent } from "node:fs";
 import { join, relative, sep } from "node:path";
 import type { Config } from "./config.ts";
 import { mainToolNames, toolSpecs } from "./tools/index.ts";
+import { CODE_MODE_TOOL_NAME, codeModePromptSection, codeModeVisibleForPrompt } from "./tools/codeMode.ts";
 import { buildMcpCatalogSection } from "./mcp/toolSearch.ts";
 import { buildSkillIndex, discoverSkills, isRealDir } from "./skills.ts";
 import { resolveUserWikiLayout, resolveWikiLayout } from "./wiki/paths.ts";
@@ -63,7 +64,16 @@ function listFiles(root: string, depth = 2, max = 200): string[] {
  */
 export function buildSystemPrompt(
   cfg: Config,
-  opts: { mailbox?: boolean; askUser?: boolean; mcpLoaded?: ReadonlySet<string> | Iterable<string> } = {},
+  opts: {
+    mailbox?: boolean;
+    askUser?: boolean;
+    mcpLoaded?: ReadonlySet<string> | Iterable<string>;
+    /**
+     * 非交互入口（`-p` / ACP）。issue #71：Code Mode 只开交互 TUI，
+     * 这里缺省 false —— 不传 = 交互口径（测试与旧调用方都按交互算）。
+     */
+    nonInteractive?: boolean;
+  } = {},
 ): string {
   const tree = existsSync(cfg.cwd) ? listFiles(cfg.cwd, 2, 120) : [];
   const treeText =
@@ -80,7 +90,15 @@ export function buildSystemPrompt(
     repoMapText = "";
   }
 
-  const tools = mainToolNames(cfg).join(", ");
+  // issue #71：Code Mode 只在交互 TUI 且实验开关打开时列出。
+  // 不能只靠 CONDITIONAL_TOOL_NAMES —— mainToolNames 会把 run_js 滤掉，
+  // 提示词「可用工具」行与 /tools 都要显式补回来。
+  const codeModeOn = codeModeVisibleForPrompt(cfg, opts.nonInteractive === true);
+  const tools = [
+    ...mainToolNames(cfg),
+    ...(codeModeOn ? [CODE_MODE_TOOL_NAME] : []),
+  ].join(", ");
+  const codeModeLine = codeModeOn ? `${codeModePromptSection()}\n` : "";
   // issue #68：MCP 工具延迟加载时，把「未装入」的工具以目录短节（名字 + 约 80 字描述，
   // 不含 schema）告诉模型。未启用延迟加载时返回空串，提示词与今日完全一致。
   // 已装入集合由调用方给（PromptManager 传会话的已加载集合）：装入后该工具不再出现在
@@ -145,7 +163,7 @@ ${opts.askUser ? "- ask_user：向用户提问（单选/多选/自由输入，Es
 - remember：把长期有价值的结论/用户偏好写入记忆（自动判断项目级或用户级）。
 - todo_write：写入/更新本会话的结构化待办（整表替换；同时最多一项 in_progress）。长任务用它维持清单，压缩上下文后清单仍在，用户可用 /todos 查看。
 - compact_ctx：请求压缩对话上下文（历史→结构化摘要）。大范围探索完成、进入下一阶段前可主动调用；实际压缩在当前工具批次结束后执行。
-- 规划态（用户用 /plan 进入）时工具清单会收窄为只读集合，并额外出现 submit_plan / exit_plan_mode：先澄清范围与取舍，用 submit_plan 提交「步骤 / 风险 / 涉及文件」，用户确认后才恢复写盘与执行。
+${codeModeLine}- 规划态（用户用 /plan 进入）时工具清单会收窄为只读集合，并额外出现 submit_plan / exit_plan_mode：先澄清范围与取舍，用 submit_plan 提交「步骤 / 风险 / 涉及文件」，用户确认后才恢复写盘与执行。
 ${opts.mailbox ? "- send_message：给另一个存活的 neo 会话投递纯文本消息（派活/回信）；回信时把原任务消息 id 传给 reply_to。\n- list_peers：列出存活会话及其状态机摘要（空闲/工作中/等待人类/在等别人/停滞/已死）；带 target 查单个。\n" : ""}${skillText}${wikiText}${mcpCatalogText}${mailboxText}
 ## 环境
 

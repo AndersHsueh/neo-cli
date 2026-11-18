@@ -20,6 +20,7 @@ import {
   toolSearchEnabled,
 } from "../mcp/toolSearch.ts";
 import { ToolError } from "../tools/types.ts";
+import { CODE_MODE_TOOL_NAME, codeModeExposed } from "../tools/codeMode.ts";
 import { formatModelLine } from "../prompt/modelLine.ts";
 import { isRecallMessage } from "../memory/port.ts";
 import { applyCompaction, planCompaction } from "./compact.ts";
@@ -374,6 +375,16 @@ export class Agent {
    */
   toolSpecsFor(): ToolSpec[] {
     const all = toolSpecs(this.opt.cfg);
+    // 实验性 Code Mode（issue #71）：默认关闭，且只开交互 TUI。
+    // -p / ACP（都设 nonInteractive）、规划态、子代理、wiki worker 一律不暴露。
+    // 关闭时这里只是多一次纯函数判定，清单与今日逐项相同。
+    const codeMode = codeModeExposed(this.opt.cfg, {
+      nonInteractive: this.opt.nonInteractive === true,
+      isSubagent: this.opt.isSubagent === true,
+      planning: this.planning,
+    });
+    const gate = (specs: ToolSpec[]): ToolSpec[] =>
+      codeMode ? specs : specs.filter((s) => s.function.name !== CODE_MODE_TOOL_NAME);
     // 逐次白名单（issue #53）：最后一道过滤，名单外的工具连 schema 都不给。
     const narrow = (specs: ToolSpec[]): ToolSpec[] => {
       const allow = this.opt.toolAllowlist;
@@ -382,7 +393,7 @@ export class Agent {
     // 规划态（issue #14）：只给只读工具 + 提交/退出方案两个控制工具。
     // 写盘/执行类工具从清单里摘掉，模型不会「先试着调一下再被拒」。
     // issue #68：规划态同样不暴露 MCP 与 tool_search（白名单里本来就没有它们）。
-    if (this.planning) return narrow(filterPlanTools(all));
+    if (this.planning) return narrow(gate(filterPlanTools(all)));
     // 非规划态不把规划控制工具交给模型：平时调不通，留在清单里只会诱使误调。
     // 主代理仍拿其余全量工具（含运行时注册的 task/wiki/remember 等）。
     // v0.2.0 曾把子代理排除表误用于主代理，导致那些工具从未出现。
@@ -390,7 +401,7 @@ export class Agent {
     const base = this.opt.isSubagent
       ? withoutPlan.filter((s) => !TOOL_NAMES_EXCLUDED_FOR_SUBAGENT.includes(s.function.name))
       : withoutPlan;
-    return narrow(this.deferMcpSpecs(base));
+    return narrow(this.deferMcpSpecs(gate(base)));
   }
 
   /**
