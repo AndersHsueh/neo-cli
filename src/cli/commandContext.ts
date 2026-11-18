@@ -74,6 +74,11 @@ export interface CommandContext {
     list: () => ShellJobView[];
     kill: (target: string) => number;
   };
+  /**
+   * 轮末后台 wiki 维护（issue #53）。仅交互会话注入；`/ingest` 用它做单飞判定
+   * （worker 在跑时拒绝手动派发，避免两路同时写 wiki）。
+   */
+  wikiMaintainer?: { readonly running: boolean };
   /** 后台子代理任务（issue #16）：列表 / 取消。不传 = 不支持（/tasks 会明说）。 */
   tasks?: {
     list: () => BackgroundView[];

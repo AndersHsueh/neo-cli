@@ -4,6 +4,7 @@ import type { Agent } from "../agent.ts";
 import type { BackgroundTasks } from "../tools/background.ts";
 import type { DriveManager } from "../drive.ts";
 import type { LoopScheduler } from "../loop.ts";
+import type { WikiMaintainer } from "../memory/wikiMaintainer.ts";
 
 export type SharedMut = {
   composerRef: Composer | null;
@@ -32,5 +33,7 @@ export type SharedMut = {
   agent: Agent | null;
   drive?: DriveManager | null;
   loopScheduler?: LoopScheduler | null;
+  /** 轮末后台 wiki 维护（issue #53）：只有交互会话构造，-p / ACP 恒为 null。 */
+  wikiMaintainer?: WikiMaintainer | null;
   cleanupEphemeralResources?: () => void;
 };

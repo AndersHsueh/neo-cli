@@ -149,6 +149,11 @@ export async function handleWorkspaceCommands(cmd: string, arg: string, rest: st
     }
 
     case "ingest": {
+      // issue #53：后台 wiki 维护在跑时拒绝手动派发（单飞）—— 两路同时写 wiki 会互相覆盖。
+      if (ctx.wikiMaintainer?.running) {
+        ui.warn("后台 wiki 维护正在运行，等它结束再用 /ingest（/tasks 可查看进度）。");
+        return true;
+      }
       const layout = resolveWikiLayout(cfg.cwd);
       if (!layout) {
         ui.warn(`未找到 wiki 骨架（${join(cfg.cwd, ".neo", "wiki")}）。先跑 /init。`);
@@ -175,10 +180,26 @@ export async function handleWorkspaceCommands(cmd: string, arg: string, rest: st
       // 编译交给 fast 档子代理（机械编译活）；派发前主代理切回当前档，互不影响
       const prompt = buildIngestPrompt(layout, plan, loadIngestTemplate());
       ui.startSpinner(`子代理编译中（${plan.mode}）…`);
-      const report = await runSubagent(agent, prompt, "fast", {
-        cfg,
-        approve: async () => true,
-      });
+      let report: string;
+      try {
+        // issue #53 P1：子代理失败/中止不再被当成成功 —— 不 finishIngest、不登 log。
+        report = await runSubagent(
+          agent,
+          prompt,
+          "fast",
+          {
+            cfg,
+            approve: async () => true,
+          },
+          undefined,
+          undefined,
+          { failOnError: true },
+        );
+      } catch (e) {
+        ui.stopSpinner();
+        ui.error(`ingest 失败：${(e as Error).message}`);
+        return true;
+      }
       ui.stopSpinner();
       ui.line(report);
 

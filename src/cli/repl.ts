@@ -384,6 +384,8 @@ export function createRepl(s: AppSession): ReplState {
                   list: () => backgroundShells.list(),
                   kill: (target) => backgroundShells.kill(target),
                 },
+                // issue #53：轮末后台 wiki 维护（/ingest 单飞判定用）。
+                wikiMaintainer: s.wikiMaintainer ?? undefined,
                 // issue #16：后台子代理任务（列表 / 取消）
                 // issue #45：本进程没有任务时，回落到 resume 载入的只读历史（running 已映射成 interrupted）。
                 tasks: {
@@ -566,6 +568,8 @@ export function createRepl(s: AppSession): ReplState {
             }
             repl.lastTurnMs = repl.turnStartedAt > 0 ? Date.now() - repl.turnStartedAt : 0;
             s.activeTurnFrom = null;
+            // issue #53：轮末按需起一次后台 wiki 维护（fire-and-forget，不阻塞主循环）。
+            void s.wikiMaintainer?.onTurnSettled({ aborted: outcome === "aborted", planning: agent.planning }).catch(() => {});
             if (mailbox) {
               try {
                 mailboxState.endTurn(mailbox.root, mailbox.sessionId, {

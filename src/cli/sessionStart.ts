@@ -24,6 +24,13 @@ import { recordModelContext, resolveAndApplyModelWindow } from "../env/modelWind
 import { writeBackContextLimit, writeBackOutputLimit } from "../env/modelCaps.ts";
 import { syncEnvPage } from "../env/wiki.ts";
 import { ensureScopeLayout } from "../memory/layout.ts";
+import {
+  WIKI_WORKER_LOCK_TIMEOUT_MS,
+  WIKI_WORKER_TOOLS,
+  WikiMaintainer,
+  wikiWorkerLockDir,
+} from "../memory/wikiMaintainer.ts";
+import { WikiLockBusyError } from "../memory/locks.ts";
 import { applyRestored } from "../session.ts";
 import * as mailboxState from "../mailbox/state.ts";
 import { formatIncomingFrame, formatNotice, formatNoticePreview } from "../mailbox/inbound.ts";
@@ -31,6 +38,53 @@ import { makeListPeersTool, makeSendMessageTool } from "../tools/mailbox.ts";
 import { lspServers } from "../lsp/index.ts";
 import { formatResumeWarning } from "../turnDiagnostics.ts";
 import { bootstrap } from "./bootstrap.ts";
+
+/**
+ * 后台 wiki 维护 worker 的生产实现（issue #53）：fast 档子代理 + 白名单 + 写锁。
+ *
+ * 锁忙（CaptureEngine 正持 journalDir/.write.lock）时 wiki_write 会调 onTimeout 并中止
+ * 子代理；这里把那次失败换成 WikiLockBusyError —— 维护器据此静默放弃本轮，下一轮再判。
+ */
+async function runWikiWorker(
+  agent: Agent,
+  cfg: Config,
+  prompt: string,
+  signal: AbortSignal,
+): Promise<string> {
+  const ctrl = new AbortController();
+  const onAbort = (): void => ctrl.abort();
+  if (signal.aborted) ctrl.abort();
+  else signal.addEventListener("abort", onAbort, { once: true });
+  let lockBusy = false;
+  try {
+    return await runSubagent(
+      agent,
+      prompt,
+      "fast",
+      { cfg, approve: async () => false, signal: ctrl.signal },
+      undefined,
+      undefined,
+      {
+        toolAllowlist: WIKI_WORKER_TOOLS,
+        approve: async () => false,
+        wikiWriteLock: {
+          dir: wikiWorkerLockDir(cfg),
+          timeoutMs: WIKI_WORKER_LOCK_TIMEOUT_MS,
+          onTimeout: () => {
+            lockBusy = true;
+            ctrl.abort();
+          },
+        },
+        failOnError: true,
+      },
+    );
+  } catch (e) {
+    if (lockBusy) throw new WikiLockBusyError(`记忆写锁被占用（${wikiWorkerLockDir(cfg)}）`);
+    throw e;
+  } finally {
+    signal.removeEventListener("abort", onAbort);
+  }
+}
 
 /**
  * 构造 Agent、后台任务、MCP、项目记忆与环境快照。
@@ -537,6 +591,26 @@ export async function startSession(s: BootstrapSession) {
   }
 
 
+
+  // issue #53：轮末后台 wiki 维护。只有交互会话构造 —— `-p` 与 ACP 不接 worker
+  // （issue 明确以交互模式为主，-p 继续只做 memory.flush）。
+  if (args.print === null) {
+    s.wikiMaintainer = new WikiMaintainer({
+      cfg,
+      memory,
+      launch: (job) => {
+        const r = s.backgroundTasks!.launch({
+          kind: "wiki",
+          prompt: job.label,
+          run: job.run,
+          ctx: { cfg, approve: async () => false },
+        });
+        return r.ok ? { ok: true, id: r.job.id } : { ok: false, error: r.error };
+      },
+      runWorker: (prompt, signal) => runWikiWorker(agent, cfg, prompt, signal),
+      notice: (msg) => ui.info(msg),
+    });
+  }
 
   const cleanupEphemeralResources = function cleanupEphemeralResources(): void {
     cleanupEphemeral({

@@ -661,7 +661,7 @@ Zed 的 External Agent（Custom Agent）配置，写进 Zed 的 `settings.json`�
 /rename <name> 设置本会话名字（跨会话寻址；撞名自动加后缀）
 /history   历史统计        /save      导出会话
 /sessions  历史会话        /resume    恢复会话（无参进入选择）
-/skills    技能列表与详情  /ingest    编译 raw → wiki
+/skills    技能列表与详情  /ingest    编译 raw → wiki（首次全量；之后交互会话轮末自动增量）
 /wiki-lint wiki 体检        /memory    记忆子命令族
 /remember  显式记忆         /exit      退出
 /last [n]  回看最近 n 次工具调用（默认 1；紧凑模式的信息找回入口）
