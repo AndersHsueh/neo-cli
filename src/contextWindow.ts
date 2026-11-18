@@ -1,13 +1,9 @@
 /** K01: base algorithms live only in core's built compat/v1; legacy-host DTO adaptation only. */
-import { resolveContextWindow as resolveCoreWindow, type WindowSource } from "@neo/core-compat/compat/v1";
+import { resolveContextWindow as resolveCoreWindow, type WindowSource, type ResolvedWindow as CoreResolvedWindow } from "@neo/core-compat/compat/v1";
 import type { ModelContextInfo } from "./env/types.ts";
 export { knownWindow, isContextOverflowError, parseContextLimitFromError } from "@neo/core-compat/compat/v1";
 export type { WindowSource } from "@neo/core-compat/compat/v1";
-export interface ResolvedWindow {
-  tokens: number;
-  source: WindowSource;
-  env?: ModelContextInfo;
-}
+export type ResolvedWindow = Omit<CoreResolvedWindow, "env"> & { env?: ModelContextInfo };
 /** Legacy snapshots also carry output-probe provenance; not a context-window fact source. */
 function windowSourceOf(source: ModelContextInfo["source"]): Exclude<WindowSource, "default"> {
   switch (source) {
