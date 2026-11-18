@@ -120,7 +120,7 @@ interface Harness {
   rulesCwd: string;
   rulesCalls: number;
   lspCalls: number;
-  lspImpl: (cfg: Config) => void;
+  lspImpl: (cfg: Config) => void | Promise<void>;
   previous: ReturnType<typeof slot>;
   deps: CwdSwitchDeps;
 }
@@ -237,7 +237,7 @@ function makeHarness(opts: { agentsA?: string; mailbox?: boolean } = {}): Harnes
     },
     restartLsp: (cfg) => {
       h.lspCalls += 1;
-      h.lspImpl(cfg);
+      return h.lspImpl(cfg);
     },
   };
   return h;
@@ -377,12 +377,12 @@ describe("PromptManager 指纹含 cwd", () => {
 });
 
 describe("changeSessionCwd", () => {
-  test("相对路径换根：工具侧状态、meta persist、项目记忆、历史保留；不 process.chdir", () => {
+  test("相对路径换根：工具侧状态、meta persist、项目记忆、历史保留；不 process.chdir", async () => {
     const h = makeHarness();
     writeFileSync(join(h.b, "AGENTS.md"), "RULES-FROM-B-MARKER\n", "utf8");
     const prevProc = process.cwd();
     const chdir = spyOn(process, "chdir");
-    const r = changeSessionCwd("../proj-b", h.deps);
+    const r = await changeSessionCwd("../proj-b", h.deps);
     expect(chdir).not.toHaveBeenCalled();
     chdir.mockRestore();
     expect(process.cwd()).toBe(prevProc);
@@ -407,12 +407,12 @@ describe("changeSessionCwd", () => {
     expect(h.previous.get()).toBe(h.a);
   });
 
-  test("同根（含经软链 realpath 相同）成功提示不刷新", () => {
+  test("同根（含经软链 realpath 相同）成功提示不刷新", async () => {
     const h = makeHarness();
     const link = join(h.a, "..", "alias-a");
     symlinkSync(h.a, link);
     const before = snapshotState(h);
-    const r = changeSessionCwd(link, h.deps);
+    const r = await changeSessionCwd(link, h.deps);
     expect(r.ok).toBe(true);
     if (r.ok) {
       expect(r.unchanged).toBe(true);
@@ -431,23 +431,23 @@ describe("changeSessionCwd", () => {
     expect(after.previousSets).toBe(before.previousSets);
   });
 
-  test("目标不存在：明确失败，侧状态全部不变", () => {
+  test("目标不存在：明确失败，侧状态全部不变", async () => {
     const h = makeHarness();
     const before = snapshotState(h);
-    const r = changeSessionCwd("does-not-exist", h.deps);
+    const r = await changeSessionCwd("does-not-exist", h.deps);
     expect(r.ok).toBe(false);
     if (!r.ok) expect(r.error.length).toBeGreaterThan(0);
     expect(snapshotState(h)).toEqual(before);
   });
 
-  test("persist 失败则 cwd 与所有侧状态仍停在旧根（含磁盘 meta）", () => {
+  test("persist 失败则 cwd 与所有侧状态仍停在旧根（含磁盘 meta）", async () => {
     const h = makeHarness();
     writeFileSync(join(h.b, "AGENTS.md"), "RULES-FROM-B-MARKER\n", "utf8");
     h.persistImpl = () => {
       throw new Error("disk full");
     };
     const before = snapshotState(h);
-    const r = changeSessionCwd(h.b, h.deps);
+    const r = await changeSessionCwd(h.b, h.deps);
     expect(r.ok).toBe(false);
     const after = snapshotState(h);
     expect(after.cfgCwd).toBe(before.cfgCwd);
@@ -463,7 +463,7 @@ describe("changeSessionCwd", () => {
     expect(sys).not.toContain("RULES-FROM-B-MARKER");
   });
 
-  test("必做改挂失败（FileIndex.setCwd 抛错）则整次失败且侧状态全部不变，含已 persist 的 meta 回退", () => {
+  test("必做改挂失败（FileIndex.setCwd 抛错）则整次失败且侧状态全部不变，含已 persist 的 meta 回退", async () => {
     const h = makeHarness();
     writeFileSync(join(h.b, "AGENTS.md"), "RULES-FROM-B-MARKER\n", "utf8");
     h.deps.fileIndex = {
@@ -472,7 +472,7 @@ describe("changeSessionCwd", () => {
       },
     };
     const before = snapshotState(h);
-    const r = changeSessionCwd(h.b, h.deps);
+    const r = await changeSessionCwd(h.b, h.deps);
     expect(r.ok).toBe(false);
     expect(h.cfg.cwd).toBe(h.a);
     expect(h.meta.cwd).toBe(h.a);
@@ -486,21 +486,21 @@ describe("changeSessionCwd", () => {
     expect(sys).not.toContain("RULES-FROM-B-MARKER");
   });
 
-  test("新根没有 AGENTS.md/NEO.md/.neo.md 则项目记忆段清空，不能沿用旧文", () => {
+  test("新根没有 AGENTS.md/NEO.md/.neo.md 则项目记忆段清空，不能沿用旧文", async () => {
     const h = makeHarness();
     expect(existsSync(join(h.b, "AGENTS.md"))).toBe(false);
-    const r = changeSessionCwd(h.b, h.deps);
+    const r = await changeSessionCwd(h.b, h.deps);
     expect(r.ok).toBe(true);
     const sys = String(h.messages[0]?.content ?? "");
     expect(sys).not.toContain("RULES-FROM-A-MARKER");
     expect(sys).not.toContain("项目记忆（来自");
   });
 
-  test("更新 meta.cwd 后能按同一 id 读到新目录；不改 session id、不搬文件", () => {
+  test("更新 meta.cwd 后能按同一 id 读到新目录；不改 session id、不搬文件", async () => {
     const h = makeHarness();
     const oldPath = h.meta.path;
     const id = h.meta.id;
-    const r = changeSessionCwd(h.b, h.deps);
+    const r = await changeSessionCwd(h.b, h.deps);
     expect(r.ok).toBe(true);
     const loaded = loadSession(id);
     expect(loaded).not.toBeNull();
@@ -510,25 +510,25 @@ describe("changeSessionCwd", () => {
     expect(existsSync(oldPath)).toBe(true);
   });
 
-  test("/cd - 回到上一根；无上一根时拒绝；失败的 /cd 不写入上一根槽", () => {
+  test("/cd - 回到上一根；无上一根时拒绝；失败的 /cd 不写入上一根槽", async () => {
     const h = makeHarness();
     writeFileSync(join(h.b, "AGENTS.md"), "RULES-FROM-B-MARKER\n", "utf8");
-    const noPrev = changeSessionCwd("-", h.deps);
+    const noPrev = await changeSessionCwd("-", h.deps);
     expect(noPrev.ok).toBe(false);
     if (!noPrev.ok) expect(noPrev.error.length).toBeGreaterThan(0);
     expect(h.cfg.cwd).toBe(h.a);
     expect(h.previous.get()).toBe(null);
 
-    expect(changeSessionCwd(h.b, h.deps).ok).toBe(true);
+    expect((await changeSessionCwd(h.b, h.deps)).ok).toBe(true);
     expect(h.cfg.cwd).toBe(h.b);
     expect(h.previous.get()).toBe(h.a);
 
-    const failed = changeSessionCwd("missing-dir", h.deps);
+    const failed = await changeSessionCwd("missing-dir", h.deps);
     expect(failed.ok).toBe(false);
     expect(h.previous.get()).toBe(h.a);
     expect(h.cfg.cwd).toBe(h.b);
 
-    const back = changeSessionCwd("-", h.deps);
+    const back = await changeSessionCwd("-", h.deps);
     expect(back.ok).toBe(true);
     if (back.ok) {
       expect(back.unchanged).toBe(false);
@@ -538,32 +538,47 @@ describe("changeSessionCwd", () => {
     expect(h.previous.get()).toBe(h.b);
   });
 
-  test("飞行中子代理 / wiki worker / 本轮 turn 拒绝换根，状态不变", () => {
+  test("飞行中子代理 / wiki worker / 本轮 turn 拒绝换根，状态不变", async () => {
     const h = makeHarness();
     const before = snapshotState(h);
     h.deps.busyReason = "后台子代理任务正在运行，不能切换工作目录";
-    const r = changeSessionCwd(h.b, h.deps);
+    const r = await changeSessionCwd(h.b, h.deps);
     expect(r.ok).toBe(false);
     if (!r.ok) expect(r.error).toContain("后台子代理");
     expect(snapshotState(h)).toEqual(before);
   });
 
-  test("LSP 重启失败只警告、不回滚已成功的换根", () => {
+  test("LSP 重启失败只警告、不回滚已成功的换根", async () => {
     const h = makeHarness();
     h.lspImpl = () => {
       throw new Error("lsp down");
     };
-    const r = changeSessionCwd(h.b, h.deps);
+    const r = await changeSessionCwd(h.b, h.deps);
     expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.warnings?.some((w) => w.includes("LSP 重启失败"))).toBe(true);
     expect(h.cfg.cwd).toBe(h.b);
     expect(loadSession(h.meta.id)?.meta.cwd).toBe(h.b);
     expect(h.lspCalls).toBe(1);
   });
 
-  test("信箱 profile.cwd 随成功换根更新", () => {
+  test("LSP 重启返回 rejected Promise 时，警告在返回值里且不回滚", async () => {
+    const h = makeHarness();
+    h.lspImpl = () => Promise.reject(new Error("lsp async down"));
+    const r = await changeSessionCwd(h.b, h.deps);
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.warnings?.some((w) => w.includes("LSP 重启失败") && w.includes("lsp async down"))).toBe(true);
+    expect(h.cfg.cwd).toBe(h.b);
+    expect(h.meta.cwd).toBe(h.b);
+    expect(loadSession(h.meta.id)?.meta.cwd).toBe(h.b);
+    expect(h.lspCalls).toBe(1);
+  });
+
+  test("信箱 profile.cwd 随成功换根更新", async () => {
     const h = makeHarness({ mailbox: true });
     expect(h.mailbox?.profile().cwd).toBe(h.a);
-    const r = changeSessionCwd(h.b, h.deps);
+    const r = await changeSessionCwd(h.b, h.deps);
     expect(r.ok).toBe(true);
     expect(h.mailbox?.profile().cwd).toBe(h.b);
   });
@@ -626,6 +641,19 @@ describe("dispatchCommand 接线", () => {
     expect(h.cfg.cwd).toBe(h.b);
     expect(loadSession(h.meta.id)?.meta.cwd).toBe(h.b);
     expect(cap.out()).not.toMatch(/未知命令/);
+  });
+
+  test("/cd 异步 LSP 失败时命令处理把警告打给用户，且已换根", async () => {
+    const h = makeHarness();
+    h.lspImpl = () => Promise.reject(new Error("lsp async down"));
+    const cap = captureConsole({ stdoutIsTTY: false, stdinIsTTY: false });
+    await dispatchCommand(`/cd ${h.b}`, makeCmdCtx(h, cap.ui));
+    expect(h.cfg.cwd).toBe(h.b);
+    expect(loadSession(h.meta.id)?.meta.cwd).toBe(h.b);
+    const out = cap.out();
+    expect(out).toMatch(/LSP 重启失败/);
+    expect(out).toContain("lsp async down");
+    expect(out).not.toMatch(/未知命令/);
   });
 });
 

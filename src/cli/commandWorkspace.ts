@@ -242,7 +242,7 @@ export async function handleWorkspaceCommands(cmd: string, arg: string, rest: st
         wikiRunning: ctx.wikiMaintainer?.running === true,
         backgroundTasks: (ctx.tasks?.list() ?? []).map((t) => ({ status: t.status, ...(t.kind ? { kind: t.kind } : {}) })),
       });
-      const result = changeSessionCwd(arg, {
+      const result = await changeSessionCwd(arg, {
         cfg,
         meta,
         messages: agent.messages,

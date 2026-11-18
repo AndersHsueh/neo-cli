@@ -158,7 +158,7 @@ function currentProjectMemory(pm: PromptManager): { path: string; text: string }
   return { path: mem.path, text: mem.text };
 }
 
-export function changeSessionCwd(arg: string, deps: CwdSwitchDeps): CwdSwitchResult {
+export async function changeSessionCwd(arg: string, deps: CwdSwitchDeps): Promise<CwdSwitchResult> {
   const { cfg, meta, messages } = deps;
 
   if (deps.busyReason) return { ok: false, error: deps.busyReason };
@@ -263,16 +263,13 @@ export function changeSessionCwd(arg: string, deps: CwdSwitchDeps): CwdSwitchRes
 
   deps.previousCwd.set(oldCwd);
 
+  // 语言服务器重启失败只警告，不回滚已成功的换根。
+  // 必须在返回前 await，否则 rejected Promise 进不了 result.warnings，
+  // 命令处理里的 ui.warn 也看不到。
   const warnings: string[] = [];
   if (deps.restartLsp) {
     try {
-      const r = deps.restartLsp(cfg);
-      if (r && typeof (r as Promise<void>).then === "function") {
-        void (r as Promise<void>).catch((e: unknown) => {
-          // 语言服务器重启失败只警告，不回滚已成功的换根。
-          warnings.push(`LSP 重启失败（已忽略）：${(e as Error).message}`);
-        });
-      }
+      await deps.restartLsp(cfg);
     } catch (e) {
       warnings.push(`LSP 重启失败（已忽略）：${(e as Error).message}`);
     }
