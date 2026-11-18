@@ -37,6 +37,7 @@ export const writeFileTool: ToolImpl = {
     // 没执行必须走 notExecuted（异常通道），否则 dispatch 会误跑 PostToolUse。
     const denied = await gateTool(ctx, "write_file", args, detail);
     if (denied !== null) notExecuted(denied);
+    if (ctx.signal?.aborted) notExecuted("本轮已取消，未执行（write_file）。");
 
     // 审批通过、写盘之前留检查点（P0-4）。失败不阻塞写入。
     try {
@@ -100,6 +101,7 @@ export const editFile: ToolImpl = {
       `修改 ${path}：${count > 1 ? `替换全部 ${count} 处` : "替换 1 处"}`,
     );
     if (denied !== null) notExecuted(denied);
+    if (ctx.signal?.aborted) notExecuted("本轮已取消，未执行（edit_file）。");
 
     // 审批通过、写盘之前留检查点（P0-4）。失败不阻塞写入。
     try {

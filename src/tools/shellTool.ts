@@ -62,6 +62,7 @@ export const shell: ToolImpl = {
       workdir === ctx.cfg.cwd ? `执行: ${command}` : `执行（cwd=${workdir}）: ${command}`,
     );
     if (denied !== null) notExecuted(denied);
+    if (ctx.signal?.aborted) notExecuted("本轮已取消，未执行（shell）。");
 
     // v0.4.0 平台适配层：shell 由 resolveShell 探测（配置/环境变量/$SHELL/平台默认），
     // 登录 shell 会注入 PATH 保真前缀，避免「neo 能跑的 bun 在工具里 not found」。

@@ -218,6 +218,9 @@ export async function runAcpServer(): Promise<number> {
   // 初始化闸门在 handler 之前就拒绝后续请求，所以排队必须发生在字节流上。
   // dispose 在闸门之后定义，EOF 回调通过这个可变槽转过去。
   let invokeDispose: () => void = () => undefined;
+  // session 在下面才声明：cancel 闩通过这个槽转到 session.cancel()，
+  // 必须在 SDK 异步处理通知之前同步落下。
+  let invokeSessionCancel: (sessionId: string) => void = () => undefined;
   const inbound = createInboundGate(
     new ReadableStream<Uint8Array>({
       start(controller) {
@@ -228,7 +231,10 @@ export async function runAcpServer(): Promise<number> {
         process.stdin.on("error", (err) => controller.error(err));
       },
     }),
-    { onRawEnd: () => invokeDispose() },
+    {
+      onRawEnd: () => invokeDispose(),
+      onSessionCancel: (sessionId) => invokeSessionCancel(sessionId),
+    },
   );
 
   // 只有看到「带 id 的 JSON-RPC 响应」写出后才放行下一条入站请求。
@@ -266,6 +272,14 @@ export async function runAcpServer(): Promise<number> {
 
   /** 单进程只服务一个 session（PRD §2.6）。 */
   let session: AcpSession | null = null;
+  invokeSessionCancel = (sessionId) => {
+    if (!session || session.sessionId !== sessionId) {
+      log(`session/cancel（入站闩）指向未知 session ${sessionId}（已忽略）`);
+      return;
+    }
+    log(`session/cancel（入站闩）：${sessionId}`);
+    session.cancel();
+  };
   /** 同一 session 已有 prompt 在跑时，新的 session/prompt 回 -32603（PRD §2.8）。 */
   let prompting = false;
   /** 连接句柄：`connect()` 之后才有；通知与权限请求都经它发给客户端。 */

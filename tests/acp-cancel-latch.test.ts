@@ -16,6 +16,7 @@ import { join } from "node:path";
 import type { Config } from "../src/config.ts";
 import { writeFileTool } from "../src/tools/writeFile.ts";
 import { isNotExecuted, type ToolCtx } from "../src/tools/types.ts";
+import { createInboundGate, sessionCancelId } from "../src/acp/inbound.ts";
 
 const SANDBOX = mkdtempSync(join(tmpdir(), "neo-acp-cancel-latch-"));
 
@@ -47,5 +48,40 @@ describe("cancel 闩：迟到的 allow 不得写盘", () => {
     expect(failed).not.toBeNull();
     expect(isNotExecuted(failed)).toBe(true);
     expect(existsSync(target)).toBe(false);
+  });
+});
+
+describe("入站闩：cancel 必须在同块 allow 入队前同步落下", () => {
+  test("L2 同一字节块里识别 session/cancel，并在后续响应喂进 SDK 前调用钩子", async () => {
+    expect(sessionCancelId('{"jsonrpc":"2.0","method":"session/cancel","params":{"sessionId":"s1"}}')).toBe("s1");
+    expect(sessionCancelId('{"jsonrpc":"2.0","id":4,"result":{"outcome":"selected"}}')).toBeNull();
+
+    const events: string[] = [];
+    const cancel = JSON.stringify({ jsonrpc: "2.0", method: "session/cancel", params: { sessionId: "sess-1" } }) + "\n";
+    const allow = JSON.stringify({ jsonrpc: "2.0", id: 9, result: { outcome: { outcome: "selected", optionId: "allow_once" } } }) + "\n";
+    const { readable } = createInboundGate(
+      new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(new TextEncoder().encode(cancel + allow));
+          controller.close();
+        },
+      }),
+      {
+        onSessionCancel: (id) => {
+          events.push(`hook:${id}`);
+        },
+      },
+    );
+
+    const decoder = new TextDecoder();
+    let out = "";
+    for await (const chunk of readable as unknown as AsyncIterable<Uint8Array>) {
+      out += decoder.decode(chunk, { stream: true });
+      events.push(`out:${out.split("\n").filter(Boolean).length}`);
+    }
+
+    expect(events[0]).toBe("hook:sess-1");
+    expect(out).toContain("session/cancel");
+    expect(out).toContain("allow_once");
   });
 });

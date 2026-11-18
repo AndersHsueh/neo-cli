@@ -648,6 +648,24 @@ describe("F5 usage_update", () => {
     const llm = fakeLlm([sseTextFrames("你好，这是一轮正常回复。")]);
     try {
       const dir = project(llm.baseUrl);
+      // 用非默认窗口交叉验证 size 走 contextWindow，不是夹具里写死的 100000。
+      patchSettings(dir, {
+        providers: [
+          {
+            provider_name: "fake",
+            provider_type: "openai",
+            base_url: llm.baseUrl,
+            api_key: "test",
+            default_model_name: "fake-model",
+            deep_reasoning_model_name: "fake-model",
+            balanced_model_name: "fake-model",
+            fast_model_name: "fake-model",
+            max_tokens: 64,
+            temperature: 0,
+            context_window: 50_000,
+          },
+        ],
+      });
       const r = await runClient(dir, { promptBlocks: [{ type: "text", text: "打个招呼" }] });
       try {
         const promptDone = await r.waitFor((m) => m.id === 3, 12_000);
@@ -660,9 +678,9 @@ describe("F5 usage_update", () => {
         const size = body?.["size"];
         expect(typeof used).toBe("number");
         expect(typeof size).toBe("number");
-        expect(size).toBe(100_000);
+        expect(size).toBe(50_000);
         expect(used as number).toBeGreaterThan(100);
-        expect(used as number).toBeLessThanOrEqual(100_000);
+        expect(used as number).toBeLessThanOrEqual(50_000);
       } finally {
         await r.closeStdin();
         r.kill();
@@ -757,6 +775,7 @@ describe("F6–F8 session/load", () => {
       const loaded = missing.messages.find((m) => m.id === 2);
       expect(loaded).not.toBeNull();
       expect(loaded?.error).toBeDefined();
+      expect(errorCode(loaded)).toBe(-32602);
       expect(loaded?.result).toBeUndefined();
     } finally {
       await missing.closeStdin();

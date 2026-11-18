@@ -30,6 +30,29 @@ function isRequestLine(line: string): boolean {
   }
 }
 
+/**
+ * 识别 `session/cancel` 通知（有 method 无 id）。解析失败或不是该通知 → null。
+ *
+ * 必须在喂给 SDK 之前同步识别：SDK 对 JSON-RPC *响应*（迟到的 allow_once）
+ * 是同步 resolve，对 cancel 通知要走过一串 async handleMessage。#80 新增的
+ * `session/load` / `session/set_mode` 让这条链更长，写盘会落在闩落下之前。
+ */
+export function sessionCancelId(line: string): string | null {
+  try {
+    const parsed = JSON.parse(line) as unknown;
+    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return null;
+    const record = parsed as Record<string, unknown>;
+    if (record["method"] !== "session/cancel") return null;
+    if ("id" in record) return null;
+    const params = record["params"];
+    if (typeof params !== "object" || params === null || Array.isArray(params)) return null;
+    const sessionId = (params as { sessionId?: unknown }).sessionId;
+    return typeof sessionId === "string" && sessionId !== "" ? sessionId : null;
+  } catch {
+    return null;
+  }
+}
+
 export interface InboundGate {
   readable: ReadableStream<Uint8Array>;
   /** 某条请求的响应已经写出时由 stdout 监视器调用。 */
@@ -46,7 +69,15 @@ export interface InboundGate {
  */
 export function createInboundGate(
   stdin: ReadableStream<Uint8Array>,
-  hooks?: { onRawEnd?: () => void },
+  hooks?: {
+    onRawEnd?: () => void;
+    /**
+     * 从 stdin 拆出 `session/cancel` 通知的瞬间同步调用（在该行以及其后的
+     * 报文喂进 SDK 之前）。用来立刻落下「本轮已取消」闩，挡住同一块里紧随的
+     * allow_once 把写工具放行。
+     */
+    onSessionCancel?: (sessionId: string) => void;
+  },
 ): InboundGate {
   const decoder = new TextDecoder();
   const encoder = new TextEncoder();
@@ -91,8 +122,18 @@ export function createInboundGate(
         for (;;) {
           const lf = buffer.indexOf("\n");
           if (lf === -1) break;
-          pending.push(buffer.slice(0, lf + 1));
+          const line = buffer.slice(0, lf + 1);
+          pending.push(line);
           buffer = buffer.slice(lf + 1);
+          // 先闩再 pump：同一块里随后的 allow 响应入队时，取消已经生效。
+          const cancelId = sessionCancelId(line.trim());
+          if (cancelId !== null) {
+            try {
+              hooks?.onSessionCancel?.(cancelId);
+            } catch {
+              /* 闩失败不能打断入站泵 */
+            }
+          }
           pump();
         }
         if (buffer.length > MAX_LINE_BYTES) {

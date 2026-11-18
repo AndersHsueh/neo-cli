@@ -132,10 +132,14 @@ export async function gateTool(
     const ok = await ctx.approve(tool, detail);
     if (!ok) return `用户拒绝了该操作，未执行（${tool}）。`;
   }
+  // 写盘执行前再检一次（issue #80）：审批 RPC 返回 allow 之后、真正副作用之前，
+  // 本轮可能已经被 session/cancel 闩上。只在 Promise 返回后检一次不够。
+  if (ctx.signal?.aborted) return `本轮已取消，未执行（${tool}）。`;
   if (ctx.preToolUse) {
     const blocked = await ctx.preToolUse(tool, args);
     if (blocked !== null) return `已被 PreToolUse hook 阻断：${blocked}`;
   }
+  if (ctx.signal?.aborted) return `本轮已取消，未执行（${tool}）。`;
   return null;
 }
 
