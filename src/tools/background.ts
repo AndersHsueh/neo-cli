@@ -63,6 +63,8 @@ export interface BackgroundJob {
   promptTier?: string;
   /** 发起时的工具上下文（审批/检查点委托；signal 会被替换成任务自己的）。 */
   ctx: ToolCtx;
+  /** 任务种类（issue #53）；缺省视为 "task"。 */
+  kind: "task" | "wiki";
 }
 
 /** `task` 工具发起后台任务时带过来的现场。 */
@@ -72,6 +74,16 @@ export interface BackgroundLaunch {
   promptTier?: string;
   /** 发起时的工具上下文（审批委托主 console；后台跑期间仍然有效）。 */
   ctx: ToolCtx;
+  /**
+   * 任务种类（issue #53）。缺省 "task"（用户可见的后台子代理）。
+   * "wiki" = 轮末自动 wiki 维护：不占并发名额、不注入主会话、不落盘。
+   */
+  kind?: "task" | "wiki";
+  /**
+   * 自带执行函数（issue #53）。传了就代替 opts.run ——
+   * wiki 维护不是子代理任务，不能走「runSubagent + job.ctx」那条通用路径。
+   */
+  run?: (signal: AbortSignal) => Promise<string>;
 }
 
 /** 交给 `/tasks` 展示的只读视图。 */
@@ -82,6 +94,8 @@ export interface BackgroundView {
   elapsedMs: number;
   result: string | null;
   error: string | null;
+  /** 任务种类（issue #53）："wiki" 的行在 /tasks 里带 [wiki] 标签。 */
+  kind?: "task" | "wiki";
 }
 
 export interface BackgroundOptions {
@@ -111,6 +125,14 @@ export class BackgroundTasks {
     return this.jobs.filter((j) => j.status === "running").length;
   }
 
+  /**
+   * 占并发名额的运行中任务数（issue #53）：wiki 维护不算用户的后台子代理，
+   * 不能挤掉用户自己发起的任务。runningCount 仍数全部运行中任务（/tasks 展示用）。
+   */
+  private get taskRunningCount(): number {
+    return this.jobs.filter((j) => j.status === "running" && j.kind !== "wiki").length;
+  }
+
   get size(): number {
     return this.jobs.length;
   }
@@ -124,7 +146,8 @@ export class BackgroundTasks {
    * 启动一个后台任务。超过并发上限返回 error（不排队 —— 排队会让「后台」变成隐藏积压）。
    */
   launch(job: BackgroundLaunch): { ok: true; job: BackgroundJob } | { ok: false; error: string } {
-    if (this.runningCount >= this.max) {
+    const kind = job.kind ?? "task";
+    if (kind !== "wiki" && this.taskRunningCount >= this.max) {
       return {
         ok: false,
         error: `后台子代理已达并发上限 ${this.max}（用 /tasks 查看，/tasks cancel 取消）`,
@@ -144,12 +167,13 @@ export class BackgroundTasks {
       tier: job.tier,
       promptTier: job.promptTier,
       ctx: job.ctx,
+      kind,
     };
     this.jobs.push(record);
     this.controllers.set(record.id, ctrl);
     // 不 await：这就是「后台」的全部含义。失败收敛到任务状态，不抛给主循环。
-    void this.opts
-      .run(record, ctrl.signal)
+    const run = job.run ?? ((signal: AbortSignal) => this.opts.run(record, signal));
+    void run(ctrl.signal)
       .then((text) => {
         if (record.status === "cancelled") return;
         record.status = "done";
@@ -178,6 +202,7 @@ export class BackgroundTasks {
         elapsedMs: (j.finishedAt ?? this.now()) - j.startedAt,
         result: j.result,
         error: j.error,
+        kind: j.kind,
       }));
   }
 
@@ -190,6 +215,8 @@ export class BackgroundTasks {
     for (const j of this.jobs) {
       if (j.reported || j.status === "running") continue;
       j.reported = true;
+      // issue #53：wiki 维护不是用户发起的任务，结果不进主会话（只打一行 dim 回执）。
+      if (j.kind === "wiki") continue;
       if (j.status === "done") {
         out.push(
           `<后台子代理结果 id="${j.id}" status="done"\n${j.result ?? ""}\n</后台子代理结果>`,
@@ -248,7 +275,8 @@ function clipResult(text: string | null): string | null {
  * 显式逐字段拷贝而不是 `{...job}`：后者会把 `ctx` 一起带出去，等于把活引用写进 JSON。
  */
 export function serializeJobs(jobs: readonly BackgroundJob[]): PersistedBackgroundJob[] {
-  const sorted = [...jobs].sort((a, b) => a.startedAt - b.startedAt);
+  // issue #53：wiki 维护任务不落盘（重启后没有意义，也不该出现在 /tasks 历史里）。
+  const sorted = [...jobs].filter((j) => j.kind !== "wiki").sort((a, b) => a.startedAt - b.startedAt);
   const kept = sorted.slice(-MAX_PERSISTED_JOBS);
   return kept.map((j) => ({
     id: j.id,

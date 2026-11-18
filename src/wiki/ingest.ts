@@ -215,3 +215,50 @@ export function buildIngestPrompt(
 export function finishIngest(layout: WikiLayout): void {
   writeIngestState(layout, listRawFiles(layout));
 }
+
+/* ------------------------------------------------------------------ */
+/* 自动维护的 raw 增量判定（issue #53）                                   */
+/* ------------------------------------------------------------------ */
+
+/**
+ * raw/ 相对上次 ingest 快照的变化。
+ *
+ * 自动路径只做增量（Leo 拍板 5）：没有快照、或快照过期超过 1 周、或增量超过
+ * 单次上限时都不自动跑，只提示用户手动 `/ingest`（首次/全量必须手动）。
+ */
+export type RawDelta =
+  | { kind: "none" }
+  | { kind: "incremental"; added: string[]; removed: string[] }
+  | { kind: "needsFull"; pending: number; reason: string };
+
+/** 自动增量编译的单次文件上限（超过只提示 /ingest）。 */
+export const AUTO_INGEST_MAX_FILES = 10;
+
+/** 快照过期阈值：超过 1 周不做自动增量（内容漂移风险交给手动全量）。 */
+const AUTO_INGEST_MAX_AGE_MS = WEEK_MS;
+
+export function rawDelta(layout: WikiLayout, now: number = Date.now()): RawDelta {
+  const all = listRawFiles(layout);
+  const state = readIngestState(layout);
+  if (!state) {
+    if (all.length === 0) return { kind: "none" };
+    return {
+      kind: "needsFull",
+      pending: all.length,
+      reason: `无 ingest 快照（raw 有 ${all.length} 份待编译）`,
+    };
+  }
+  const last = new Set(state.lastRawFiles);
+  const added = all.filter((f) => !last.has(f));
+  const removed = state.lastRawFiles.filter((f) => !all.includes(f));
+  if (added.length === 0 && removed.length === 0) return { kind: "none" };
+  const at = Date.parse(state.lastRunAt);
+  if (Number.isNaN(at) || now - at > AUTO_INGEST_MAX_AGE_MS) {
+    return {
+      kind: "needsFull",
+      pending: all.length,
+      reason: `上次 ingest 快照超过 1 周（${state.lastRunAt.slice(0, 10)}）`,
+    };
+  }
+  return { kind: "incremental", added, removed };
+}

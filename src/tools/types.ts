@@ -85,6 +85,19 @@ export interface ToolCtx {
   /** 强制关闭当前提问模态（宿主 abort 时用）。 */
   cancelAskUser?: () => void;
   /**
+   * 逐次工具白名单（issue #53）。存在时 dispatch 只放行名单内的工具，
+   * 名单外一律回「未知工具: <name>」且不执行。不传 = 不做 dispatch 层收窄（旧行为）。
+   *
+   * 注意：这是**职责收窄**，不是安全边界 —— 它挡的是「子代理顺手用了不该用的工具」。
+   */
+  toolAllowlist?: readonly string[];
+  /**
+   * wiki_write 的跨进程写锁（issue #53）。只有后台 wiki 维护 worker 传：
+   * 每次 wiki_write 都 withLock(dir) 包住写回，超时调 onTimeout 并抛 ToolError。
+   * 不传 = 主会话路径，行为完全不变。
+   */
+  wikiWriteLock?: { dir: string; timeoutMs: number; onTimeout?: () => void };
+  /**
    * 生命周期 hooks（issue #3）：PreToolUse 检查。
    *
    * 返回 null = 放行；返回字符串 = 阻断，字符串是回给模型的原因。

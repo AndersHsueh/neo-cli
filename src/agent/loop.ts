@@ -337,15 +337,20 @@ export class Agent {
    */
   toolSpecsFor(): ToolSpec[] {
     const all = toolSpecs(this.opt.cfg);
+    // 逐次白名单（issue #53）：最后一道过滤，名单外的工具连 schema 都不给。
+    const narrow = (specs: ToolSpec[]): ToolSpec[] => {
+      const allow = this.opt.toolAllowlist;
+      return allow ? specs.filter((s) => allow.includes(s.function.name)) : specs;
+    };
     // 规划态（issue #14）：只给只读工具 + 提交/退出方案两个控制工具。
     // 写盘/执行类工具从清单里摘掉，模型不会「先试着调一下再被拒」。
-    if (this.planning) return filterPlanTools(all);
+    if (this.planning) return narrow(filterPlanTools(all));
     // 非规划态不把规划控制工具交给模型：平时调不通，留在清单里只会诱使误调。
     // 主代理仍拿其余全量工具（含运行时注册的 task/wiki/remember 等）。
     // v0.2.0 曾把子代理排除表误用于主代理，导致那些工具从未出现。
     const withoutPlan = all.filter((s) => !PLAN_CONTROL_TOOLS.includes(s.function.name));
-    if (!this.opt.isSubagent) return withoutPlan;
-    return withoutPlan.filter((s) => !TOOL_NAMES_EXCLUDED_FOR_SUBAGENT.includes(s.function.name));
+    if (!this.opt.isSubagent) return narrow(withoutPlan);
+    return narrow(withoutPlan.filter((s) => !TOOL_NAMES_EXCLUDED_FOR_SUBAGENT.includes(s.function.name)));
   }
 
   cancel(): void {

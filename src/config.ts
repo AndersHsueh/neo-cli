@@ -788,6 +788,7 @@ function resolveMemoryConfig(raw: Raw | undefined): MemoryConfig {
     autoRecall,
     autoCapture,
     quiet: bool(r["quiet"], false),
+    autoMaintain: bool(r["auto_maintain"], true),
   };
 }
 

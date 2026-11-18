@@ -236,6 +236,16 @@ export interface AgentOptions {
    */
   readGoal?: () => string | null;
   /**
+   * 逐次工具白名单（issue #53）：有值时 toolSpecsFor 只保留名单内的工具，
+   * dispatch 层也会拒绝名单外的调用。不传 = 旧行为（全量减排除表）。
+   */
+  toolAllowlist?: readonly string[];
+  /**
+   * wiki_write 的跨进程写锁（issue #53）：只有后台 wiki 维护 worker 传，
+   * 由 makeCtx 透传进 ToolCtx。不传 = 主会话路径行为不变。
+   */
+  wikiWriteLock?: { dir: string; timeoutMs: number; onTimeout?: () => void };
+  /**
    * 生命周期 hooks（issue #3）。会话启动时由组合根从 settings.hooks 解析一次。
    *
    * 不传 = 无 hooks（子代理默认继承主代理的配置，见 task.ts）。

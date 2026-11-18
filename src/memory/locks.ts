@@ -97,3 +97,16 @@ export async function withLock<T>(
     await new Promise((r) => setTimeout(r, retryMs));
   }
 }
+
+/**
+ * 后台 wiki 维护（issue #53）放弃本轮的唯一信号。
+ *
+ * 与 MemoryError 分开：锁忙不是「失败」，是「这一轮不做，下一轮再判」——
+ * 调用方据此静默放弃（不 notice、不写失败审计、不更新 ingest 快照）。
+ */
+export class WikiLockBusyError extends Error {
+  override name = "WikiLockBusyError";
+  constructor(message = "wiki 写锁被占用") {
+    super(message);
+  }
+}

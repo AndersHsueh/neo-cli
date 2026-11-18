@@ -16,6 +16,8 @@ import { resolveUserWikiLayout, resolveWikiLayout } from "../wiki/paths.ts";
 import { writeBack, WikiWriteError, type LogType, LOG_TYPES, formatLinkIssues } from "../wiki/write.ts";
 import { searchWiki, formatSearchResults, wikiIsEmpty } from "../wiki/search.ts";
 import { ensureScopeLayout } from "../memory/layout.ts";
+import { withLock } from "../memory/locks.ts";
+import { MemoryError } from "../memory/types.ts";
 import { ToolError, type ToolImpl } from "./types.ts";
 import type { Config } from "../config.ts";
 
@@ -207,7 +209,7 @@ export const wikiWriteTool: ToolImpl = {
     // 另一层未创建 → null → 按「两层都无」处理。
     const otherLayout =
       scope === "user" ? resolveWikiLayout(ctx.cfg.cwd) : optionalUserLayout(ctx.cfg);
-    try {
+    const write = (): string => {
       const r = writeBack(layout, {
         action,
         page: String(args["page"] ?? ""),
@@ -225,10 +227,28 @@ export const wikiWriteTool: ToolImpl = {
         parts.push(formatLinkIssues(r.linkIssues));
       }
       return parts.join("；\n");
-    } catch (e) {
-      if (e instanceof WikiWriteError) throw new ToolError(e.message);
-      throw e;
+    };
+    // issue #53：后台 wiki 维护 worker 的写回要挡住跨进程冲突（捕获在 LLM 提炼期间
+    // 会持同一把锁最长约 60s）。主会话路径不传 wikiWriteLock，行为完全不变。
+    const lock = ctx.wikiWriteLock;
+    if (!lock) {
+      try {
+        return write();
+      } catch (e) {
+        if (e instanceof WikiWriteError) throw new ToolError(e.message);
+        throw e;
+      }
     }
+    return withLock(lock.dir, write, { timeoutMs: lock.timeoutMs }).catch((e: unknown) => {
+      if (e instanceof WikiWriteError) throw new ToolError(e.message);
+      if (e instanceof MemoryError && e.code === "raw_concurrent_modify") {
+        lock.onTimeout?.();
+        throw new ToolError(
+          `等待记忆写锁超时（${lock.dir}），本次 wiki_write 未执行；稍后重试或等捕获队列排空`,
+        );
+      }
+      throw e;
+    });
   },
 };
 

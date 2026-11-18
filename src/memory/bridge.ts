@@ -48,6 +48,12 @@ export class MemoryBridge implements MemoryPort {
   private lastRecallText: string | null = null;
   /** 显式记忆的轮次计数（审计用；与 Agent 的 turn 序号独立）。 */
   private explicitTurn = 0;
+  /**
+   * 本阶段的显式记忆次数与落过的项目页（issue #53）。
+   * 轮末 wiki 维护用 takePhaseSignals() 取走并清零。
+   */
+  private phaseExplicit = 0;
+  private phasePages = new Set<string>();
 
   constructor(private readonly opts: MemoryBridgeOptions) {
     this.engine = new CaptureEngine({
@@ -58,7 +64,40 @@ export class MemoryBridge implements MemoryPort {
       scopeMode: opts.mode === "oneshot" ? "project" : "both",
       ...(opts.onNotice ? { onNotice: opts.onNotice } : {}),
       ...(opts.onDebug ? { onDebug: opts.onDebug } : {}),
+      // issue #53：累计本阶段落过的项目页（用户级页由 /memory lint 覆盖，不进自动收口）。
+      onApplied: (_rec, applied) => {
+        for (const a of applied) {
+          if (a.scope === "project") this.phasePages.add(a.page);
+        }
+      },
     });
+  }
+
+  /* ------------------------------------------------------------------ */
+  /* 阶段信号（issue #53）                                                */
+  /* ------------------------------------------------------------------ */
+
+  /** 取走本阶段的显式记忆次数与落页集合（取走即清零）。 */
+  takePhaseSignals(): { explicitCount: number; touchedPages: string[] } {
+    const out = { explicitCount: this.phaseExplicit, touchedPages: [...this.phasePages] };
+    this.phaseExplicit = 0;
+    this.phasePages = new Set<string>();
+    return out;
+  }
+
+  /** 暂停捕获出队（后台 wiki 维护运行期间用）。 */
+  pauseCapture(): void {
+    this.engine.pause();
+  }
+
+  /** 恢复捕获出队。 */
+  resumeCapture(): void {
+    this.engine.resume();
+  }
+
+  /** 捕获队列是否还有在处理/待处理的记录（flush 超时后用）。 */
+  captureBusy(): boolean {
+    return this.engine.pendingCount > 0;
   }
 
   /* ------------------------------------------------------------------ */
@@ -136,6 +175,8 @@ export class MemoryBridge implements MemoryPort {
       return "单次模式（-p）只用项目级记忆，不能写用户级。";
     }
     this.explicitTurn += 1;
+    // issue #53：显式记忆是本阶段「有活」的强信号（remember 之后必做一次代码侧 lint）。
+    this.phaseExplicit += 1;
     // -p：即使 scope=auto 也强制项目级（否则提炼器可能判成 user，随后被合并器丢弃）
     const effective = this.opts.mode === "oneshot" ? "project" : hintScope;
     const receipt = this.engine.captureExplicit(body, this.explicitTurn, effective);

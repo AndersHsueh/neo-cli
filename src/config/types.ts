@@ -560,6 +560,11 @@ export interface MemoryConfig {
   /** 静默模式：不打印「记忆 +N」提示。 */
   quiet: boolean;
   /**
+   * 交互会话轮末按需后台 wiki 维护（issue #53，settings `memory.auto_maintain`，默认 true）。
+   * false = 完全关闭自动增量编译与自动体检收口（手动 /ingest 不受影响）。
+   */
+  autoMaintain: boolean;
+  /**
    * 运行时会话的记忆作用域（不落配置文件）。
    * -p 单次模式由组合根置为 "project"：只读写项目级记忆，
    * 避免服务器脚本场景混入操作员个人记忆。

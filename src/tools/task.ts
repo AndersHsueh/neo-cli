@@ -183,6 +183,22 @@ export function describeTierDecision(d: TierDecision): string {
 /* ------------------------------------------------------------------ */
 
 /**
+ * 子代理运行的可选参数（issue #53 起）。
+ *
+ * 不传 = 旧行为：全量工具减排除表、审批委托主 console、失败返回文本。
+ */
+export interface SubagentRunOptions {
+  /** 逐次工具白名单：schema 与 dispatch 两层同时收窄（职责收窄，不是安全边界）。 */
+  toolAllowlist?: readonly string[];
+  /** 子代理审批（不传 = 旧行为：委托主 console）。worker 传恒拒。 */
+  approve?: (tool: string, detail: string) => Promise<boolean>;
+  /** wiki_write 的跨进程写锁（只有后台 wiki 维护 worker 传）。 */
+  wikiWriteLock?: ToolCtx["wikiWriteLock"];
+  /** true：子代理 stats.aborted 或 hadError 时抛 Error（而不是返回文本）。 */
+  failOnError?: boolean;
+}
+
+/**
  * 运行一个子代理任务，返回最终报告文本。
  * 由组合根注入主代理引用后装配成 task 工具。
  */
@@ -204,6 +220,8 @@ export async function runSubagent(
     /** 跑完把最终 messages 交回去（调用方负责落盘）。 */
     onMessages?: (messages: Message[]) => void;
   },
+  /** issue #53：白名单 / 审批 / 写锁 / 失败即抛。不传 = 旧行为。 */
+  opts?: SubagentRunOptions,
 ): Promise<string> {
   const trimmed = prompt.trim();
   if (!trimmed) {
@@ -245,8 +263,12 @@ export async function runSubagent(
     }
   }
   // 子代理实际可见的工具 schema 计入预算（排除表与 Agent.toolSpecsFor 一致）。
+  // issue #53：传了 toolAllowlist 时同样收窄 —— 预算必须按真实可见集算。
   const subTools = toolSpecs(subCfg).filter(
-    (t) => !TOOL_NAMES_EXCLUDED_FOR_SUBAGENT.includes(t.function.name) && !PLAN_ONLY_TOOL_NAMES.includes(t.function.name),
+    (t) =>
+      !TOOL_NAMES_EXCLUDED_FOR_SUBAGENT.includes(t.function.name) &&
+      !PLAN_ONLY_TOOL_NAMES.includes(t.function.name) &&
+      (!opts?.toolAllowlist || opts.toolAllowlist.includes(t.function.name)),
   );
   const subPrompt = renderSubagentPrompt({
     parentSessionName: main.sessionName,
@@ -279,6 +301,10 @@ export async function runSubagent(
     isSubagent: true,
     // 子代理的写操作也进父会话的检查点（/undo 能一起恢复）
     checkpoint: ctx.checkpoint,
+    // issue #53：白名单与写锁透传（不传 = 旧行为）。
+    ...(opts?.toolAllowlist ? { toolAllowlist: opts.toolAllowlist } : {}),
+    ...(opts?.wikiWriteLock ? { wikiWriteLock: opts.wikiWriteLock } : {}),
+    ...(opts?.approve ? { approve: opts.approve } : {}),
     // 生命周期 hooks（issue #3）：子代理的工具调用同样触发 Pre/PostToolUse ——
     // 子代理是「同一次用户请求里的工具执行」，绕过 hook 等于给 hook 留了一条
     // 结构性旁路（危险命令派给子代理跑就躲过了拦截）。
@@ -301,6 +327,11 @@ export async function runSubagent(
 
   try {
     const stats = await sub.send(trimmed);
+    // issue #53：worker 需要「失败就是失败」，不能把中止/出错当成功文本返回。
+    if (opts?.failOnError) {
+      if (stats.aborted) throw new Error("子代理被取消");
+      if (stats.hadError) throw new Error(stats.errorMessage ?? "子代理执行失败");
+    }
 
     // 报告 = 子代理最后一条非空 assistant 正文。
     // 中间轮次的 assistant 消息要么带 tool_calls（内容是给工具的旁白），

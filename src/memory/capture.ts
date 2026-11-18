@@ -51,6 +51,12 @@ export interface CaptureDeps {
   scopeMode: "both" | "project";
   onNotice?: (msg: string) => void;
   onDebug?: (msg: string) => void;
+  /**
+   * 落页回调（issue #53）：applyOps 之后、applied 非空时调用一次。
+   * 记忆桥用它累计「本阶段落了哪些页」，供轮末 wiki 维护判定。
+   * 回调异常一律吞掉 —— 记忆是增强项，不能因为观察者出错而丢审计。
+   */
+  onApplied?: (rec: TurnRecord, applied: { scope: string; page: string; status: string }[]) => void;
   now?: () => Date;
 }
 
@@ -209,11 +215,33 @@ export class CaptureEngine {
   private lastNotice = "";
   /** 显式 remember 的同步回执：record id → audit 到达时 resolve（v0.4.1 B3）。 */
   private readonly pendingAudits = new Map<string, (a: AuditEntry) => void>();
+  /**
+   * 出队暂停（issue #53）：后台 wiki 维护运行期间暂停处理队列。
+   * 记录照常写 journal（不丢），resume 后接着处理。
+   */
+  private pausedFlag = false;
 
   constructor(private readonly deps: CaptureDeps) {}
 
   get pendingCount(): number {
     return this.queue.length + (this.running ? 1 : 0);
+  }
+
+  /** 是否处于暂停出队状态（issue #53）。 */
+  get paused(): boolean {
+    return this.pausedFlag;
+  }
+
+  /** 暂停出队：新记录照常入队/落 journal，但不处理。幂等。 */
+  pause(): void {
+    this.pausedFlag = true;
+  }
+
+  /** 恢复出队：接着处理积压队列。幂等。 */
+  resume(): void {
+    if (!this.pausedFlag) return;
+    this.pausedFlag = false;
+    if (this.queue.length > 0) void this.kickQueue();
   }
 
   get lastNoticeText(): string {
@@ -339,8 +367,11 @@ export class CaptureEngine {
 
   private async kickQueue(): Promise<void> {
     if (this.running) return;
+    // issue #53：暂停期间不出队（记录已在 journal 里，resume 后接着处理）。
+    if (this.pausedFlag) return;
     this.running = (async () => {
       for (;;) {
+        if (this.pausedFlag) break;
         const rec = this.queue.shift();
         if (!rec) break;
         await this.process(rec);
@@ -350,7 +381,7 @@ export class CaptureEngine {
       await this.running;
     } finally {
       this.running = null;
-      if (this.queue.length > 0) void this.kickQueue();
+      if (this.queue.length > 0 && !this.pausedFlag) void this.kickQueue();
     }
   }
 
@@ -362,6 +393,8 @@ export class CaptureEngine {
 
   /** 等队列清空（带超时；退出/flush 用）。 */
   async flush(timeoutMs?: number): Promise<void> {
+    // issue #53：暂停且没有在跑时立即返回 —— 否则每次轮末都要空等满超时。
+    if (this.pausedFlag && !this.running) return;
     const timeout = timeoutMs ?? this.deps.cfg.memory.autoCapture.flushTimeoutMs;
     const deadline = Date.now() + timeout;
     while ((this.running || this.queue.length > 0) && Date.now() < deadline) {
@@ -467,6 +500,14 @@ export class CaptureEngine {
         journalDir,
       });
       for (const a of merged.applied) this.pagesTouched.add(`${a.scope}/${a.page}`);
+      // issue #53：把本次落页交给观察者（记忆桥据此累计「本阶段落页」）。
+      if (merged.applied.length > 0) {
+        try {
+          this.deps.onApplied?.(rec, merged.applied);
+        } catch (e) {
+          this.debug(`onApplied 回调失败（已忽略）：${(e as Error).message}`);
+        }
+      }
       const reasons = merged.dropped.slice(0, 10).map((d) => `merge#${d.index}: ${d.reason}`);
       const status = merged.applied.length === 0 ? "dropped" : merged.dropped.length > 0 ? "partial" : "applied";
       this.audit({

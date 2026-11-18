@@ -166,11 +166,40 @@ export function mainToolNames(cfg?: Config): string[] {
 /** 只在规划态可见的工具（与 agent/plan-mode.ts 的 PLAN_CONTROL_TOOLS 同口径）。 */
 export const PLAN_ONLY_TOOL_NAMES: readonly string[] = ["submit_plan", "exit_plan_mode"];
 
+/**
+ * 工具调用闸门（issue #53；#84 复用）。
+ *
+ * 名单外/禁用返回拒绝文案（以「未知工具: <name>」开头），否则 null。
+ * 只在调用方显式给了策略时才拦 —— 不传 allow/deny 等于不设闸门（旧行为）。
+ * 文案刻意与「工具不存在」同前缀：模型对「未知工具」的处理是换工具，
+ * 而不是反复重试同一个被禁用的调用。
+ */
+export function toolCallRejection(
+  name: string,
+  policy: { allow?: readonly string[]; deny?: readonly string[] },
+): string | null {
+  if (policy.allow && !policy.allow.includes(name)) {
+    return `未知工具: ${name}。当前任务只允许: ${policy.allow.join(", ")}`;
+  }
+  if (policy.deny && policy.deny.includes(name)) {
+    return `未知工具: ${name}。该工具在当前任务中被禁用`;
+  }
+  return null;
+}
+
 export async function dispatch(
   name: string,
   rawArgs: string,
   ctx: ToolCtx,
 ): Promise<DispatchResult> {
+  // 逐次白名单（issue #53）：schema 层已收窄，这里再挡一次 ——
+  // 模型仍可能凭历史记忆调出名单外的工具，dispatch 不校验就等于白名单只写在提示里。
+  if (ctx.toolAllowlist) {
+    const rejected = toolCallRejection(name, { allow: ctx.toolAllowlist });
+    if (rejected !== null) {
+      return { ok: false, output: rejected, truncated: false, executed: false };
+    }
+  }
   const impl = registry.get(name);
   if (!impl) {
     return {

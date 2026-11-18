@@ -826,3 +826,94 @@ describe("E remember 工具与边界", () => {
     expect(Date.now() - t0).toBeLessThan(1000);
   });
 });
+
+/* ------------------------------------------------------------------ */
+/* M. #53 后台 wiki 维护：阶段信号 + 暂停出队（互斥）                       */
+/* ------------------------------------------------------------------ */
+
+describe("M #53 阶段信号与捕获暂停", () => {
+  const decisionOp = (page: string) =>
+    jsonOps([
+      {
+        scope: "project",
+        action: "create",
+        page,
+        summary: "采用方案 B",
+        body: "采用方案 B，因为性能更好，已修改 src/agent.ts。",
+        confidence: 0.9,
+        inferred: false,
+        evidence: "用户说「我们决定采用方案 B」",
+      },
+    ]);
+  const turn = (): Message[] => [
+    { role: "user", content: "我们决定采用方案 B 并修改了实现" },
+    { role: "assistant", content: "已按方案 B 修改 src/agent.ts。" },
+  ];
+
+  test("#53 M1 onApplied：落页后回调本次 applied（含 scope/page）", async () => {
+    const seen: Array<{ kind: string; pages: string[] }> = [];
+    const engine = new CaptureEngine({
+      cfg: makeCfg(),
+      cwd: CWD,
+      sessionId: "s",
+      scopeMode: "both",
+      streamFn: async () => decisionOp("决策-阶段A.md"),
+      onApplied: (r, applied) => seen.push({ kind: r.kind, pages: applied.map((a) => `${a.scope}/${a.page}`) }),
+      now: () => new Date("2026-10-20T10:00:00.000Z"),
+    });
+    engine.capture({ kind: "turn", messages: turn(), turn: 1 });
+    await engine.flush(3000);
+    expect(seen).toEqual([{ kind: "turn", pages: ["project/决策-阶段A.md"] }]);
+  });
+
+  test("#53 W6 pause 期间新记录照常落 journal、不出队；resume 后只处理一次", async () => {
+    let calls = 0;
+    const engine = new CaptureEngine({
+      cfg: makeCfg(),
+      cwd: CWD,
+      sessionId: "s",
+      scopeMode: "both",
+      streamFn: async () => {
+        calls += 1;
+        return decisionOp("决策-暂停.md");
+      },
+      now: () => new Date("2026-10-20T10:00:00.000Z"),
+    });
+    engine.pause();
+    expect(engine.paused).toBe(true);
+    engine.capture({ kind: "turn", messages: turn(), turn: 1 });
+    // flush 在暂停且无在跑时立即返回（不空等超时）
+    const t0 = Date.now();
+    await engine.flush(2000);
+    expect(Date.now() - t0).toBeLessThan(500);
+    await new Promise((r) => setTimeout(r, 30));
+    expect(calls).toBe(0);
+    expect(pendingRecords(JOURNAL, { limit: 10, retentionDays: 3650 }).length).toBe(1);
+    engine.resume();
+    expect(engine.paused).toBe(false);
+    await engine.flush(3000);
+    expect(calls).toBe(1);
+    expect(pendingRecords(JOURNAL, { limit: 10, retentionDays: 3650 }).length).toBe(0);
+    engine.resume();
+    await engine.flush(3000);
+    expect(calls).toBe(1);
+  });
+
+  test("#53 M2 MemoryBridge.takePhaseSignals：remember 计数 + 项目落页集合，取走即清零", async () => {
+    const { MemoryBridge } = await import("../src/memory/bridge.ts");
+    const bridge = new MemoryBridge({
+      cfg: makeCfg(),
+      cwd: CWD,
+      sessionId: "s",
+      mode: "interactive",
+      captureEnabled: true,
+      streamFn: async () => decisionOp("决策-记住.md"),
+    });
+    const reply = await bridge.remember("以后发布前必须先跑 verify.sh 全量闸门", "project");
+    expect(reply).toContain("已写入");
+    const sig = bridge.takePhaseSignals();
+    expect(sig.explicitCount).toBe(1);
+    expect(sig.touchedPages).toEqual(["决策-记住.md"]);
+    expect(bridge.takePhaseSignals()).toEqual({ explicitCount: 0, touchedPages: [] });
+  });
+});

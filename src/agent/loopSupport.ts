@@ -261,6 +261,9 @@ export function makeCtx(this: Agent, signal: AbortSignal): ToolCtx {
     signal,
     host: this,
     checkpoint: this.opt.checkpoint,
+    // issue #53：逐次白名单与 wiki 写锁只在宿主显式传入时生效（主会话不传）。
+    ...(this.opt.toolAllowlist ? { toolAllowlist: this.opt.toolAllowlist } : {}),
+    ...(this.opt.wikiWriteLock ? { wikiWriteLock: this.opt.wikiWriteLock } : {}),
     approve: async (tool, detail) => {
       const decision = decidePermission(mode, tool);
       if (decision.allow) return true;

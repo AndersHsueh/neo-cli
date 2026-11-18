@@ -563,7 +563,9 @@ export async function handleSystemCommands(cmd: string, arg: string, rest: strin
                   : c.dim("已取消");
         const secs = Math.max(0, Math.round(t.elapsedMs / 1000));
         const prompt = t.prompt.length > 50 ? `${t.prompt.slice(0, 50)}…` : t.prompt;
-        ui.line(`  ${c.text(t.id)}  ${status}  ${c.dim(`${secs}s`)}  ${c.dim(prompt)}`);
+        // issue #53：后台 wiki 维护在任务表里可见，但用 [wiki] 标出它不是用户发起的子代理。
+        const tag = t.kind === "wiki" ? `  ${c.dim("[wiki]")}` : "";
+        ui.line(`  ${c.text(t.id)}${tag}  ${status}  ${c.dim(`${secs}s`)}  ${c.dim(prompt)}`);
         if (t.error) ui.line(`      ${c.warn(t.error)}`);
       }
       ui.line(c.dim("  /tasks cancel 取消全部 · /tasks cancel <id> 取消单个 · /tasks chat <id> <消息> 继续该子代理"));
