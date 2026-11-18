@@ -1,12 +1,12 @@
 {
   "schema": "neo-core-compat-pin@1",
   "archive": "vendor/neo-core-compat-v1.tgz",
-  "sha256": "6942996c08baaeedec00cce82091116a46877c7f22810c0917f348fc4d2258e4",
-  "coreCandidate": "6e38c30462f3e3c6fc0469cbaa7071f67a6c5993",
+  "sha256": "38eade64023d5cba7e4f9154c955e9b6354cdbf91844c766413c695e5002e41c",
+  "coreCandidate": "1eaea68b34ae16a8c93c9eff9368def6488e4b98",
   "coreLockSha256": "5dce79b4509e79e3e0f17a20912f162b17a05be4337ed2915b9396fd2cfd225a",
-  "entrySha256": "a0995cb125b2ac56c1d0de732350f43e0ba9747447ea068d2fd5abff743e3bdc",
-  "dtsSha256": "814e6f44db7107728ba1b2e1621970857ffda29b6aa16dc6c572bee8837708b3",
-  "indexSha256": "a9c9dbed0ce5a3c0f8262472169e3dcb9d9b229826a31efd1c8977760ed0ad7e",
+  "entrySha256": "2a66230fa7c866230eff0bc8d2f76872d557ef7f0bcee449c4e03f742da8580f",
+  "dtsSha256": "72f6852736588ebf53a148643cbe8999b214717945dc48b32d96fa81fefc0b5b",
+  "indexSha256": "89fe060f52696a916aa81ed77adbd1224e1f1dfe782d8376ce5c5deb35db7b7b",
   "toolchain": {
     "bun": "1.3.0",
     "sha256": "70ce58104a5d2a81b254f5b5c77bbd890dcdb1ef3499c554472f6625199e1df9"
