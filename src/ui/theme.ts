@@ -271,20 +271,25 @@ export function banner(opts: BannerOptions): string {
     // 提示是契约原文。40 列内宽不够一整行（原文 46 列）时按 ` · ` 折行，不截断。
     const room = width - 2 - BANNER_PAD * 2;
     const inner = room + BANNER_PAD * 2;
-    const row = (body: string): string =>
-      `${c.dim("│")}${" ".repeat(BANNER_PAD)}${padEndW(body, room)}${" ".repeat(BANNER_PAD)}${c.dim("│")}`;
+    // padEndW 只补空格不截断。先把 body 收敛到内宽，再补空格 ——
+    // 超长 provider / model / endpoint / 工具摘要也不能把右边框顶出外宽。
+    const row = (body: string): string => {
+      const fitted = displayWidth(body) <= room ? body : truncate(body, room);
+      return `${c.dim("│")}${" ".repeat(BANNER_PAD)}${padEndW(fitted, room)}${" ".repeat(BANNER_PAD)}${c.dim("│")}`;
+    };
     const labelWidth = Math.max(...fields.map((f) => displayWidth(f.label)));
+    const valueMax = Math.max(0, room - labelWidth - 1);
     lines.push(c.dim(`╭${"─".repeat(inner)}╮`));
     lines.push(row(truncate(bannerTitle(), room)));
     for (const f of fields) {
       const label = c.dim(padEndW(f.label, labelWidth));
-      const value = f.label === "cwd"
-        ? c.text(shortenHomePath(f.value, home, room - labelWidth - 1))
-        : c.text(f.value);
-      lines.push(row(`${label} ${value}`));
+      const rawValue = f.label === "cwd"
+        ? shortenHomePath(f.value, home, valueMax)
+        : truncate(f.value, valueMax);
+      lines.push(row(`${label} ${c.text(rawValue)}`));
     }
     for (const hint of wrapByWidth(BANNER_HINT, room)) lines.push(row(c.muted(hint)));
-    lines.push(row(c.muted(bannerToolsSummary(opts))));
+    lines.push(row(c.muted(truncate(bannerToolsSummary(opts), room))));
     lines.push(c.dim(`╰${"─".repeat(inner)}╯`));
   }
   // 底部用「一个空格行」而不是空串：dock 的 wrapAnsi 会忽略尾部空串。

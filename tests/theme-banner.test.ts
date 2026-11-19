@@ -292,3 +292,92 @@ describe("B1 NO_COLOR（issue #83）", () => {
     expectBoxWidth(plain, 80);
   });
 });
+
+
+describe("B1 40 列超长运行信息按内宽截断（issue #83 P2）", () => {
+  const LONG_MODEL = "anthropic/claude-3.5-sonnet-20241022";
+  const LONG_PROVIDER = "enterprise-anthropic-gateway-with-an-unreasonably-long-name";
+  const LONG_TIER = "deep_reasoning";
+  const LONG_HOST = "this-is-a-very-very-long-internal-gateway.example.company.internal:8443";
+  const LONG_ENDPOINT = `https://${LONG_HOST}/v1`;
+  const HUGE_TOOL_COUNT = 123456789012345;
+  const HUGE_MCP_COUNT = 123456789012345;
+
+  /** 找到带字段标签的框线行；标签必须作为左栏出现，不能因为值里碰巧有这几个字母就误判。 */
+  function labeledRow(plain: string, label: string): string {
+    const row = boxRows(plain).find((l) => {
+      const body = l.replace(/[╭╮╰╯│]/g, " ").trimStart();
+      return body.startsWith(label) || body.startsWith(`${label} `);
+    });
+    expect(row).toBeDefined();
+    return row as string;
+  }
+
+  function expectTruncatedLabeledValue(plain: string, label: string, prefix: string, full: string): void {
+    const row = labeledRow(plain, label);
+    expect(displayWidth(row)).toBe(40);
+    expect(/[╮╯│]/.test(row.trimEnd().slice(-1))).toBe(true);
+    expect(row).toContain(label);
+    expect(row).toContain(prefix);
+    expect(row).toContain("…");
+    expect(row).not.toContain(full);
+  }
+
+  test("B1p 40 列超长 model：每行宽 40，标签仍在，值截断为可识别前缀 + …", () => {
+    const opts = { ...BASE, columns: 40, model: LONG_MODEL };
+    const plain = plainOf(opts);
+    expectBoxWidth(plain, 40);
+    expectPinnedHint(plain);
+    expect(plain).toContain("neo");
+    expect(plain).toContain(VERSION);
+    expectTruncatedLabeledValue(plain, "model", "anthropic/", LONG_MODEL);
+  });
+
+  test("B1q 40 列超长 provider（含 tier）：每行宽 40，标签仍在，值截断为可识别前缀 + …", () => {
+    const opts = {
+      ...BASE,
+      columns: 40,
+      providerName: LONG_PROVIDER,
+      modelTier: LONG_TIER,
+    };
+    const plain = plainOf(opts);
+    expectBoxWidth(plain, 40);
+    expectPinnedHint(plain);
+    expectTruncatedLabeledValue(plain, "provider", "enterprise-anthropic", `${LONG_PROVIDER} [${LONG_TIER}]`);
+  });
+
+  test("B1r 40 列超长 endpoint host：每行宽 40，标签仍在，值截断为可识别前缀 + …", () => {
+    const opts = { ...BASE, columns: 40, baseUrl: LONG_ENDPOINT };
+    const plain = plainOf(opts);
+    expectBoxWidth(plain, 40);
+    expectPinnedHint(plain);
+    expect(hostOf(opts.baseUrl)).toBe(LONG_HOST);
+    expectTruncatedLabeledValue(plain, "endpoint", "this-is-a-very-very-long", LONG_HOST);
+  });
+
+  test("B1s 40 列超长工具摘要：每行宽 40，摘要按内宽截断", () => {
+    const opts = { ...BASE, columns: 40, toolCount: HUGE_TOOL_COUNT, mcpServerCount: HUGE_MCP_COUNT };
+    const summary = `${HUGE_TOOL_COUNT} tools · ${HUGE_MCP_COUNT} MCP`;
+    const plain = plainOf(opts);
+    expectBoxWidth(plain, 40);
+    expectPinnedHint(plain);
+    const row = boxRows(plain).find((l) => l.includes("tools"));
+    expect(row).toBeDefined();
+    expect(displayWidth(row as string)).toBe(40);
+    expect(/[╮╯│]/.test((row as string).trimEnd().slice(-1))).toBe(true);
+    expect(row as string).toContain("1234567890");
+    expect(row as string).toContain("…");
+    expect(row as string).not.toContain(summary);
+    expect(plain).not.toContain(summary);
+  });
+
+  test("B1t 80 列下同一长 model 完整显示、不截断，且每行宽 80", () => {
+    const opts = { ...BASE, columns: 80, model: LONG_MODEL };
+    const plain = plainOf(opts);
+    expectSharedContract(plain, opts);
+    expectBoxWidth(plain, 80);
+    const row = labeledRow(plain, "model");
+    expect(row).toContain(LONG_MODEL);
+    expect(row).not.toContain("…");
+  });
+});
