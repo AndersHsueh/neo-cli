@@ -32,7 +32,7 @@ bun run src/index.ts -p "修到测试全绿" --drive "bun test" --max 5 --max-mi
 | 其它 POSIX（dash/ksh/fish） | 自动探测 | ✅ 解析器支持；fish 不吃登录 PATH preamble |
 | Windows 11 | `pwsh` → `powershell` → `cmd` | 🟡 **实验性，未实机验证**（见 PD-1） |
 
-> **v0.4.96 发布验证（Linux worktree）**：`bun x tsc --noEmit` exit 0；2517 pass / 3 skip / 0 fail（148 文件）；PTY 36/0；`bash scripts/verify.sh` **ALL GREEN**。表内 macOS 数字保留为历史记录，不代表本次在 macOS 复测。
+> **v0.4.97 发布验证（Linux worktree）**：`bun x tsc --noEmit` exit 0；2534 pass / 3 skip / 0 fail（148 文件）；PTY 36/0；`bash scripts/verify.sh` **ALL GREEN**。表内 macOS 数字保留为历史记录，不代表本次在 macOS 复测。
 
 Windows 启动用 `neo.cmd`（需要 Bun 在 PATH）；Linux/macOS 用 `neo.sh` 或 `bun run src/index.ts`。
 
@@ -61,6 +61,7 @@ Windows 启动用 `neo.cmd`（需要 Bun 在 PATH）；Linux/macOS 用 `neo.sh` 
 - **v0.4.94**：交互 slash `/cd` 切换会话工作目录（#69）——只做交互命令、不是模型工具；不 `process.chdir()`，就地改会话 `cfg.cwd`。无参打印当前根，`/cd -` 回上一根；必做改挂失败整单回滚（含磁盘 `meta.cwd`），LSP 重启失败只警告，P2 在返回前 await 并把警告交给用户。会话文件仍在全局 `~/.neo/sessions/`，不搬家、不改 id。详见 `docs/release-notes/v0.4.94.md`。
 - **v0.4.95**：实验性 Code Mode（`run_js`，#71）——默认关闭，仅交互 TUI 暴露；`NEO_EXPERIMENTAL_CODE_MODE=1` 开启，`=0` 一律获胜。P2 将 PromptManager 缺省改为 fail-closed，规划态 `/tools` 按暴露条件过滤，`confirm`/`approve` 响应 AbortSignal。同时纳入 #81 K45b：把纯叶适配委托给已 pin 的 `@neo/core-compat` 扩展归档（Agent 循环与带状态运行时仍留在 legacy 侧）。详见 `docs/release-notes/v0.4.95.md`。
 - **v0.4.96**：`-p --json-schema` 结构化输出（#77）——仅 `-p` 增加该旗标，在 harness 层把进程级最终答案校验为符合给定 JSON Schema 的 JSON 值；不合规最多回喂 2 次（共 3 次尝试）。`json` 按需增加 `structured_output`，不删现有 `answer`；带旗标的 `text` 只把 stdout 收成那份校验通过的紧凑单行 JSON 值；`stream-json` 只在最终 `result` 携带该字段。不宣称与 Claude Code 或 Codex 兼容。详见 `docs/release-notes/v0.4.96.md`。
+- **v0.4.97**：交互启动 Banner 改为圆角框线卡片（#83）——首行 `neo` + 版本，展示 provider（含 tier）、model、endpoint host、cwd 与工具摘要；一行提示原文为 `/help 查看命令 · ? 快捷键 · Shift+Tab 切换模式`。外宽 `min(终端列数, 80)`，`< 40` 列退化为无框纯文本；40 列下超长字段按内宽截断，右边框对齐。圆角框线只是视觉灵感，不宣称与 Claude Code 兼容。`-p` 与 `neo acp` 仍不打印 Banner。详见 `docs/release-notes/v0.4.97.md`。
 
 ## 配置
 
