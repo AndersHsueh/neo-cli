@@ -277,6 +277,24 @@ export function runningTakenNames(
   return out;
 }
 
+/**
+ * 断言名字未被运行中会话占用（不加后缀）。撞名抛 `name_taken`。
+ *
+ * 与 `pickUniqueName` 的差别：默认名 `Neo#N` 撞名意味着「这个号已被占」，
+ * 唯一正确反应是重新分配下一个号，而不是造出 `Neo#1-2`（issue #82 P2）。
+ */
+export function assertNameFree(
+  root: string,
+  base: string,
+  opts: { nowMs?: number; deadAfterMs?: number; excludeSession?: string; excludeSessions?: string[] } = {},
+): string {
+  const wanted = normalizeName(base);
+  if (runningTakenNames(root, opts).has(wanted)) {
+    throw new MailboxError("name_taken", `名字 ${wanted} 已被运行中的会话占用`);
+  }
+  return wanted;
+}
+
 /** 撞名自动加后缀 -2、-3…（只扫 running 会话；dead 名字可复用）。 */
 export function pickUniqueName(
   root: string,
@@ -314,6 +332,14 @@ export interface CreateIdentityOpts {
   deadAfterMs?: number;
   /** 额外排除的 session（adopt 时排除「即将退役的当前身份」）。 */
   excludeSessions?: string[];
+  /**
+   * 撞名时是否加 `-2` 后缀（默认 true，保持旧行为）。
+   *
+   * 默认名 `Neo#N` 必须传 false：撞名说明这个号已被别的活会话占了，
+   * 正确做法是重新分配下一个号，而不是写成 `Neo#1-2`（issue #82 P2）。
+   * false 时撞名直接抛错，绝不静默改名。
+   */
+  applyUniqueSuffix?: boolean;
 }
 
 export interface Identity {
@@ -333,12 +359,19 @@ export function createIdentity(opts: CreateIdentityOpts): Identity {
   // excludeSession 保证「自己」的残留锁/旧 profile 不会把自己撞成 -2（崩溃 resume critical）。
   const baseName = opts.name ?? old?.name ?? null;
   const wantedName = baseName
-    ? pickUniqueName(opts.root, baseName, {
-        nowMs,
-        deadAfterMs: opts.deadAfterMs,
-        excludeSession: opts.sessionId,
-        excludeSessions: opts.excludeSessions,
-      })
+    ? opts.applyUniqueSuffix === false
+      ? assertNameFree(opts.root, baseName, {
+          nowMs,
+          deadAfterMs: opts.deadAfterMs,
+          excludeSession: opts.sessionId,
+          excludeSessions: opts.excludeSessions,
+        })
+      : pickUniqueName(opts.root, baseName, {
+          nowMs,
+          deadAfterMs: opts.deadAfterMs,
+          excludeSession: opts.sessionId,
+          excludeSessions: opts.excludeSessions,
+        })
     : null;
   const nowIso = isoNow(nowMs);
 
@@ -384,17 +417,20 @@ export function renameSession(
   root: string,
   sessionId: string,
   name: string,
-  opts: { nowMs?: number; deadAfterMs?: number } | number = {},
+  opts: { nowMs?: number; deadAfterMs?: number; applyUniqueSuffix?: boolean } | number = {},
 ): PeerProfile {
   const o = typeof opts === "number" ? { nowMs: opts } : opts;
   const nowMs = o.nowMs ?? Date.now();
   const profile = readProfile(root, sessionId);
   if (!profile) throw new MailboxError("not_found", `会话 ${sessionId} 的 profile 不存在`);
-  const unique = pickUniqueName(root, name, {
+  const uniqueOpts = {
     nowMs,
     deadAfterMs: o.deadAfterMs,
     excludeSession: sessionId,
-  });
+  };
+  const unique = o.applyUniqueSuffix === false
+    ? assertNameFree(root, name, uniqueOpts)
+    : pickUniqueName(root, name, uniqueOpts);
   profile.name = unique;
   profile.updated_at = isoNow(nowMs);
   writeProfile(root, profile);

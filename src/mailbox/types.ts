@@ -296,6 +296,7 @@ export type MailboxErrorCode =
   | "empty_body"
   | "not_found" // 消息 / held 条目不存在
   | "session_alive" // .alive 已存在
+  | "name_taken" // 名字已被运行中的会话占用（不加后缀的路径）
   | "resume_conflict" // resume 改键时目标目录已存在
   | "invalid_envelope"
   | "invalid_state"

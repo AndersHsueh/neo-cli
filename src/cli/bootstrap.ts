@@ -8,7 +8,12 @@ import { VERSION } from "./version.ts";
 import { detectRepo, ensureWorktree } from "../worktree.ts";
 import { Console } from "../ui/console.ts";
 import { TranscriptDock, type DockHost } from "../tui/dock.ts";
-import { chooseSessionName } from "../sessionName.ts";
+import {
+  chooseSessionName,
+  DefaultNameReservationError,
+  openMailboxIdentity,
+  type ChosenName,
+} from "../sessionName.ts";
 import { c } from "../ui/theme.ts";
 import { discoverProjectRules } from "../rules/index.ts";
 import { PromptManager } from "../prompt/manager.ts";
@@ -19,7 +24,7 @@ import { currentProviderConfig, probeCapabilitiesOnFirstUse, undeclaredCapabilit
 import { describeProbeOutcome, persistLearnedOutputLimit, probeOutputLimitForConfig, readOutputProbeMemo, shouldRunOutputProbe } from "../env/outputProbe.ts";
 import { adoptSession, createSession, listSessions, loadSession, type SessionMeta } from "../session.ts";
 import { Mailbox } from "../mailbox/store.ts";
-import { createIdentity, readProfile, releaseAlive, sessionLiveness, sweepSessions } from "../mailbox/identity.ts";
+import { readProfile, releaseAlive, sessionLiveness, sweepSessions } from "../mailbox/identity.ts";
 import * as mailboxState from "../mailbox/state.ts";
 import { decideInbound, formatPreview } from "../mailbox/inbound.ts";
 import { mailboxRoot, type Envelope } from "../mailbox/types.ts";
@@ -594,26 +599,32 @@ export async function bootstrap() {
   if (mailboxEnabled) {
     try {
       mailbox = new Mailbox({ sessionId: sess.meta.id, config: cfg.mailbox });
-      const chosen = chooseSessionName({
-        explicit: args.name,
-        previous: resumePreviousName,
-        root: mailbox.root,
-      });
-      const ident = createIdentity({
+      // 名字装配走真实 wiring（openMailboxIdentity）：
+      //  - --name 撞名加后缀（Jacky-2），记 suffixFrom 供 toast；
+      //  - resume 保留旧名；
+      //  - 默认名由计数器发号，撞名再分配下一个号（绝不给 Neo#N 加后缀）。
+      const opened = openMailboxIdentity({
         root: mailbox.root,
         sessionId: sess.meta.id,
         cwd: cfg.cwd,
         mode: args.mode,
-        name: chosen?.name ?? null,
+        explicit: args.name,
+        previous: resumePreviousName,
         deadAfterMs: cfg.mailbox.deadAfterMs,
       });
-      s.sessionLabel = ident.profile.name;
-      // 默认名撞名不再加后缀（编号单调递增）；只有 --name 会走 pickUniqueName 后缀。
-      if (chosen?.source === "explicit" && ident.profile.name && chosen.name !== ident.profile.name) {
-        ui.info(`代号 ${chosen.name} 已被占用，本会话使用 ${ident.profile.name}`);
+      s.sessionLabel = opened.identity.profile.name;
+      // 只有 --name 会走唯一后缀；默认名撞名是再分配，不会出现后缀。
+      if (opened.suffixFrom && s.sessionLabel) {
+        ui.info(`代号 ${opened.suffixFrom} 已被占用，本会话使用 ${s.sessionLabel}`);
       }
       sweepSessions(mailbox.root, { ttlMs: cfg.mailbox.sessionTtlMs });
     } catch (e) {
+      // 默认名预留失败（计数器写不进去）= 没有拿到号，绝不能静默换个名字继续：
+      // 那样下一个进程会发出同一个 Neo#N。必须致命退出。
+      if (e instanceof DefaultNameReservationError) {
+        console.error(c.err(`✖ ${e.message}`));
+        return 2;
+      }
       // resume 命中时失败 = 不能安全接手该会话（通常另一个进程刚抢到锁）：
       // sess 已 adopt 原 session-id，继续跑会双写同一会话文件，必须致命退出。
       if (meta) {
@@ -630,16 +641,21 @@ export async function bootstrap() {
   }
 
   // 信箱不可用：本地仍选一个默认名，仅用于标题显示（不落盘、不参与寻址）。
-  // 默认编号要读信箱根目录的计数器，所以包在 try/catch 里；失败退回纯显示兜底。
+  // 默认编号要读信箱根目录的计数器，所以包在 try/catch 里 —— 但预留失败
+  // （DefaultNameReservationError）不是「读不到」，必须致命退出，不能兜底成 neo。
   if (mailboxEnabled && s.sessionLabel === null) {
-    let local: ReturnType<typeof chooseSessionName> = null;
+    let local: ChosenName | null = null;
     try {
       local = chooseSessionName({
         explicit: args.name,
         previous: resumePreviousName,
         root: mailboxRoot(),
       });
-    } catch {
+    } catch (e) {
+      if (e instanceof DefaultNameReservationError) {
+        console.error(c.err(`✖ ${e.message}`));
+        return 2;
+      }
       local = null;
     }
     s.sessionLabel = local?.name ?? "neo";

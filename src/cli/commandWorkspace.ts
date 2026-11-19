@@ -10,7 +10,7 @@ import { contentText } from "../llm.ts";
 import { initProjectLevel as initProjectLevelImpl } from "../memory/init.ts";
 import { readProfile, sessionLiveness, renameSession } from "../mailbox/identity.ts";
 import { mailboxRoot } from "../mailbox/types.ts";
-import { chooseSessionName } from "../sessionName.ts";
+import { allocateUnusedDefaultName } from "../sessionName.ts";
 import { discoverProjectRules } from "../rules/index.ts";
 import {
   buildReviewPrompt,
@@ -774,13 +774,26 @@ export async function handleWorkspaceCommands(cmd: string, arg: string, rest: st
             onNameChange?.(p.name);
           } else {
             // 目标 profile 无名字：分配默认 Neo#N 并写回（不覆盖已有名字）。
-            const chosen = chooseSessionName({ root: mailbox.root });
-            if (chosen) {
-              const renamed = renameSession(mailbox.root, mailbox.sessionId, chosen.name, {
+            // 必须走 allocateUnusedDefaultName + 不加后缀的 rename：
+            // 默认名撞名要再分配下一个号，不能变成 Neo#N-2。
+            let renamed = null as ReturnType<typeof renameSession> | null;
+            for (let i = 0; i < 10_000 && !renamed; i += 1) {
+              const name = allocateUnusedDefaultName(mailbox.root, {
                 deadAfterMs: cfg.mailbox.deadAfterMs,
+                excludeSession: mailbox.sessionId,
               });
-              onNameChange?.(renamed.name ?? "");
+              try {
+                renamed = renameSession(mailbox.root, mailbox.sessionId, name, {
+                  deadAfterMs: cfg.mailbox.deadAfterMs,
+                  applyUniqueSuffix: false,
+                });
+              } catch (e) {
+                if ((e as { code?: string }).code === "name_taken") continue;
+                throw e;
+              }
             }
+            if (!renamed) throw new Error("无法为恢复的会话分配默认名");
+            onNameChange?.(renamed.name ?? "");
           }
           ui.info(`跨会话信箱身份已切换到 ${full.meta.id}${p.name ? `（${p.name}）` : ""}`);
         } catch (e) {

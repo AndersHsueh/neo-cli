@@ -134,7 +134,7 @@ describe("N3 并发分配", () => {
       }),
     );
     expect(names).toHaveLength(n);
-    expect(new Set(names).size).toBe(n);
+    expect(new Set(names).size, `duplicate default names: ${names.sort().join(",")}`).toBe(n);
     const nums = names.map((s) => {
       const m = /^Neo#([1-9]\d*)$/.exec(s);
       if (!m) throw new Error(`unexpected name: ${JSON.stringify(s)}`);
