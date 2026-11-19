@@ -18,7 +18,8 @@ import { completeCdLine } from "./cdWorkdir.ts";
 import { COMMANDS } from "../input/commands.ts";
 import { appendContinuation, continuationPrompt, emptyContinuation, finishContinuation, isActiveContinuation, newlineKindsFromBytes, stripContinuationMarker, type Continuation } from "../input/multiline.ts";
 import { todosSummary } from "../tools/todo.ts";
-import { toolNames } from "../tools/index.ts";
+import { mainToolNames, toolNames } from "../tools/index.ts";
+import { CODE_MODE_TOOL_NAME, codeModeExposed } from "../tools/codeMode.ts";
 import { describeShell, getShell } from "../shell.ts";
 import { bootLines } from "../bootDiagnostics.ts";
 import type { AppSession } from "./sessionStart.ts";
@@ -39,6 +40,28 @@ interface TabCycle {
 /**
  * 交互模式：启动块 + 输入源（composer / readline）+ drain 循环，直到退出。
  */
+
+/**
+ * 启动 banner 用的可见工具数（issue #83）。
+ *
+ * 与交互启动时 `/tools` 同一来源：规划态用 `toolNames`，否则 `mainToolNames`，
+ * Code Mode 打开时把 `run_js` 算进去。MCP 只计已装入上下文的（`toolSpecsFor`），
+ * 仅目录、未装入的不算进 N。
+ */
+function visibleToolCountForBanner(agent: AppSession["agent"], cfg: AppSession["cfg"]): number {
+  const baseNames = agent.planning ? toolNames(cfg) : mainToolNames(cfg);
+  const codeModeOn = codeModeExposed(cfg, {
+    nonInteractive: agent.opt.nonInteractive === true,
+    isSubagent: agent.opt.isSubagent === true,
+    planning: agent.planning,
+  });
+  const names = codeModeOn
+    ? (baseNames.includes(CODE_MODE_TOOL_NAME) ? baseNames : [...baseNames, CODE_MODE_TOOL_NAME])
+    : baseNames.filter((n) => n !== CODE_MODE_TOOL_NAME);
+  const inCtx = new Set(agent.toolSpecsFor().map((s) => s.function.name));
+  return names.filter((n) => !n.startsWith("mcp__") || inCtx.has(n)).length;
+}
+
 export async function runInteractive(s: AppSession): Promise<number> {
   const {
     cfg,
@@ -64,7 +87,16 @@ export async function runInteractive(s: AppSession): Promise<number> {
     // 再看到「带了哪份项目记忆」），所以注入留在上面、提示行挪到这里，且只打一次。
     // shell 解析告警（如 settings shell.path 不可执行而回退）仍然可见，但排在记忆提示之后：
     // 它插在中间会打断「shell 行 → 记忆提示」的紧邻关系（#18 独立验收 MUST FIX 1）。
-    ui.line(banner(cfg.model, cfg.baseUrl, cfg.providerName, tierDisplayName(cfg.modelTier), toolNames(cfg).join(" ")));
+    ui.line(banner({
+      model: cfg.model,
+      baseUrl: cfg.baseUrl,
+      providerName: cfg.providerName,
+      modelTier: tierDisplayName(cfg.modelTier),
+      columns: ui.width,
+      cwd: cfg.cwd,
+      toolCount: visibleToolCountForBanner(agent, cfg),
+      mcpServerCount: (cfg.mcpServers ?? []).length,
+    }));
     // v0.4.0 平台适配层：一眼可见实际使用的 shell，解析告警不静默。
     const bootShell = getShell(cfg);
     const overBudgetNotice = overBudget.takePending();

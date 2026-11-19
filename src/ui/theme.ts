@@ -2,6 +2,8 @@
  * Matrix 主题层。
  * 全部使用 24 位真彩色（38;2;r;g;b），保证在真彩终端下呈现磷光绿。
  */
+import { homedir } from "node:os";
+import { VERSION } from "../cli/version.ts";
 
 const esc = "\x1b[";
 const RESET = `${esc}0m`;
@@ -125,61 +127,169 @@ export function rule(width = 64, ch = "─"): string {
   return c.dim(ch.repeat(Math.max(0, width)));
 }
 
-/**
- * Matrix 数字雨背景。单行版本 —— 供启动横幅使用，
- * 不做全屏动画，避免干扰 readline 的光标管理。
- */
-export function digitalRain(rows = 6, cols = 78, seed = 0): string {
-  const out: string[] = [];
-  let s = seed || Date.now();
-  const rand = () => {
-    // 线性同余，避免 Math.random 在同帧内不可复现
-    s = (s * 1103515245 + 12345) % 2147483648;
-    return s / 2147483648;
-  };
-  for (let r = 0; r < rows; r++) {
-    let line = "";
-    for (let i = 0; i < cols; i++) {
-      const v = rand();
-      let g: string;
-      if (v > 0.94) g = c.bright(GLYPHS[Math.floor(rand() * GLYPHS.length)] ?? "0");
-      else if (v > 0.6) g = c.accent(GLYPHS[Math.floor(rand() * GLYPHS.length)] ?? "1");
-      else g = c.dim(GLYPHS[Math.floor(rand() * GLYPHS.length)] ?? "0");
-      line += g;
-    }
-    out.push(line);
-  }
-  return out.join("\n");
+/* ------------------------------------------------------------------ */
+/* 启动横幅（issue #83：圆角框线卡片）                                  */
+/* ------------------------------------------------------------------ */
+
+/** 卡片外宽上限：终端再宽也只画到 80 列。 */
+const BANNER_MAX_WIDTH = 80;
+
+/** 有框阈值（含 40）：再窄就退化成无框纯文本，不硬画对不齐的框线。 */
+const BANNER_BOX_MIN_WIDTH = 40;
+
+/** 卡片内左右留白（框线以内各 1 列）。 */
+const BANNER_PAD = 1;
+
+/** 一行轻提示，文案固定。 */
+const BANNER_HINT = "/help 查看命令 · ? 快捷键 · Shift+Tab 切换模式";
+
+/** 启动横幅的输入。列数 / cwd / 工具数 / MCP server 数都由组合根给。 */
+export type BannerOptions = {
+  model: string;
+  baseUrl: string;
+  providerName?: string;
+  modelTier?: string;
+  /**
+   * 终端列数。0 / undefined / 非正或按 Console 口径异常的值回落 80
+   * （与 `Console.width` 一致：`n > 20` 才采信）。
+   */
+  columns?: number;
+  cwd?: string;
+  /** 对用户可见的工具数（与 `/tools` 同口径，不含仅目录的 MCP 工具）。 */
+  toolCount?: number;
+  /** 已配置的 MCP **server** 数（不是 `mcp__*` 工具数）。 */
+  mcpServerCount?: number;
+  /** `~` 缩写用的 home；缺省 `os.homedir()`。 */
+  home?: string;
+};
+
+/** 终端列数 → 卡片外宽。口径与 `Console.width` 一致：`n > 20` 才采信。 */
+function bannerOuterWidth(columns: number | undefined): number {
+  const n = columns;
+  const cols = typeof n === "number" && n > 20 ? n : BANNER_MAX_WIDTH;
+  return Math.min(cols, BANNER_MAX_WIDTH);
 }
 
-/** 启动横幅。toolsText 由组合根传入当前实际注册工具（含运行时工具）。 */
-export function banner(
-  model: string,
-  baseUrl: string,
-  providerName?: string,
-  modelTier?: string,
-  toolsText = "read_file write_file edit_file list_dir glob grep shell fetch",
-): string {
-  const title = "M.A.T.R.I.X";
-  const sub = "wake up, neo... the matrix has you.";
-  const host = hostOf(baseUrl);
-  const providerLine =
-    providerName === undefined
-      ? ""
-      : c.dim("  provider ") + c.accent(providerName) + (modelTier ? c.dim(` [${modelTier}]`) : "");
-  const lines = [
-    digitalRain(4, 76, 42),
-    c.onAccent(`  ${title}  `) + c.dim("  ") + c.bright(sub),
-    rule(76),
-    providerLine,
-    c.dim("  model  ") + c.accent(model),
-    c.dim("  endpoint ") + c.muted(host),
-    c.dim("  tools  ") + c.muted(toolsText),
-    // 底部不再画第二条横线：输入框顶线就在下面，两条线贴太近会显得突兀。
-    // 用「一个空格行」而不是空串：dock 的 wrapAnsi 会忽略尾部空串，空格行才能稳定落成空行。
-    " ",
-  ];
-  return lines.filter((l) => l !== "").join("\n");
+/**
+ * 路径展示：先把 home 缩成 `~`，再按可用列数做中间省略。
+ *
+ * 省略保留「头两段 + 末段」：用户认的是末段目录名，而头部能说明盘符/根目录。
+ * 末段本身放不下时退回首段 + 省略号，绝不把整条路径截成无信息的前缀。
+ */
+function shortenHomePath(p: string, home: string, max: number): string {
+  const flat = p.replace(/\s+/g, " ").trim();
+  const h = home.replace(/\/+$/, "");
+  let s = flat;
+  if (h !== "" && (flat === h || flat.startsWith(`${h}/`))) s = `~${flat.slice(h.length)}`;
+  if (displayWidth(s) <= max) return s;
+  const parts = s.split("/");
+  if (parts.length <= 2) return truncate(s, max);
+  const tail = parts.at(-1) ?? "";
+  const head = parts.slice(0, 2).join("/");
+  const short = `${head}/…/${tail}`;
+  return displayWidth(short) <= max ? short : truncate(`${head}/…`, max);
+}
+
+/** 卡片内的一行内容：`label` 是固定的左栏，`value` 是可变值。 */
+type BannerField = { label: string; value: string };
+
+/** 运行信息与提示（无框时按原样输出，有框时套进卡片）。 */
+function bannerFields(opts: BannerOptions): BannerField[] {
+  const fields: BannerField[] = [];
+  if (opts.providerName !== undefined) {
+    const tier = opts.modelTier ? ` [${opts.modelTier}]` : "";
+    fields.push({ label: "provider", value: `${opts.providerName}${tier}` });
+  }
+  fields.push({ label: "model", value: opts.model });
+  fields.push({ label: "endpoint", value: hostOf(opts.baseUrl) });
+  fields.push({ label: "cwd", value: opts.cwd ?? process.cwd() });
+  return fields;
+}
+
+function bannerToolsSummary(opts: BannerOptions): string {
+  return `${opts.toolCount ?? 0} tools · ${opts.mcpServerCount ?? 0} MCP`;
+}
+
+/** 首行：Matrix 绿品牌 + 版本号。 */
+function bannerTitle(): string {
+  return `${c.accent("neo")} ${c.dim(`v${VERSION}`)}`;
+}
+
+/**
+ * 按显示列把一行文本折成多行（在 ` · ` 分隔处断，不切词）。
+ *
+ * 提示文案是契约原文，窄卡片里宁可折成两行也不能截成 `Shift+T…`。
+ * 只在分隔符处断行，避免把 `Shift+Tab` 拆开。
+ */
+function wrapByWidth(s: string, max: number, sep = " · "): string[] {
+  if (displayWidth(s) <= max) return [s];
+  const parts = s.split(sep);
+  const out: string[] = [];
+  let cur = "";
+  for (const part of parts) {
+    const next = cur === "" ? part : `${cur}${sep}${part}`;
+    if (cur !== "" && displayWidth(next) > max) {
+      out.push(cur);
+      // 分隔符跟到下一行开头，折行后仍能拼回原文（不丢 `·`）。
+      const resumed = `${sep.trimStart()}${part}`;
+      cur = displayWidth(resumed) <= max ? resumed : part;
+    } else {
+      cur = next;
+    }
+  }
+  if (cur !== "") out.push(cur);
+  // 单段本身就超宽（没有分隔符可断）：只能按列截断。
+  return out.flatMap((l) => (displayWidth(l) <= max ? [l] : [truncate(l, max)]));
+}
+
+/**
+ * 启动横幅（issue #83）：圆角框线卡片。
+ *
+ * 外宽 = `min(终端列数, 80)`；`< 40` 列退化为无框纯文本（仍含全部信息）。
+ * 框线行去掉 ANSI 后的显示宽度恒等于外宽，右边框永远落在最后一列 ——
+ * 内容一律先按 `displayWidth` 收敛到内宽再补空格，中文/emoji 不会把框顶歪。
+ *
+ * 底部固定以一个空格行结束（不是空串）：dock 的 wrapAnsi 会忽略尾部空串，
+ * 空格行才能稳定落成空行，把输入框顶线隔开。
+ */
+export function banner(opts: BannerOptions): string {
+  const width = bannerOuterWidth(opts.columns);
+  const home = opts.home ?? homedir();
+  const fields = bannerFields(opts);
+
+  const lines: string[] = [];
+  if (width < BANNER_BOX_MIN_WIDTH) {
+    // 窄终端：不画框，但信息一条不少。无框行不必卡终端宽度，提示保持单行原文。
+    lines.push(bannerTitle());
+    for (const f of fields) {
+      const value = f.label === "cwd" ? shortenHomePath(f.value, home, 1024) : f.value;
+      lines.push(`${c.dim(`${f.label} `)}${c.text(value)}`);
+    }
+    lines.push(c.muted(BANNER_HINT));
+    lines.push(c.muted(bannerToolsSummary(opts)));
+  } else {
+    // 提示是契约原文。40 列内宽不够一整行（原文 46 列）时按 ` · ` 折行，不截断。
+    const room = width - 2 - BANNER_PAD * 2;
+    const inner = room + BANNER_PAD * 2;
+    const row = (body: string): string =>
+      `${c.dim("│")}${" ".repeat(BANNER_PAD)}${padEndW(body, room)}${" ".repeat(BANNER_PAD)}${c.dim("│")}`;
+    const labelWidth = Math.max(...fields.map((f) => displayWidth(f.label)));
+    lines.push(c.dim(`╭${"─".repeat(inner)}╮`));
+    lines.push(row(truncate(bannerTitle(), room)));
+    for (const f of fields) {
+      const label = c.dim(padEndW(f.label, labelWidth));
+      const value = f.label === "cwd"
+        ? c.text(shortenHomePath(f.value, home, room - labelWidth - 1))
+        : c.text(f.value);
+      lines.push(row(`${label} ${value}`));
+    }
+    for (const hint of wrapByWidth(BANNER_HINT, room)) lines.push(row(c.muted(hint)));
+    lines.push(row(c.muted(bannerToolsSummary(opts))));
+    lines.push(c.dim(`╰${"─".repeat(inner)}╯`));
+  }
+  // 底部用「一个空格行」而不是空串：dock 的 wrapAnsi 会忽略尾部空串。
+  lines.push(" ");
+  return lines.join("\n");
 }
 
 /** 从 URL 中提取 host，用于展示。 */

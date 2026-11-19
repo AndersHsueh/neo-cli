@@ -41,6 +41,7 @@ import type { Subprocess } from "bun";
 
 // 纯函数、无副作用：与 neo 渲染层使用同一套「显示列」规则（CJK/全角算 2 列）。
 import { displayWidth } from "../src/ui/theme.ts";
+import { VERSION } from "../src/cli/version.ts";
 
 /** 本脚本统一用 stdin/stderr/stdout 全 pipe 的进程形态。 */
 type Proc = Subprocess<"pipe" | "ignore", "pipe", "pipe">;
@@ -2435,21 +2436,33 @@ async function scenarioS22b(tmpRoot: string): Promise<void> {
  * S22 系列：**严格**定位真实启动 shell 状态行（issue #18 独立验收 MUST FIX 2）。
  *
  * 不能用 `includes("shell ")`：shell 解析告警（「指定的 shell 不可执行…」）、
- * `/help` 输出、banner 的 tools 行（含 `shell` 工具名）都会命中，造成假阳性。
+ * `/help` 输出里的 `shell` 字样都会命中，造成假阳性。
+ * （issue #83 之后 banner 不再整行平铺工具名，但告警与 /help 仍可能含 shell。）
  * 真实状态行由 index.ts 输出为 `  shell <path>（<kind>…）`，所以按行首格式匹配：
- * 行首两个空格 + `shell ` + 绝对路径 + 全角括号。只取**启动段**（第一条分隔线之前）
+ * 行首两个空格 + `shell ` + 绝对路径 + 全角括号。只取**启动段**（输入框顶部分隔线之前）
  * 里的第一条，后续命令输出一律不算启动锚点。
  */
 const BOOT_SHELL_LINE = /^ {2}shell \/[^（]*（/;
 
 /**
- * 启动段的行：banner 首行（M.A.T.R.I.X）之后，到含 `Agent:` 的输入框顶部分隔线之前。
- * banner 自身就带一条分隔线，所以不能用「第一条分隔线」当边界（那样启动段只剩 banner）。
+ * 启动段的行：新 banner 的稳定锚点之后，到含 `Agent:` 的输入框顶部分隔线之前。
+ *
+ * issue #83：启动段定位从 `M.A.T.R.I.X` 改到新卡片锚点。旧标题与字符雨横幅已去掉；
+ * 有框时顶行带圆角 `╭`，首行同时含品牌名 `neo` 与 package.json 版本号。
+ * 窄终端（< 40 列）退化成无框纯文本，这时靠「同时含 neo 与版本号」定位。
+ * 框线里仍有 `─`，所以仍然不能用「第一条横线」当边界。
  * 屏幕是滚动缓冲：banner 已滚出时退回整屏。
  */
+function isStartupBannerAnchor(line: string): boolean {
+  // 圆角框顶行是最稳的视觉锚点（默认 80 列 / PTY 100 列都会画框）。
+  if (line.includes("╭")) return true;
+  // 无框退化：品牌名 + 版本号，避免单独匹配 "neo" 误伤其它行。
+  return line.includes("neo") && line.includes(VERSION);
+}
+
 function bootSegmentRange(screen: Screen): { from: number; to: number; lines: string[] } {
   const lines = screen.lines();
-  const start = lines.findIndex((l) => l.includes("M.A.T.R.I.X"));
+  const start = lines.findIndex((l) => isStartupBannerAnchor(l));
   const from = start >= 0 ? start : 0;
   const end = lines.findIndex((l, i) => i > from && l.includes("Agent:"));
   const to = end >= 0 ? end : lines.length;
@@ -3302,19 +3315,19 @@ const SCENARIOS: Scenario[] = [
     id: "s22",
     title: "S22 启动降噪：无探测诊断；banner → shell → 项目记忆提示（紧邻且一次）",
     fn: scenarioS22,
-    focus: ["M.A.T.R.I.X", "shell ", "已加载项目记忆"],
+    focus: ["neo", "shell ", "已加载项目记忆"],
   },
   {
     id: "s22b",
     title: "S22b 有 shell 配置告警：告警可见但不打断「shell 行 → 项目记忆提示」紧邻",
     fn: scenarioS22b,
-    focus: ["M.A.T.R.I.X", "已加载项目记忆", "指定的 shell 不可执行"],
+    focus: ["neo", "已加载项目记忆", "指定的 shell 不可执行"],
   },
   {
     id: "s22c",
     title: "S22c 小窗口：系统提示词放不下预算时给一次性提示（排在记忆提示之后，日志里也有）",
     fn: scenarioS22c,
-    focus: ["M.A.T.R.I.X", "已加载项目记忆", "系统提示词放不下预算"],
+    focus: ["neo", "已加载项目记忆", "系统提示词放不下预算"],
   },
   {
     id: "s23",
