@@ -729,10 +729,13 @@ deepseek-flash · balanced · ask · ⎇ main · ctx ▓▓░░░ 42% · 0:42
 - `/btw <问题>` 旁支提问：基于当前上下文回答，**不入历史、不调工具、不打断主轮次**；
   审批问题显示在框上方、输入框不卸载；选择菜单在 live 帧内渲染。
 - **不换渲染模型**：不 alt-screen，历史留在 scrollback；非 TTY（`-p` / 管道 / CI）走原 readline 路径。
-- **会话代号（v0.3.1）**：交互启动从 12 个《黑客帝国》角色池随机取一个未被存活会话占用的名字
-  （`--name` 与 resume 旧名优先；池全占才加后缀）；顶线显示 `Agent: <代号>`，`/rename` 即时同步。
-  代号为 `neo` 时，标题每 10–20 秒在 `Mr.Anderson`（dim）与 `N E O`（Matrix 绿）之间切换，
-  切换前 3 帧 ×80ms 字符雨；`neo` 本身仍是普通可寻址名字。
+- **会话代号（v0.3.1 起，issue #82 改默认名）**：默认名是单调递增的 `Neo#1`、`Neo#2`…，
+  **关闭后不回收编号**（关掉 `Neo#1` 再开新的得到 `Neo#3`）；计数器在信箱根目录的
+  `default-name-seq.json`，丢失或损坏时按已知会话里最大的 `Neo#N` + 1 恢复，不报错。
+  优先级：`--name` 显式指定 > `--resume` / `--continue` 沿用旧名 > 默认 `Neo#N`；
+  显式名与 resume 都不消耗默认编号，resume 的旧名（含历史 Matrix 角色名）原样保留。
+  顶线恒为静态 `Agent: <代号>`（名字为 `neo` 时也是 `Agent: neo`，无动画），`/rename` 即时同步；
+  撞名后缀（`-2`、`-3`）只用于 `--name` 与 `/rename`。
 - `--resume`（v0.3.1 起）真续接同一 session-id/文件/信箱身份；运行中的会话不列出、不允许恢复。
 - v0.3.2/0.3.3 hotfix：并发 `--resume` 抢锁失败不再覆盖存活会话 profile（`.alive/owner.json` + 先抢锁后写 profile）；resume 身份失败直接 exit 2；owner 新鲜保护启动窗口。
 - `Ctrl+O` transcript 视图与轮次 diff 留 v0.3.2 / v0.3.3。

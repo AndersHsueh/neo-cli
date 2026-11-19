@@ -241,7 +241,7 @@ export async function runInteractive(s: AppSession): Promise<number> {
       },
     });
     s.composerRef = repl.composer;
-    repl.titleAnimator = new TitleAnimator({});
+    repl.titleAnimator = new TitleAnimator();
     repl.titleAnimator.setName(s.sessionLabel ?? "neo");
     repl.composer.setTitleAnimator(repl.titleAnimator);
     ui.setAsker((q: string, signal?: AbortSignal) => repl.composer!.ask(q, signal));

@@ -2028,7 +2028,7 @@ async function scenarioS18(tmpRoot: string): Promise<void> {
   }
 }
 
-/** S19：随机代号 + Agent 标题 + /rename neo 初始 Mr.Anderson + busy 后缀。 */
+/** S19：显式代号 + Agent 静态标题 + /rename neo 仍显示 Agent: neo + busy 后缀。 */
 async function scenarioS19(tmpRoot: string): Promise<void> {
   const dirs = await makeDirs(tmpRoot, "s19-agent-title");
   const fake = await startFake("slow-800");
@@ -2037,8 +2037,7 @@ async function scenarioS19(tmpRoot: string): Promise<void> {
     dirs,
     name: "s19",
     autoName: false,
-    // 先用确定名字起会话，避免随机名恰好是 neo 时 10–20s 动画造成假红；
-    // 随机代号由 session-name 单测覆盖。
+    // 先用确定名字起会话；默认 Neo#N 由 session-name 单测覆盖。
     args: [...BASE_ARGS, "--name", "Trinity"],
     cols: DEFAULT_COLS,
     rows: DEFAULT_ROWS,
@@ -2050,16 +2049,15 @@ async function scenarioS19(tmpRoot: string): Promise<void> {
     const name0 = titleNameOf(run.screen) ?? "";
     check(name0 === "Trinity", `顶线名字应为显式 Trinity：${JSON.stringify(name0)}（${title0}）`, run.screen);
 
-    // /rename neo：初态必须是 Mr.Anderson（动画切到 N E O 由单测 fake timer 覆盖）
+    // /rename neo：标题静态为 Agent: neo（无 Mr.Anderson 动画）
     await run.type("/rename neo");
-    // 先等命令真正执行完（随机名恰好是 neo 时标题一开始就是 Mr.Anderson，不能拿标题当完成信号）
     await waitFor(() => run.screen.text().includes("本会话名字 → neo"), {
       label: "/rename neo 成功提示",
       run,
       timeoutMs: 8000,
     });
-    await waitFor(() => titleLineOf(run.screen)?.includes("Agent: Mr.Anderson") ?? false, {
-      label: "/rename neo 后标题变为 Agent: Mr.Anderson",
+    await waitFor(() => titleLineOf(run.screen)?.includes("Agent: neo") ?? false, {
+      label: "/rename neo 后标题变为 Agent: neo",
       run,
       timeoutMs: 8000,
     });
@@ -2075,7 +2073,7 @@ async function scenarioS19(tmpRoot: string): Promise<void> {
     await waitFor(() => run.screen.text().includes("慢回答完成。"), { label: "回答完成", run, timeoutMs: 15_000 });
     await waitPrompt(run, "回到提示符");
 
-    // 再改名离开 neo：动画停止，标题回落普通 dim 名字
+    // 再改名离开 neo：标题立即同步为 Trinity
     await run.type("/rename Trinity");
     await waitFor(() => titleNameOf(run.screen) === "Trinity", {
       label: "改名 Trinity 后标题精确同步（不是 Trinity-2）",
@@ -3295,9 +3293,9 @@ const SCENARIOS: Scenario[] = [
   },
   {
     id: "s19",
-    title: "S19 随机代号 + Agent 标题 + /rename neo 动画初态",
+    title: "S19 显式代号 + Agent 静态标题 + /rename neo",
     fn: scenarioS19,
-    focus: ["Agent:", "Mr.Anderson"],
+    focus: ["Agent:", "neo"],
   },
   {
     id: "s20",

@@ -8,7 +8,7 @@ import type { PermissionMode } from "../agent.ts";
 import { renderPlan } from "../agent.ts";
 import { contentText } from "../llm.ts";
 import { initProjectLevel as initProjectLevelImpl } from "../memory/init.ts";
-import { readProfile, sessionLiveness, renameSession, takenAliveNames } from "../mailbox/identity.ts";
+import { readProfile, sessionLiveness, renameSession } from "../mailbox/identity.ts";
 import { mailboxRoot } from "../mailbox/types.ts";
 import { chooseSessionName } from "../sessionName.ts";
 import { discoverProjectRules } from "../rules/index.ts";
@@ -773,10 +773,8 @@ export async function handleWorkspaceCommands(cmd: string, arg: string, rest: st
           if (p.name) {
             onNameChange?.(p.name);
           } else {
-            // 目标 profile 无名字：按 A2 随机一个池内名并写回（不随机覆盖已有名字）。
-            const chosen = chooseSessionName({
-              taken: takenAliveNames(mailbox.root, { deadAfterMs: cfg.mailbox.deadAfterMs }),
-            });
+            // 目标 profile 无名字：分配默认 Neo#N 并写回（不覆盖已有名字）。
+            const chosen = chooseSessionName({ root: mailbox.root });
             if (chosen) {
               const renamed = renameSession(mailbox.root, mailbox.sessionId, chosen.name, {
                 deadAfterMs: cfg.mailbox.deadAfterMs,

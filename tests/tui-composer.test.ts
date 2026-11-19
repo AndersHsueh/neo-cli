@@ -405,7 +405,7 @@ describe("C1e Agent 标题视图（v0.3.1）", () => {
 
   test("C1e TitleAnimator 接入 composer；窄终端标题不超宽", () => {
     const h = makeHarness({ columns: () => 30, stdout: { write: () => {}, columns: 30, rows: 24 } });
-    const anim = new TitleAnimator({ rng: () => 0.5 });
+    const anim = new TitleAnimator();
     anim.setName("Morpheus");
     h.composer.setTitleAnimator(anim);
     const rows = h.composer.compose().rows;

@@ -293,7 +293,7 @@ export function pickUniqueName(
   throw new MailboxError("invalid_target", `名字 ${wanted} 的候选后缀已用尽`);
 }
 
-/** 存活会话已占用的名字集合（随机代号池排除用；dead 不占名）。 */
+/** 存活会话已占用的名字集合（dead 不占名；/rename 撞名后缀与寻址共用 running 口径）。 */
 export function takenAliveNames(root: string, opts: { nowMs?: number; deadAfterMs?: number } = {}): Set<string> {
   return runningTakenNames(root, opts);
 }
@@ -329,7 +329,7 @@ export function createIdentity(opts: CreateIdentityOpts): Identity {
   const nowMs = opts.nowMs ?? Date.now();
   ensureSessionLayout(opts.root, opts.sessionId);
   const old = readProfile(opts.root, opts.sessionId);
-  // 旧名也走一次查重：dead 名可被池重新分配后，adopt 不能造出两个 running 同名；
+  // 旧名也走一次查重：adopt 不能造出两个 running 同名；
   // excludeSession 保证「自己」的残留锁/旧 profile 不会把自己撞成 -2（崩溃 resume critical）。
   const baseName = opts.name ?? old?.name ?? null;
   const wantedName = baseName

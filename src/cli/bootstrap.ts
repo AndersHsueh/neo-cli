@@ -19,7 +19,7 @@ import { currentProviderConfig, probeCapabilitiesOnFirstUse, undeclaredCapabilit
 import { describeProbeOutcome, persistLearnedOutputLimit, probeOutputLimitForConfig, readOutputProbeMemo, shouldRunOutputProbe } from "../env/outputProbe.ts";
 import { adoptSession, createSession, listSessions, loadSession, type SessionMeta } from "../session.ts";
 import { Mailbox } from "../mailbox/store.ts";
-import { createIdentity, readProfile, releaseAlive, sessionLiveness, sweepSessions, takenAliveNames } from "../mailbox/identity.ts";
+import { createIdentity, readProfile, releaseAlive, sessionLiveness, sweepSessions } from "../mailbox/identity.ts";
 import * as mailboxState from "../mailbox/state.ts";
 import { decideInbound, formatPreview } from "../mailbox/inbound.ts";
 import { mailboxRoot, type Envelope } from "../mailbox/types.ts";
@@ -597,7 +597,7 @@ export async function bootstrap() {
       const chosen = chooseSessionName({
         explicit: args.name,
         previous: resumePreviousName,
-        taken: takenAliveNames(mailbox.root, { deadAfterMs: cfg.mailbox.deadAfterMs }),
+        root: mailbox.root,
       });
       const ident = createIdentity({
         root: mailbox.root,
@@ -608,7 +608,8 @@ export async function bootstrap() {
         deadAfterMs: cfg.mailbox.deadAfterMs,
       });
       s.sessionLabel = ident.profile.name;
-      if (chosen && ident.profile.name && chosen.name !== ident.profile.name) {
+      // 默认名撞名不再加后缀（编号单调递增）；只有 --name 会走 pickUniqueName 后缀。
+      if (chosen?.source === "explicit" && ident.profile.name && chosen.name !== ident.profile.name) {
         ui.info(`代号 ${chosen.name} 已被占用，本会话使用 ${ident.profile.name}`);
       }
       sweepSessions(mailbox.root, { ttlMs: cfg.mailbox.sessionTtlMs });
@@ -628,13 +629,19 @@ export async function bootstrap() {
     }
   }
 
-  // 信箱不可用：本地仍选一个池内名，仅用于标题显示（不落盘、不参与寻址）。
+  // 信箱不可用：本地仍选一个默认名，仅用于标题显示（不落盘、不参与寻址）。
+  // 默认编号要读信箱根目录的计数器，所以包在 try/catch 里；失败退回纯显示兜底。
   if (mailboxEnabled && s.sessionLabel === null) {
-    const local = chooseSessionName({
-      explicit: args.name,
-      previous: resumePreviousName,
-      taken: new Set(),
-    });
+    let local: ReturnType<typeof chooseSessionName> = null;
+    try {
+      local = chooseSessionName({
+        explicit: args.name,
+        previous: resumePreviousName,
+        root: mailboxRoot(),
+      });
+    } catch {
+      local = null;
+    }
     s.sessionLabel = local?.name ?? "neo";
   }
 
