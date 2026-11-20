@@ -102,6 +102,12 @@ export interface ToolCtx {
    */
   toolAllowlist?: readonly string[];
   /**
+   * 是否为 task 派生的子代理（issue #84）。makeCtx 从 AgentOptions.isSubagent 透传。
+   * dispatch 用它把 TOOL_NAMES_EXCLUDED_FOR_SUBAGENT 交给 toolCallRejection 的 deny，
+   * 与 #53 的 allowlist 走同一校验点。不传 = 主代理路径，排除表不生效。
+   */
+  isSubagent?: boolean;
+  /**
    * wiki_write 的跨进程写锁（issue #53）。只有后台 wiki 维护 worker 传：
    * 每次 wiki_write 都 withLock(dir) 包住写回，超时调 onTimeout 并抛 ToolError。
    * 不传 = 主会话路径，行为完全不变。

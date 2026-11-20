@@ -216,13 +216,15 @@ export async function dispatch(
   rawArgs: string,
   ctx: ToolCtx,
 ): Promise<DispatchResult> {
-  // 逐次白名单（issue #53）：schema 层已收窄，这里再挡一次 ——
-  // 模型仍可能凭历史记忆调出名单外的工具，dispatch 不校验就等于白名单只写在提示里。
-  if (ctx.toolAllowlist) {
-    const rejected = toolCallRejection(name, { allow: ctx.toolAllowlist });
-    if (rejected !== null) {
-      return { ok: false, output: rejected, truncated: false, executed: false };
-    }
+  // 逐次白名单（issue #53）与子代理排除表（issue #84）：schema 层已收窄，这里再挡一次 ——
+  // 模型仍可能凭历史记忆调出名单外的工具，dispatch 不校验就等于策略只写在提示里。
+  // 同一个 toolCallRejection 同时处理 allow 与 deny；两者都不传则返回 null（旧行为）。
+  const rejected = toolCallRejection(name, {
+    allow: ctx.toolAllowlist,
+    deny: ctx.isSubagent ? TOOL_NAMES_EXCLUDED_FOR_SUBAGENT : undefined,
+  });
+  if (rejected !== null) {
+    return { ok: false, output: rejected, truncated: false, executed: false };
   }
   const impl = registry.get(name);
   if (!impl) {

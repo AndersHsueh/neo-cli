@@ -266,7 +266,9 @@ export function makeCtx(this: Agent, signal: AbortSignal): ToolCtx {
     host: this,
     checkpoint: this.opt.checkpoint,
     // issue #53：逐次白名单与 wiki 写锁只在宿主显式传入时生效（主会话不传）。
+    // issue #84：子代理身份透传给 dispatch，由 toolCallRejection 的 deny 拦排除表。
     ...(this.opt.toolAllowlist ? { toolAllowlist: this.opt.toolAllowlist } : {}),
+    ...(this.opt.isSubagent ? { isSubagent: true } : {}),
     ...(this.opt.wikiWriteLock ? { wikiWriteLock: this.opt.wikiWriteLock } : {}),
     approve: async (tool, detail) => {
       const decision = decidePermission(mode, tool);
