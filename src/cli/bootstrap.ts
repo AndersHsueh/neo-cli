@@ -35,6 +35,13 @@ import { CheckpointStore } from "../checkpoint.ts";
 import { formatGapLogLine, formatProbeIntent, makeOverBudgetReporter, formatWindowNotice, formatWritebackNotice, logBootDiagnostic } from "../bootDiagnostics.ts";
 import type { PromptSelection } from "../prompt/select.ts";
 import { parseArgs, HELP, streamJsonUsageError } from "./args.ts";
+import { findSettingsPath } from "../config/settingsPath.ts";
+import {
+  MISSING_SETTINGS_MESSAGE,
+  runFirstUseOnboard,
+  shouldEnterFirstUseOnboard,
+  shouldFailForMissingSettings,
+} from "./firstUseOnboard.ts";
 import { loadJsonSchema, type CompiledSchema } from "../structuredOutput.ts";
 import { acpUsageError, reportAcpUsageError } from "../acp/entry.ts";
 import type { SharedMut } from "./session.ts";
@@ -82,6 +89,12 @@ export async function bootstrap() {
     return 0;
   }
   if (args.rest[0] === "acp") {
+    // #88：没有候选 settings.json 时不进入向导、不启动服务端（避免随后发模型请求）。
+    // 不改 src/acp/*：缺文件判定放在拉起服务端之前。
+    if (findSettingsPath() == null) {
+      console.error(c.err(`✖ ${MISSING_SETTINGS_MESSAGE}`));
+      return 2;
+    }
     // 动态 import：TUI / -p 路径不加载 ACP 服务端与 SDK。
     const { runAcpServer } = await import("../acp/server.ts");
     return await runAcpServer();
@@ -204,7 +217,42 @@ export async function bootstrap() {
   let cfg: Config;
   try {
     cfg = loadConfig(overrides);
+  } catch (e) {
+    if (e instanceof ConfigError) {
+      console.error(c.err(`✖ 配置错误：${e.message}`));
+      return 2;
+    }
+    throw e;
+  }
 
+  // #88：候选路径都没有 settings.json 时，仅交互 TTY 进入初次配置向导；
+  // -p / 非 TTY 说明需要先跑交互 neo，exit 2，不发模型请求。
+  // 环境变量（如 NEO_API_KEY）不能跳过本向导。
+  const missingSettingsFlags = {
+    settingsPath: cfg.settingsPath,
+    print: args.print,
+    isAcp: false,
+    stdinIsTTY: process.stdin.isTTY === true,
+    stdoutIsTTY: process.stdout.isTTY === true,
+  };
+  if (shouldEnterFirstUseOnboard(missingSettingsFlags)) {
+    const onboard = await runFirstUseOnboard();
+    if (!onboard.ok) return onboard.exitCode;
+    try {
+      cfg = loadConfig(overrides);
+    } catch (e) {
+      if (e instanceof ConfigError) {
+        console.error(c.err(`✖ 配置错误：${e.message}`));
+        return 2;
+      }
+      throw e;
+    }
+  } else if (shouldFailForMissingSettings(missingSettingsFlags)) {
+    console.error(c.err(`✖ ${MISSING_SETTINGS_MESSAGE}`));
+    return 2;
+  }
+
+  try {
     if (requestedTier) {
       const r = applyTier(cfg, requestedTier);
       if (!r.ok) {

@@ -33,7 +33,7 @@
  *
  * 退出码：全部 PASS → 0，否则 → 1。
  */
-import { closeSync, constants as fsConstants, openSync, readdirSync, readFileSync, statSync, writeSync } from "node:fs";
+import { closeSync, constants as fsConstants, existsSync, openSync, readdirSync, readFileSync, statSync, writeSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -498,10 +498,12 @@ interface NeoOptions {
   autoName?: boolean;
   /** 启动 1.5s 后把 PTY 改窄（测 resize 下帧/输入框不串行）。 */
   resizeToCols?: number;
-  /** 启动前在临时 cwd 里写 settings.json（默认用 PTY_SETTINGS）。 */
-  settings?: Record<string, unknown>;
+  /** 启动前在临时 cwd 里写 settings.json（默认用 PTY_SETTINGS）。false = 不写（#88 向导）。 */
+  settings?: Record<string, unknown> | false;
   /** 启动前在临时 cwd 里写项目记忆文件（AGENTS.md 内容）。 */
   agentsMd?: string;
+  /** 额外环境变量，后写覆盖默认值。 */
+  extraEnv?: Record<string, string>;
 }
 
 /**
@@ -537,11 +539,14 @@ async function startNeo(opts: NeoOptions): Promise<NeoRun> {
   const cat = Bun.which("cat") ?? "/bin/cat";
 
   // 确定性配置写到临时 cwd：config.loadConfig 的第一优先级就是 <cwd>/settings.json。
-  await writeFile(
-    join(dirs.work, "settings.json"),
-    JSON.stringify(opts.settings ?? PTY_SETTINGS, null, 2),
-    "utf8",
-  );
+  // #88：settings === false 时不写，好测「没有候选文件」的初次使用向导。
+  if (opts.settings !== false) {
+    await writeFile(
+      join(dirs.work, "settings.json"),
+      JSON.stringify(opts.settings ?? PTY_SETTINGS, null, 2),
+      "utf8",
+    );
+  }
   // issue #18 S22：项目记忆文件必须早于 neo 启动落盘，否则启动时找不到。
   if (opts.agentsMd !== undefined) {
     await writeFile(join(dirs.work, "AGENTS.md"), opts.agentsMd, "utf8");
@@ -596,6 +601,7 @@ async function startNeo(opts: NeoOptions): Promise<NeoRun> {
     COLUMNS: String(cols),
     LINES: String(rows),
     TERM: "xterm-256color",
+    ...opts.extraEnv,
   };
 
   const proc = Bun.spawn(["/bin/sh", "-c", inner], {
@@ -3306,10 +3312,120 @@ async function scenarioS36(tmpRoot: string): Promise<void> {
   }
 }
 
+async function scenarioS37(tmpRoot: string): Promise<void> {
+  const dirs = await makeDirs(tmpRoot, "s37-first-use-onboard");
+  const fake = await startFake("narration");
+  const typedKey = "sk-pty88-secret";
+  const run = await startNeo({
+    fake,
+    dirs,
+    name: "s37",
+    args: BASE_ARGS,
+    settings: false,
+    // 环境变量不得跳过向导；会话稍后仍可被 env 覆盖，但文件必须是刚输入的值。
+    extraEnv: { NEO_API_KEY: "env-should-not-be-written" },
+  });
+  try {
+    await waitFor(() => run.screen.text().includes("请输入 base_url"), { label: "base_url 提示", run });
+    await run.type(`http://127.0.0.1:${fake.port}/v1`);
+    await waitFor(() => run.screen.text().includes("请输入 api_key"), { label: "api_key 提示", run });
+    await run.type(typedKey);
+    await waitFor(() => run.screen.text().includes("请选择协议"), { label: "协议提示", run });
+    const afterKey = run.screen.text();
+    check(!afterKey.includes(typedKey), "api_key 不得在屏幕上以明文出现", run.screen);
+    check(afterKey.includes("*"), "api_key 输入应回显 *", run.screen);
+    await run.type("1");
+    await waitFor(() => run.screen.text().includes("请为 default 选择模型"), { label: "default 模型", run });
+    await run.type("");
+    await waitFor(() => run.screen.text().includes("请为 balance 选择模型"), { label: "balance 模型", run });
+    await run.type("");
+    await waitFor(() => run.screen.text().includes("请为 fast 选择模型"), { label: "fast 模型", run });
+    await run.type("");
+    await waitFor(() => run.screen.text().includes("请为 deep 选择模型"), { label: "deep 模型", run });
+    await run.type("");
+    await waitFor(() => run.screen.text().includes("max_output_tokens"), { label: "max_output_tokens", run });
+    await run.type("4096");
+    await waitFor(() => run.screen.text().includes("已写入"), { label: "已写入配置", run });
+    await waitPrompt(run);
+    const text = run.screen.text();
+    check(!text.includes(typedKey), "整场会话屏幕不得出现明文 api_key", run.screen);
+    check(!run.stderr.includes(typedKey), "stderr 不得出现明文 api_key", run.screen);
+    const dest = join(dirs.home, ".neo", "settings.json");
+    check(existsSync(dest), "成功后应写入 HOME/.neo/settings.json", run.screen);
+    check((statSync(dest).mode & 0o777) === 0o600, "写入文件权限应为 0600", run.screen);
+    check(!existsSync(join(dirs.work, "settings.json")), "不应写工作区 settings.json", run.screen);
+    const raw = JSON.parse(readFileSync(dest, "utf8")) as {
+      default_provider?: string;
+      classifier_model_name?: string;
+      providers?: Array<Record<string, unknown>>;
+    };
+    check(raw.default_provider === "default", "default_provider 应为 default", run.screen);
+    const prov = raw.providers?.[0] ?? {};
+    if (prov["api_key"] !== typedKey) {
+      throw new CheckError("写出的 api_key 不是用户刚输入的值", ["api_key"], run.screen);
+    }
+    check(prov["max_tokens"] === 8192, "max_tokens 应保持 8192", run.screen);
+    check(prov["max_output_tokens"] === 4096, "max_output_tokens 应为用户确认的 4096", run.screen);
+    // api_key 已与 typedKey 比较；typedKey 不是环境变量里的 env-should-not-be-written。
+    maybeDumpScreen(run.screen);
+    await run.type("/exit");
+    const code = await run.waitExit();
+    check(code === 0, `向导完成后 /exit 退出码应为 0（实际 ${code}）`, run.screen);
+  } catch (e) {
+    throw attachScreen(e instanceof Error ? new CheckError(e.message, ["已写入", "请输入 base_url"], run.screen, run.stderr) : e, run.screen, run.stderr);
+  } finally {
+    await run.close();
+    await fake.stop();
+  }
+}
+
+/**
+ * S38 #88：探测失败时不写文件，用户选择退出后进程以 2 结束。
+ */
+async function scenarioS38(tmpRoot: string): Promise<void> {
+  const dirs = await makeDirs(tmpRoot, "s38-first-use-probe-fail");
+  const fake = await startFake("narration");
+  const typedKey = "sk-pty88-fail-secret";
+  const run = await startNeo({
+    fake,
+    dirs,
+    name: "s38",
+    args: BASE_ARGS,
+    settings: false,
+  });
+  try {
+    await waitFor(() => run.screen.text().includes("请输入 base_url"), { label: "base_url 提示", run });
+    await run.type("http://127.0.0.1:9/v1");
+    await waitFor(() => run.screen.text().includes("请输入 api_key"), { label: "api_key 提示", run });
+    await run.type(typedKey);
+    await waitFor(() => run.screen.text().includes("请选择协议"), { label: "协议提示", run });
+    check(!run.screen.text().includes(typedKey), "api_key 不得在屏幕上以明文出现", run.screen);
+    await run.type("1");
+    await waitFor(() => run.screen.text().includes("探测失败") || run.screen.text().includes("重试或退出"), {
+      label: "探测失败并询问重试",
+      run,
+    });
+    await run.type("q");
+    const code = await run.waitExit();
+    check(code === 2, `探测失败退出码应为 2（实际 ${code}）`, run.screen);
+    check(!existsSync(join(dirs.home, ".neo", "settings.json")), "探测失败不得写入 settings.json", run.screen);
+    check(!run.screen.text().includes(typedKey), "失败路径屏幕不得出现明文 api_key", run.screen);
+    check(!run.stderr.includes(typedKey), "失败路径 stderr 不得出现明文 api_key", run.screen);
+    maybeDumpScreen(run.screen);
+  } catch (e) {
+    throw attachScreen(e, run.screen, run.stderr);
+  } finally {
+    await run.close();
+    await fake.stop();
+  }
+}
+
 const SCENARIOS: Scenario[] = [
   {id:"s34", title:"#64 drive 内部轮共享额度与 clear 生命周期",fn:scenarioS34,focus:["已启动自动续跑","上下文已清空"]},
   {id:"s35", title:"#90 Ctrl+O 打开/Esc 关闭/再次 Ctrl+O 关闭 transcript 视图",fn:scenarioS35,focus:["本会话还没有记录","/ 搜索"]},
   {id:"s36", title:"#90 视图内 / 或 Ctrl+F 搜索并跳到命中",fn:scenarioS36,focus:["UNIQUE_ALPHA","会话恢复测试答案。"]},
+  {id:"s37", title:"#88 初次使用向导：测通后写入 ~/.neo/settings.json 并正常启动",fn:scenarioS37,focus:["请输入 base_url","请输入 api_key","已写入"]},
+  {id:"s38", title:"#88 探测失败不写文件并退出 2",fn:scenarioS38,focus:["探测失败","重试或退出"]},
   {
     id: "s1",
     title: "S1 narration：两轮正文都有行首 ● 前缀",

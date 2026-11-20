@@ -159,7 +159,7 @@ function windowFromModelEntry(entry: Record<string, unknown>): number | null {
  * 这里的 `max_tokens` 只可能出现在 /models 模型卡片上，表示网关声明的生成上限。
  * 它不是请求体里的预算，也不是 usage.completion_tokens。后两者禁止写进能力上限（#6）。
  */
-function outputFromModelEntry(entry: Record<string, unknown>): number | null {
+export function outputFromModelEntry(entry: Record<string, unknown>): number | null {
   const direct = ["max_output_tokens", "max_completion_tokens", "max_output", "output_token_limit", "max_tokens"];
   for (const k of direct) {
     const n = num(entry[k]);

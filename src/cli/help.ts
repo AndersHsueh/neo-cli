@@ -142,5 +142,10 @@ ${c.bold("输入")}
 ${c.bold("环境变量")}
   NEO_PROVIDER / NEO_TIER / NEO_MODEL / NEO_BASE_URL / NEO_API_KEY  覆盖 settings.json
   NEO_CLASSIFIER_PROVIDER / NEO_CLASSIFIER_MODEL                    指定分类器用的 provider 与模型
+
+${c.bold("初次使用")}
+  候选路径都没有 settings.json 时，交互运行 neo 会引导配置一个 default provider，
+  测通后写入 ~/.neo/settings.json（权限 0600）。-p / 非 TTY / neo acp 不进入向导。
+  环境变量不会跳过本向导，也不会被偷偷写进文件。
 `;
 }

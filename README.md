@@ -10,8 +10,8 @@ Matrix 风格的终端编程助手。用 Bun 写的 CLI harness，对接 OpenAI 
 
 ```bash
 cd neo
-cp settings.example.json settings.json   # 填入 api-key / OpenAI / model_name
-bun run src/index.ts                     # 交互模式
+bun run src/index.ts                     # 交互模式：候选路径都没有 settings.json 时会引导配置并写入 ~/.neo/settings.json
+cp settings.example.json settings.json   # 或自行撰写配置后再启动
 bun run src/index.ts -p "用 glob 找出所有 .ts 文件"   # 单次模式
 bun run src/index.ts -p "修到测试全绿" --drive "bun test" --max 5 --max-minutes 30 -y  # 无人值守长跑
 ```
@@ -600,6 +600,8 @@ Anthropic 路径的差异处理：`system` 提到顶层字段，连续 `tool` �
 `NEO_PROVIDER` / `NEO_TIER` / `NEO_MODEL` / `NEO_BASE_URL` / `NEO_API_KEY`
 
 配置文件搜索顺序：当前目录 `settings.json` → 项目根 `settings.json` → `~/.neo/settings.json`。
+
+**初次使用。** 候选路径都没有 `settings.json` 时，在终端交互运行 `neo`（不要加 `-p`）会进入向导：输入 `base_url` 与 `api_key`（输入只回显 `*`）、选择 OpenAI 或 Anthropic 协议、从网关 `/models` 列表里为 default / balance / fast / deep 各选一个模型、确认 `max_output_tokens`（模型能力上限，不是请求预算 `max_tokens`），并对 default 模型做一次连通测试。成功后写入 `~/.neo/settings.json`（权限 `0600`，不覆盖已有文件），然后正常启动。`-p`、非 TTY 和 `neo acp` 不会进入向导，会提示先跑一次交互 `neo` 完成初次配置并以 exit 2 退出，不发模型请求。环境变量（如 `NEO_API_KEY`）不会跳过本向导，也不会被偷偷写进文件。也可以仍用手写 `settings.json` 或复制 `settings.example.json`。
 
 旧版扁平格式（顶层 `api-key` / `OpenAI` / `model_name`）仍能读取，会自动折算成一个名为 `legacy` 的 provider 并给出提示。
 

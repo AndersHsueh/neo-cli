@@ -29,6 +29,7 @@ import {
   type InboundPolicy,
   type MailboxConfig,
 } from "./mailbox/types.ts";
+import { findSettingsPath } from "./config/settingsPath.ts";
 
 import {
   API_TYPE_PREFERENCE,
@@ -536,21 +537,13 @@ export function loadConfig(overrides: Partial<Config> = {}, options: LoadConfigO
   const here = options.settingsDir ?? process.cwd();
   // v0.4.0：Windows 上 URL.pathname 是 /C:/... 形态，必须用 fileURLToPath 还原盘符路径。
   const pkgRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-  const spawnDir = process.cwd();
 
   // ACP 传 settingsDir=session cwd：先工作区，再启动目录（编辑器拉起进程时的 cwd，
   // 工作区里不一定有 settings.json），然后才是包装根与用户级 ~/.neo。
   // 不能在工作区没有文件时直接掉到包装根/模板——那会悄悄用开发机上的密钥，
   // 把「缺凭证」测例和沙箱假 LLM 全部打到错误的配置上。
-  const candidates = [
-    join(here, "settings.json"),
-    ...(options.settingsDir !== undefined && resolve(here) !== resolve(spawnDir)
-      ? [join(spawnDir, "settings.json")]
-      : []),
-    join(pkgRoot, "settings.json"),
-    join(process.env["HOME"] || process.env["USERPROFILE"] || homedir(), ".neo", "settings.json"),
-  ];
-  const found = candidates.find((p) => existsSync(p)) ?? null;
+  // 候选顺序与「第一份存在的文件全赢」集中在 settingsPath.ts，此处只取结果。
+  const found = findSettingsPath({ settingsDir: options.settingsDir });
   const raw = found ? (readJson(found) ?? {}) : {};
   const dflt = readJson(join(pkgRoot, "settings.example.json")) ?? {};
 
