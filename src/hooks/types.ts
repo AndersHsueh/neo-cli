@@ -425,14 +425,14 @@ export const SUBAGENT_DESCRIPTION_LIMIT = 500;
  * #86 SubagentStart 载荷。
  *
  * 跑在**父会话**上下文：`session_id` / `cwd` / `mode` / `turn` 用父代理，
- * `subagent` 恒为 `false`。matcher 只认 `agent_type`（本切为 `task`）；
- * `agent_name` 本切锁死为空字符串，matcher 不读它。
+ * `subagent` 恒为 `false`。matcher 只认 `agent_type`（本切为 `task`），不读 `agent_name`。
+ * `#36`：`agent_name` 为命名子代理的名字；通用 `task` 为空字符串。
  */
 export interface SubagentStartPayload extends HookPayloadBase {
   event: "SubagentStart";
   agent_type: SubagentAgentType;
-  /** 本切锁死为空字符串（预留；#36 之前 matcher 不读它）。 */
-  agent_name: "";
+  /** 命名子代理的名字；通用 task 为空字符串。matcher 不读此字段。 */
+  agent_name: string;
   /** 前台 `sg-N`，后台 / 续跑为调用方传入的 `bg-N`。 */
   task_id: string;
   /** 任务 prompt，硬截断到 `SUBAGENT_DESCRIPTION_LIMIT`。 */
@@ -448,7 +448,7 @@ export interface SubagentStartPayload extends HookPayloadBase {
 export interface SubagentStopPayload extends HookPayloadBase {
   event: "SubagentStop";
   agent_type: SubagentAgentType;
-  agent_name: "";
+  agent_name: string;
   task_id: string;
   description: string;
   reason: SubagentStopReason;

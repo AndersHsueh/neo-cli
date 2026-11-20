@@ -44,7 +44,7 @@ ${c.bold("选项")}
                         同模型重试耗尽后才切换；会话内保持目标，不自动回切、不改写 settings
                         仅主 Agent 请求生效；提高可恢复性，但不保证任务成功
       --safe-mode       以干净配置启动，用于排查自定义项故障（不加载 AGENTS.md / 路径规则 /
-                        技能 / hooks / MCP / LSP / 仓库地图 / 记忆 wiki）。登录、provider /
+                        技能 / 自定义子代理 / hooks / MCP / LSP / 仓库地图 / 记忆 wiki）。登录、provider /
                         模型、内置工具与 /mode 仍可用。只影响本次进程，不改 settings.json。
                         这不是沙箱。等效环境变量 NEO_SAFE_MODE=1/true/yes（大小写不敏感）
       --drive <检查命令>  -p 无人值守长跑：每轮结束跑检查命令，exit 0 = 达成（已验证）。
@@ -116,6 +116,9 @@ ${c.bold("交互命令")}
   /inbox           查看 held 消息；/inbox release <id> 放行一条
   /rename <name>   设置本会话名字（跨会话寻址；撞名自动加后缀）
   /skills          列出可用技能    /skills <名>  查看技能详情
+  /agents          列出自定义命名子代理    /agents <名>  查看路径/工具/模型（不倾倒全文）
+                   定义是 <cwd>/.neo/agents/*.md 或 ~/.neo/agents/*.md（也识别 .claude/agents）
+                   经 task 的可选 agent 参数调用；不传则为通用子代理。与技能、#17 规则不是同一件事。
   /<技能名> [参数]  直接调用技能（正文随下一轮发给模型；$ARGUMENTS 替换为参数）
   /wiki-lint       wiki 体检：断链/orphan/摘要/日期戳/链接密度
   /ingest [f|i]    编译 raw → wiki（无参按 log 判定：超 1 周全量并告知，否则增量）

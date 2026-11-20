@@ -9,6 +9,7 @@ import { mainToolNames, toolSpecs } from "./tools/index.ts";
 import { CODE_MODE_TOOL_NAME, codeModePromptSection, codeModeVisibleForPrompt } from "./tools/codeMode.ts";
 import { buildMcpCatalogSection } from "./mcp/toolSearch.ts";
 import { buildSkillIndex, discoverSkills, isRealDir } from "./skills.ts";
+import { buildAgentIndex, discoverAgents } from "./agents.ts";
 import { resolveUserWikiLayout, resolveWikiLayout } from "./wiki/paths.ts";
 import { getEnvForPrompt } from "./env/probe.ts";
 import { formatEnvPrompt } from "./env/render.ts";
@@ -130,6 +131,8 @@ export function buildSystemPrompt(
   // 两者在不同段才不会互相干扰。约束 10：无技能时完全不输出该段。
   const skills = discoverSkills(cfg);
   const skillText = skills.length > 0 ? `\n${buildSkillIndex(skills)}\n` : "";
+  const agents = discoverAgents(cfg).agents;
+  const agentText = agents.some((a) => a.advertised) ? `\n${buildAgentIndex(agents)}\n` : "";
 
   // wiki 索引注入（wiki-turnning-1018.md 问题 2）：让模型看得见库里有什么知识，
   // 才可能想起来用 wiki_search / wiki_write——可见性靠注入，不靠 prompt 自觉。
@@ -156,7 +159,7 @@ ${askUserRule}
 ${lspToolLine}- web_fetch：抓网页转纯文本，查文档用。
 - web_search：用 cn.bing.com RSS 搜全网（无需 API key），返回标题/URL/摘要；搜索优先用它，再对结果 web_fetch。
 - use_skill：按需加载技能正文（技能索引见下方「技能」节）。
-- task：派生隔离子代理跑探索/多文件改动，返回结论与用量；子代理不能用 task 递归派生。
+- task：派生隔离子代理跑探索/多文件改动，返回结论与用量；子代理不能用 task 递归派生。可选 agent 参数指定自定义命名子代理（见下方「自定义子代理」节；不传则为通用子代理）。
 ${opts.askUser ? "- ask_user：向用户提问（单选/多选/自由输入，Esc 取消）。仅在交互 TUI 可用；关键歧义/破坏性操作前使用。\n" : ""}
 - wiki_search：检索记忆 wiki（scope=auto 时先项目级、后用户级）。
 - wiki_write：回填项目 wiki 的唯一合法路径（强制摘要/日期戳/INDEX/log）。
@@ -164,7 +167,7 @@ ${opts.askUser ? "- ask_user：向用户提问（单选/多选/自由输入，Es
 - todo_write：写入/更新本会话的结构化待办（整表替换；同时最多一项 in_progress）。长任务用它维持清单，压缩上下文后清单仍在，用户可用 /todos 查看。
 - compact_ctx：请求压缩对话上下文（历史→结构化摘要）。大范围探索完成、进入下一阶段前可主动调用；实际压缩在当前工具批次结束后执行。
 ${codeModeLine}- 规划态（用户用 /plan 进入）时工具清单会收窄为只读集合，并额外出现 submit_plan / exit_plan_mode：先澄清范围与取舍，用 submit_plan 提交「步骤 / 风险 / 涉及文件」，用户确认后才恢复写盘与执行。
-${opts.mailbox ? "- send_message：给另一个存活的 neo 会话投递纯文本消息（派活/回信）；回信时把原任务消息 id 传给 reply_to。\n- list_peers：列出存活会话及其状态机摘要（空闲/工作中/等待人类/在等别人/停滞/已死）；带 target 查单个。\n" : ""}${skillText}${wikiText}${mcpCatalogText}${mailboxText}
+${opts.mailbox ? "- send_message：给另一个存活的 neo 会话投递纯文本消息（派活/回信）；回信时把原任务消息 id 传给 reply_to。\n- list_peers：列出存活会话及其状态机摘要（空闲/工作中/等待人类/在等别人/停滞/已死）；带 target 查单个。\n" : ""}${skillText}${agentText}${wikiText}${mcpCatalogText}${mailboxText}
 ## 环境
 
 - 工作目录：${cfg.cwd}

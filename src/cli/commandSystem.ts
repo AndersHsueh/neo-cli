@@ -625,7 +625,12 @@ export async function handleSystemCommands(cmd: string, arg: string, rest: strin
         const secs = Math.max(0, Math.round(t.elapsedMs / 1000));
         const prompt = t.prompt.length > 50 ? `${t.prompt.slice(0, 50)}…` : t.prompt;
         // issue #53：后台 wiki 维护在任务表里可见，但用 [wiki] 标出它不是用户发起的子代理。
-        const tag = t.kind === "wiki" ? `  ${c.dim("[wiki]")}` : "";
+        // #36：命名子代理要带上 agent 名。
+        const tags = [
+          ...(t.kind === "wiki" ? [`${c.dim("[wiki]")}`] : []),
+          ...(t.agent ? [`${c.dim("[agent:" + t.agent + "]")}`] : []),
+        ].join(" ");
+        const tag = tags ? `  ${tags}` : "";
         ui.line(`  ${c.text(t.id)}${tag}  ${status}  ${c.dim(`${secs}s`)}  ${c.dim(prompt)}`);
         if (t.error) ui.line(`      ${c.warn(t.error)}`);
       }

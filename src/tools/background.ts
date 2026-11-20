@@ -46,6 +46,8 @@ export interface PersistedBackgroundJob {
   error: string | null;
   tier?: string;
   promptTier?: string;
+  /** #36：命名子代理名；通用 task 不写。 */
+  agent?: string;
 }
 
 export interface BackgroundJob {
@@ -65,6 +67,8 @@ export interface BackgroundJob {
   ctx: ToolCtx;
   /** 任务种类（issue #53）；缺省视为 "task"。 */
   kind: "task" | "wiki";
+  /** #36：命名子代理名；通用 task 不写。 */
+  agent?: string;
 }
 
 /** `task` 工具发起后台任务时带过来的现场。 */
@@ -74,6 +78,8 @@ export interface BackgroundLaunch {
   promptTier?: string;
   /** 发起时的工具上下文（审批委托主 console；后台跑期间仍然有效）。 */
   ctx: ToolCtx;
+  /** #36：命名子代理名。 */
+  agent?: string;
   /**
    * 任务种类（issue #53）。缺省 "task"（用户可见的后台子代理）。
    * "wiki" = 轮末自动 wiki 维护：不占并发名额、不注入主会话、不落盘。
@@ -96,6 +102,8 @@ export interface BackgroundView {
   error: string | null;
   /** 任务种类（issue #53）："wiki" 的行在 /tasks 里带 [wiki] 标签。 */
   kind?: "task" | "wiki";
+  /** #36：命名子代理名，/tasks 列表要带上。 */
+  agent?: string;
 }
 
 export interface BackgroundOptions {
@@ -168,6 +176,7 @@ export class BackgroundTasks {
       promptTier: job.promptTier,
       ctx: job.ctx,
       kind,
+      ...(job.agent ? { agent: job.agent } : {}),
     };
     this.jobs.push(record);
     this.controllers.set(record.id, ctrl);
@@ -203,6 +212,7 @@ export class BackgroundTasks {
         result: j.result,
         error: j.error,
         kind: j.kind,
+        ...(j.agent ? { agent: j.agent } : {}),
       }));
   }
 
@@ -288,6 +298,7 @@ export function serializeJobs(jobs: readonly BackgroundJob[]): PersistedBackgrou
     error: j.error,
     ...(j.tier !== undefined ? { tier: j.tier } : {}),
     ...(j.promptTier !== undefined ? { promptTier: j.promptTier } : {}),
+    ...(j.agent ? { agent: j.agent } : {}),
   }));
 }
 
@@ -317,6 +328,7 @@ export function restoreJobs(raw: unknown): BackgroundView[] {
       rawStatus === "running" || !KNOWN_STATUS.has(rawStatus)
         ? "interrupted"
         : (rawStatus as BackgroundStatus);
+    const agent = typeof r["agent"] === "string" && r["agent"].trim() !== "" ? r["agent"] : undefined;
     out.push({
       id,
       status,
@@ -324,6 +336,7 @@ export function restoreJobs(raw: unknown): BackgroundView[] {
       elapsedMs: Math.max(0, (finishedAt ?? startedAt) - startedAt),
       result: typeof r["result"] === "string" ? r["result"] : null,
       error: typeof r["error"] === "string" ? r["error"] : null,
+      ...(agent ? { agent } : {}),
     });
   }
   return out;

@@ -205,8 +205,7 @@ TurnEnd / Notification。ACP 诊断不写 stdout。
 | `SubagentStart` | 校验通过、真正派出之后。不可阻断，失败只诊断。本切不把 `additionalContext` 注入子代理。 |
 | `SubagentStop` | 子代理结束时（`finally`，且只在已经打过 Start 时成对出现）。`reason` 为 `completed` / `error` / `cancelled`（`aborted` 一律 `cancelled`，即使同时有 `hadError`）。不复用 Stop 的一次续跑，也不做 prevent-stop；失败默认 continue。 |
 
-`matcher` 只认 `agent_type`（本切唯一值 `task`）。载荷预留 `agent_name`（本切锁死为空字符串），
-matcher 不读它。`task_id`：前台为 `sg-N`（按父代理实例递增，只在真正打出 Start 时加一），
+`matcher` 只认 `agent_type`（本切唯一值 `task`），不读 `agent_name`。`agent_name` 在命名子代理（#36）上为该名字，通用 `task` 与不打 hook 的 wiki worker 仍为空字符串。`task_id`：前台为 `sg-N`（按父代理实例递增，只在真正打出 Start 时加一），
 后台 `/tasks` 用已有的 `bg-N`。`description` 是任务 prompt，按 JS 字符串长度硬截断到 500 个字符。
 
 `/tasks chat` 续跑（传入已有 `resume.messages`）不打第二次 Start，该次结束仍打 Stop——
@@ -651,7 +650,7 @@ Anthropic 路径的差异处理：`system` 提到顶层字段，连续 `tool` �
 | `--output-format <fmt>` | 仅 `-p`：`text`（默认）/ `json`（结束时单行）/ `stream-json`（stdout JSONL） |
 | `--fallback <provider>:<model>` | 有序模型备用链，可重复；任一项出现即整体替换 `settings.model_fallback`，最多 8 项 |
 | `--no-fallback` | 本次禁用备用链，与 `--fallback` 互斥 |
-| `--safe-mode` | 以干净配置启动，用于排查自定义项故障：不加载 `AGENTS.md` / 路径规则 / 技能 / hooks / MCP / LSP / 仓库地图 / 记忆 wiki。登录、provider、模型、内置工具与 `/mode` 仍可用。启动时打印「当前为干净配置，自定义项未加载」。只影响本次进程，不改 `settings.json`。这不是沙箱。等效环境变量 `NEO_SAFE_MODE` |
+| `--safe-mode` | 以干净配置启动，用于排查自定义项故障：不加载 `AGENTS.md` / 路径规则 / 技能 / 自定义子代理 / hooks / MCP / LSP / 仓库地图 / 记忆 wiki。登录、provider、模型、内置工具与 `/mode` 仍可用。启动时打印「当前为干净配置，自定义项未加载」。只影响本次进程，不改 `settings.json`。这不是沙箱。等效环境变量 `NEO_SAFE_MODE` |
 
 ### `neo doctor` —— 配置体检
 
@@ -728,7 +727,8 @@ Zed 的 External Agent（Custom Agent）配置，写进 Zed 的 `settings.json`�
 /rename <name> 设置本会话名字（跨会话寻址；撞名自动加后缀）
 /history   历史统计        /save      导出会话
 /sessions  历史会话        /resume    恢复会话（无参进入选择）
-/skills    技能列表与详情  /ingest    编译 raw → wiki（首次全量；之后交互会话轮末自动增量）
+/skills    技能列表与详情  /agents    自定义命名子代理列表与详情
+/ingest    编译 raw → wiki（首次全量；之后交互会话轮末自动增量）
 /wiki-lint wiki 体检        /memory    记忆子命令族
 /remember  显式记忆         /exit      退出
 /last [n]  回看最近 n 次工具调用（默认 1；紧凑模式的信息找回入口）
@@ -931,6 +931,23 @@ bun run verify  # 全量闸门：tsc → test → pty，证据落 docs/evidence/
 | `mcp__<server>__<tool>` | 是 | 外部 MCP server 提供的工具（动态注册，`inputSchema` 透传）；未配置 `mcpServers` 时不存在 |
 | `run_js` | 是（与 `shell` 同桶） | 实验性 Code Mode：执行一段 JavaScript，在一次调用里完成多次工具调用。默认关闭，见下方专节 |
 
+### 自定义命名子代理（issue #36）
+
+用单个 markdown 文件定义可复用的子代理角色（专属提示、工具白名单与模型/档位），执行仍走现有 `task` / `runSubagent`，不另建运行时。不传 `agent` 时，`task` 仍是今天的通用子代理。
+
+这与技能（`use_skill` / `/skills`，按需加载说明书）、#17 的 `.neo/rules`（路径作用域规则）以及项目指令 `AGENTS.md` 不是同一件事。不要把工具白名单理解成沙箱：它只是职责收窄，权限仍由 `/mode` 与审批闸门负责。`--safe-mode` / `NEO_SAFE_MODE` 下不加载这些定义，通用 `task` 仍可用。
+
+发现顺序（同名先到者胜）：
+
+1. `<cwd>/.neo/agents/*.md`
+2. `<cwd>/.claude/agents/*.md`（互操作）
+3. `~/.neo/agents/*.md`（可用 settings 的 `agents_store` 覆盖）
+4. `~/.claude/agents/*.md`（互操作）
+
+frontmatter 支持 `name`（或合法文件名）、`description`（进入索引所必需）、`tools`（neo 工具名，或一小部分 Claude 别名：Read / Write / Edit / Bash / Grep / Glob / Agent）、`model` 或 `tier`。正文是角色提示，会接在既有子代理安全/身份核心之后，不能剥掉该核心。未写 `tools` 则用默认子代理工具集；`task` 等排除表始终生效，不能递归派生。
+
+调用：`task` 的可选 `agent` 参数；系统提示里有短索引。`/agents` 列表，`/agents <名>` 看路径/工具/模型与短摘录。v1 没有交互式管理器、没有创建向导，也没有 `@agentname`（会和 `@` 文件补全冲突）。后台任务与 `/tasks` 会带上子代理名。`SubagentStart` / `SubagentStop` 的 `agent_name` 填该名字（通用 task 仍为 `""`）；matcher 只认 `agent_type`。
+
 MCP 工具与内置工具走**同一条**审批路径。两种「plan」要分开看：
 
 - **交互式 `/plan` 规划态**：MCP 工具**从工具清单里摘掉**，模型看不见，也就不会去调。
@@ -1090,6 +1107,7 @@ neo/
     ├── system-prompt.ts    # 系统提示词与 /init 记忆文件
     ├── session.ts          # 会话持久化（~/.neo/sessions）
     ├── skills.ts           # 技能发现/索引/软链（三层渐进披露）
+    ├── agents.ts           # 自定义命名子代理发现/索引（#36）
     ├── paste.ts            # 长文本粘贴折叠
     ├── attachments.ts      # 粘贴附件（文本/图片）chip 绑定与还原
     ├── clipboard.ts        # macOS 剪贴板图片读取（JXA）

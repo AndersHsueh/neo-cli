@@ -484,6 +484,11 @@ export interface Config {
   /** 额外技能目录（v0.4.1 B3）：按顺序只读扫描，用于外部技能包/团队共享目录。 */
   skillsExtraPaths?: string[];
   /**
+   * 用户级自定义子代理库路径（issue #36）。默认 ~/.neo/agents。
+   * 必须可注入：测试不得扫描用户真实的 ~/.neo/agents/。
+   */
+  agentsStore?: string;
+  /**
    * 记忆系统配置。PRD docs/memory-prd.md §6.3 + §A 配套。
    * 实现层用 `cfg.memory.userLevelDir ?? homedir()/.neo/memorys`（§7.3）：
    * 测试场景下 cfg.memory 总有值；真启动路径下 loadConfig 必填默认。

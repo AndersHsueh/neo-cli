@@ -433,10 +433,13 @@ export function createRepl(s: AppSession): ReplState {
                       signal: ctrl.signal,
                     };
                     try {
+                      const agentName =
+                        (s.backgroundTasks?.rawJobs().find((j) => j.id === id)?.agent) ??
+                        restoredJobs.find((j) => j.id === id)?.agent;
                       const reply = await runSubagent(agent, text, undefined, ctx, undefined, {
                         messages,
                         onMessages: (msgs) => saveSubagentTranscript(sess.meta.id, id, msgs),
-                      }, { jobId: id });
+                      }, { jobId: id, agentName }, agentName);
                       return { ok: true as const, reply };
                     } catch (e) {
                       return { ok: false as const, error: `续聊失败：${(e as Error).message}` };

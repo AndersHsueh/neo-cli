@@ -41,6 +41,11 @@ export interface SubPromptInput {
   tools: readonly ToolSpec[];
   /** 子代理的报告格式/环境/任务等动态正文（不含核心）。 */
   dynamicBody: string;
+  /**
+   * 命名子代理的角色正文（issue #36）。接在安全/身份核心之后，
+   * 不能替换或剥掉核心前缀。
+   */
+  rolePrompt?: string;
   request: SubPromptTierRequest;
   taskText: string;
   config?: Partial<PromptSelectionConfig>;
@@ -59,7 +64,11 @@ export function renderSubagentPrompt(input: SubPromptInput): SubPromptResult {
   // 取更大的一档：主代理请求与宿主规则任一要求更高，就按更高的来。
   const required = rank(requested) <= rank(auto) ? requested : auto;
 
-  const compose = (t: PromptTier): string => `${renderSubagentCore(t, input.parentSessionName)}\n\n${input.dynamicBody}`;
+  const compose = (t: PromptTier): string => {
+    const core = renderSubagentCore(t, input.parentSessionName);
+    const role = (input.rolePrompt ?? "").trim();
+    return role ? `${core}\n\n${role}\n\n${input.dynamicBody}` : `${core}\n\n${input.dynamicBody}`;
+  };
   const overhead: Partial<Record<PromptTier, number>> = {};
   for (const t of TIER_ORDER) overhead[t] = countSystemTokens([compose(t)], input.tools).tokens;
 

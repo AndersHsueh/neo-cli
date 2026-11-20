@@ -38,6 +38,13 @@ import {
   isValidSkillName,
   normalizeDescription,
 } from "../skills.ts";
+import {
+  describeAgentSource,
+  discoverAgents,
+  excerptAgentBody,
+  formatAgentLine,
+  isValidAgentName,
+} from "../agents.ts";
 import { runSubagent } from "../tools/task.ts";
 import { select } from "../ui/select.ts";
 import { formatToolCall } from "../ui/toolLog.ts";
@@ -135,6 +142,61 @@ export async function handleWorkspaceCommands(cmd: string, arg: string, rest: st
       }
       ui.blank();
       ui.info("直接输入 /名称 [参数] 调用技能，或让模型按需 use_skill；/skills <名称> 看详情。");
+      ui.blank();
+      return true;
+    }
+
+    case "agents": {
+      if (cfg.safeMode) {
+        ui.blank();
+        ui.kv("agents", c.dim("未加载"));
+        ui.info(SAFE_MODE_NOTICE);
+        ui.blank();
+        return true;
+      }
+      const { agents, warnings } = discoverAgents(cfg);
+      for (const w of warnings) ui.warn(w);
+      if (arg) {
+        if (!isValidAgentName(arg)) {
+          ui.error(`子代理名非法: ${arg}`);
+          if (agents.length > 0) ui.info(`可用子代理：${agents.map((a) => a.name).join(", ")}`);
+          return true;
+        }
+        const hit = agents.find((a) => a.name === arg);
+        if (!hit) {
+          ui.error(`子代理不存在: ${arg}`);
+          if (agents.length > 0) ui.info(`可用子代理：${agents.map((a) => a.name).join(", ")}`);
+          return true;
+        }
+        ui.blank();
+        ui.kv("名称", hit.name);
+        ui.kv("说明", hit.description || c.dim("（无 description，未进入自动索引）"));
+        ui.kv("来源", describeAgentSource(hit.source));
+        ui.kv("路径", hit.absPath);
+        ui.kv("工具", hit.tools ? hit.tools.join(", ") : "默认子代理工具集");
+        ui.kv("模型", hit.modelRaw || "inherit");
+        const excerpt = excerptAgentBody(hit.body);
+        if (excerpt) ui.kv("摘录", excerpt);
+        ui.blank();
+        ui.info("用 task 工具的 agent 参数调用；用户直接编辑 markdown 文件即可增改定义。");
+        return true;
+      }
+      ui.blank();
+      if (agents.length === 0) {
+        ui.info(
+          `没有自定义子代理。把 markdown 放到 ${join(cfg.cwd, ".neo", "agents")} 或用户库（默认 ~/.neo/agents）。也识别 .claude/agents 互操作目录。`,
+        );
+        ui.blank();
+        return true;
+      }
+      ui.kv("自定义子代理", String(agents.length));
+      for (const a of agents) {
+        const dot = c.tool("●");
+        const desc = a.advertised ? formatAgentLine(a.name, a.description) : `- ${a.name}：${c.dim("（无 description）")}`;
+        ui.line(`  ${dot} ${desc}　[${describeAgentSource(a.source)}]`);
+      }
+      ui.blank();
+      ui.info("用 task 的 agent 参数调用；/agents <名称> 看详情。这与 /skills 不是同一件事。");
       ui.blank();
       return true;
     }

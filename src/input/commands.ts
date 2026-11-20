@@ -46,6 +46,7 @@ export const COMMANDS: CommandEntry[] = [
   { name: "ps", description: "后台长驻 shell：列表 / 停止（/ps kill [id|all]）" },
   { name: "todos", description: "查看本会话结构化待办" },
   { name: "skills", description: "技能列表与详情" },
+  { name: "agents", description: "自定义命名子代理列表与详情（markdown 定义，不是技能）" },
   { name: "wiki-lint", description: "wiki 体检" },
   { name: "ingest", description: "编译 raw → wiki" },
   { name: "mode", description: "权限模式（plan = 只读闸门，禁止一切写操作）" },

@@ -273,7 +273,8 @@ export async function createAcpSession(opts: CreateAcpSessionOptions): Promise<A
   // ---- 工具注册：与 sessionStart 同一批运行时工具，但跳过信箱与 TUI 专属 ----
   registerTool(
     makeTaskTool({
-      run: (prompt, tier, ctx, promptTier) => runSubagent(agent, prompt, tier, ctx, promptTier),
+      run: (prompt, tier, ctx, promptTier, agentName) =>
+        runSubagent(agent, prompt, tier, ctx, promptTier, undefined, { agentName }, agentName),
     }),
   );
   registerWikiTools(registerTool);

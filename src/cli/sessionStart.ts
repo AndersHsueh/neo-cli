@@ -18,6 +18,7 @@ import { chatStream } from "../llm.ts";
 import { registerTool } from "../tools/index.ts";
 import { McpManager } from "../mcp/index.ts";
 import { makeTaskTool, runSubagent } from "../tools/task.ts";
+import { discoverAgents } from "../agents.ts";
 import { BackgroundTasks, serializeJobs, restoreJobs } from "../tools/background.ts";
 import { saveSubagentTranscript } from "../tools/transcript.ts";
 import { backgroundShells } from "../tools/backgroundShell.ts";
@@ -393,7 +394,9 @@ export async function startSession(s: BootstrapSession) {
         // issue #48：把子代理的最终 messages 交出来，任务结束即落盘（续聊要用它重建上下文）。
         { onMessages: (msgs) => saveSubagentTranscript(sess.meta.id, job.id, msgs) },
         // #86：后台任务沿用已有的 bg-N，Start/Stop 用同一个 id，不要在内部再发 sg-N。
-        { jobId: job.id },
+        // #36：带上命名子代理名，Hook 与再次发现角色定义。
+        { jobId: job.id, agentName: job.agent },
+        job.agent,
       ),
   });
 
@@ -425,7 +428,8 @@ export async function startSession(s: BootstrapSession) {
   // task 工具：派生子代理。必须在首次 send 前注册 —— toolSpecs() 每轮现取，注册后即刻生效。
   registerTool(
     makeTaskTool({
-      run: (prompt, tier, ctx, promptTier) => runSubagent(agent, prompt, tier, ctx, promptTier),
+      run: (prompt, tier, ctx, promptTier, agentName) =>
+        runSubagent(agent, prompt, tier, ctx, promptTier, undefined, { agentName }, agentName),
       background: {
         launch: (job) => {
           const r = s.backgroundTasks!.launch(job);
@@ -529,6 +533,9 @@ export async function startSession(s: BootstrapSession) {
     if (n > 0) ui.info(`hooks：已加载 ${n} 条生命周期 hook（/hooks 查看）`);
   }
   for (const w of cfg.hooks.warnings) ui.warn(`hooks 配置：${w}`);
+  if (!cfg.safeMode) {
+    for (const w of discoverAgents(cfg).warnings) ui.warn(w);
+  }
 
   // 运行时工具注册完成后再刷新系统提示：`可用工具` 行由 toolNames() 现取，
   // 首次构造时运行时工具（task/wiki/remember/send_message/list_peers）尚未注册。

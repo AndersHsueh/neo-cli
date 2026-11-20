@@ -34,6 +34,11 @@ import {
   SUBAGENT_DESCRIPTION_LIMIT,
   type SubagentStopReason,
 } from "../hooks/types.ts";
+import {
+  resolveAgentModel,
+  resolveTaskAgent,
+  type NamedAgent,
+} from "../agents.ts";
 
 /** 子代理迭代上限。子代理是单一任务，跑满主代理的 80 次迭代意味着早已跑偏。 */
 const SUB_MAX_ITERATIONS = 24;
@@ -252,6 +257,12 @@ export interface SubagentRunOptions {
    * wiki 维护 worker 必须传 false：产品上不算子代理，且关闭时不消耗 `sg-N`。
    */
   emitSubagentHooks?: boolean;
+  /** #36：命名子代理的名字；通用 task 不传。写入 hook 的 agent_name。 */
+  agentName?: string;
+  /** #36：角色正文，接在 renderSubagentPrompt 安全核心之后。 */
+  rolePrompt?: string;
+  /** #36：当前 provider 已配置的模型 id，只写在子代理 cfg 拷贝上。 */
+  modelOverride?: string;
 }
 
 /** 按父代理实例计数的前台 task_id（`sg-N`）。只在真正打出 Start 时递增。 */
@@ -281,7 +292,7 @@ function isResumeRun(resume?: { messages?: Message[] }): boolean {
 async function emitSubagentHook(
   main: Agent,
   event: "SubagentStart" | "SubagentStop",
-  fields: { task_id: string; description: string; reason?: SubagentStopReason },
+  fields: { task_id: string; description: string; reason?: SubagentStopReason; agent_name?: string },
   signal?: AbortSignal,
 ): Promise<void> {
   await main.runHooks(
@@ -289,7 +300,7 @@ async function emitSubagentHook(
     null,
     {
       agent_type: "task",
-      agent_name: "",
+      agent_name: fields.agent_name ?? "",
       task_id: fields.task_id,
       description: fields.description,
       ...(event === "SubagentStop" ? { reason: fields.reason } : {}),
@@ -298,6 +309,42 @@ async function emitSubagentHook(
     null,
     { agentType: "task" },
   );
+}
+
+
+/** 把命名子代理定义收成 runSubagent 选项（工具白名单 / 角色正文 / 模型）。 */
+export function optionsFromNamedAgent(cfg: Config, agent: NamedAgent): {
+  declaredTier?: string;
+  opts: Pick<SubagentRunOptions, "agentName" | "rolePrompt" | "toolAllowlist" | "modelOverride">;
+} {
+  const resolved = resolveAgentModel(agent.modelRaw, cfg);
+  const opts: Pick<SubagentRunOptions, "agentName" | "rolePrompt" | "toolAllowlist" | "modelOverride"> = {
+    agentName: agent.name,
+    rolePrompt: agent.body,
+  };
+  if (agent.tools) opts.toolAllowlist = agent.tools;
+  if (resolved.kind === "model") opts.modelOverride = resolved.model;
+  return {
+    declaredTier: resolved.kind === "tier" ? resolved.tier : undefined,
+    opts,
+  };
+}
+
+function resolveNamedRun(
+  cfg: Config,
+  opts: SubagentRunOptions | undefined,
+  agentName: string | undefined,
+): { ok: true; declaredTier?: string; opts: SubagentRunOptions } | { ok: false; error: string } {
+  const name = opts?.agentName ?? agentName;
+  // 已由调用方备好 rolePrompt / allowlist / model 时，不必再发现一次。
+  if (opts?.rolePrompt !== undefined || opts?.modelOverride !== undefined || opts?.toolAllowlist !== undefined) {
+    return { ok: true, opts: { ...opts, agentName: name ?? opts.agentName } };
+  }
+  const resolved = resolveTaskAgent(cfg, name);
+  if (!resolved.ok) return resolved;
+  if (!resolved.agent) return { ok: true, opts: { ...opts, agentName: name ?? "" } };
+  const named = optionsFromNamedAgent(cfg, resolved.agent);
+  return { ok: true, declaredTier: named.declaredTier, opts: { ...opts, ...named.opts } };
 }
 
 /**
@@ -324,6 +371,8 @@ export async function runSubagent(
   },
   /** issue #53：白名单 / 审批 / 写锁 / 失败即抛。不传 = 旧行为。 */
   opts?: SubagentRunOptions,
+  /** #36：命名子代理名（简写；与 opts 合并，opts 优先）。 */
+  agentName?: string,
 ): Promise<string> {
   const trimmed = prompt.trim();
   if (!trimmed) {
@@ -331,7 +380,10 @@ export async function runSubagent(
   }
 
   const cfg = main.config;
-  const decision = decideSubTier(trimmed, declaredTier, cfg);
+  const named = resolveNamedRun(cfg, opts, agentName);
+  if (!named.ok) throw new ToolError(named.error);
+  const effectiveOpts: SubagentRunOptions = { ...opts, ...named.opts };
+  const decision = decideSubTier(trimmed, declaredTier ?? named.declaredTier, cfg);
 
   // 浅拷贝：applyTier 原地改写 cfg 顶层标量，共享引用会互相污染。
   const subCfg: Config = {
@@ -348,6 +400,11 @@ export async function runSubagent(
   // 子代理可能换了模型：按它自己的 env 事实重新解析窗口与来源，不沿用主代理的值。
   // （applyTier 只改 contextWindow 数值；来源要重算，否则主代理的「已探测」会冒充子模型。）
   resolveAndApplyModelWindow(subCfg);
+  // #36：模型 id 只写在子代理拷贝上，不改父 cfg，也不切换 provider。
+  if (effectiveOpts.modelOverride) {
+    subCfg.model = effectiveOpts.modelOverride;
+    resolveAndApplyModelWindow(subCfg);
+  }
 
   const promptTierReq = normalizePromptTierRequest(declaredPromptTier);
   if (promptTierReq === null) {
@@ -375,13 +432,14 @@ export async function runSubagent(
   // 子代理实际可见的工具 schema 计入预算（排除表与 Agent.toolSpecsFor 一致）。
   // issue #53：传了 toolAllowlist 时同样收窄 —— 预算必须按真实可见集算。
   // issue #68：MCP schema 同样按「已装入」收窄 —— 预算不能按全量目录算。
-  const subTools = subagentVisibleSpecs(subCfg, subMcpLoaded, opts?.toolAllowlist);
+  const subTools = subagentVisibleSpecs(subCfg, subMcpLoaded, effectiveOpts.toolAllowlist);
   const subPrompt = renderSubagentPrompt({
     parentSessionName: main.sessionName,
     window: subCfg.contextWindow,
     source: subCfg.contextWindowSource,
     tools: subTools,
     dynamicBody: subDynamicBody(trimmed, subEnvText),
+    rolePrompt: effectiveOpts.rolePrompt,
     request: promptTierReq,
     taskText: trimmed,
     config: subCfg.systemPrompt,
@@ -408,7 +466,7 @@ export async function runSubagent(
     // 子代理的写操作也进父会话的检查点（/undo 能一起恢复）
     checkpoint: ctx.checkpoint,
     // issue #53：白名单与写锁透传（不传 = 旧行为）。
-    ...(opts?.toolAllowlist ? { toolAllowlist: opts.toolAllowlist } : {}),
+    ...(effectiveOpts.toolAllowlist ? { toolAllowlist: effectiveOpts.toolAllowlist } : {}),
     ...(opts?.wikiWriteLock ? { wikiWriteLock: opts.wikiWriteLock } : {}),
     ...(opts?.approve ? { approve: opts.approve } : {}),
     // 生命周期 hooks（issue #3）：子代理的工具调用同样触发 Pre/PostToolUse ——
@@ -438,17 +496,18 @@ export async function runSubagent(
   // Start 只在真正派出时打；续跑不打第二次 Start，但结束仍打 Stop。
   // wiki worker 传 emitSubagentHooks: false，既不打 hook 也不消耗 sg-N。
   const description = truncateSubagentDescription(trimmed);
-  const emitHooks = opts?.emitSubagentHooks !== false;
+  const emitHooks = effectiveOpts.emitSubagentHooks !== false;
+  const hookAgentName = effectiveOpts.agentName ?? "";
   let hookStarted = false;
   let taskId = "";
   let stopReason: SubagentStopReason = "error";
   if (emitHooks) {
     hookStarted = true;
     if (resumed) {
-      taskId = opts?.jobId ?? "";
+      taskId = effectiveOpts.jobId ?? "";
     } else {
-      taskId = opts?.jobId ?? allocateForegroundTaskId(main);
-      await emitSubagentHook(main, "SubagentStart", { task_id: taskId, description }, ctx.signal);
+      taskId = effectiveOpts.jobId ?? allocateForegroundTaskId(main);
+      await emitSubagentHook(main, "SubagentStart", { task_id: taskId, description, agent_name: hookAgentName }, ctx.signal);
     }
   }
 
@@ -456,7 +515,7 @@ export async function runSubagent(
     const stats = await sub.send(trimmed);
     stopReason = subagentStopReason(stats);
     // issue #53：worker 需要「失败就是失败」，不能把中止/出错当成功文本返回。
-    if (opts?.failOnError) {
+    if (effectiveOpts.failOnError) {
       if (stats.aborted) throw new Error("子代理被取消");
       if (stats.hadError) throw new Error(stats.errorMessage ?? "子代理执行失败");
     }
@@ -490,7 +549,7 @@ export async function runSubagent(
         // 子代理被取消时 ctx.signal 已经 aborted；若把它传给 hook，
         // Stop 脚本会立刻被杀掉，调用方就看不到结束事件。
         const stopSignal = ctx.signal?.aborted ? undefined : ctx.signal;
-        await emitSubagentHook(main, "SubagentStop", { task_id: taskId, description, reason: stopReason }, stopSignal);
+        await emitSubagentHook(main, "SubagentStop", { task_id: taskId, description, reason: stopReason, agent_name: hookAgentName }, stopSignal);
       } catch {
         /* hook 分发已在 runHooks 内收敛，这里再兜一层，不掩盖任务结果 */
       }
@@ -504,17 +563,35 @@ export async function runSubagent(
   }
 }
 
+
+function taskToolDescription(): string {
+  const base =
+    "派生一个子代理，在独立上下文中完成一项自包含任务，只把最终报告返回给你。" +
+    "适合：大范围代码探索、批量机械读写、跑测试并汇总结果 —— 子代理烧掉的上下文不占用你的窗口。" +
+    "任务描述必须自包含：子代理看不到与用户的对话历史。" +
+    "可选 agent 参数指定自定义命名子代理（项目/用户级 markdown 定义的专属提示、工具与模型；与技能不同，技能用 use_skill 加载说明书）。不传则为通用子代理。" +
+    "tier 参数决定子代理用哪档模型（档位名，实际模型由该档位的路由配置解析）：机械读写用 fast 档（廉价模型）省钱，" +
+    "深度推理用 deep（deep_reasoning）档（强推理模型），不确定就留空（自动按任务措辞判断，无信号则沿用当前档位）。";
+  return base;
+}
+
 /**
  * task 工具定义。deps.run 由组合根注入，避免本模块直接依赖主代理实例。
  */
 export function makeTaskTool(deps: {
-  run: (prompt: string, tier: string | undefined, ctx: ToolCtx, promptTier?: string) => Promise<string>;
+  run: (
+    prompt: string,
+    tier: string | undefined,
+    ctx: ToolCtx,
+    promptTier?: string,
+    agentName?: string,
+  ) => Promise<string>;
   /**
    * 后台模式（issue #16）。不传 = 只有同步模式（子代理、测试的裸装配）。
    * 传了才允许 `background: true`：立刻返回任务 id，子代理在后台跑。
    */
   background?: {
-    launch: (job: { prompt: string; tier?: string; promptTier?: string; ctx: ToolCtx }) =>
+    launch: (job: { prompt: string; tier?: string; promptTier?: string; ctx: ToolCtx; agent?: string }) =>
       | { ok: true; id: string }
       | { ok: false; error: string };
   };
@@ -529,18 +606,19 @@ export function makeTaskTool(deps: {
       type: "function",
       function: {
         name: "task",
-        description:
-          "派生一个子代理，在独立上下文中完成一项自包含任务，只把最终报告返回给你。" +
-          "适合：大范围代码探索、批量机械读写、跑测试并汇总结果 —— 子代理烧掉的上下文不占用你的窗口。" +
-          "任务描述必须自包含：子代理看不到与用户的对话历史。" +
-          "tier 参数决定子代理用哪档模型（档位名，实际模型由该档位的路由配置解析）：机械读写用 fast 档（廉价模型）省钱，" +
-          "深度推理用 deep（deep_reasoning）档（强推理模型），不确定就留空（自动按任务措辞判断，无信号则沿用当前档位）。",
+        description: taskToolDescription(),
         parameters: {
           type: "object",
           properties: {
             prompt: {
               type: "string",
               description: "自包含的任务描述。包含子代理需要的全部背景、目标与验收标准",
+            },
+            agent: {
+              type: "string",
+              description:
+                "可选。自定义命名子代理的名字（定义见项目或用户的 agents/*.md）。" +
+                "不传则为通用子代理。未知名字会报错并列出可用项，不会派出。",
             },
             tier: {
               type: "string",
@@ -569,7 +647,17 @@ export function makeTaskTool(deps: {
       const prompt = String(args["prompt"] ?? "");
       const tierRaw = args["tier"];
       const tier = typeof tierRaw === "string" && tierRaw.trim() !== "" ? tierRaw.trim() : undefined;
-      const label = tier ? `tier=${tier}` : "tier=auto";
+      const agentRaw = args["agent"];
+      const agentName = typeof agentRaw === "string" && agentRaw.trim() !== "" ? agentRaw.trim() : undefined;
+      const resolved = resolveTaskAgent(ctx.cfg, agentName);
+      if (!resolved.ok) throw new ToolError(resolved.error);
+      const named = resolved.agent ? optionsFromNamedAgent(ctx.cfg, resolved.agent) : undefined;
+      const effectiveTier = tier ?? named?.declaredTier;
+      const labelParts = [
+        effectiveTier ? `tier=${effectiveTier}` : "tier=auto",
+        ...(agentName ? [`agent=${agentName}`] : []),
+      ];
+      const label = labelParts.join("，");
       const ptRaw = args["prompt_tier"];
       const promptTier = typeof ptRaw === "string" && ptRaw.trim() !== "" ? ptRaw.trim() : undefined;
       if (args["background"] === true) {
@@ -577,7 +665,7 @@ export function makeTaskTool(deps: {
           throw new ToolError("当前装配不支持后台子代理（background 未接线）");
         }
         if (!prompt.trim()) throw new ToolError("prompt 不能为空 —— 子代理没有主代理的上下文");
-        const launched = deps.background.launch({ prompt, tier, promptTier, ctx });
+        const launched = deps.background.launch({ prompt, tier: effectiveTier, promptTier, ctx, agent: agentName });
         if (!launched.ok) throw new ToolError(launched.error);
         return (
           `后台子代理已启动（id=${launched.id}，${label}）。` +
@@ -585,7 +673,7 @@ export function makeTaskTool(deps: {
         );
       }
       ctx.onProgress?.(`子代理运行中（${label}）…`);
-      return deps.run(prompt, tier, ctx, promptTier);
+      return deps.run(prompt, effectiveTier, ctx, promptTier, agentName);
     },
   };
 }

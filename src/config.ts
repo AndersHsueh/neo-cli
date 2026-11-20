@@ -703,6 +703,7 @@ export function loadConfig(overrides: Partial<Config> = {}, options: LoadConfigO
     settingsPath: found,
     skillsStore: str(raw["skills_store"], join(homedir(), ".neo", "skills")),
     skillsExtraPaths: parseSkillsExtraPaths(raw["skills_extra_paths"]),
+    agentsStore: str(raw["agents_store"], join(homedir(), ".neo", "agents")),
     memory: resolveMemoryConfig(raw["memory"] as Raw | undefined),
     shell: resolveShellConfig(raw["shell"]),
     // MCP 只认本地 settings.json：模板里的示例 server 不该在用户机器上被启动。
