@@ -13,6 +13,7 @@
  *  - cfg 浅拷贝：applyTier 是原地改写 cfg（config.ts），共享引用会让主代理
  *    下一轮的档位切换污染正在运行的子代理。
  */
+import { sessionMonitors } from "../monitors.ts";
 import { Agent, type AgentIO } from "../agent.ts";
 import { contentText } from "../llm.ts";
 import type { Message } from "../llm.ts";
@@ -456,6 +457,14 @@ export async function runSubagent(
   const effectiveSystemPrompt =
     resumedSystem && typeof resumedSystem.content === "string" ? resumedSystem.content : subPrompt.text;
 
+  // 监视归属 id 必须在构造 Agent 之前就位（issue #87）。
+  // hook 的 task_id 仍按原规则：续跑沿用 jobId，新派出才分配 sg-N。
+  const resumedEarly = isResumeRun(resume);
+  let taskId = effectiveOpts.jobId ?? "";
+  if (!taskId && !resumedEarly) {
+    taskId = effectiveOpts.emitSubagentHooks !== false ? allocateForegroundTaskId(main) : `sg-tmp-${Math.random().toString(36).slice(2, 8)}`;
+  }
+
   const sub = new Agent({
     cfg: subCfg,
     console: new SilentConsole(main.io),
@@ -463,6 +472,7 @@ export async function runSubagent(
     systemPrompt: effectiveSystemPrompt,
     chatStream: main.injectedStreamFn,
     isSubagent: true,
+    ...(taskId ? { subagentId: taskId } : {}),
     // 子代理的写操作也进父会话的检查点（/undo 能一起恢复）
     checkpoint: ctx.checkpoint,
     // issue #53：白名单与写锁透传（不传 = 旧行为）。
@@ -499,14 +509,10 @@ export async function runSubagent(
   const emitHooks = effectiveOpts.emitSubagentHooks !== false;
   const hookAgentName = effectiveOpts.agentName ?? "";
   let hookStarted = false;
-  let taskId = "";
   let stopReason: SubagentStopReason = "error";
   if (emitHooks) {
     hookStarted = true;
-    if (resumed) {
-      taskId = effectiveOpts.jobId ?? "";
-    } else {
-      taskId = effectiveOpts.jobId ?? allocateForegroundTaskId(main);
+    if (!resumed) {
       await emitSubagentHook(main, "SubagentStart", { task_id: taskId, description, agent_name: hookAgentName }, ctx.signal);
     }
   }
@@ -543,6 +549,13 @@ export async function runSubagent(
     throw e;
   } finally {
     ctx.signal?.removeEventListener("abort", onAbort);
+    if (taskId) {
+      try {
+        sessionMonitors.cancelByOwner({ kind: "subagent", id: taskId });
+      } catch {
+        /* 回收失败不掩盖任务结果 */
+      }
+    }
     // #86：Stop 放在 finally，且只在已经打过 Start（或续跑约定要打 Stop）时成对出现。
     if (hookStarted) {
       try {

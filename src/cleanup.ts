@@ -36,6 +36,12 @@ export interface KillableShells {
   killAll(): void;
 }
 
+/** 事件驱动监视（issue #87）：先停注入，再按进程组杀掉。 */
+export interface StoppableMonitors {
+  stopInjection(): void;
+  killAll(): void;
+}
+
 /** 语言服务器（issue #23）。 */
 export interface ClosableLspServers {
   closeAll(): void;
@@ -55,6 +61,8 @@ export interface EphemeralDeps {
   tasks?: CancellableTasks | null;
   /** 杀后台 shell（issue #28）。 */
   shells?: KillableShells | null;
+  /** 停并回收监视（issue #87）。 */
+  monitors?: StoppableMonitors | null;
   /** 关语言服务器（issue #23）。 */
   lsp?: ClosableLspServers | null;
   /** 关 MCP 子进程。 */
@@ -83,8 +91,11 @@ export function cleanupEphemeral(deps: EphemeralDeps): void {
   // 1) 先停驱动，避免清理过程中又排新轮 / 起新子进程。
   if (deps.loop) safe("loop", () => deps.loop!.dispose());
   if (deps.drive) safe("drive", () => deps.drive!.stop());
-  // 2) 子进程：子代理 → 后台 shell → 语言服务器。
+  // 1b) 先停监视注入，避免清理过程中再往已退出的会话灌事件。
+  if (deps.monitors) safe("monitors-stop-inject", () => deps.monitors!.stopInjection());
+  // 2) 子进程：子代理 → 监视进程组 → 后台 shell → 语言服务器。
   if (deps.tasks) safe("tasks", () => deps.tasks!.cancelAll());
+  if (deps.monitors) safe("monitors-kill", () => deps.monitors!.killAll());
   if (deps.shells) safe("shells", () => deps.shells!.killAll());
   if (deps.lsp) safe("lsp", () => deps.lsp!.closeAll());
   // 3) MCP 子进程。

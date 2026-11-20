@@ -308,12 +308,15 @@ export function makeCtx(this: Agent, signal: AbortSignal): ToolCtx {
     // issue #84：子代理身份透传给 dispatch，由 toolCallRejection 的 deny 拦排除表。
     ...(this.opt.toolAllowlist ? { toolAllowlist: this.opt.toolAllowlist } : {}),
     ...(this.opt.isSubagent ? { isSubagent: true } : {}),
+    ...(this.opt.nonInteractive ? { nonInteractive: true } : {}),
+    ...(this.opt.subagentId ? { monitorOwnerId: this.opt.subagentId } : {}),
     ...(this.opt.wikiWriteLock ? { wikiWriteLock: this.opt.wikiWriteLock } : {}),
     approve: async (tool, detail) => {
       const decision = decidePermission(mode, tool);
       if (decision.allow) return true;
       if (decision.reason === "plan") {
-        ui.warn(`plan 模式禁止 ${tool}：${detail}`);
+        if (tool === "monitor") ui.warn(`plan 模式禁止执行 shell：${detail}`);
+        else ui.warn(`plan 模式禁止 ${tool}：${detail}`);
         return false;
       }
       // Notification（issue #56）：在**弹审批框之前**发通知。

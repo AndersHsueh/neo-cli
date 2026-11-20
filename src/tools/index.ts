@@ -24,6 +24,7 @@ import { listDir } from "./listDir.ts";
 import { lspTool } from "./lspTool.ts";
 import { readFile } from "./readFile.ts";
 import { shell, shellOutput } from "./shellTool.ts";
+import { monitorTool } from "./monitorTool.ts";
 import { useSkill } from "./useSkill.ts";
 import { webFetch } from "./webFetch.ts";
 import { editFile, writeFileTool } from "./writeFile.ts";
@@ -50,6 +51,7 @@ export const TOOLS: ToolImpl[] = [
   grepTool,
   shell,
   shellOutput,
+  monitorTool,
   lspTool,
   webFetch,
   webSearchTool,

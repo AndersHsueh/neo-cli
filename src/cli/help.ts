@@ -136,6 +136,7 @@ ${c.bold("交互命令")}
   /loop [re]       定时/自节奏循环提示：/loop 2m <提示> · /loop self <提示> · /loop stop
   /tasks           后台子代理任务（列表 / cancel [id|all]）
   /ps              后台长驻 shell（列表 / kill [id|all]）；模型用 shell background:true 启动
+  /monitor         事件驱动监视：/monitor [--for <时长>] <命令> 启动 · /monitor 列表 · /monitor stop <id|all>
   /output-style [name] 查看/切输出风格（只改本会话；Default 不加 style 段）
   /tier [name]     查看/切档位      /auto [name] 切换分类器（off/rule/llm）
   /fast /balanced /deep            档位快捷方式（等价 /tier）

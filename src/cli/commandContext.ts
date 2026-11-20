@@ -77,6 +77,12 @@ export interface CommandContext {
     list: () => ShellJobView[];
     kill: (target: string) => number;
   };
+  /** 事件驱动监视（issue #87）：启 / 列 / 停。不传 = 不支持（/monitor 会明说）。 */
+  monitors?: {
+    start: (opts: { command: string; timeoutMs: number; description?: string }) => { ok: true; id: string; timeoutMs: number } | { ok: false; error: string };
+    stop: (target: string) => number;
+    listLines: () => string[];
+  };
   /**
    * 轮末后台 wiki 维护（issue #53）。仅交互会话注入；`/ingest` 用它做单飞判定
    * （worker 在跑时拒绝手动派发，避免两路同时写 wiki）。

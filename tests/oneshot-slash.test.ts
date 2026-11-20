@@ -138,4 +138,14 @@ describe("A -p / 非交互路径的斜杠命令（issue #41）", () => {
     expect(err).toContain("不解析斜杠命令");
     expect(hits).toBe(0);
   }, 30_000);
+
+  test("A4 -p /monitor：退出码 2、说明只能交互使用并由模型调 monitor 工具、不发模型请求", async () => {
+    const dir = project();
+    const r = await run(dir, ["-p", "/monitor --for 5m tail -f log"]);
+    expect(r.code).toBe(2);
+    expect(r.err).toContain("/monitor");
+    expect(r.err).toContain("只能在交互模式使用");
+    expect(r.err).toContain("monitor 工具");
+    expect(hits).toBe(0);
+  }, 30_000);
 });

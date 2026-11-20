@@ -29,7 +29,7 @@ export function isMcpToolName(tool: string): boolean {
  * 敏感动作的统一判定。
  *
  * - auto-all：全部放行
- * - auto-edit：写文件放行；shell、run_js 与 MCP 工具仍要问
+ * - auto-edit：写文件放行；shell、run_js、monitor 与 MCP 工具仍要问
  * - plan：一律拒绝
  * - ask：一律询问
  *
@@ -42,7 +42,13 @@ export function decidePermission(mode: PermissionMode, tool: string): Permission
   if (mode === "auto-all") return { allow: true };
   // issue #71：run_js 与 shell 同桶 —— 脚本能调任意工具、能碰宿主全局，
   // 只把它标成 sensitive 不够（auto-edit 会因「不是 shell、不是 mcp__」免问放行整段 JS）。
-  if (mode === "auto-edit" && tool !== "shell" && tool !== "run_js" && !isMcpToolName(tool)) {
+  if (
+    mode === "auto-edit" &&
+    tool !== "shell" &&
+    tool !== "run_js" &&
+    tool !== "monitor" &&
+    !isMcpToolName(tool)
+  ) {
     return { allow: true };
   }
   if (mode === "plan") return { allow: false, reason: "plan" };

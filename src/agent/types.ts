@@ -170,6 +170,10 @@ export interface AgentOptions {
    */
   isSubagent?: boolean;
   /**
+   * 子代理任务 id（issue #87）：监视归属；结束时按此回收该子代理起的监视。
+   */
+  subagentId?: string;
+  /**
    * 非交互单次模式（-p）：即使 stdout 是 TTY 也用块级渲染，不逐 chunk 流式输出。
    * 否则 `neo -p` 在真终端里会喷出 spinner/ANSI，脚本与日志都难读。
    */

@@ -16,6 +16,8 @@ import { runSubagent } from "../tools/task.ts";
 import { saveSubagentTranscript, loadSubagentTranscript } from "../tools/transcript.ts";
 import type { ToolCtx } from "../tools/types.ts";
 import { backgroundShells } from "../tools/backgroundShell.ts";
+import { sessionMonitors } from "../monitors.ts";
+import { insertBeforeQueuedUser } from "../monitor.ts";
 import { runDriveCheck } from "../driveCheck.ts";
 import * as mailboxState from "../mailbox/state.ts";
 import { formatIncomingFrame, formatNotice, formatNoticePreview, formatPreview } from "../mailbox/inbound.ts";
@@ -26,7 +28,7 @@ import { makeDriveJudge } from "../driveJudge.ts";
 import { outcomeOf, type LastTurnMeta } from "../turnDiagnostics.ts";
 import type { AppSession } from "./sessionStart.ts";
 
-export type QueueOrigin = "user" | "mailbox" | "notice";
+export type QueueOrigin = "user" | "mailbox" | "notice" | "monitor";
 export interface QueueItem extends QueuedLine {
   origin: QueueOrigin;
   /** mailbox/notice 的来源 session（状态机 turn.from）。 */
@@ -214,6 +216,22 @@ export function createRepl(s: AppSession): ReplState {
       s.composerRef?.setQueueCount(repl.queue.length);
       repl.runDrainSafely();
       return true;
+    },
+  });
+  sessionMonitors.configure({
+    isOneshot: () => false,
+    isBusy: () => repl.turnActive,
+    cfg,
+    onInject: (owner, text) => {
+      if (owner.kind !== "session") return;
+      insertBeforeQueuedUser(repl.queue, { text, attachments: [], origin: "monitor" });
+      s.composerRef?.setQueueCount(repl.queue.length);
+      repl.runDrainSafely();
+    },
+    onUserVisible: (line) => {
+      // 不要用 notice()：会触发 #76 空闲 tick。
+      if (line.startsWith("已开始监视") || line.startsWith("已取消监视")) ui.success(line);
+      else ui.line(line);
     },
   });
   repl.pasteTextCounter = 0; // chip 编号会话内递增（PRD §3），图片/文本各自独立
@@ -408,6 +426,11 @@ export function createRepl(s: AppSession): ReplState {
                   list: () => backgroundShells.list(),
                   kill: (target) => backgroundShells.kill(target),
                 },
+                monitors: {
+                  start: (opts) => sessionMonitors.start({ command: opts.command, cwd: cfg.cwd, timeoutMs: opts.timeoutMs, description: opts.description }),
+                  stop: (target) => sessionMonitors.stop(target),
+                  listLines: () => sessionMonitors.formatList(),
+                },
                 // issue #53：轮末后台 wiki 维护（/ingest 单飞判定用）。
                 wikiMaintainer: s.wikiMaintainer ?? undefined,
                 // issue #16：后台子代理任务（列表 / 取消）
@@ -585,6 +608,7 @@ export function createRepl(s: AppSession): ReplState {
             // issue #25：self 节奏循环在「每轮结束」后排下一拍（interval 模式自己在定时器里排）。
             if (turnStats?.blocked || turnStats?.compactBlocked || turnStats?.aborted) repl.loopScheduler.stop();
             else repl.loopScheduler.onTurnEnd();
+            sessionMonitors.onTurnEnd();
             // issue #24：目标驱动续跑 —— 每轮结束跑检查命令，未通过则自动再排一轮。
             // issue #50：把最近一轮的工具输出摘要交给 judge（截断并标注，PRD §2.3）。
             // issue #50：只取**本轮**的工具输出（turnStats.toolCalls 条）；0 工具轮给空，避免混入上一轮尾巴。

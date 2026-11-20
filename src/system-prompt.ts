@@ -156,6 +156,7 @@ ${askUserRule}
 - list_dir / glob / grep：探索代码库。找东西用 grep，找文件用 glob。
 - shell：执行命令。安装依赖、跑测试、git 操作走这里。长跑命令（dev server / watch / 长测试）传 background:true，立刻返回 id，不阻塞会话；前台命令超时也会自动转后台而不是被杀。
 - shell_output：按 id（sh-N）读后台命令的状态与输出尾部（/ps 可列出，/ps kill 停止）。
+- monitor：启动有限时的命令输出监视，行到达时自动回流当前会话（不要用 shell_output 轮询）。用户也可用 /monitor 启/列/停。本轮不支持 WebSocket 源。
 ${lspToolLine}- web_fetch：抓网页转纯文本，查文档用。
 - web_search：用 cn.bing.com RSS 搜全网（无需 API key），返回标题/URL/摘要；搜索优先用它，再对结果 web_fetch。
 - use_skill：按需加载技能正文（技能索引见下方「技能」节）。

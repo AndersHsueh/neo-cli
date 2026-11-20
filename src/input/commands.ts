@@ -44,6 +44,7 @@ export const COMMANDS: CommandEntry[] = [
   { name: "loop", description: "定时/自节奏循环提示（/loop 2m <提示> · self · stop）" },
   { name: "tasks", description: "后台子代理任务列表 / 取消（/tasks cancel [id]）" },
   { name: "ps", description: "后台长驻 shell：列表 / 停止（/ps kill [id|all]）" },
+  { name: "monitor", description: "事件驱动监视：/monitor [--for <时长>] <命令> · 列表 · stop <id|all>" },
   { name: "todos", description: "查看本会话结构化待办" },
   { name: "skills", description: "技能列表与详情" },
   { name: "agents", description: "自定义命名子代理列表与详情（markdown 定义，不是技能）" },

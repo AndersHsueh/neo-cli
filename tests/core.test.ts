@@ -70,6 +70,7 @@ describe("F1 工具集完整性", () => {
     ["grep", false],
     ["shell", true],
     ["shell_output", false],
+    ["monitor", true],
     ["lsp", false],
     ["web_fetch", false],
     ["web_search", false],
@@ -108,7 +109,12 @@ describe("F1 工具集完整性", () => {
       expect(params.type).toBe("object");
       expect(Array.isArray(params.required)).toBe(true);
       // compact_ctx 的 reason 是可选说明，不设必填；exit_plan_mode 的 reason 同理。
-      if (s.function.name !== "compact_ctx" && s.function.name !== "exit_plan_mode") {
+      // monitor 的 action/command 随用法变化，schema 层不设必填，在 execute 里校验。
+      if (
+        s.function.name !== "compact_ctx" &&
+        s.function.name !== "exit_plan_mode" &&
+        s.function.name !== "monitor"
+      ) {
         expect((params.required ?? []).length).toBeGreaterThan(0);
       }
     }

@@ -12,7 +12,9 @@ import { formatEnvForCli } from "../env/render.ts";
 import { syncEnvPage } from "../env/wiki.ts";
 import type { RewindMode } from "../rewind.ts";
 import type { DriveSpec } from "../drive.ts";
+import { decidePermission } from "../agent/policy.ts";
 import { formatInterval, parseLoopCommand } from "../loop.ts";
+import { parseMonitorCommand } from "../monitor.ts";
 import { formatShellJobs } from "../tools/backgroundShell.ts";
 import { ensureScopeLayout } from "../memory/layout.ts";
 import { renameSession } from "../mailbox/identity.ts";
@@ -33,7 +35,7 @@ import { formatDoctorReport, runDoctorCheckup } from "./doctor.ts";
 export async function handleSystemCommands(cmd: string, arg: string, rest: string[], ctx: CommandContext): Promise<boolean> {
   const {
     agent, ui, cfg, meta, mailbox,
-    injectMailbox, onNameChange, loop, tasks, shells, rewind, drive,
+    injectMailbox, onNameChange, loop, tasks, shells, monitors, rewind, drive,
   } = ctx;
   const memoryMode = ctx.memoryMode ?? "interactive";
   switch (cmd) {
@@ -535,6 +537,53 @@ export async function handleSystemCommands(cmd: string, arg: string, rest: strin
           (r.filesSkipped > 0 ? `，跳过 ${r.filesSkipped} 处（快照缺失/过大）` : ""),
       );
       for (const note of r.notes) ui.line(c.dim(`  ${note}`));
+      return true;
+    }
+
+    // 事件驱动监视（issue #87）：用户可独立启/列/停，不要只能靠问模型。
+    case "monitor": {
+      if (!monitors) {
+        ui.warn("当前会话不支持监视（未接线）。");
+        return true;
+      }
+      const parsed = parseMonitorCommand(arg);
+      if (parsed.kind === "error") {
+        ui.warn(parsed.message);
+        return true;
+      }
+      if (parsed.kind === "stop") {
+        const n = monitors.stop(parsed.id);
+        if (parsed.id === "all") {
+          if (n > 0) ui.success(`已取消 ${n} 条监视。`);
+          else ui.info("没有可取消的监视。");
+        } else if (n > 0) ui.success(`已取消监视 ${parsed.id}。`);
+        else ui.info(`没有正在运行的监视 ${parsed.id}。`);
+        return true;
+      }
+      if (parsed.kind === "list") {
+        for (const line of monitors.listLines()) ui.line(line);
+        return true;
+      }
+      // start：plan 拒；ask 走与 shell 同款确认。
+      const mode = agent.effectiveMode ?? agent.mode;
+      const decision = decidePermission(mode, "monitor");
+      if (!decision.allow && decision.reason === "plan") {
+        ui.warn(`plan 模式禁止执行 shell：${parsed.command}`);
+        return true;
+      }
+      if (!decision.allow) {
+        const ok = await ui.confirm(`monitor — 监视: ${parsed.command}`);
+        if (!ok) {
+          ui.info("已拒绝。");
+          return true;
+        }
+      }
+      const started = monitors.start({ command: parsed.command, timeoutMs: parsed.timeoutMs });
+      if (!started.ok) {
+        ui.warn(started.error);
+        return true;
+      }
+      // 成功行由 MonitorTable.onUserVisible 打出（与工具启动同一条文案）。
       return true;
     }
 

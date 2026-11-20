@@ -22,6 +22,7 @@ import { discoverAgents } from "../agents.ts";
 import { BackgroundTasks, serializeJobs, restoreJobs } from "../tools/background.ts";
 import { saveSubagentTranscript } from "../tools/transcript.ts";
 import { backgroundShells } from "../tools/backgroundShell.ts";
+import { sessionMonitors } from "../monitors.ts";
 import { cleanupEphemeral } from "../cleanup.ts";
 import { makeAskUserTool } from "../tools/askUser.ts";
 import { registerWikiTools } from "../tools/wiki.ts";
@@ -651,6 +652,7 @@ export async function startSession(s: BootstrapSession) {
       drive: s.drive ?? null,
       tasks: s.backgroundTasks,
       shells: backgroundShells,
+      monitors: sessionMonitors,
       lsp: lspServers,
       mcp: mcpManager,
       closeMailbox,

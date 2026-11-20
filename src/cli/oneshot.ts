@@ -13,6 +13,7 @@ import { makeDriveJudge } from "../driveJudge.ts";
 import { parseDriveArgs, driveExitCode, formatDriveSummary, type DriveRunResult } from "../oneshotDrive.ts";
 import type { AppSession } from "./sessionStart.ts";
 import { installFatalSignalHandlers } from "../signals.ts";
+import { sessionMonitors } from "../monitors.ts";
 import {
   MAX_SCHEMA_FEEDBACK,
   checkAgainstSchema,
@@ -58,6 +59,14 @@ export async function runOneshotOrPiped(s: AppSession): Promise<number | null> {
   } = s;
   // ---- 单次模式 ----
   if (args.print !== null) {
+    sessionMonitors.configure({
+      isOneshot: () => true,
+      isBusy: () => true, // 首轮进行中；结束后 flushOneshotMonitors 会重配
+      cfg,
+      onUserVisible: (line) => {
+        for (const part of line.split("\n")) s.ui.line(part);
+      },
+    });
     let prompt = args.print || args.rest.join(" ");
     if (!prompt.trim()) {
       console.error(c.err("✖ -p 需要提供内容"));
@@ -71,6 +80,13 @@ export async function runOneshotOrPiped(s: AppSession): Promise<number | null> {
     if (slashCommand === "output-style") {
       // issue #73：带参数切换在 -p 下同样生效；无参则非 TTY 列出当前项。
       return await runOneshotOutputStyle(s, prompt);
+    }
+    if (slashCommand === "monitor") {
+      console.error(
+        c.err("✖ /monitor 只能在交互模式使用；-p 下请让模型调用 monitor 工具启动监视。"),
+      );
+      s.cleanupEphemeralResources();
+      return 2;
     }
     if (slashCommand) {
       console.error(
@@ -338,6 +354,12 @@ export async function runOneshotOrPiped(s: AppSession): Promise<number | null> {
           structuredDiagnostic = outcome.diagnostic;
         }
       }
+      // issue #87：仍有监视时等它们结束并把待注入刷新完，再 cleanup。
+      // 必须在 uninstallSignals 之前，这样等待期间的 SIGINT 仍会先回收再退出。
+      if (!stats.aborted) {
+        const flushed = await flushOneshotMonitors(s, stats, streamBeginTurn);
+        if (flushed) stats = flushed;
+      }
     } catch (e) {
       // 异常退出路径：agent.send 抛错时不能把 MCP 子进程留在后面当孤儿。
       // 收完再原样抛出，让外层（main 的 catch / 进程退出）按原语义处理。
@@ -512,13 +534,29 @@ export async function runOneshotOrPiped(s: AppSession): Promise<number | null> {
     if (restSlashCommand === "output-style") {
       return await runOneshotOutputStyle(s, restPrompt);
     }
+    if (restSlashCommand === "monitor") {
+      console.error(c.err("✖ /monitor 只能在交互模式使用；非交互模式下请让模型调用 monitor 工具启动监视。"));
+      s.cleanupEphemeralResources();
+      return 2;
+    }
     if (restSlashCommand) {
       console.error(c.err(`✖ 非交互模式不解析斜杠命令：/${restSlashCommand} 只能在交互模式使用`));
       s.cleanupEphemeralResources();
       return 2;
     }
+    sessionMonitors.configure({
+      isOneshot: () => true,
+      isBusy: () => false,
+      cfg,
+      onUserVisible: (line) => {
+        for (const part of line.split("\n")) s.ui.line(part);
+      },
+    });
     try {
-      await agent.send(restPrompt);
+      sessionMonitors.configure({ isBusy: () => true, isOneshot: () => true, cfg });
+      const restStats = await agent.send(restPrompt);
+      sessionMonitors.configure({ isBusy: () => false, isOneshot: () => true, cfg });
+      await flushOneshotMonitors(s, restStats);
     } finally {
       // 与 -p 同一条一次性进程路径（issue #40）：子进程必须显式收掉，否则留下孤儿。
       s.cleanupEphemeralResources();
@@ -539,6 +577,48 @@ export async function runOneshotOrPiped(s: AppSession): Promise<number | null> {
  * 回喂在 DriveManager 之外：不计入 --max、不重跑检查命令；若回喂又调工具，
  * 仍走既有权限 / -y。SIGINT 中止回喂时返回 aborted（调用方按 130 收口）。
  */
+
+/** issue #87：-p 在仍有未到期监视时不得立刻 cleanup 退出。 */
+async function flushOneshotMonitors(
+  s: AppSession,
+  stats: Awaited<ReturnType<AppSession["agent"]["send"]>> | undefined,
+  beginTurn?: () => void,
+): Promise<Awaited<ReturnType<AppSession["agent"]["send"]>> | undefined> {
+  const agent = s.agent;
+  let current = stats;
+  let busy = false;
+  sessionMonitors.configure({
+    isOneshot: () => true,
+    isBusy: () => busy,
+    cfg: s.cfg,
+    onUserVisible: (line) => {
+      for (const part of line.split("\n")) s.ui.line(part);
+    },
+  });
+  if (current?.aborted) return current;
+  sessionMonitors.onTurnEnd();
+  for (;;) {
+    const text = await sessionMonitors.nextSessionInjection();
+    if (!text) break;
+    if (current?.aborted) break;
+    beginTurn?.();
+    if (!agent.userTurn) {
+      const boundary = agent.beginUserTurn();
+      boundary.result = { blocked: false, reason: "", context: "", continue: false };
+      boundary.stopContinued = true;
+    }
+    busy = true;
+    try {
+      current = await agent.send(text, { rollbackOnAbort: false });
+    } finally {
+      busy = false;
+      sessionMonitors.onTurnEnd();
+    }
+    if (current.aborted || current.blocked === true) break;
+  }
+  return current;
+}
+
 async function validateFinalAnswer(
   agent: AppSession["agent"],
   stats: Awaited<ReturnType<AppSession["agent"]["send"]>>,

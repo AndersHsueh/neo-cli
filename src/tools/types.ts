@@ -108,6 +108,15 @@ export interface ToolCtx {
    */
   isSubagent?: boolean;
   /**
+   * 非交互单次模式（-p）。monitor 工具用它把时限上限收紧到 10 分钟。
+   */
+  nonInteractive?: boolean;
+  /**
+   * 子代理监视的归属 id（issue #87）。有值时 monitor 启动的任务注入该子代理，
+   * 而不是父会话；子代理结束时按这个 id 回收。
+   */
+  monitorOwnerId?: string;
+  /**
    * wiki_write 的跨进程写锁（issue #53）。只有后台 wiki 维护 worker 传：
    * 每次 wiki_write 都 withLock(dir) 包住写回，超时调 onTimeout 并抛 ToolError。
    * 不传 = 主会话路径，行为完全不变。
