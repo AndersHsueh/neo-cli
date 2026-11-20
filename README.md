@@ -12,6 +12,7 @@ Matrix 风格的终端编程助手。用 Bun 写的 CLI harness，对接 OpenAI 
 cd neo
 bun run src/index.ts                     # 交互模式：候选路径都没有 settings.json 时会引导配置并写入 ~/.neo/settings.json
 cp settings.example.json settings.json   # 或自行撰写配置后再启动
+bun run src/index.ts doctor              # 配置体检（只读报告，不进入 TUI、不发模型请求；别名 /doctor、/checkup）
 bun run src/index.ts -p "用 glob 找出所有 .ts 文件"   # 单次模式
 bun run src/index.ts -p "修到测试全绿" --drive "bun test" --max 5 --max-minutes 30 -y  # 无人值守长跑
 ```
@@ -652,6 +653,12 @@ Anthropic 路径的差异处理：`system` 提到顶层字段，连续 `tool` �
 | `--no-fallback` | 本次禁用备用链，与 `--fallback` 互斥 |
 | `--safe-mode` | 以干净配置启动，用于排查自定义项故障：不加载 `AGENTS.md` / 路径规则 / 技能 / hooks / MCP / LSP / 仓库地图 / 记忆 wiki。登录、provider、模型、内置工具与 `/mode` 仍可用。启动时打印「当前为干净配置，自定义项未加载」。只影响本次进程，不改 `settings.json`。这不是沙箱。等效环境变量 `NEO_SAFE_MODE` |
 
+### `neo doctor` —— 配置体检
+
+`neo doctor`（交互会话里是 `/doctor`，别名 `/checkup`）对已有配置做一次只读体检：实际载入的 `settings.json` 是否可解析、provider / `api_key` 是否缺失、MCP 配置或（在已启动会话里）连接失败原因、hooks 配置告警、技能与规则是否损坏或重名，以及是否找到 `AGENTS.md` / 项目规则。报告按「问题 / 位置 / 建议」列出，默认不改任何文件；密钥只显示已配置或缺失（掩码为 `***`），不会写出明文。
+
+这与 `--safe-mode`（#70，以干净配置启动排障）和初次使用向导（#88）分工不同：doctor 检查已有配置，不替代干净启动，也不会从本命令启动向导。若还没有 `settings.json`，它会提示先交互运行一次 `neo` 或参考 `settings.example.json`。CLI 为避免挂起不会实时连接 MCP；交互 `/doctor` 使用当前进程已加载的 MCP 状态。成功打印报告时退出码为 0（即便有发现）；用法错误为 2。
+
 ### `neo acp` —— 编辑器里的 ACP 服务端
 
 `neo acp` 在 stdio 上跑一个 ACP v1 服务端，供 Zed / JetBrains 等支持 ACP 的编辑器作为外部 Agent 拉起。它与 TUI、`-p` 互斥：stdin/stdout 整条让给 ACP 协议（stdout 只有协议 NDJSON，诊断走 stderr），`-p` / `--output-format` / `--resume` 等会话参数一律不接受 —— 会话由编辑器在 `session/new` 里给出 cwd。MCP 服务沿用 `settings.json` 的 `mcpServers`（编辑器传入的 `mcpServers` 首期不接入）。鉴权沿用 `settings.json`，不需要额外登录。
@@ -710,6 +717,8 @@ Zed 的 External Agent（Custom Agent）配置，写进 Zed 的 `settings.json`�
 /env [refresh] 环境快照（平台/shell/资源/工具链）；refresh 重采并写 wiki 页
 /mcp       MCP server 状态（连接/工具数/错误）
 /hooks     生命周期 hooks 列表与配置告警（不是权限系统）
+/doctor    配置体检（别名 /checkup）：汇总 settings / MCP / hooks / 技能 / 规则问题，默认不改文件
+/checkup   别名：/doctor
 /mode      权限模式        /init      生成 AGENTS.md
 /peers [name]  跨会话状态：列出存活会话 / 查单个
 /worktree list          列出 neo 托管的 worktree（名/路径/分支/脏/当前）

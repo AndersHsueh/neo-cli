@@ -35,6 +35,7 @@ import { CheckpointStore } from "../checkpoint.ts";
 import { formatGapLogLine, formatProbeIntent, makeOverBudgetReporter, formatWindowNotice, formatWritebackNotice, logBootDiagnostic } from "../bootDiagnostics.ts";
 import type { PromptSelection } from "../prompt/select.ts";
 import { parseArgs, HELP, streamJsonUsageError } from "./args.ts";
+import { runDoctorCli } from "./doctor.ts";
 import { SAFE_MODE_NOTICE, applySafeMode, isSafeModeEnabled } from "./safeMode.ts";
 import { findSettingsPath } from "../config/settingsPath.ts";
 import {
@@ -99,6 +100,10 @@ export async function bootstrap() {
     // 动态 import：TUI / -p 路径不加载 ACP 服务端与 SDK。
     const { runAcpServer } = await import("../acp/server.ts");
     return await runAcpServer();
+  }
+  // issue #91：`neo doctor` 是独立只读体检入口，不进入 TUI、不发模型请求、不启动向导。
+  if (args.rest[0] === "doctor") {
+    return runDoctorCli(args);
   }
   // #37：stream-json 只在 -p/--print 下合法。缺 -p（交互模式或
   // `neo <prompt>` 非 -p 形式）在会话创建前按 JSONL 收口为用法错误 2，

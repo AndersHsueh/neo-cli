@@ -20,6 +20,8 @@ ${c.bold("用法")}
   bun run src/index.ts --sessions      列出会话
   neo acp                              stdio 上的 ACP 服务端，供 Zed/JetBrains 等编辑器拉起
                                        （与 TUI / -p 互斥；stdin/stdout 整条归协议）
+  neo doctor                           配置体检：只读报告，不进入 TUI、不发模型请求
+                                       （别名斜杠命令 /doctor、/checkup）
 
 ${c.bold("选项")}
   -p, --print <text>    单次模式
@@ -80,6 +82,8 @@ ${c.bold("交互命令")}
   /mcp             MCP 外部工具 server 状态（stdio/http、连接数/工具数/错误；配置见 settings.json 的 mcpServers）
   /hooks           生命周期 hooks 列表与配置告警（配置见 settings.json 的 hooks；不是权限系统）
                    含 SubagentStart / SubagentStop：子代理真正派出后与结束时在父会话触发
+  /doctor          配置体检（别名 /checkup）：汇总 settings、MCP、hooks、技能与规则问题，默认不改文件
+  /checkup         别名：/doctor
   /plan [子命令]   交互规划工作流：先澄清 → 出方案 → 用户确认 → 开始实施
                    /plan            进入规划态（默认不写盘，先澄清再出方案）
                    /plan approve    确认方案并开始实施（别名 /plan go）

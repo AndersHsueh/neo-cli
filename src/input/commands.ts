@@ -33,6 +33,8 @@ export const COMMANDS: CommandEntry[] = [
   { name: "tools", description: "工具列表" },
   { name: "mcp", description: "MCP 外部工具 server 状态（连接/工具数/错误）" },
   { name: "hooks", description: "生命周期 hooks 列表（Pre/PostToolUse、TurnEnd）与配置告警" },
+  { name: "doctor", description: "配置体检：汇总 settings / MCP / hooks / 技能 / 规则问题（别名 checkup；默认不改文件）" },
+  { name: "checkup", description: "别名：/doctor" },
   { name: "env", description: "环境快照（/env refresh 重采并写 wiki 页）" },
   { name: "peers", description: "跨会话状态" },
   { name: "inbox", description: "查看/放行 held 消息" },

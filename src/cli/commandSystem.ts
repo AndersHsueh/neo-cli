@@ -28,6 +28,7 @@ import { c } from "../ui/theme.ts";
 
 import type { CommandContext } from "./commandContext.ts";
 import { SAFE_MODE_NOTICE } from "./safeMode.ts";
+import { formatDoctorReport, runDoctorCheckup } from "./doctor.ts";
 
 export async function handleSystemCommands(cmd: string, arg: string, rest: string[], ctx: CommandContext): Promise<boolean> {
   const {
@@ -198,6 +199,19 @@ export async function handleSystemCommands(cmd: string, arg: string, rest: strin
       if (rejected > 0) {
         ui.line(c.dim("  标 ✖ 的工具注册失败（重名等），模型看不到也调不到；改名或停用冲突的 server 后重启。"));
       }
+      ui.blank();
+      return true;
+    }
+
+    case "doctor":
+    case "checkup": {
+      const report = runDoctorCheckup({
+        cwd: cfg.cwd,
+        safeMode: cfg.safeMode === true,
+        mcpStates: ctx.mcp ? ctx.mcp() : [],
+      });
+      ui.blank();
+      ui.line(formatDoctorReport(report));
       ui.blank();
       return true;
     }
