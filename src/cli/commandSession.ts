@@ -30,6 +30,7 @@ import type { PromptSelection } from "../prompt/select.ts";
 import type { ToolVisibility } from "../prompt/visibility.ts";
 import { select } from "../ui/select.ts";
 import { c } from "../ui/theme.ts";
+import { SAFE_MODE_NOTICE } from "./safeMode.ts";
 import { helpText } from "./help.ts";
 
 import type { CommandContext } from "./commandContext.ts";
@@ -146,6 +147,7 @@ export async function handleSessionCommands(cmd: string, arg: string, rest: stri
       const est = Math.round(usage * cfg.contextWindow);
       const last = agent.lastCompactionInfo;
       ui.blank();
+      if (cfg.safeMode) ui.info(SAFE_MODE_NOTICE);
       ui.kv("model", `${cfg.providerName}/${cfg.model}`);
       ui.kv(
         "window",
@@ -225,13 +227,16 @@ export async function handleSessionCommands(cmd: string, arg: string, rest: stri
       }
       // issue #15：仓库地图状态（命中缓存，不重复扫描）。
       try {
-        ui.kv("repo map", repoMapSummary(cfg));
+        ui.kv("repo map", cfg.safeMode ? c.dim("未加载") : repoMapSummary(cfg));
       } catch {
         /* 诊断是增强项 */
       }
       // issue #17：路径作用域规则 —— 每会话几条、本轮命中了哪几条、为什么。
       // 规则发现/匹配都可能抛错（cwd 权限、并发删除），失败就省略，不让 /context 崩。
-      if (rules) {
+      if (cfg.safeMode) {
+        ui.kv("规则", c.dim("未加载"));
+        ui.kv("项目记忆", c.dim("未加载"));
+      } else if (rules) {
         try {
           const r = rules();
           const report = rulesReport(r.alwaysOn, r.loaded, r.total);

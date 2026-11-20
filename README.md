@@ -620,6 +620,8 @@ Anthropic 路径的差异处理：`system` 提到顶层字段，连续 `tool` �
 
 `NEO_PROVIDER` / `NEO_TIER` / `NEO_MODEL` / `NEO_BASE_URL` / `NEO_API_KEY`
 
+`NEO_SAFE_MODE=1`（也接受 `true` / `yes`，大小写不敏感）等效于 `--safe-mode`。
+
 配置文件搜索顺序：当前目录 `settings.json` → 项目根 `settings.json` → `~/.neo/settings.json`。
 
 **初次使用。** 候选路径都没有 `settings.json` 时，在终端交互运行 `neo`（不要加 `-p`）会进入向导：输入 `base_url` 与 `api_key`（输入只回显 `*`）、选择 OpenAI 或 Anthropic 协议、从网关 `/models` 列表里为 default / balance / fast / deep 各选一个模型、确认 `max_output_tokens`（模型能力上限，不是请求预算 `max_tokens`），并对 default 模型做一次连通测试。成功后写入 `~/.neo/settings.json`（权限 `0600`，不覆盖已有文件），然后正常启动。`-p`、非 TTY 和 `neo acp` 不会进入向导，会提示先跑一次交互 `neo` 完成初次配置并以 exit 2 退出，不发模型请求。环境变量（如 `NEO_API_KEY`）不会跳过本向导，也不会被偷偷写进文件。也可以仍用手写 `settings.json` 或复制 `settings.example.json`。
@@ -648,6 +650,7 @@ Anthropic 路径的差异处理：`system` 提到顶层字段，连续 `tool` �
 | `--output-format <fmt>` | 仅 `-p`：`text`（默认）/ `json`（结束时单行）/ `stream-json`（stdout JSONL） |
 | `--fallback <provider>:<model>` | 有序模型备用链，可重复；任一项出现即整体替换 `settings.model_fallback`，最多 8 项 |
 | `--no-fallback` | 本次禁用备用链，与 `--fallback` 互斥 |
+| `--safe-mode` | 以干净配置启动，用于排查自定义项故障：不加载 `AGENTS.md` / 路径规则 / 技能 / hooks / MCP / LSP / 仓库地图 / 记忆 wiki。登录、provider、模型、内置工具与 `/mode` 仍可用。启动时打印「当前为干净配置，自定义项未加载」。只影响本次进程，不改 `settings.json`。这不是沙箱。等效环境变量 `NEO_SAFE_MODE` |
 
 ### `neo acp` —— 编辑器里的 ACP 服务端
 

@@ -540,9 +540,11 @@ export async function startSession(s: BootstrapSession) {
   // 覆盖系统提示：注入项目记忆文件（若存在）
   // issue #18：注入仍在这里（系统提示必须早于首轮），但**提示行**延后到
   // banner + shell 行之后输出（见下方「启动输出顺序」），避免记忆提示跑到 banner 前面。
-  const memoryFile = ["AGENTS.md", "NEO.md", ".neo.md"]
-    .map((f) => join(cfg.cwd, f))
-    .find((p) => existsSync(p));
+  const memoryFile = cfg.safeMode
+    ? undefined
+    : ["AGENTS.md", "NEO.md", ".neo.md"]
+        .map((f) => join(cfg.cwd, f))
+        .find((p) => existsSync(p));
   // issue #17：无 paths 的规则按「每会话」并入项目记忆段（独立小节，便于 /context 区分）。
   const alwaysOnText = formatAlwaysOnRules(projectRules);
   if (memoryFile || alwaysOnText !== "") {

@@ -35,6 +35,7 @@ import { CheckpointStore } from "../checkpoint.ts";
 import { formatGapLogLine, formatProbeIntent, makeOverBudgetReporter, formatWindowNotice, formatWritebackNotice, logBootDiagnostic } from "../bootDiagnostics.ts";
 import type { PromptSelection } from "../prompt/select.ts";
 import { parseArgs, HELP, streamJsonUsageError } from "./args.ts";
+import { SAFE_MODE_NOTICE, applySafeMode, isSafeModeEnabled } from "./safeMode.ts";
 import { findSettingsPath } from "../config/settingsPath.ts";
 import {
   MISSING_SETTINGS_MESSAGE,
@@ -252,6 +253,11 @@ export async function bootstrap() {
     return 2;
   }
 
+  // #70：登录/provider 已从 settings 读完后再卸下自定义面。只改内存，不写文件。
+  if (isSafeModeEnabled(args.safeMode)) {
+    applySafeMode(cfg);
+  }
+
   try {
     if (requestedTier) {
       const r = applyTier(cfg, requestedTier);
@@ -369,6 +375,11 @@ export async function bootstrap() {
           }
         : { getTier: () => cfg.modelTier },
   );
+
+  if (cfg.safeMode) {
+    ui.info(SAFE_MODE_NOTICE);
+  }
+
 
   /**
    * issue #8 B：输出上限的**受控主动探测**（默认关，见 settings 的
@@ -782,7 +793,7 @@ export async function bootstrap() {
     onSelection: onPromptSelection,
   });
   // issue #17：路径作用域规则（.neo/rules + .claude/rules）。无规则时零额外上下文。
-  const projectRules = discoverProjectRules(cfg.cwd);
+  const projectRules = cfg.safeMode ? [] : discoverProjectRules(cfg.cwd);
   const scopedRuleList = projectRules.filter((r) => r.paths.length > 0);
   const alwaysOnRules = projectRules.filter((r) => r.paths.length === 0);
 

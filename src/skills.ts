@@ -211,6 +211,7 @@ export function isRealDir(full: string, e: Dirent): boolean {
  * buildSkillIndex 会在生成索引文本时按名去重。
  */
 export function discoverSkills(cfg: Config): SkillMeta[] {
+  if (cfg.safeMode) return [];
   const project = scanSkillsDir(projectSkillsDir(cfg), "project");
   const global = scanSkillsDir(skillsStore(cfg), "global");
   const extras = extraSkillsDirs(cfg).flatMap((dir) => scanSkillsDir(dir, "extra"));

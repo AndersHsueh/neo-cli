@@ -27,6 +27,7 @@ import type { ToolCtx } from "../tools/types.ts";
 import { c } from "../ui/theme.ts";
 
 import type { CommandContext } from "./commandContext.ts";
+import { SAFE_MODE_NOTICE } from "./safeMode.ts";
 
 export async function handleSystemCommands(cmd: string, arg: string, rest: string[], ctx: CommandContext): Promise<boolean> {
   const {
@@ -85,6 +86,13 @@ export async function handleSystemCommands(cmd: string, arg: string, rest: strin
       // issue #3：一眼看清「配了哪些生命周期 hook、哪条写错了被丢弃」。
       // hooks 不是权限系统 —— 这里刻意不展示任何「放行/拒绝」策略，
       // 免得用户误以为它是 #4 那种 allow/deny 规则表。
+      if (cfg.safeMode) {
+        ui.blank();
+        ui.kv("hooks", c.dim("未加载"));
+        ui.info(SAFE_MODE_NOTICE);
+        ui.blank();
+        return true;
+      }
       const h = cfg.hooks;
       const total = HOOK_EVENTS.reduce((n, ev) => n + h.hooks[ev].length, 0);
       ui.blank();
@@ -130,6 +138,13 @@ export async function handleSystemCommands(cmd: string, arg: string, rest: strin
 
     case "mcp": {
       // issue #2：一眼看清「接了哪些外部 server、连上没有、各贡献几个工具、错在哪」。
+      if (cfg.safeMode) {
+        ui.blank();
+        ui.kv("mcp", c.dim("未加载"));
+        ui.info(SAFE_MODE_NOTICE);
+        ui.blank();
+        return true;
+      }
       const states = ctx.mcp?.();
       if (!states) {
         ui.warn("当前进程没有接入 MCP（未配置 mcpServers，或不在主循环里）。");

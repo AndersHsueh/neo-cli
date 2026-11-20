@@ -38,6 +38,11 @@ export interface Args {
   jsonSchema: string | null;
   /** 参数值非法（如 --output-format bogus）：main 直接返回 2。 */
   badArgs: boolean;
+  /**
+   * #70：`--safe-mode` 以干净配置启动，排查自定义项故障。
+   * 环境变量 `NEO_SAFE_MODE` 在 bootstrap 里合并；解析层只记录旗标。
+   */
+  safeMode: boolean;
   rest: string[];
 }
 
@@ -63,6 +68,7 @@ export function parseArgs(argv: string[]): Args {
     worktree: null,
     jsonSchema: null,
     badArgs: false,
+    safeMode: false,
     rest: [],
   };
   for (let i = 0; i < argv.length; i++) {
@@ -178,6 +184,10 @@ export function parseArgs(argv: string[]): Args {
       // 取值是否合法（缺值 / 读不到 / 不是可编译的 schema）由 bootstrap 判定。
       case "--json-schema":
         a.jsonSchema = argv[++i] ?? "";
+        break;
+      // #70：排障用干净配置。无取值；环境变量在 bootstrap 合并。
+      case "--safe-mode":
+        a.safeMode = true;
         break;
       default:
         a.rest.push(v);

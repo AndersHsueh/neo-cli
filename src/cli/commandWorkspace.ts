@@ -60,6 +60,7 @@ import {
 } from "./cdWorkdir.ts";
 
 import type { CommandContext } from "./commandContext.ts";
+import { SAFE_MODE_NOTICE } from "./safeMode.ts";
 
 export async function handleWorkspaceCommands(cmd: string, arg: string, rest: string[], ctx: CommandContext): Promise<boolean> {
   const {
@@ -68,6 +69,13 @@ export async function handleWorkspaceCommands(cmd: string, arg: string, rest: st
   } = ctx;
   switch (cmd) {
     case "skills": {
+      if (cfg.safeMode) {
+        ui.blank();
+        ui.kv("skills", c.dim("未加载"));
+        ui.info(SAFE_MODE_NOTICE);
+        ui.blank();
+        return true;
+      }
       const skills = discoverSkills(cfg);
       if (arg) {
         // 约束 16：这是给**人**看的只读诊断入口 —— 不加载全文，也不建软链。

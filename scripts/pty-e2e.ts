@@ -3420,12 +3420,93 @@ async function scenarioS38(tmpRoot: string): Promise<void> {
   }
 }
 
+
+/**
+ * S39 #70：`--safe-mode` 启动提示「干净配置」，自定义 hooks/MCP/技能/项目记忆未加载。
+ * 临时 HOME + cwd 里准备了 hooks / MCP / 技能 / AGENTS.md / 路径规则，用以证明它们没被加载。
+ */
+async function scenarioS39(tmpRoot: string): Promise<void> {
+  const { dirs, mark, settings } = await hooksFixture(
+    tmpRoot,
+    "s39-safe-mode",
+    ["SessionStart"],
+    {
+      mcpServers: { canary: { command: "echo", args: ["mcp-should-not-start"] } },
+      lsp: { enabled: true, servers: [{ command: "false", args: [] }] },
+      repo_map: { enabled: true },
+      memory: { enabled: true },
+    },
+  );
+  await writeFile(join(dirs.work, "AGENTS.md"), "# Agents\nSAFE_MODE_CANARY_AGENTS_70\n", "utf8");
+  await mkdir(join(dirs.work, "skills", "safe-mode-canary"), { recursive: true });
+  await writeFile(
+    join(dirs.work, "skills", "safe-mode-canary", "SKILL.md"),
+    "---\nname: safe-mode-canary\ndescription: SAFE_MODE_CANARY_SKILL_70\n---\n\n# Canary\n",
+    "utf8",
+  );
+  await mkdir(join(dirs.work, ".neo", "rules"), { recursive: true });
+  await writeFile(join(dirs.work, ".neo", "rules", "always.md"), "SAFE_MODE_CANARY_RULE_70\n", "utf8");
+  const settingsPath = join(dirs.work, "settings.json");
+  const fake = await startFake("narration");
+  const run = await startNeo({
+    fake,
+    dirs,
+    name: "s39",
+    args: [...BASE_ARGS, "--safe-mode"],
+    cols: DEFAULT_COLS,
+    rows: DEFAULT_ROWS,
+    settings,
+  });
+  try {
+    await waitPrompt(run);
+    const settingsBefore = readFileSync(settingsPath);
+    const settingsStat = statSync(settingsPath);
+    const boot = run.screen.text();
+    check(boot.includes("当前为干净配置，自定义项未加载"), "启动应提示干净配置", run.screen);
+    check(!boot.includes("已加载项目记忆"), "不应加载 AGENTS.md", run.screen);
+    check(!boot.includes("hooks：已加载"), "不应加载 hooks", run.screen);
+    check(!boot.includes("MCP：已接入"), "不应接入 MCP", run.screen);
+    await run.type("/hooks");
+    await waitPrompt(run);
+    check(run.screen.text().includes("未加载"), "/hooks 应显示未加载", run.screen);
+    check(!run.screen.text().includes("rec.sh"), "/hooks 不应列出 hook 命令", run.screen);
+    await run.type("/mcp");
+    await waitPrompt(run);
+    check(run.screen.text().includes("未加载"), "/mcp 应显示未加载", run.screen);
+    check(!run.screen.text().includes("mcp-should-not-start"), "/mcp 不应显示未加载的 server 命令", run.screen);
+    await run.type("/skills");
+    await waitPrompt(run);
+    check(run.screen.text().includes("未加载"), "/skills 应显示未加载", run.screen);
+    check(!run.screen.text().includes("safe-mode-canary"), "/skills 不应列出技能", run.screen);
+    await run.type("/context");
+    await waitPrompt(run);
+    const ctx = run.screen.text();
+    check(ctx.includes("当前为干净配置，自定义项未加载"), "/context 应重复干净配置提示", run.screen);
+    check(ctx.includes("未加载"), "/context 应标明自定义面未加载", run.screen);
+    const marks = await readMarks(mark);
+    check(marks.length === 0, `SessionStart hook 不应执行（实际 ${marks.join(",") || "空"}）`, run.screen);
+    const afterStat = statSync(settingsPath);
+    check(afterStat.mtimeMs === settingsStat.mtimeMs, "不应改写工作区 settings.json", run.screen);
+    check(readFileSync(settingsPath).equals(settingsBefore), "settings.json 内容不应变化", run.screen);
+    maybeDumpScreen(run.screen);
+    await run.type("/exit");
+    const code = await run.waitExit();
+    check(code === 0, `/exit 退出码应为 0（实际 ${code}）`, run.screen);
+  } catch (e) {
+    throw attachScreen(e, run.screen, run.stderr);
+  } finally {
+    await run.close();
+    await fake.stop();
+  }
+}
+
 const SCENARIOS: Scenario[] = [
   {id:"s34", title:"#64 drive 内部轮共享额度与 clear 生命周期",fn:scenarioS34,focus:["已启动自动续跑","上下文已清空"]},
   {id:"s35", title:"#90 Ctrl+O 打开/Esc 关闭/再次 Ctrl+O 关闭 transcript 视图",fn:scenarioS35,focus:["本会话还没有记录","/ 搜索"]},
   {id:"s36", title:"#90 视图内 / 或 Ctrl+F 搜索并跳到命中",fn:scenarioS36,focus:["UNIQUE_ALPHA","会话恢复测试答案。"]},
   {id:"s37", title:"#88 初次使用向导：测通后写入 ~/.neo/settings.json 并正常启动",fn:scenarioS37,focus:["请输入 base_url","请输入 api_key","已写入"]},
   {id:"s38", title:"#88 探测失败不写文件并退出 2",fn:scenarioS38,focus:["探测失败","重试或退出"]},
+  {id:"s39", title:"#70 --safe-mode 启动提示干净配置，自定义项未加载",fn:scenarioS39,focus:["当前为干净配置，自定义项未加载","未加载"]},
   {
     id: "s1",
     title: "S1 narration：两轮正文都有行首 ● 前缀",

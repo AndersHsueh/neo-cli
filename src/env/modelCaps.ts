@@ -135,6 +135,8 @@ export function writeBackCapabilities(
   patch: CapabilityPatch,
 ): SettingsWritebackResult {
   const result: SettingsWritebackResult = { written: [], skipped: [], persisted: false };
+  // #70：干净配置只影响本次进程，能力探测不得改写 settings.json。
+  if (cfg.safeMode) return result;
   const prov = currentProviderConfig(cfg);
 
   // ---- 1. 规划：哪些字段该写（内存视角的「已填」判定） ----

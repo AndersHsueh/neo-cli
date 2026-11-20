@@ -532,6 +532,11 @@ export interface Config {
    * settings.json 写 true 都不能开，否则克隆来的仓库就能替用户打开它。
    */
   experimental?: ExperimentalConfig;
+  /**
+   * #70：本次进程是否处于 `--safe-mode` / `NEO_SAFE_MODE`。
+   * 只是运行时标记，不从 settings.json 读取，也不写回。
+   */
+  safeMode?: boolean;
 }
 
 /** settings.json 顶层 `experimental` 段（issue #71）。 */

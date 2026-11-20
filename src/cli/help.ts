@@ -41,6 +41,10 @@ ${c.bold("选项")}
       --no-fallback     本次禁用备用链（与 --fallback 互斥）
                         同模型重试耗尽后才切换；会话内保持目标，不自动回切、不改写 settings
                         仅主 Agent 请求生效；提高可恢复性，但不保证任务成功
+      --safe-mode       以干净配置启动，用于排查自定义项故障（不加载 AGENTS.md / 路径规则 /
+                        技能 / hooks / MCP / LSP / 仓库地图 / 记忆 wiki）。登录、provider /
+                        模型、内置工具与 /mode 仍可用。只影响本次进程，不改 settings.json。
+                        这不是沙箱。等效环境变量 NEO_SAFE_MODE=1/true/yes（大小写不敏感）
       --drive <检查命令>  -p 无人值守长跑：每轮结束跑检查命令，exit 0 = 达成（已验证）。
                         未达成自动再发同一提示。必须配 -y（无人值守无人类确认）
       --judge <标准>     模型判断完成标准（来源标注为「模型判断」，绝不冒充已验证）
@@ -143,6 +147,7 @@ ${c.bold("输入")}
 ${c.bold("环境变量")}
   NEO_PROVIDER / NEO_TIER / NEO_MODEL / NEO_BASE_URL / NEO_API_KEY  覆盖 settings.json
   NEO_CLASSIFIER_PROVIDER / NEO_CLASSIFIER_MODEL                    指定分类器用的 provider 与模型
+  NEO_SAFE_MODE   1 / true / yes（大小写不敏感）时等效 --safe-mode
 
 ${c.bold("初次使用")}
   候选路径都没有 settings.json 时，交互运行 neo 会引导配置一个 default provider，
