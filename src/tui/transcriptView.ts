@@ -16,6 +16,9 @@ export const EMPTY_TRANSCRIPT_HINT = "本会话还没有记录";
 export const TRANSCRIPT_FOOTER_SEARCH = "/ 搜索";
 export const TRANSCRIPT_FOOTER_BUSY = "关闭后再 Esc 才能取消本轮";
 
+/** 非字符翻页一次移动的记录数。 */
+const PAGE_RECORDS = 8;
+
 export type TranscriptRecord =
   | { id: string; kind: "user"; text: string }
   | { id: string; kind: "assistant"; text: string }
@@ -246,11 +249,12 @@ export function handleTranscriptAction(
 
   const next = cloneState(state);
 
+  if (action.type === "ctrl-f" || (action.type === "insert" && action.text === "/")) {
+    enterSearch(next);
+    return { state: next, effect: "none" };
+  }
+
   if (next.searching) {
-    if (action.type === "ctrl-f" || (action.type === "insert" && action.text === "/")) {
-      enterSearch(next);
-      return { state: next, effect: "none" };
-    }
     if (action.type === "submit") {
       syncHits(next, "next");
       return { state: next, effect: "none" };
@@ -287,37 +291,25 @@ export function handleTranscriptAction(
       next.queryCursor = Array.from(next.query).length;
       return { state: next, effect: "none" };
     }
-    if (action.type === "up") {
-      moveCursor(next, next.cursor - 1);
+  } else {
+    if (action.type === "insert" && (action.text === "n" || action.text === "N")) {
+      syncHits(next, action.text === "n" ? "next" : "prev");
       return { state: next, effect: "none" };
     }
-    if (action.type === "down") {
-      moveCursor(next, next.cursor + 1);
+    if (action.type === "submit" || (action.type === "insert" && action.text === " ")) {
+      toggleExpand(next);
       return { state: next, effect: "none" };
     }
-    if (action.type === "page-up") {
-      moveCursor(next, next.cursor - 8);
+    if (action.type === "home") {
+      moveCursor(next, 0);
       return { state: next, effect: "none" };
     }
-    if (action.type === "page-down") {
-      moveCursor(next, next.cursor + 8);
+    if (action.type === "end") {
+      moveCursor(next, next.records.length - 1);
       return { state: next, effect: "none" };
     }
-    return { state: next, effect: "none" };
   }
 
-  if (action.type === "ctrl-f" || (action.type === "insert" && action.text === "/")) {
-    enterSearch(next);
-    return { state: next, effect: "none" };
-  }
-  if (action.type === "insert" && (action.text === "n" || action.text === "N")) {
-    syncHits(next, action.text === "n" ? "next" : "prev");
-    return { state: next, effect: "none" };
-  }
-  if (action.type === "submit" || (action.type === "insert" && action.text === " ")) {
-    toggleExpand(next);
-    return { state: next, effect: "none" };
-  }
   if (action.type === "up") {
     moveCursor(next, next.cursor - 1);
     return { state: next, effect: "none" };
@@ -327,19 +319,11 @@ export function handleTranscriptAction(
     return { state: next, effect: "none" };
   }
   if (action.type === "page-up") {
-    moveCursor(next, next.cursor - 8);
+    moveCursor(next, next.cursor - PAGE_RECORDS);
     return { state: next, effect: "none" };
   }
   if (action.type === "page-down") {
-    moveCursor(next, next.cursor + 8);
-    return { state: next, effect: "none" };
-  }
-  if (action.type === "home") {
-    moveCursor(next, 0);
-    return { state: next, effect: "none" };
-  }
-  if (action.type === "end") {
-    moveCursor(next, next.records.length - 1);
+    moveCursor(next, next.cursor + PAGE_RECORDS);
     return { state: next, effect: "none" };
   }
   // 其它键吞掉，不落到输入框。

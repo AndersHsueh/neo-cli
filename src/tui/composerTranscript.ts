@@ -38,14 +38,12 @@ export function handleTranscriptViewKey(this: Composer, action: KeyAction): void
   const view = this.transcriptView;
   if (!view) return;
   const { state, effect } = handleTranscriptAction(view, action, { busy: this.busy });
-  this.transcriptView = state;
   if (state === null) {
-    this.menuDismissedFor = null;
-    this.syncCommandMenu();
+    closeTranscriptView.call(this);
     if (effect === "close-and-cancel") this.deps.onCancelTurn?.();
-    this.scheduleRender();
     return;
   }
+  this.transcriptView = state;
   this.scheduleRender();
 }
 
