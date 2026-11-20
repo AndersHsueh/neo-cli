@@ -133,6 +133,14 @@ export interface AgentOptions {
    */
   scopedRulesPrompt?: (touched: string[]) => { text: string; matches: RuleMatch[] } | null;
   /**
+   * 嵌套 AGENTS.md / CLAUDE.md（issue #54）：按本会话已触达路径生成临时注入文本。
+   * 返回 null = 没有命中；不传 = 该能力关闭（子代理/测试默认）。
+   */
+  nestedAgentsPrompt?: (touched: string[]) => {
+    text: string;
+    files: Array<{ path: string; text: string; dir?: string; name?: string }>;
+  } | null;
+  /**
    * LLM 流式函数注入点，默认用真实 chatStream。
    * 测试用：避免 mock.module 全局污染其它测试文件（bun test 单进程共享模块表）。
    */

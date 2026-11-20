@@ -23,6 +23,7 @@ import {
   resolveAndApplyModelWindow,
 } from "../env/modelWindows.ts";
 import { rulesReport } from "../rules/index.ts";
+import { nestedAgentsReport } from "./nestedAgents.ts";
 import { toolNames } from "../tools/index.ts";
 import { repoMapSummary } from "../prompt/repoMap.ts";
 import { listModels } from "../llm.ts";
@@ -236,11 +237,21 @@ export async function handleSessionCommands(cmd: string, arg: string, rest: stri
       if (cfg.safeMode) {
         ui.kv("规则", c.dim("未加载"));
         ui.kv("项目记忆", c.dim("未加载"));
-      } else if (rules) {
+        ui.kv("嵌套指令", c.dim("未加载"));
+      } else {
+        if (rules) {
+          try {
+            const r = rules();
+            const report = rulesReport(r.alwaysOn, r.loaded, r.total);
+            ui.kv("规则", report[0] ?? "");
+            for (const line of report.slice(1)) ui.line(c.dim(line));
+          } catch {
+            /* 诊断是增强项 */
+          }
+        }
         try {
-          const r = rules();
-          const report = rulesReport(r.alwaysOn, r.loaded, r.total);
-          ui.kv("规则", report[0] ?? "");
+          const report = nestedAgentsReport(agent.activeNestedAgents);
+          ui.kv("嵌套指令", report[0] ?? "");
           for (const line of report.slice(1)) ui.line(c.dim(line));
         } catch {
           /* 诊断是增强项 */

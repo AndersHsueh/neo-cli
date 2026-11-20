@@ -1,4 +1,3 @@
-import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { tierDisplayName, tierChoiceLabel, type Config } from "../config.ts";
 import { Agent } from "../agent.ts";
@@ -7,6 +6,12 @@ import type { AssistantMessageEventData, ToolEndEventData, ToolStartEventData } 
 import { persist } from "./sessions.ts";
 import { c } from "../ui/theme.ts";
 import { extractTouchedPaths, formatAlwaysOnRules, formatScopedRulesBlock, selectScopedRules } from "../rules/index.ts";
+import {
+  collectNestedInstructionFiles,
+  composePermanentMemory,
+  formatNestedAgentsBlock,
+  loadSessionInstructionMemory,
+} from "./nestedAgents.ts";
 import { makeRememberTool } from "../tools/memory.ts";
 import { makeTodoWriteTool, type TodoItem } from "../tools/todo.ts";
 import { chatStream } from "../llm.ts";
@@ -148,6 +153,18 @@ export async function startSession(s: BootstrapSession) {
       const matches = selectScopedRules(scopedRuleList, touched, { cwd: cfg.cwd });
       const text = formatScopedRulesBlock(matches);
       return text === "" ? null : { text, matches };
+    },
+    // issue #54：嵌套 AGENTS.md / CLAUDE.md。roots 只接线当前 cwd；#63 可把额外根传入同一 helper。
+    nestedAgentsPrompt: (touched) => {
+      if (cfg.safeMode) return null;
+      const perm = composePermanentMemory(cfg.cwd);
+      const files = collectNestedInstructionFiles({
+        roots: [cfg.cwd],
+        touched,
+        exclude: perm?.files.map((f) => f.path),
+      });
+      const text = formatNestedAgentsBlock(files);
+      return text === "" ? null : { text, files };
     },
     memory,
     checkpoint: checkpoints,
@@ -540,18 +557,15 @@ export async function startSession(s: BootstrapSession) {
   // 覆盖系统提示：注入项目记忆文件（若存在）
   // issue #18：注入仍在这里（系统提示必须早于首轮），但**提示行**延后到
   // banner + shell 行之后输出（见下方「启动输出顺序」），避免记忆提示跑到 banner 前面。
-  const memoryFile = cfg.safeMode
-    ? undefined
-    : ["AGENTS.md", "NEO.md", ".neo.md"]
-        .map((f) => join(cfg.cwd, f))
-        .find((p) => existsSync(p));
+  // issue #54：cwd 根文件 +（git 仓内）祖先指令写入永久项目记忆段；子目录不预载。
+  const permanentMem = loadSessionInstructionMemory(cfg.cwd, { safeMode: cfg.safeMode });
+  const memoryFile = permanentMem?.path;
   // issue #17：无 paths 的规则按「每会话」并入项目记忆段（独立小节，便于 /context 区分）。
   const alwaysOnText = formatAlwaysOnRules(projectRules);
-  if (memoryFile || alwaysOnText !== "") {
-    const base = memoryFile ? readFileSync(memoryFile, "utf8") : "";
+  if (permanentMem || alwaysOnText !== "") {
     promptManager.setProjectMemory({
-      path: memoryFile ?? join(cfg.cwd, ".neo/rules"),
-      text: `${base}${alwaysOnText}`,
+      path: permanentMem?.path ?? join(cfg.cwd, ".neo/rules"),
+      text: `${permanentMem?.text ?? ""}${alwaysOnText}`,
     });
     agent.refreshSystemPrompt();
   }

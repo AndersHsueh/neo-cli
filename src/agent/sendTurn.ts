@@ -259,6 +259,7 @@ export async function sendTurn(
     // 触达路径在工具批次之后才变多，所以按**每次请求**重算：命中集合变了就换掉临时
     // system 消息，不再命中就摘除。与预算提示同口径：只服务当前请求，轮末统一清理。
     this.syncScopedRulesMessage();
+    this.syncNestedAgentsMessage();
 
     const budgetMsg = this.budgetMessage(iter + 1, maxIter);
     this.messages.push(budgetMsg);
@@ -673,6 +674,7 @@ export async function sendTurn(
           }
           if (recallMsg) this.dropTransientMessage(recallMsg);
           this.dropScopedRulesMessage();
+          this.dropNestedAgentsMessage();
           this.opt.onEvent?.({ type: "aborted" });
           this.emitMemoryCapture(turnStart, "aborted");
           this.lastStats = {
@@ -703,6 +705,7 @@ export async function sendTurn(
       }
       if (recallMsg) this.dropTransientMessage(recallMsg);
       this.dropScopedRulesMessage();
+      this.dropNestedAgentsMessage();
       throw e;
     }
   }
@@ -736,6 +739,7 @@ export async function sendTurn(
   // 临时召回消息只服务于本轮：轮末摘除，不进历史、不污染后续轮次
   if (recallMsg) this.dropTransientMessage(recallMsg);
   this.dropScopedRulesMessage();
+  this.dropNestedAgentsMessage();
 
   this.totalPrompt += promptTokens;
   this.totalCompletion += completionTokens;

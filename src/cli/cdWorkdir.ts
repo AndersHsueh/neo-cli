@@ -10,7 +10,7 @@
  *  - 先做完所有路径预检，再动会话状态；persist 属于成功条件；
  *  - 全程不调用 process.chdir（会话 cwd 是 cfg.cwd，进程 cwd 不动）。
  */
-import { readFileSync, readdirSync, realpathSync, statSync } from "node:fs";
+import { readdirSync, realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 
@@ -20,6 +20,7 @@ import type { Message } from "../llm.ts";
 import type { PromptManager } from "../prompt/manager.ts";
 import type { ProjectRule } from "../rules/index.ts";
 import { discoverProjectRules, formatAlwaysOnRules } from "../rules/index.ts";
+import { loadSessionInstructionMemory, pickInstructionFile } from "./nestedAgents.ts";
 import type { SessionMeta } from "../session.ts";
 
 /** `~` 前缀（`~` 本身或 `~/...`；`~user` 不展开）。 */
@@ -118,20 +119,13 @@ export type CwdSwitchResult =
   | { ok: false; error: string };
 
 /**
- * 新根的项目指令：AGENTS.md → NEO.md → .neo.md 只取第一个存在的（不遍历上级）。
- * `.neo/rules` 的 always-on 规则由 replaceRules 侧负责，这里只管单文件记忆。
+ * 新根目录上的那一个项目指令文件：AGENTS.md → NEO.md → .neo.md → CLAUDE.md。
+ * 祖先链与永久段组装见 loadSessionInstructionMemory（issue #54）。
+ * `.neo/rules` 的 always-on 规则由 replaceRules 侧负责。
  */
 export function readRootMemoryFile(cwd: string): { path: string; text: string } | null {
-  for (const name of ["AGENTS.md", "NEO.md", ".neo.md"]) {
-    const p = join(cwd, name);
-    try {
-      if (!statSync(p).isFile()) continue;
-      return { path: p, text: readFileSync(p, "utf8") };
-    } catch {
-      /* 不存在 / 不可读：试下一个 */
-    }
-  }
-  return null;
+  const file = pickInstructionFile(cwd);
+  return file ? { path: file.path, text: file.text } : null;
 }
 
 /** 新根的路径作用域规则（`.neo/rules`，不遍历上级、不按需加载子目录 AGENTS.md）。 */
@@ -181,8 +175,8 @@ export async function changeSessionCwd(arg: string, deps: CwdSwitchDeps): Promis
   // 同根：成功但什么都不刷新（不 persist、不改上一根、不改挂）。
   if (target === oldCwd) return { ok: true, cwd: target, unchanged: true };
 
-  // 预检：新根的项目记忆与规则先读出来，读失败也不能等到改完 cfg 才发现。
-  const fileMem = readRootMemoryFile(target);
+  // 预检：新根的项目记忆（cwd 文件 + git 祖先，#54）与规则先读出来。
+  const fileMem = loadSessionInstructionMemory(target, { safeMode: cfg.safeMode });
   const newRules = discoverRulesFor(target);
   const alwaysOnText = formatAlwaysOnRules(newRules);
   const newMemory =

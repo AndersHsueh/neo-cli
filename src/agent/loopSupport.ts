@@ -210,6 +210,45 @@ export function dropScopedRulesMessage(this: Agent): void {
   this.scopedRulesMsg = null;
 }
 
+/** 本轮要注入的嵌套指令消息；没配置 / 没触达 / 没命中 → null。 */
+export function buildNestedAgentsMessage(this: Agent): Message | null {
+  const build = this.opt.nestedAgentsPrompt;
+  if (!build || this.touchedPaths.size === 0) {
+    this.loadedNestedAgents = [];
+    return null;
+  }
+  const built = build([...this.touchedPaths]);
+  this.loadedNestedAgents = built?.files ?? [];
+  return built && built.text !== "" ? { role: "system", content: built.text } : null;
+}
+
+/**
+ * 按当前触达路径同步嵌套指令临时消息：命中集合变了才换，没命中就摘掉。
+ * 与 #17 scoped 规则同一生命周期，消息分开，便于 /context 区分。
+ */
+export function syncNestedAgentsMessage(this: Agent): void {
+  const next = this.buildNestedAgentsMessage();
+  const nextText = next && typeof next.content === "string" ? next.content : null;
+  const curText =
+    this.nestedAgentsMsg && typeof this.nestedAgentsMsg.content === "string"
+      ? this.nestedAgentsMsg.content
+      : null;
+  if (nextText === null) {
+    this.dropNestedAgentsMessage();
+    return;
+  }
+  if (nextText === curText) return;
+  this.dropNestedAgentsMessage();
+  this.messages.push(next!);
+  this.nestedAgentsMsg = next!;
+}
+
+/** 摘掉历史里的嵌套指令临时消息（命中集合变化 / 轮末）。 */
+export function dropNestedAgentsMessage(this: Agent): void {
+  if (this.nestedAgentsMsg) this.dropTransientMessage(this.nestedAgentsMsg);
+  this.nestedAgentsMsg = null;
+}
+
 /** 移除临时消息（预算提示 / 重试提示）。按引用比对，避免误删历史里内容相同的消息。 */
 export function dropTransientMessage(this: Agent, msg: Message): void {
   const i = this.messages.lastIndexOf(msg);

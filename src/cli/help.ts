@@ -72,6 +72,12 @@ ${c.bold("选项")}
   -h, --help            显示帮助
   -v, --version         显示版本
 
+${c.bold("项目指令")}
+  启动时加载会话 cwd 上的 AGENTS.md / NEO.md / .neo.md / CLAUDE.md（按此顺序取一个）；
+  若 cwd 在 git 工作树内，再加载向上到工作树根的祖先指令文件。子目录里的同名文件不预载，
+  只在本轮触达该子目录时按需注入，轮末从历史摘除（#54）。这与 #17 的 .neo/rules（paths: glob）
+  不是同一件事；也与尚未实现的 #63 --add-dir / /add-dir（额外工作根）不同。
+
 ${c.bold("交互命令")}
   /help            帮助            /clear       清空上下文
   /compact [--from n] 压缩上下文（--from 只压该轮往后）  /cost  token 统计
@@ -103,7 +109,7 @@ ${c.bold("交互命令")}
                    /cd                  打印当前会话工作目录
                    /cd ../other         相对当前会话 cwd（不是进程 cwd）；支持 ~、路径补全
                    /cd -                回到上一根（还没切换过则拒绝）
-                   与 -C（启动时定根）、shell.cwd（只影响单条命令）、#63 /add-dir（主根不变、加额外范围，本单未实现；未来 /cd 成功后应清空已 add 的额外目录）、#9 --worktree（开新会话）、#54 嵌套 AGENTS.md（只加载新根上那一个）不同。
+                   与 -C（启动时定根）、shell.cwd（只影响单条命令）、#63 /add-dir（主根不变、加额外范围，本单未实现；未来 /cd 成功后应清空已 add 的额外目录）、#9 --worktree（开新会话）、#54 嵌套 AGENTS.md / CLAUDE.md（/cd 会刷新新根及其 git 祖先的永久段；子目录仍按需加载，不在换根时预载）不同。
                    会话文件仍在全局 ~/.neo/sessions，只更新记录里的 cwd；在新目录可按同一 id --resume。这和 Claude 按项目搬家会话文件不是一回事。要新项目的 MCP / 本地 settings，须在该目录重新启动。
   /env [refresh]   环境快照（平台/shell/资源/工具链）；refresh 重采并写 wiki 页
   /peers [name]    跨会话状态：列出存活会话 / 查单个

@@ -58,6 +58,9 @@ import {
   buildScopedRulesMessage,
   syncScopedRulesMessage,
   dropScopedRulesMessage,
+  buildNestedAgentsMessage,
+  syncNestedAgentsMessage,
+  dropNestedAgentsMessage,
   dropTransientMessage,
   settleToolOutcome,
   makeCtx,
@@ -149,6 +152,10 @@ export class Agent {
   loadedRules: RuleMatch[] = [];
   /** 当前在历史里的 scoped 规则临时消息（命中集合变化/轮末时摘除）。 */
   scopedRulesMsg: Message | null = null;
+  /** 本轮实际注入过的嵌套指令文件（/context 展示用，issue #54）。 */
+  loadedNestedAgents: Array<{ path: string; text: string; dir?: string; name?: string }> = [];
+  /** 当前在历史里的嵌套指令临时消息（命中集合变化/轮末时摘除）。 */
+  nestedAgentsMsg: Message | null = null;
   /**
    * #64：当前这条**真实用户输入**的生命周期额度（UserPromptSubmit 是否已发、
    * Stop 是否已续跑一次）。null = 下一条 `send()` 视为新的真实用户输入。
@@ -691,6 +698,10 @@ export class Agent {
   get activeRules(): RuleMatch[] {
     return this.loadedRules;
   }
+  /** /context 用：本轮已加载的嵌套指令文件（路径与正文，展示只用路径）。 */
+  get activeNestedAgents(): Array<{ path: string; text: string; dir?: string; name?: string }> {
+    return this.loadedNestedAgents;
+  }
   /* ---------------- 生命周期 hooks（issue #3） ---------------- */
 
   /** hooks 配置（组合根注入；不传 = 无 hooks）。 */
@@ -734,6 +745,9 @@ export class Agent {
   buildScopedRulesMessage = buildScopedRulesMessage;
   syncScopedRulesMessage = syncScopedRulesMessage;
   dropScopedRulesMessage = dropScopedRulesMessage;
+  buildNestedAgentsMessage = buildNestedAgentsMessage;
+  syncNestedAgentsMessage = syncNestedAgentsMessage;
+  dropNestedAgentsMessage = dropNestedAgentsMessage;
   dropTransientMessage = dropTransientMessage;
   settleToolOutcome = settleToolOutcome;
   makeCtx = makeCtx;
