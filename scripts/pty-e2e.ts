@@ -3266,24 +3266,36 @@ async function scenarioS36(tmpRoot: string): Promise<void> {
       { label: "Ctrl+O 打开含历史的 transcript 视图", run, timeoutMs: 8000 },
     );
     await run.write("/");
-    await waitFor(() => run.screen.text().includes("/ 搜索") || run.screen.text().includes("/"), {
-      label: "视图内 / 进入搜索",
+    await waitFor(() => run.screen.lines().some((l) => l.trim() === "/"), {
+      label: "视图内 / 进入搜索（空查询行）",
       run,
       timeoutMs: 5000,
     });
     await run.write("UNIQUE_ALPHA");
-    await waitFor(() => run.screen.text().includes("UNIQUE_ALPHA"), {
-      label: "搜索查询可见且能落到用户行",
+    await waitFor(() => run.screen.lines().some((l) => l.trim() === "/UNIQUE_ALPHA"), {
+      label: "搜索查询行可见，且能跳到用户行命中",
       run,
       timeoutMs: 8000,
     });
-    await run.write("\x1b"); // 退出搜索
+    await run.write("\x1b"); // 退出搜索（与下一键隔开，避免 Esc 与 Ctrl+F 被合成 Meta+F）
+    await waitFor(
+      () =>
+        run.screen.text().includes("/ 搜索") &&
+        !run.screen.lines().some((l) => l.trim() === "/UNIQUE_ALPHA" || l.trim() === "/"),
+      { label: "Esc 退出搜索后查询行消失", run, timeoutMs: 5000 },
+    );
     await run.write("\x06"); // Ctrl+F 再进搜索
-    await waitFor(() => true, { label: "Ctrl+F 别名已送达", run, timeoutMs: 2000 });
+    await waitFor(
+      () => run.screen.lines().some((l) => l.trim() === "/"),
+      { label: "Ctrl+F 别名再次进入搜索（空查询行 / 可见）", run, timeoutMs: 5000 },
+    );
     maybeDumpScreen(run.screen);
-    await run.write("\x1b");
-    await run.write("\x1b");
-    await waitFor(() => inputEmpty(run.screen), { label: "Esc 关视图回到输入框", run, timeoutMs: 8000 });
+    await run.write("\x1b"); // 退出搜索
+    await run.write("\x1b"); // 关闭视图
+    await waitFor(
+      () => inputEmpty(run.screen) && !run.screen.text().includes("会话记录"),
+      { label: "Esc 关视图回到输入框", run, timeoutMs: 8000 },
+    );
     await run.type("/exit");
     await run.waitExit();
   } catch (e) {

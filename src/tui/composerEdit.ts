@@ -10,6 +10,13 @@ import { cycleMode } from "./permissionMode.ts";
 import type { Composer } from "./composer.ts";
 
 export function handleNormalAction(this: Composer, action: KeyAction): void {
+  // issue #90：transcript 视图打开时所有键由视图消化，绝不穿透到输入框。
+  if (this.transcriptView) {
+    this.handleTranscriptViewKey(action);
+    return;
+  }
+  // 未打开视图时 Ctrl+F 保持未绑定（无输入框语义）。
+  if (action.type === "ctrl-f") return;
   // issue #74：检索态优先分发（普通插入/退格改的是查询，不是草稿）。
   if (this.search) {
     this.handleHistorySearchKey(action);
@@ -153,7 +160,7 @@ export function handleNormalAction(this: Composer, action: KeyAction): void {
       else { this.recordEdit(); this.buf.delete(); this.scheduleRender(); }
       return;
     case "ctrl-o":
-      this.notice("transcript 视图将在 v0.3.1 提供");
+      this.toggleTranscriptView();
       return;
     case "ctrl-v":
       void this.pasteImage();

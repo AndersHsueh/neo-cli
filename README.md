@@ -739,7 +739,7 @@ deepseek-flash · balanced · ask · ⎇ main · ctx ▓▓░░░ 42% · 0:42
   撞名后缀（`-2`、`-3`）只用于 `--name` 与 `/rename`。
 - `--resume`（v0.3.1 起）真续接同一 session-id/文件/信箱身份；运行中的会话不列出、不允许恢复。
 - v0.3.2/0.3.3 hotfix：并发 `--resume` 抢锁失败不再覆盖存活会话 profile（`.alive/owner.json` + 先抢锁后写 profile）；resume 身份失败直接 exit 2；owner 新鲜保护启动窗口。
-- `Ctrl+O` transcript 视图与轮次 diff 留 v0.3.2 / v0.3.3。
+- `Ctrl+O` 打开/关闭本会话 transcript 视图（只读浏览；视图内 `/` 或 Ctrl+F 搜索；Esc 关闭）。轮次 diff 与 `[` 回灌到输入框尚未提供，不替代 `/rewind`、`/export`、`/last`、Ctrl+R。
 
 > M0 探针（raw mode / 按键 / live 帧 / 交错 / 终端恢复）见
 > `scripts/tui-probe.ts` 与 `docs/v0.3.0-tui-prd[done].md` §2；PTY 场景 S11~S19 覆盖状态条、

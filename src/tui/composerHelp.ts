@@ -21,6 +21,7 @@ export const HELP_LINES: readonly string[] = [
   "  Tab / @ 补全 · / 命令菜单 · ! shell 模式 · Ctrl+V 贴图 · Ctrl+G 外部编辑器",
   "  Shift+Tab / Alt+M 循环权限模式（ask → auto-edit → auto-all → plan）",
   "  Esc 清空 · Esc Esc 回滚 · Ctrl+C 清空草稿（再按退出）",
+  "  Ctrl+O 打开/关闭 transcript 视图 · 视图内 / 搜索，或 Ctrl+F · Esc 关闭",
   "  本输入框不做 Vim 模式（无普通/插入模式切换）。",
 ];
 

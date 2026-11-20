@@ -152,6 +152,8 @@ export async function runInteractive(s: AppSession): Promise<number> {
       files: () => repl.fileIndex.list(),
       cwd: () => cfg.cwd,
       onSubmit: (text, attachments) => repl.submitUserLine(text, attachments as Attachment[]),
+      // issue #90：视图打开时拍已落盘 messages 的快照（进行中的工具调用尚未入列）。
+      getMessages: () => agent.messages,
       onCycleMode: (next) => {
         agent.mode = next;
         try {

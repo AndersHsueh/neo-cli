@@ -344,10 +344,25 @@ describe("#90 检索", () => {
 });
 
 describe("#90 Esc / Ctrl+C / busy / 互斥", () => {
+  test("#90 搜索态下 escape-escape（终端合并的连按 Esc）直接关视图，不打开 rewind", () => {
+    const h = makeHarness();
+    typeText(h, "draft");
+    h.messages.push(...CONVO);
+    openView(h);
+    special(h, { ch: "/", name: "/" });
+    typeText(h, "beta");
+    special(h, { name: "escape", sequence: "\x1b\x1b" });
+    expect(viewOf(h)).toBeNull();
+    expect(h.composer.text).toBe("draft");
+    expect(h.composer.rewindMenuOpen).toBe(false);
+    expect(h.cancels).toBe(0);
+    h.composer.stop();
+  });
+
   test("#90 Esc 先退出搜索再关视图；绝不取消本轮、不清空草稿、不打开 rewind", () => {
     const h = makeHarness({
       rewind: {
-        list: () => [{ index: 1, at: "2026-11-20T12:00:00.000Z", prompt: "x", checkpointSeqs: [], compacted: false }],
+        list: () => [{ index: 1, at: "2026-11-20T12:00:00.000Z", prompt: "x", messagesBefore: 1, checkpointSeqs: [], compacted: false }],
         apply: () => {
           throw new Error("rewind 不应被调用");
         },

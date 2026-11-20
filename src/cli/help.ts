@@ -125,7 +125,7 @@ ${c.bold("交互命令")}
   !<cmd>           直接执行 shell（受权限模式约束）
   ESC              运行中取消本轮（不回滚历史）；空闲时清空输入
   Ctrl+C           双击退出（运行中第一次 = 取消本轮）
-  Ctrl+O           transcript 视图（v0.3.1 提供；当前按下一行提示）
+  Ctrl+O           打开/关闭 transcript 视图（视图内 / 搜索，或 Ctrl+F；Esc 关闭）
 
 ${c.bold("输入")}
   输入框           底部常驻（上下横线 + 状态行）：Enter 提交；Ctrl+J / Shift+Enter /

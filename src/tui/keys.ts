@@ -58,6 +58,7 @@ export type KeyAction =
   | { type: "ctrl-c" }
   | { type: "ctrl-d" }
   | { type: "ctrl-o" }
+  | { type: "ctrl-f" }
   | { type: "ctrl-v" }
   | { type: "ctrl-g" }
   | { type: "ctrl-r" }
@@ -126,6 +127,7 @@ export function mapKey(k: RawKey): KeyAction | null {
   if (k.ctrl) {
     switch (k.name) {
       case "o": return { type: "ctrl-o" };
+      case "f": return { type: "ctrl-f" };
       case "c": return { type: "ctrl-c" };
       case "d": return { type: "ctrl-d" };
       case "v": return { type: "ctrl-v" };

@@ -37,6 +37,14 @@ import { renderStatus, type StatusSnapshot, type StatusSegment } from "./status.
 import { stripAnsi, truncateAnsi, wrapAnsi } from "./ansi.ts";
 import { TitleAnimator, type TitleView } from "./title.ts";
 import { EscDoublePress } from "./rewindMenu.ts";
+import type { Message } from "../llm.ts";
+import type { TranscriptViewState } from "./transcriptView.ts";
+import {
+  closeTranscriptView,
+  composeTranscriptFrame,
+  handleTranscriptViewKey,
+  toggleTranscriptView,
+} from "./composerTranscript.ts";
 import { EditHistory } from "./editHistory.ts";
 import { DraftRing } from "./draftRing.ts";
 import { HELP_LINES } from "./composerHelp.ts";
@@ -176,6 +184,11 @@ export interface ComposerDeps {
   onRecallQueue?: () => { text: string; attachments: unknown[] } | null;
   /** issue #79：Ctrl+X Ctrl+S 立即发送队列（与单独 Ctrl+S 暂存区分）。 */
   onFlushQueue?: () => void;
+  /**
+   * issue #90：打开 transcript 视图时拍一份已落盘消息的快照。
+   * 不提供则视为空会话。进行中的工具调用不要放进这个列表。
+   */
+  getMessages?: () => readonly Message[];
 }
 
 export interface SelectSession {
@@ -290,6 +303,8 @@ export class Composer {
   readonly drafts = new DraftRing();
   /** issue #79：空输入框按 `?` 打开的快捷键帮助（静态面板，不启动 tick）。 */
   helpOpen = false;
+  /** issue #90：交互式 transcript 视图（Ctrl+O）；null = 未打开。 */
+  transcriptView: TranscriptViewState | null = null;
   /** issue #79：Ctrl+X 和弦前缀已按下，等下一个键（Ctrl+S = 立即发送排队）。 */
   chordPending = false;
   hint: string | null = null;
@@ -620,6 +635,11 @@ export class Composer {
     const maxRows = this.maxFrameRows();
     const status = this.buildStatus(width);
     const statusRow = renderStatus(status, (role, text) => paintRole(role, text));
+    if (this.transcriptView && this.mode === "normal") {
+      const box = this.composeInput(width, this.buf, this.shellMode ? "shell" : "normal");
+      return this.composeTranscriptFrame(width, maxRows, box, statusRow);
+    }
+
     const extras: string[] = [];
     const pending = this.pendingRows.slice(-2);
     extras.push(...pending.map((r) => truncateAnsi(r, width)));
@@ -780,6 +800,10 @@ export class Composer {
   submitShellCommand = submitShellCommand;
   commitUserInput = commitUserInput;
   handleCtrlC = handleCtrlC;
+  toggleTranscriptView = toggleTranscriptView;
+  closeTranscriptView = closeTranscriptView;
+  handleTranscriptViewKey = handleTranscriptViewKey;
+  composeTranscriptFrame = composeTranscriptFrame;
   syncCommandMenu = syncCommandMenu;
   menuRows = menuRows;
   handleMenuKey = handleMenuKey;

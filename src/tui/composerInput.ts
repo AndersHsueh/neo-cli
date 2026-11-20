@@ -71,6 +71,8 @@ export function handleKey(this: Composer, ch: string | undefined, key: RawKey): 
   // 粘贴边界必须先于模态分发：否则审批/选择态里 paste-start 被当普通键吃掉，
   // 粘贴内容会逐字符走 mapKey（审批可能被 "y\r" 代答）。
   if (action.type === "paste-start") {
+    // 视图打开时不把粘贴送进输入框。
+    if (this.transcriptView) return;
     this.paste.start();
     this.pasteChunks = [];
     this.hint = "粘贴中…";
@@ -90,6 +92,11 @@ export function handleKey(this: Composer, ch: string | undefined, key: RawKey): 
   }
   if (this.mode === "ask" && this.askState) {
     this.handleAskKey(action);
+    return;
+  }
+  // issue #90：视图打开时拦截在 modal 之后、普通输入之前，粘贴也不进输入框。
+  if (this.transcriptView) {
+    this.handleTranscriptViewKey(action);
     return;
   }
   this.handleNormalAction(action);
