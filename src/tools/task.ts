@@ -429,7 +429,8 @@ export async function runSubagent(
 
   // 续聊（issue #48）：把已有历史灌进子代理，再追加本轮用户消息。
   // 放在 send 之前 —— send 会把新消息 push 到 messages 末尾，历史必须先就位。
-  if (resume?.messages && resume.messages.length > 0) {
+  const resumed = isResumeRun(resume);
+  if (resumed && resume?.messages) {
     sub.messages = resume.messages.map((m) => ({ ...m }));
   }
 
@@ -438,18 +439,16 @@ export async function runSubagent(
   // wiki worker 传 emitSubagentHooks: false，既不打 hook 也不消耗 sg-N。
   const description = truncateSubagentDescription(trimmed);
   const emitHooks = opts?.emitSubagentHooks !== false;
-  const resumed = isResumeRun(resume);
   let hookStarted = false;
   let taskId = "";
   let stopReason: SubagentStopReason = "error";
   if (emitHooks) {
-    if (!resumed) {
+    hookStarted = true;
+    if (resumed) {
+      taskId = opts?.jobId ?? "";
+    } else {
       taskId = opts?.jobId ?? allocateForegroundTaskId(main);
       await emitSubagentHook(main, "SubagentStart", { task_id: taskId, description }, ctx.signal);
-      hookStarted = true;
-    } else {
-      taskId = opts?.jobId ?? "";
-      hookStarted = true;
     }
   }
 
