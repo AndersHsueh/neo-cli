@@ -9,7 +9,7 @@ import { c } from "../ui/theme.ts";
 import { FileIndex } from "../input/fileIndex.ts";
 import type { Composer } from "../tui/composer.ts";
 import type { TitleAnimator } from "../tui/title.ts";
-import { expandReferences } from "../input/references.ts";
+import { expandMessageReferences } from "../input/references.ts";
 import { normalizeRelPath } from "../rules/index.ts";
 import { chatStream, contentText } from "../llm.ts";
 import { runSubagent } from "../tools/task.ts";
@@ -361,6 +361,9 @@ export function createRepl(s: AppSession): ReplState {
                 memoryMode,
                 todos: () => sessionTodos,
                 mcp: () => mcpManager.statuses(),
+                mcpPrompts: () => mcpManager.connectedPrompts(),
+                mcpGetPrompt: (server, name, args) => mcpManager.getPrompt(server, name, args),
+                mcpRefresh: () => mcpManager.refreshLists(),
                 // issue #25：定时/自节奏循环（仅交互会话；-p 不传 → 命令提示不可用）
                 loop: {
                   start: (spec) => repl.loopScheduler.start(spec),
@@ -466,7 +469,13 @@ export function createRepl(s: AppSession): ReplState {
           // 反过来会把「粘贴内容里恰好出现的 @foo」也当成引用展开（用户并没有这个意图）。
           const expanded =
             origin === "user"
-              ? expandReferences(line, { cwd: cfg.cwd })
+              ? await expandMessageReferences(line, {
+                  cwd: cfg.cwd,
+                  mcp: {
+                    connectedServers: mcpManager.connectedServerNames(),
+                    read: (server, uri) => mcpManager.readResource(server, uri),
+                  },
+                })
               : { text: line, refs: [], errors: [] as string[] };
           const resolved =
             origin === "user"

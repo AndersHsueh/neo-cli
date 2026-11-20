@@ -1,3 +1,10 @@
+import { isMcpAppResource } from "../mcp/catalog.ts";
+
+/** 与 references.ts 的 isWindowsDrivePath 同口径，避免两文件循环 import。 */
+function isWindowsDriveQuery(query: string): boolean {
+  return /^[A-Za-z]:[\\/]/.test(query);
+}
+
 /**
  * input/completion.ts — 补全的纯逻辑（v0.2.4 C1/C2，无 IO）。
  *
@@ -25,13 +32,29 @@ export interface TriggerContext {
   start: number;
 }
 
+export interface McpCompletionResource {
+  server?: string;
+  uri: string;
+  name?: string;
+  title?: string;
+  mimeType?: string;
+}
+
 export interface CompleteInput {
   files: string[];
   commands: CommandEntry[];
   limit?: number;
   /** 光标位置（readline completer 只给整行时用行尾）。 */
   cursor?: number;
+  /** issue #67：已连接 MCP server 与资源。安全模式由调用方传 safeMode 或不传此项。 */
+  mcp?: {
+    servers: string[];
+    resources: McpCompletionResource[];
+    safeMode?: boolean;
+  };
 }
+
+export type CandidateHintKind = "file" | "command" | "resource" | "mcp-server" | "mixed";
 
 export interface CompleteResult {
   /** 替换用的完整候选（含 `@` / `/` 前缀）。 */
@@ -40,6 +63,10 @@ export interface CompleteResult {
   token: string;
   /** token 在行内的起点（applyCompletion 直接用，避免二次解析分叉）。 */
   start: number;
+  /** 提示行类型；缺省按文件/命令旧口径。 */
+  hintKind?: CandidateHintKind;
+  /** 与 matches 对齐的展示名（长 URI 用 name/title）。 */
+  labels?: string[];
 }
 
 /** 不命中哨兵。用 -Infinity 而不是 -1：`score - target.length` 可能恰好等于 -1。 */
@@ -209,6 +236,50 @@ export function rankCommands(query: string, commands: CommandEntry[], limit = 20
   return topK(commands, max, (c) => fuzzyScoreLower(q, c.name.toLowerCase()), (c) => c.name);
 }
 
+
+function completeMcpResources(
+  query: string,
+  input: CompleteInput,
+  limit: number,
+): Pick<CompleteResult, "matches" | "labels" | "hintKind"> | null {
+  const mcp = input.mcp;
+  if (!mcp || mcp.safeMode) return null;
+  if (!query.includes(":")) return null;
+  if (isWindowsDriveQuery(query)) return null;
+  const colon = query.indexOf(":");
+  const serverPart = query.slice(0, colon);
+  const rest = query.slice(colon + 1);
+  const server =
+    mcp.servers.find((s) => s === serverPart) ??
+    mcp.servers.find((s) => s.toLowerCase() === serverPart.toLowerCase());
+  if (!server) return null;
+  const resources = mcp.resources.filter((r) => r.server === server && !isMcpAppResource(r));
+  const picked =
+    rest === ""
+      ? resources.slice(0, Math.max(0, limit))
+      : topK(
+          resources,
+          limit,
+          (r) => fuzzyScoreLower(rest.toLowerCase(), `${r.name ?? ""} ${r.title ?? ""} ${r.uri}`.toLowerCase()),
+          (r) => r.uri,
+        );
+  return {
+    matches: picked.map((r) => `@${server}:${r.uri}`),
+    labels: picked.map((r) => r.title || r.name || r.uri),
+    hintKind: "resource",
+  };
+}
+
+/** 当前前缀能唯一对上已连接 server 时，在文件候选之后给出 `@server:`。 */
+function mcpServerQualifier(query: string, input: CompleteInput): string | null {
+  const mcp = input.mcp;
+  if (!mcp || mcp.safeMode) return null;
+  if (query.includes(":")) return null;
+  const hits = mcp.servers.filter((s) => s.toLowerCase().startsWith(query.toLowerCase()));
+  if (hits.length !== 1) return null;
+  return `@${hits[0]}:`;
+}
+
 /** 整行补全：给 readline completer（或自绘候选）用的最终结果。 */
 export function completeLine(line: string, input: CompleteInput): CompleteResult | null {
   const ctx = triggerAt(line, input.cursor ?? line.length);
@@ -221,12 +292,30 @@ export function completeLine(line: string, input: CompleteInput): CompleteResult
       matches: rankCommands(ctx.query, input.commands, limit).map((c) => `/${c.name}`),
       token: ctx.token,
       start: ctx.start,
+      hintKind: "command",
+    };
+  }
+  const mcpMatches = completeMcpResources(ctx.query, input, limit);
+  if (mcpMatches) return { ...mcpMatches, token: ctx.token, start: ctx.start };
+
+  const fileMatches = rankFiles(ctx.query, input.files, limit).map((f) => `@${f}`);
+  const qualifier = mcpServerQualifier(ctx.query, input);
+  if (qualifier && !fileMatches.includes(qualifier)) {
+    const matches = [...fileMatches, qualifier];
+    const labels = matches.map((m) => (m === qualifier ? "MCP server" : m));
+    return {
+      matches,
+      labels,
+      token: ctx.token,
+      start: ctx.start,
+      hintKind: fileMatches.length > 0 ? "mixed" : "mcp-server",
     };
   }
   return {
-    matches: rankFiles(ctx.query, input.files, limit).map((f) => `@${f}`),
+    matches: fileMatches,
     token: ctx.token,
     start: ctx.start,
+    hintKind: "file",
   };
 }
 
@@ -277,7 +366,41 @@ export function applyMatch(
  * 命令补全**不再**用这条 hint（issue #31 改成 composer 里的纵向菜单）—— 传 "command"
  * 只保留给「没有 composer 的降级模式」，正常 TUI 里命令走菜单，不会再出现「N 个命令候选」。
  */
-export function formatCandidateHint(kind: "file" | "command", matches: string[], max = 8): string {
+export function formatCandidateHint(
+  kind: CandidateHintKind,
+  matches: string[],
+  max = 8,
+  labels?: string[],
+): string {
+  if (kind === "resource") {
+    const shown = matches
+      .slice(0, max)
+      .map((m, i) => {
+        const label = labels?.[i];
+        const uri = m.replace(/^@[^:]+:/, "");
+        return label && label !== uri ? `${label}（${uri}）` : m;
+      })
+      .join("  ");
+    const more = matches.length > max ? `  … 还有 ${matches.length - max} 个` : "";
+    return `${matches.length} 个资源候选：${shown}${more}（继续按 Tab 循环）`;
+  }
+  if (kind === "mcp-server") {
+    return `MCP server：${matches.join("  ")}`;
+  }
+  if (kind === "mixed") {
+    const files: string[] = [];
+    const servers: string[] = [];
+    for (let i = 0; i < matches.length; i++) {
+      const m = matches[i]!;
+      if (labels?.[i] === "MCP server" || /^@[A-Za-z0-9._-]+:$/.test(m)) servers.push(m);
+      else files.push(m);
+    }
+    const fileShown = files.slice(0, max).join("  ");
+    const fileMore = files.length > max ? `  … 还有 ${files.length - max} 个` : "";
+    const filePart = files.length > 0 ? `${files.length} 个文件候选：${fileShown}${fileMore}` : "";
+    const srvPart = servers.length > 0 ? `MCP server：${servers.join("  ")}` : "";
+    return `${[filePart, srvPart].filter(Boolean).join("  ·  ")}（继续按 Tab 循环）`;
+  }
   const shown = matches.slice(0, max).join("  ");
   const more = matches.length > max ? `  … 还有 ${matches.length - max} 个` : "";
   const what = kind === "command" ? "命令" : "文件";

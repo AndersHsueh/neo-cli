@@ -8,7 +8,17 @@ export {
   type McpServerStatus,
   type McpToolEntry,
   type McpToolInfo,
+  type McpPromptGetResult,
+  type McpPromptInfo,
+  type McpResourceInfo,
+  type McpResourceReadResult,
 } from "./client.ts";
+export {
+  isMcpAppResource,
+  mcpPromptMenuEntries,
+  formatMcpPromptResult,
+  type McpPromptArgument,
+} from "./catalog.ts";
 export { StdioRpc, RpcError } from "./jsonrpc.ts";
 export {
   makeMcpTool,

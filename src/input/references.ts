@@ -21,6 +21,11 @@ export interface Reference {
   start: number;
 }
 
+export interface McpReferenceSource {
+  connectedServers: Iterable<string>;
+  read: (server: string, uri: string) => Promise<{ text?: string; blob?: string; mimeType?: string; uri?: string }>;
+}
+
 export interface ExpandOptions {
   cwd: string;
   /** 路径是否存在（相对 cwd 或绝对路径）。默认 fs.existsSync。 */
@@ -37,6 +42,8 @@ export interface ExpandOptions {
   maxLinesPerFile?: number;
   /** 单条消息引用内容总字节上限（默认 60000）。 */
   maxBytesTotal?: number;
+  /** issue #67：已连接 MCP 资源。不传则所有 `@` 都按文件路径处理。 */
+  mcp?: McpReferenceSource;
 }
 
 export interface ExpandedRef {
@@ -221,3 +228,209 @@ export function expandReferences(text: string, opts: ExpandOptions): ExpandResul
   };
 }
 
+/** Windows 盘符（单字母 + : + \ 或 /）一律当文件路径，不当 MCP。 */
+export function isWindowsDrivePath(path: string): boolean {
+  return /^[A-Za-z]:[\\/]/.test(path);
+}
+
+/**
+ * `@<server>:<uri>`：首段能对上已连接 server 时才走 MCP。
+ * 解析以 URI 为准，在第一个冒号处切开（URI 本身还可再含冒号）。
+ */
+export function parseMcpResourceRef(
+  path: string,
+  connectedServers: Iterable<string>,
+): { server: string; uri: string } | null {
+  if (isWindowsDrivePath(path)) return null;
+  const colon = path.indexOf(":");
+  if (colon <= 0) return null;
+  const server = path.slice(0, colon);
+  const uri = path.slice(colon + 1);
+  if (!uri) return null;
+  const list = [...connectedServers];
+  const exact = list.find((s) => s === server);
+  if (exact) return { server: exact, uri };
+  const lower = server.toLowerCase();
+  const folded = list.find((s) => s.toLowerCase() === lower);
+  return folded ? { server: folded, uri } : null;
+}
+
+interface CollectedRef {
+  kind: "file" | "mcp";
+  path: string;
+  lines: number;
+  truncated: boolean;
+  body: string;
+  server?: string;
+  uri?: string;
+}
+
+/**
+ * 展开 `@path` 与 `@server:uri`：原文不动，引用块附在末尾。
+ * 文件与 MCP 资源共用同一份预算，附件块分开标注。
+ */
+export async function expandMessageReferences(
+  text: string,
+  opts: ExpandOptions,
+): Promise<ExpandResult> {
+  const refs0 = parseReferences(text);
+  if (refs0.length === 0) return { text, refs: [], errors: [] };
+
+  const absOf = (p: string): string => (isAbsolute(p) ? p : join(opts.cwd, p));
+  const exists = opts.exists ?? defaultExists;
+  const readFile = opts.readFile ?? defaultReadFile;
+  const statSize = opts.statSize ?? defaultStatSize;
+  const readSlice = opts.readSlice ?? defaultReadSlice;
+  const maxFiles = Math.max(1, opts.maxFiles ?? DEFAULT_MAX_FILES);
+  const maxLines = Math.max(1, opts.maxLinesPerFile ?? DEFAULT_MAX_LINES_PER_FILE);
+  const maxBytes = Math.max(1, opts.maxBytesTotal ?? DEFAULT_MAX_BYTES_TOTAL);
+  const connected = opts.mcp ? [...opts.mcp.connectedServers] : [];
+
+  const collected: CollectedRef[] = [];
+  const errors: string[] = [];
+  const seenFile = new Set<string>();
+  const seenMcp = new Set<string>();
+  let totalBytes = 0;
+
+  const applyBudget = (raw: string): { body: string; lines: number; truncated: boolean } => {
+    let body = raw;
+    let truncated = false;
+    let lines = countLines(body);
+    if (lines > maxLines) {
+      body = body.split("\n").slice(0, maxLines).join("\n");
+      lines = maxLines;
+      truncated = true;
+    }
+    return { body, lines, truncated };
+  };
+
+  for (const r of refs0) {
+    const mcpRef = opts.mcp ? parseMcpResourceRef(r.path, connected) : null;
+    if (mcpRef) {
+      const key = `${mcpRef.server}\0${mcpRef.uri}`;
+      if (seenMcp.has(key)) continue;
+      seenMcp.add(key);
+      if (collected.length >= maxFiles) {
+        errors.push(`最多引用 ${maxFiles} 个文件，${r.token} 未展开`);
+        continue;
+      }
+      const remaining = maxBytes - totalBytes;
+      if (remaining <= 0) {
+        errors.push(`${r.token} 会让引用总量超出 ${maxBytes} 字节预算，已跳过`);
+        continue;
+      }
+      try {
+        const got = await opts.mcp!.read(mcpRef.server, mcpRef.uri);
+        if (got.blob && got.text === undefined) {
+          errors.push(`${r.token} 是二进制/blob 资源，已跳过`);
+          continue;
+        }
+        if (got.text === undefined || got.text === "") {
+          errors.push(`${r.token} 读取失败：空内容，按原文保留`);
+          continue;
+        }
+        if (got.text.includes("\0")) {
+          errors.push(`${r.token} 是二进制文件，已跳过`);
+          continue;
+        }
+        let content = got.text;
+        const size = Buffer.byteLength(content, "utf8");
+        let truncatedByBytes = false;
+        if (size > remaining) {
+          // 按剩余字节截断，避免冲破预算。
+          const buf = Buffer.from(content, "utf8").subarray(0, remaining);
+          content = new TextDecoder("utf-8", { fatal: false }).decode(buf, { stream: true });
+          truncatedByBytes = true;
+        }
+        totalBytes += Buffer.byteLength(content, "utf8");
+        const clipped = applyBudget(content);
+        collected.push({
+          kind: "mcp",
+          path: `${mcpRef.server} · ${mcpRef.uri}`,
+          lines: clipped.lines,
+          truncated: clipped.truncated || truncatedByBytes,
+          body: clipped.body,
+          server: mcpRef.server,
+          uri: mcpRef.uri,
+        });
+      } catch (e) {
+        errors.push(`${r.token} 读取失败：${(e as Error).message}`);
+      }
+      continue;
+    }
+
+    const path = normPath(r.path);
+    const abs = absOf(path);
+    if (seenFile.has(abs)) continue;
+    seenFile.add(abs);
+
+    if (collected.length >= maxFiles) {
+      errors.push(`最多引用 ${maxFiles} 个文件，${r.token} 未展开`);
+      continue;
+    }
+    if (!exists(absOf(path))) {
+      errors.push(`${r.token} 不存在，按原文保留`);
+      continue;
+    }
+    let size = 0;
+    try {
+      size = statSize(absOf(path));
+    } catch (e) {
+      errors.push(`${r.token} 读取失败：${(e as Error).message}`);
+      continue;
+    }
+    const remaining = maxBytes - totalBytes;
+    if (remaining <= 0) {
+      errors.push(`${r.token} 会让引用总量超出 ${maxBytes} 字节预算，已跳过`);
+      continue;
+    }
+    const truncatedByBytes = size > remaining;
+    let content: string;
+    try {
+      content = truncatedByBytes ? readSlice(abs, remaining) : readFile(abs);
+    } catch (e) {
+      errors.push(`${r.token} 读取失败：${(e as Error).message}`);
+      continue;
+    }
+    if (content.includes("\0")) {
+      errors.push(`${r.token} 是二进制文件，已跳过`);
+      continue;
+    }
+    totalBytes += Buffer.byteLength(content, "utf8");
+    const clipped = applyBudget(content);
+    collected.push({
+      kind: "file",
+      path,
+      lines: clipped.lines,
+      truncated: clipped.truncated || truncatedByBytes,
+      body: clipped.body,
+    });
+  }
+
+  if (collected.length === 0) return { text, refs: collected.map(({ path, lines, truncated }) => ({ path, lines, truncated })), errors };
+
+  const files = collected.filter((c) => c.kind === "file");
+  const resources = collected.filter((c) => c.kind === "mcp");
+  const sections: string[] = [];
+  if (files.length > 0) {
+    const blocks = files.map((r) => {
+      const head = `——— ${r.path}（${r.lines} 行${r.truncated ? "，已截断" : ""}）———`;
+      return `${head}\n${r.body}\n——— end ${r.path} ———`;
+    });
+    sections.push(`以下是 @ 引用的文件内容：\n${blocks.join("\n\n")}`);
+  }
+  if (resources.length > 0) {
+    const blocks = resources.map((r) => {
+      const label = r.path;
+      const head = `——— MCP 资源 ${label}（${r.lines} 行${r.truncated ? "，已截断" : ""}）———`;
+      return `${head}\n${r.body}\n——— end ${label} ———`;
+    });
+    sections.push(`以下是 @ 引用的 MCP 资源：\n${blocks.join("\n\n")}`);
+  }
+
+  return {
+    text: `${text}\n\n${sections.join("\n\n")}`,
+    refs: collected.map(({ path, lines, truncated }) => ({ path, lines, truncated })),
+    errors,
+  };
+}

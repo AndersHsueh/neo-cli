@@ -150,12 +150,12 @@ describe("C1c 排序与候选", () => {
 describe("C2 整行补全（readline completer 的输入输出）", () => {
   test("文件补全：保留 @ 前缀，token 精确可替换", () => {
     const r = completeLine("@src/ui/con", { files: ["src/ui/console.ts"], commands: [] });
-    expect(r).toEqual({ matches: ["@src/ui/console.ts"], token: "@src/ui/con", start: 0 });
+    expect(r).toEqual({ matches: ["@src/ui/console.ts"], token: "@src/ui/con", start: 0, hintKind: "file" });
   });
 
   test("命令补全：保留 / 前缀", () => {
     const r = completeLine("/pro", { files: [], commands: CMDS });
-    expect(r).toEqual({ matches: ["/provider"], token: "/pro", start: 0 });
+    expect(r).toEqual({ matches: ["/provider"], token: "/pro", start: 0, hintKind: "command" });
   });
 
   test("无触发返回 null", () => {
@@ -164,7 +164,7 @@ describe("C2 整行补全（readline completer 的输入输出）", () => {
 
   test("无候选时返回空 matches 而不是 null（调用方据此响铃/不动作）", () => {
     const r = completeLine("@zzz", { files: ["a.ts"], commands: [] });
-    expect(r).toEqual({ matches: [], token: "@zzz", start: 0 });
+    expect(r).toEqual({ matches: [], token: "@zzz", start: 0, hintKind: "file" });
   });
 
   test("默认上限 20", () => {

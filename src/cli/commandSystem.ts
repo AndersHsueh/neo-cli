@@ -146,6 +146,13 @@ export async function handleSystemCommands(cmd: string, arg: string, rest: strin
         ui.blank();
         return true;
       }
+      if (ctx.mcpRefresh) {
+        try {
+          await ctx.mcpRefresh();
+        } catch {
+          /* 刷新失败保留上次成功清单，下面仍按快照展示 */
+        }
+      }
       const states = ctx.mcp?.();
       if (!states) {
         ui.warn("当前进程没有接入 MCP（未配置 mcpServers，或不在主循环里）。");
@@ -159,10 +166,12 @@ export async function handleSystemCommands(cmd: string, arg: string, rest: strin
       ui.blank();
       const connected = states.filter((s) => s.status === "connected");
       const tools = connected.reduce((n, s) => n + s.tools.length, 0);
+      const resources = connected.reduce((n, s) => n + (s.resources?.length ?? 0), 0);
+      const prompts = connected.reduce((n, s) => n + (s.prompts?.length ?? 0), 0);
       const rejected = states.reduce((n, s) => n + (s.rejected?.length ?? 0), 0);
       ui.kv(
         "MCP server",
-        `${states.length} 个（已连接 ${connected.length}，工具 ${tools} 个` +
+        `${states.length} 个（已连接 ${connected.length}，工具 ${tools} 个，资源 ${resources} 个，提示词 ${prompts} 个` +
           (rejected > 0 ? `，注册失败 ${rejected} 个）` : "）"),
       );
       for (const s of states) {
@@ -174,7 +183,10 @@ export async function handleSystemCommands(cmd: string, arg: string, rest: strin
               : s.status === "disabled"
                 ? c.dim("已禁用")
                 : c.warn("未连接");
-        const meta = s.status === "connected" ? `${s.tools.length} 个工具` : "";
+        const meta =
+          s.status === "connected"
+            ? `${s.tools.length} 个工具 · ${s.resources?.length ?? 0} 个资源 · ${s.prompts?.length ?? 0} 个提示词`
+            : "";
         // issue #29：传输类型一眼可见（stdio 本地进程 / http 远程端点）。
         const transport = s.transport ? c.dim(`  [${s.transport}]`) : "";
         ui.line(`  ${c.tool("⚡")} ${c.text(s.name)}${transport}  ${tag}${meta ? c.dim(`  ${meta}`) : ""}`);

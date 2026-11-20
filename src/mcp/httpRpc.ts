@@ -44,6 +44,8 @@ export class HttpRpc implements McpRpc {
   private sessionId: string | null = null;
   private readonly inflight = new Set<AbortController>();
   readonly stderrTail: string[] = [];
+  /** HTTP 通知本轮为 P3，字段保留以符合 McpRpc；不会被传输层触发。 */
+  onNotification?: (method: string, params?: unknown) => void;
   private readonly timeoutMs: number;
 
   constructor(private readonly opts: HttpRpcOptions) {

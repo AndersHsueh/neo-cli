@@ -432,7 +432,11 @@ export function syncCommandMenu(this: Composer): void {
     this.menu = null;
     return;
   }
-  const items = rankCommands(ctx.query, this.deps.commands, 50);
+  const commands = [
+    ...this.deps.commands,
+    ...((this.deps.safeMode?.() ? [] : this.deps.extraCommands?.()) ?? []),
+  ];
+  const items = rankCommands(ctx.query, commands, Math.max(50, commands.length));
   if (items.length === 0) {
     this.menu = { query: ctx.query, items, index: 0 };
     return;
@@ -571,6 +575,11 @@ export function tabComplete(this: Composer): void {
     files: ctx.kind === "file" ? this.deps.files() : [],
     commands: this.deps.commands,
     cursor,
+    mcp: {
+      servers: this.deps.safeMode?.() ? [] : (this.deps.mcpServers?.() ?? []),
+      resources: this.deps.safeMode?.() ? [] : (this.deps.mcpResources?.() ?? []),
+      safeMode: this.deps.safeMode?.() ?? false,
+    },
   });
   if (!result || result.matches.length === 0) {
     this.hint = "无候选";
@@ -587,7 +596,7 @@ export function tabComplete(this: Composer): void {
     applied: applied.line,
     cursorAfter: applied.cursor,
   };
-  this.hint = result.matches.length > 1 ? formatCandidateHint("file", result.matches) : null;
+  this.hint = result.matches.length > 1 ? formatCandidateHint(result.hintKind ?? "file", result.matches, 8, result.labels) : null;
   this.scheduleRender();
 }
 

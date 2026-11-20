@@ -12,7 +12,7 @@ import type { DriveSpec } from "../drive.ts";
 import type { LoopSpec } from "../loop.ts";
 import type { ProjectRule, RuleMatch } from "../rules/index.ts";
 import type { MemoryBridge } from "../memory/bridge.ts";
-import type { McpServerState } from "../mcp/client.ts";
+import type { McpPromptGetResult, McpPromptInfo, McpServerState } from "../mcp/client.ts";
 import type { PromptSelection } from "../prompt/select.ts";
 import type { ToolVisibility } from "../prompt/visibility.ts";
 import type { Envelope } from "../mailbox/types.ts";
@@ -120,6 +120,19 @@ export interface CommandContext {
    * 不传 = 本进程没有接 MCP（单测裸 ctx），`/mcp` 会明确说明而不是显示空表。
    */
   mcp?: () => McpServerState[];
+  /**
+   * issue #67：已连接 MCP 提示词清单（含 server 名）。
+   * `/` 分发与撞名提示用；不传 = 本入口没有提示词。
+   */
+  mcpPrompts?: () => Array<McpPromptInfo & { server: string }>;
+  /** issue #67：调用 prompts/get。失败抛错，由分发层转警告。 */
+  mcpGetPrompt?: (
+    server: string,
+    name: string,
+    args?: Record<string, string>,
+  ) => Promise<McpPromptGetResult>;
+  /** issue #67：`/mcp` 手动查看时再 list 一次（HTTP 通知为 P3）。 */
+  mcpRefresh?: () => Promise<void>;
   /**
    * issue #69：交互 `/cd` 换根所需的可选接线。缺一项 = 该侧状态本入口没有
    * （`-p` / 测试裸 ctx），不是「跳过刷新」的借口。

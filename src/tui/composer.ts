@@ -128,7 +128,13 @@ export interface ComposerDeps {
   /** 顶线右侧标签（会话名 / cwd 短名）。 */
   getTitle?: () => string | TitleView;
   commands: CommandEntry[];
+  /** issue #67：运行时并进 `/` 菜单的 MCP prompts（不要写进静态 COMMANDS）。 */
+  extraCommands?: () => CommandEntry[];
   files: () => string[];
+  /** issue #67：已连接 MCP server / 资源，供 `@` 补全。 */
+  mcpServers?: () => string[];
+  mcpResources?: () => Array<{ server: string; uri: string; name?: string; title?: string; mimeType?: string }>;
+  safeMode?: () => boolean;
   /** 当前会话工作目录（issue #69：`/cd ` 后的目录补全）。 */
   cwd?: () => string;
   /** 提交一条消息（此时 buffer 已清空，attachments 是 chip 绑定列表）。 */

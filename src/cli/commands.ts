@@ -14,6 +14,7 @@ import {
   tryLoadSkillForSlash,
 } from "../skills.ts";
 import { commandHandler, registerCommand } from "./command-registry.ts";
+import { mcpPromptShadowNotice, tryDispatchMcpPrompt } from "./mcpPromptCommand.ts";
 
 import type { CommandContext } from "./commandContext.ts";
 export type { CommandContext } from "./commandContext.ts";
@@ -63,23 +64,30 @@ export async function dispatchCommand(line: string, ctx: CommandContext): Promis
         `/${name} 是内置命令，同名技能未触发；要用这个技能请改名，或让模型 use_skill 加载。`,
       );
     }
+    const mcpNotice = mcpPromptShadowNotice(name, ctx.cfg.safeMode ? [] : (ctx.mcpPrompts?.() ?? []));
+    if (mcpNotice) ctx.ui.info(mcpNotice);
     await handler(line, ctx);
     return;
   }
 
   // 未命中内置命令 → 尝试当作技能名（技能是动态发现的，不登记进补全表）
   if (!isValidSkillName(name)) {
+    if (await tryDispatchMcpPrompt(line, ctx)) return;
     ctx.ui.warn(`未知命令 /${name}。用 /help 查看全部命令。`);
     return;
   }
 
   const loaded = tryLoadSkillForSlash(ctx.cfg, name);
   if (!loaded.ok) {
+    if (await tryDispatchMcpPrompt(line, ctx)) return;
     const avail = loaded.available.length > 0 ? `\n可用技能：${loaded.available.join(", ")}` : "";
     ctx.ui.warn(`未知命令 /${name}：无此技能。${loaded.message}${avail}`);
     ctx.ui.info("用 /help 查看内置命令，/skills 列出全部技能。");
     return;
   }
+
+  const mcpNotice = mcpPromptShadowNotice(name, ctx.cfg.safeMode ? [] : (ctx.mcpPrompts?.() ?? []));
+  if (mcpNotice) ctx.ui.info(mcpNotice);
 
   if (!ctx.enqueueUserTurn) {
     // 单次模式（-p）等没有主循环队列的入口：明确告知，不静默吞掉

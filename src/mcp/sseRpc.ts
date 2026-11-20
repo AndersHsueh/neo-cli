@@ -62,6 +62,7 @@ export class SseRpc implements McpRpc {
   private readonly inflight = new Set<AbortController>();
   private reader: SseReader | null = null;
   readonly stderrTail: string[] = [];
+  onNotification?: (method: string, params?: unknown) => void;
   private readonly timeoutMs: number;
   private readonly handshakeTimeoutMs: number;
 
@@ -201,6 +202,15 @@ export class SseRpc implements McpRpc {
     // 服务端发来的请求：明确回「不支持」，不静默丢弃（否则对方会一直等）。
     if (typeof m["method"] === "string" && m["id"] !== undefined) {
       void this.post({ jsonrpc: "2.0", id: m["id"], error: { code: -32601, message: `neo 不支持 ${String(m["method"])}` } });
+      return;
+    }
+    // 通知（无 id）：#67 list_changed 回调。不是重开传输。
+    if (typeof m["method"] === "string") {
+      try {
+        this.onNotification?.(m["method"], m["params"]);
+      } catch {
+        /* 回调失败不影响连接 */
+      }
     }
   }
 

@@ -16,6 +16,7 @@ import { banner, c } from "../ui/theme.ts";
 import { applyMatch, completeLine, formatCandidateHint, triggerAt } from "../input/completion.ts";
 import { completeCdLine } from "./cdWorkdir.ts";
 import { COMMANDS } from "../input/commands.ts";
+import { mcpPromptMenuEntries } from "../mcp/catalog.ts";
 import { appendContinuation, continuationPrompt, emptyContinuation, finishContinuation, isActiveContinuation, newlineKindsFromBytes, stripContinuationMarker, type Continuation } from "../input/multiline.ts";
 import { todosSummary } from "../tools/todo.ts";
 import { mainToolNames, toolNames } from "../tools/index.ts";
@@ -150,8 +151,12 @@ export async function runInteractive(s: AppSession): Promise<number> {
         todosSummary: todosSummary(sessionTodos),
       }),
       commands: COMMANDS,
+      extraCommands: () => mcpPromptMenuEntries(s.mcpManager.connectedPrompts()),
       files: () => repl.fileIndex.list(),
       cwd: () => cfg.cwd,
+      mcpServers: () => s.mcpManager.connectedServerNames(),
+      mcpResources: () => s.mcpManager.connectedResources(),
+      safeMode: () => cfg.safeMode === true,
       onSubmit: (text, attachments) => repl.submitUserLine(text, attachments as Attachment[]),
       // issue #90：视图打开时拍已落盘 messages 的快照（进行中的工具调用尚未入列）。
       getMessages: () => agent.messages,
@@ -376,8 +381,11 @@ export async function runInteractive(s: AppSession): Promise<number> {
       return match === undefined ? { line, cursor } : applyMatch(line, cursor, start, match);
     };
 
-    const formatCandidates = (kind: "file" | "command", matches: string[]): string =>
-      `· ${formatCandidateHint(kind, matches)}`;
+    const formatCandidates = (
+      kind: "file" | "command" | "resource" | "mcp-server" | "mixed",
+      matches: string[],
+      labels?: string[],
+    ): string => `· ${formatCandidateHint(kind, matches, 8, labels)}`;
 
     const onTab = (): void => {
       const r = rlInternal();
@@ -436,8 +444,16 @@ export async function runInteractive(s: AppSession): Promise<number> {
 
       const result = completeLine(line, {
         files: ctx.kind === "file" ? repl.fileIndex.list() : [],
-        commands: COMMANDS,
+        commands: [
+          ...COMMANDS,
+          ...(cfg.safeMode ? [] : mcpPromptMenuEntries(s.mcpManager.connectedPrompts())),
+        ],
         cursor,
+        mcp: {
+          servers: cfg.safeMode ? [] : s.mcpManager.connectedServerNames(),
+          resources: cfg.safeMode ? [] : s.mcpManager.connectedResources(),
+          safeMode: cfg.safeMode === true,
+        },
       });
       if (!result || result.matches.length === 0) {
         if (line !== buf) applyLine(line, cursor);
@@ -456,7 +472,7 @@ export async function runInteractive(s: AppSession): Promise<number> {
       if (result.matches.length > 1 && repl.queue.length === 0) {
         // 提示必须自己以换行结尾：applyLine 的第一步是 `\r\x1b[2K`，
         // 如果光标还停在提示行尾，提示会被同一行清掉（PTY 实测：屏幕上永远看不到）。
-        process.stdout.write(`\n${c.dim(formatCandidates(ctx.kind, result.matches))}\n`);
+        process.stdout.write(`\n${c.dim(formatCandidates(result.hintKind ?? ctx.kind, result.matches, result.labels))}\n`);
       }
       applyLine(applied.line, applied.cursor);
     };

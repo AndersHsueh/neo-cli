@@ -2,7 +2,8 @@
  * 最小 JSON-RPC 2.0 over stdio 客户端（issue #2）。
  *
  * 为什么自写而不引官方 SDK：MCP 的 stdio 传输就是「一行一个 JSON 对象」，
- * 我们只需要 initialize / tools/list / tools/call 三个方法。官方 SDK 会带来
+ * 我们只需要 initialize / tools/list / tools/call，以及 #67 的
+ * resources/list、resources/read、prompts/list、prompts/get。官方 SDK 会带来
  * 一棵依赖树和它自己的传输/重连策略，而 neo 要的是「连不上就报一句人话」。
  * 自写后整个客户端零依赖、可被测试直接驱动，失败路径也全在掌控中。
  *
@@ -61,6 +62,11 @@ export interface McpRpc {
   request<T = unknown>(method: string, params?: unknown): Promise<T>;
   notify(method: string, params?: unknown): Promise<void>;
   close(): void;
+  /**
+   * 服务端无 id 通知回调（issue #67）。stdio / SSE 在已有读循环里触发；
+   * HTTP 通知本轮为 P3，实现可留空。
+   */
+  onNotification?: (method: string, params?: unknown) => void;
 }
 
 /**
@@ -77,6 +83,7 @@ export class StdioRpc implements McpRpc {
   private closed = false;
   /** 最近若干行 stderr，连接失败时拼进错误信息（npx 的报错都在这里）。 */
   readonly stderrTail: string[] = [];
+  onNotification?: (method: string, params?: unknown) => void;
 
   constructor(private readonly opts: StdioRpcOptions) {}
 
@@ -210,8 +217,16 @@ export class StdioRpc implements McpRpc {
         id: m["id"],
         error: { code: -32601, message: `neo 不支持 ${String(m["method"])}` },
       });
+      return;
     }
-    // 通知（无 id）忽略。
+    // 通知（无 id）：#67 把 list_changed 交给管理器，其它通知仍忽略。
+    if (typeof m["method"] === "string") {
+      try {
+        this.onNotification?.(m["method"], m["params"]);
+      } catch {
+        /* 回调失败不影响连接 */
+      }
+    }
   }
 
   private write(obj: unknown): void {

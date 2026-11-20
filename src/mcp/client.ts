@@ -18,6 +18,19 @@ import { StdioRpc, type McpRpc } from "./jsonrpc.ts";
 import { HttpRpc } from "./httpRpc.ts";
 import { SseRpc } from "./sseRpc.ts";
 import { computeMcpNames, makeMcpTool } from "./tool.ts";
+import {
+  isMethodMissing,
+  listAllPages,
+  normalizePrompts,
+  normalizeResourceRead,
+  normalizeResources,
+  serverCapFlags,
+  type McpPromptGetResult,
+  type McpPromptInfo,
+  type McpResourceInfo,
+  type McpResourceReadResult,
+  type ServerCapFlags,
+} from "./catalog.ts";
 
 /** tools/list 返回的工具条目（只取我们真正用到的字段）。 */
 export interface McpToolInfo {
@@ -28,6 +41,7 @@ export interface McpToolInfo {
 }
 
 export type McpServerStatus = "connected" | "error" | "disabled" | "pending";
+export type { McpPromptGetResult, McpPromptInfo, McpResourceInfo, McpResourceReadResult } from "./catalog.ts";
 
 /** 一个已注册 MCP 工具的对外描述：本地注册名 ↔ 远端原名。 */
 export interface McpToolEntry {
@@ -57,6 +71,14 @@ export interface McpServerState {
   serverInfo?: { name?: string; version?: string };
   /** 连接耗时（毫秒），排障用。 */
   connectMs?: number;
+  /** 握手后记下的服务端能力（#67：只在声明后才 list）。 */
+  capabilities?: ServerCapFlags;
+  /** 已列出的资源（未声明或 list 失败则为空数组）。 */
+  resources?: McpResourceInfo[];
+  /** 已列出的提示词。 */
+  prompts?: McpPromptInfo[];
+  /** 非致命告警（分页截断等），/mcp 可展示。 */
+  warnings?: string[];
 }
 
 export interface McpClientOptions {
@@ -74,6 +96,10 @@ interface Live {
   tools: McpToolInfo[];
   /** 注册名 → 远端原名（tools/call 用远端名，注册名只是本地别名）。 */
   entries: McpToolEntry[];
+  capabilities: ServerCapFlags;
+  resources: McpResourceInfo[];
+  prompts: McpPromptInfo[];
+  warnings: string[];
 }
 
 /**
@@ -90,6 +116,10 @@ type Handshake =
       tools: McpToolInfo[];
       serverInfo?: { name?: string; version?: string };
       connectMs: number;
+      capabilities: ServerCapFlags;
+      resources: McpResourceInfo[];
+      prompts: McpPromptInfo[];
+      warnings: string[];
     }
   | { ok: false; cfg: McpServerConfig; error: string; connectMs: number };
 
@@ -103,6 +133,10 @@ export class McpManager {
   /** 正在握手的连接：closeAll 时它们还不在 live 里，也必须收掉（ACP 第三轮 N3）。 */
   private connecting = new Set<McpRpc>();
   private closed = false;
+  /** 同一 server 的 list 刷新串行化，避免 list_changed 连发交叉覆盖。 */
+  private refreshChain = new Map<string, Promise<void>>();
+  /** 握手尚未写入 live 时到达的 list_changed，注册后再刷。 */
+  private pendingNotices = new Map<string, Set<"resources" | "prompts">>();
 
   constructor(
     private readonly configs: McpServerConfig[],
@@ -183,8 +217,15 @@ export class McpManager {
       if (rpc instanceof StdioRpc) rpc.start();
       // issue #44：SSE 必须先建长连接拿到 endpoint，否则第一个 request 无处可 POST。
       if (rpc instanceof SseRpc) await rpc.start();
+      // issue #67：通知回调在握手早期挂上，免得 initialized 之后立刻到来的
+      // list_changed 被丢掉。HTTP 传输不会触发该回调（P3）。
+      rpc.onNotification = (method) => this.handleNotification(cfg.name, method);
       const init = await withTimeout(
-        rpc.request<{ protocolVersion?: string; serverInfo?: { name?: string; version?: string } }>(
+        rpc.request<{
+          protocolVersion?: string;
+          serverInfo?: { name?: string; version?: string };
+          capabilities?: unknown;
+        }>(
           "initialize",
           {
             protocolVersion: PROTOCOL_VERSION,
@@ -203,6 +244,28 @@ export class McpManager {
         `tools/list 超时（${timeoutMs}ms）`,
       );
       if (this.closed) throw new Error("连接已关闭");
+      const capabilities = serverCapFlags(init?.capabilities);
+      const warnings: string[] = [];
+      let resources: McpResourceInfo[] = [];
+      let prompts: McpPromptInfo[] = [];
+      if (capabilities.resources) {
+        const listed = await this.listCatalog(rpc, cfg.name, "resources", timeoutMs);
+        resources = listed.items as McpResourceInfo[];
+        if (listed.truncated) {
+          const w = "resources/list 超过页数上限，已截断";
+          warnings.push(w);
+          this.opts.onStderr?.(cfg.name, w);
+        }
+      }
+      if (capabilities.prompts) {
+        const listed = await this.listCatalog(rpc, cfg.name, "prompts", timeoutMs);
+        prompts = listed.items as McpPromptInfo[];
+        if (listed.truncated) {
+          const w = "prompts/list 超过页数上限，已截断";
+          warnings.push(w);
+          this.opts.onStderr?.(cfg.name, w);
+        }
+      }
       return {
         ok: true,
         cfg,
@@ -210,6 +273,10 @@ export class McpManager {
         tools: normalizeTools(listed?.tools),
         serverInfo: init?.serverInfo,
         connectMs: Date.now() - started,
+        capabilities,
+        resources,
+        prompts,
+        warnings,
       };
     } catch (e) {
       // 握手失败：进程收掉、从 connecting 摘掉，状态记 error。此时一个工具都还没注册，
@@ -287,7 +354,21 @@ export class McpManager {
           this.opts.onStderr?.(h.cfg.name, `工具 ${name} 注册失败：${reason}`);
         }
       }
-      this.live.set(h.cfg.name, { cfg: h.cfg, rpc: h.rpc, tools: h.tools, entries });
+      this.live.set(h.cfg.name, {
+        cfg: h.cfg,
+        rpc: h.rpc,
+        tools: h.tools,
+        entries,
+        capabilities: h.capabilities,
+        resources: h.resources,
+        prompts: h.prompts,
+        warnings: h.warnings,
+      });
+      const pending = this.pendingNotices.get(h.cfg.name);
+      this.pendingNotices.delete(h.cfg.name);
+      if (pending) {
+        for (const kind of pending) void this.refreshCatalog(h.cfg.name, kind);
+      }
       // issue #75：移入 live 之后才从 connecting 摘掉（握手成功时留在里面，
       // 保证「已握手、未注册」的空档期 closeAll 也能收掉它）。
       this.connecting.delete(h.rpc);
@@ -300,6 +381,10 @@ export class McpManager {
         ...(rejected.length > 0 ? { rejected } : {}),
         serverInfo: h.serverInfo,
         connectMs: h.connectMs,
+        capabilities: h.capabilities,
+        resources: h.resources,
+        prompts: h.prompts,
+        ...(h.warnings.length > 0 ? { warnings: h.warnings } : {}),
       });
     }
   }
@@ -325,6 +410,75 @@ export class McpManager {
     return formatCallResult(server, toolName, res);
   }
 
+  /** 仍活着的已连接 server 名（补全 / 展开用：断开的立刻消失）。 */
+  connectedServerNames(): string[] {
+    const names: string[] = [];
+    for (const [name, live] of this.live) {
+      if (live.rpc.alive) names.push(name);
+    }
+    return names;
+  }
+
+  connectedResources(): Array<McpResourceInfo & { server: string }> {
+    const out: Array<McpResourceInfo & { server: string }> = [];
+    for (const [server, live] of this.live) {
+      if (!live.rpc.alive) continue;
+      for (const r of live.resources) out.push({ ...r, server });
+    }
+    return out;
+  }
+
+  connectedPrompts(): Array<McpPromptInfo & { server: string }> {
+    const out: Array<McpPromptInfo & { server: string }> = [];
+    for (const [server, live] of this.live) {
+      if (!live.rpc.alive) continue;
+      for (const p of live.prompts) out.push({ ...p, server });
+    }
+    return out;
+  }
+
+  async readResource(server: string, uri: string): Promise<McpResourceReadResult> {
+    const live = this.live.get(server);
+    if (!live || !live.rpc.alive) {
+      throw new Error(`MCP server "${server}" 未连接或连接已断开，请用 /mcp 查看状态`);
+    }
+    const res = await live.rpc.request("resources/read", { uri });
+    return normalizeResourceRead(res);
+  }
+
+  async getPrompt(
+    server: string,
+    name: string,
+    args?: Record<string, string>,
+  ): Promise<McpPromptGetResult> {
+    const live = this.live.get(server);
+    if (!live || !live.rpc.alive) {
+      throw new Error(`MCP server "${server}" 未连接或连接已断开，请用 /mcp 查看状态`);
+    }
+    const params: Record<string, unknown> = { name };
+    if (args && Object.keys(args).length > 0) params["arguments"] = args;
+    const raw = await live.rpc.request("prompts/get", params);
+    const obj = raw && typeof raw === "object" ? (raw as Record<string, unknown>) : {};
+    const result: McpPromptGetResult = {};
+    if (typeof obj["description"] === "string") result.description = obj["description"];
+    if (Array.isArray(obj["messages"])) {
+      result.messages = obj["messages"].filter((m) => m && typeof m === "object") as McpPromptGetResult["messages"];
+    }
+    return result;
+  }
+
+  /**
+   * 手动再 list 一次（`/mcp` 查看时调用）。HTTP 收不到通知，靠这条补齐。
+   * 刷新失败保留上次成功清单。
+   */
+  async refreshLists(server?: string): Promise<void> {
+    const names = server ? [server] : this.connectedServerNames();
+    for (const name of names) {
+      await this.refreshCatalog(name, "resources");
+      await this.refreshCatalog(name, "prompts");
+    }
+  }
+
   /** 关闭所有连接并注销工具。幂等。 */
   closeAll(): void {
     if (this.closed) return;
@@ -341,6 +495,104 @@ export class McpManager {
     this.live.clear();
     for (const rpc of this.connecting) rpc.close();
     this.connecting.clear();
+    this.refreshChain.clear();
+    this.pendingNotices.clear();
+  }
+
+  private handleNotification(server: string, method: string): void {
+    if (this.closed) return;
+    // 本轮不处理 tools/list_changed，也不做 resources/subscribe。
+    const kind: "resources" | "prompts" | null =
+      method === "notifications/resources/list_changed"
+        ? "resources"
+        : method === "notifications/prompts/list_changed"
+          ? "prompts"
+          : null;
+    if (!kind) return;
+    if (!this.live.has(server)) {
+      const set = this.pendingNotices.get(server) ?? new Set<"resources" | "prompts">();
+      set.add(kind);
+      this.pendingNotices.set(server, set);
+      return;
+    }
+    void this.refreshCatalog(server, kind);
+  }
+
+  private async listCatalog(
+    rpc: McpRpc,
+    server: string,
+    kind: "resources" | "prompts",
+    timeoutMs: number,
+  ): Promise<{ items: McpResourceInfo[] | McpPromptInfo[]; ok: boolean; truncated: boolean }> {
+    const method = kind === "resources" ? "resources/list" : "prompts/list";
+    try {
+      const listed =
+        kind === "resources"
+          ? await withTimeout(
+              listAllPages({
+                request: (params) => rpc.request(method, params),
+                key: kind,
+                normalize: normalizeResources,
+              }),
+              timeoutMs,
+              `${method} 超时（${timeoutMs}ms）`,
+            )
+          : await withTimeout(
+              listAllPages({
+                request: (params) => rpc.request(method, params),
+                key: kind,
+                normalize: normalizePrompts,
+              }),
+              timeoutMs,
+              `${method} 超时（${timeoutMs}ms）`,
+            );
+      return { items: listed.items, ok: true, truncated: listed.truncated };
+    } catch (e) {
+      if (!isMethodMissing(e)) {
+        this.opts.onStderr?.(server, `${method} 失败：${(e as Error).message}`);
+      }
+      return { items: [], ok: false, truncated: false };
+    }
+  }
+
+  private refreshCatalog(server: string, kind: "resources" | "prompts"): Promise<void> {
+    const prev = this.refreshChain.get(server) ?? Promise.resolve();
+    const run = prev.then(
+      () => this.refreshCatalogNow(server, kind),
+      () => this.refreshCatalogNow(server, kind),
+    );
+    this.refreshChain.set(
+      server,
+      run.then(
+        () => undefined,
+        () => undefined,
+      ),
+    );
+    return run;
+  }
+
+  private async refreshCatalogNow(server: string, kind: "resources" | "prompts"): Promise<void> {
+    if (this.closed) return;
+    const live = this.live.get(server);
+    if (!live || !live.rpc.alive) return;
+    if (kind === "resources" && !live.capabilities.resources) return;
+    if (kind === "prompts" && !live.capabilities.prompts) return;
+    const timeoutMs = this.opts.requestTimeoutMs ?? 20_000;
+    const listed = await this.listCatalog(live.rpc, server, kind, timeoutMs);
+    if (!listed.ok) return; // 刷新失败保留上次成功清单
+    if (kind === "resources") live.resources = listed.items as McpResourceInfo[];
+    else live.prompts = listed.items as McpPromptInfo[];
+    const st = this.states.get(server);
+    if (!st) return;
+    if (kind === "resources") st.resources = live.resources;
+    else st.prompts = live.prompts;
+    if (listed.truncated) {
+      const w = `${kind}/list 超过页数上限，已截断`;
+      const ws = [...(st.warnings ?? []), w];
+      st.warnings = ws;
+      live.warnings = ws;
+      this.opts.onStderr?.(server, w);
+    }
   }
 }
 

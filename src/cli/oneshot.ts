@@ -2,6 +2,8 @@ import { clipReason, type StreamResultExitCode, type StreamResultStatus } from "
 import { persist } from "./sessions.ts";
 import { c } from "../ui/theme.ts";
 import { knownSlashCommand } from "../input/commands.ts";
+import { expandMessageReferences } from "../input/references.ts";
+import { resolveMcpPromptLine } from "./mcpPromptCommand.ts";
 import { handleOutputStyleCommand } from "../outputStyle/command.ts";
 import type { CommandContext } from "./commandContext.ts";
 import { chatStream, contentText } from "../llm.ts";
@@ -56,7 +58,7 @@ export async function runOneshotOrPiped(s: AppSession): Promise<number | null> {
   } = s;
   // ---- 单次模式 ----
   if (args.print !== null) {
-    const prompt = args.print || args.rest.join(" ");
+    let prompt = args.print || args.rest.join(" ");
     if (!prompt.trim()) {
       console.error(c.err("✖ -p 需要提供内容"));
       // 此时 MCP server 可能已经连上（连接发生在 -p 分支之前），必须收掉。
@@ -77,6 +79,34 @@ export async function runOneshotOrPiped(s: AppSession): Promise<number | null> {
       s.cleanupEphemeralResources();
       return 2;
     }
+    // issue #67：MCP prompts 在 -p 下可跑（参数写齐则 prompts/get；缺必填则报错，不挂起）。
+    if (prompt.trim().startsWith("/")) {
+      const oneshotCtx = {
+        agent: s.agent,
+        ui: s.ui,
+        cfg,
+        memory: s.memory,
+        classifier: s.classifier,
+        meta: s.sess.meta,
+        shutdown: () => {},
+        selectDeps: { router: { on: () => () => {} }, isTTY: false } as CommandContext["selectDeps"],
+        mailbox: s.mailbox ?? null,
+        checkpoints: s.checkpoints ?? null,
+        mcp: () => s.mcpManager.statuses(),
+        mcpPrompts: () => s.mcpManager.connectedPrompts(),
+        mcpGetPrompt: (server: string, name: string, args?: Record<string, string>) =>
+          s.mcpManager.getPrompt(server, name, args),
+      } as CommandContext;
+      const resolved = await resolveMcpPromptLine(prompt.trim(), oneshotCtx);
+      if (resolved.handled) {
+        if (!resolved.ok) {
+          console.error(c.err(`✖ ${resolved.error}`));
+          s.cleanupEphemeralResources();
+          return 2;
+        }
+        prompt = resolved.text;
+      }
+    }
     // issue #51：`-p --drive` 无人值守长跑。参数在进入单次模式前就解析好，
     // 用法错误在这里直接 exit 2（一次模型请求都不发）。
     const driveArgs = parseDriveArgs(process.argv.slice(2));
@@ -89,6 +119,24 @@ export async function runOneshotOrPiped(s: AppSession): Promise<number | null> {
     if (oneShotDrive) {
       // PRD §5：-y 全自动在 CI 上可能执行危险命令，这是用户显式选择 —— 但必须让日志看得见。
       console.error(c.warn("无人值守：-y 会自动批准所有操作"));
+    }
+
+    // issue #67：-p 同样展开 @ 文件与 MCP 资源（失败只警告不阻断）。
+    {
+      const expanded = await expandMessageReferences(prompt, {
+        cwd: cfg.cwd,
+        mcp: {
+          connectedServers: s.mcpManager.connectedServerNames(),
+          read: (server, uri) => s.mcpManager.readResource(server, uri),
+        },
+      });
+      for (const e of expanded.errors) console.error(c.dim(`· ${e}`));
+      if (expanded.refs.length > 0) {
+        const nFiles = expanded.refs.length;
+        const lines = expanded.refs.reduce((n, r) => n + r.lines, 0);
+        console.error(c.dim(`· 已引用 ${nFiles} 个（+${lines} 行）`));
+      }
+      prompt = expanded.text;
     }
 
     // #37 init：oneShotDrive 确定后、首次 agent.send() 前恰好一次。
