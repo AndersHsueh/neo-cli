@@ -3181,8 +3181,123 @@ async function scenarioS30(tmpRoot: string): Promise<void> {
   }
 }
 
+
+/** S35（issue #90）：空闲 Ctrl+O 打开 transcript 视图；Esc 与第二次 Ctrl+O 关闭。 */
+async function scenarioS35(tmpRoot: string): Promise<void> {
+  const dirs = await makeDirs(tmpRoot, "s35-transcript-toggle");
+  const fake = await startFake("resume");
+  const run = await startNeo({
+    fake,
+    dirs,
+    name: "s35",
+    args: BASE_ARGS,
+    cols: DEFAULT_COLS,
+    rows: DEFAULT_ROWS,
+  });
+  try {
+    await waitPrompt(run);
+    await run.write("\x0f"); // Ctrl+O
+    await waitFor(
+      () => run.screen.text().includes("本会话还没有记录") && run.screen.text().includes("/ 搜索"),
+      { label: "空闲 Ctrl+O 打开空会话 transcript 视图", run, timeoutMs: 8000 },
+    );
+    check(!run.screen.text().includes("将在 v0.3.1 提供"), "不应再出现 v0.3.1 占位提示", run.screen);
+    check(statusLineOf(run.screen) !== null, "视图打开时状态行应仍可见", run.screen);
+    check(run.screen.lines().some((l) => l.includes("❯")), "视图打开时输入框应仍可见", run.screen);
+
+    await run.write("\x1b"); // Esc 关闭
+    await waitFor(
+      () => inputEmpty(run.screen) && !run.screen.text().includes("本会话还没有记录"),
+      { label: "Esc 关闭视图并回到输入框", run, timeoutMs: 8000 },
+    );
+
+    await run.write("\x0f");
+    await waitFor(() => run.screen.text().includes("本会话还没有记录"), {
+      label: "再次 Ctrl+O 打开视图",
+      run,
+      timeoutMs: 8000,
+    });
+    await run.write("\x0f");
+    await waitFor(() => !run.screen.text().includes("本会话还没有记录"), {
+      label: "第二次 Ctrl+O 关闭视图",
+      run,
+      timeoutMs: 8000,
+    });
+    check(inputEmpty(run.screen), "关闭后应回到空输入框", run.screen);
+    maybeDumpScreen(run.screen);
+    await run.type("/exit");
+    await run.waitExit();
+  } catch (e) {
+    throw attachScreen(e, run.screen, run.stderr);
+  } finally {
+    await run.close();
+    await fake.stop();
+  }
+}
+
+/** S36（issue #90）：在已有会话上打开视图，/ 或 Ctrl+F 搜索并跳到命中。 */
+async function scenarioS36(tmpRoot: string): Promise<void> {
+  const dirs = await makeDirs(tmpRoot, "s36-transcript-search");
+  const fake = await startFake("resume");
+  const run = await startNeo({
+    fake,
+    dirs,
+    name: "s36",
+    args: BASE_ARGS,
+    cols: DEFAULT_COLS,
+    rows: DEFAULT_ROWS,
+  });
+  try {
+    await waitPrompt(run);
+    await run.type("UNIQUE_ALPHA 请看这里");
+    await waitFor(() => run.screen.text().includes("会话恢复测试答案。"), {
+      label: "假会话已落入历史",
+      run,
+      timeoutMs: 15_000,
+    });
+    await waitPrompt(run, "一轮结束后回到提示符");
+    await run.write("\x0f");
+    await waitFor(
+      () =>
+        run.screen.text().includes("UNIQUE_ALPHA 请看这里") &&
+        run.screen.text().includes("会话恢复测试答案。") &&
+        run.screen.text().includes("/ 搜索") &&
+        !run.screen.text().includes("将在 v0.3.1 提供"),
+      { label: "Ctrl+O 打开含历史的 transcript 视图", run, timeoutMs: 8000 },
+    );
+    await run.write("/");
+    await waitFor(() => run.screen.text().includes("/ 搜索") || run.screen.text().includes("/"), {
+      label: "视图内 / 进入搜索",
+      run,
+      timeoutMs: 5000,
+    });
+    await run.write("UNIQUE_ALPHA");
+    await waitFor(() => run.screen.text().includes("UNIQUE_ALPHA"), {
+      label: "搜索查询可见且能落到用户行",
+      run,
+      timeoutMs: 8000,
+    });
+    await run.write("\x1b"); // 退出搜索
+    await run.write("\x06"); // Ctrl+F 再进搜索
+    await waitFor(() => true, { label: "Ctrl+F 别名已送达", run, timeoutMs: 2000 });
+    maybeDumpScreen(run.screen);
+    await run.write("\x1b");
+    await run.write("\x1b");
+    await waitFor(() => inputEmpty(run.screen), { label: "Esc 关视图回到输入框", run, timeoutMs: 8000 });
+    await run.type("/exit");
+    await run.waitExit();
+  } catch (e) {
+    throw attachScreen(e, run.screen, run.stderr);
+  } finally {
+    await run.close();
+    await fake.stop();
+  }
+}
+
 const SCENARIOS: Scenario[] = [
   {id:"s34", title:"#64 drive 内部轮共享额度与 clear 生命周期",fn:scenarioS34,focus:["已启动自动续跑","上下文已清空"]},
+  {id:"s35", title:"#90 Ctrl+O 打开/Esc 关闭/再次 Ctrl+O 关闭 transcript 视图",fn:scenarioS35,focus:["本会话还没有记录","/ 搜索"]},
+  {id:"s36", title:"#90 视图内 / 或 Ctrl+F 搜索并跳到命中",fn:scenarioS36,focus:["UNIQUE_ALPHA","会话恢复测试答案。"]},
   {
     id: "s1",
     title: "S1 narration：两轮正文都有行首 ● 前缀",

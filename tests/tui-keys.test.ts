@@ -148,6 +148,10 @@ describe("K1d Ctrl/Meta 组合", () => {
     expect(act({ name: "v", ctrl: true })).toEqual({ type: "ctrl-v" });
   });
 
+  test("#90 K1d Ctrl+F 映射为 ctrl-f（视图内搜索别名；未打开视图时由 composer 忽略）", () => {
+    expect(act({ ch: "\x06", name: "f", ctrl: true })).toEqual({ type: "ctrl-f" });
+  });
+
   test("K1d Ctrl+J（ctrl 标志为 true 的形态）→ newline，不是 ctrl 动作", () => {
     expect(act({ name: "j", ctrl: true })).toEqual({ type: "newline" });
   });
