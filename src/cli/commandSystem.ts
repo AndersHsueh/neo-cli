@@ -117,7 +117,11 @@ export async function handleSystemCommands(cmd: string, arg: string, rest: strin
             "SessionStart 在会话开始（new / resume / clear）触发一次，失败只诊断；" +
             "UserPromptSubmit 只对真实用户输入触发（-p 一次 / ACP 每次 prompt / 交互每条输入），exit 2 阻断该输入；" +
             "Stop 在模型正常终止后触发，只有 JSON decision:block + 非空 reason 才续跑，每条用户输入最多一次；" +
-            "PreCompact 在任何破坏历史的动作之前触发（matcher 匹配 trigger=manual/auto），exit 2 拒绝本次压缩。",
+            "PreCompact 在任何破坏历史的动作之前触发（matcher 匹配 trigger=manual/auto），exit 2 拒绝本次压缩。" +
+            "SubagentStart / SubagentStop 在父会话上下文于子代理真正派出后与结束时触发（matcher 只认 agent_type=task）；" +
+            "Start 不可阻断、失败只诊断，本切不向子代理注入 additionalContext；" +
+            "Stop 的 reason 为 completed / error / cancelled，不续跑、不做 prevent-stop；" +
+            "/tasks chat 续跑不打第二次 Start，该次结束仍打 Stop（这次 Stop 可能没有成对的 Start）。",
         ),
       );
       ui.blank();

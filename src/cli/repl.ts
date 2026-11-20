@@ -436,7 +436,7 @@ export function createRepl(s: AppSession): ReplState {
                       const reply = await runSubagent(agent, text, undefined, ctx, undefined, {
                         messages,
                         onMessages: (msgs) => saveSubagentTranscript(sess.meta.id, id, msgs),
-                      });
+                      }, { jobId: id });
                       return { ok: true as const, reply };
                     } catch (e) {
                       return { ok: false as const, error: `续聊失败：${(e as Error).message}` };

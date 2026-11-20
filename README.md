@@ -128,7 +128,7 @@ Windows 启动用 `neo.cmd`（需要 Bun 在 PATH）；Linux/macOS 用 `neo.sh` 
 | `mcpServers` | 外部 MCP server（stdio），工具动态注册为 `mcp__<server>__<tool>`，见下 |
 | `hooks` | 生命周期 hooks（工具、会话、用户提交、停止与压缩事件），见下 |
 
-### hooks —— 生命周期脚本（issue #3 / #56 / #64）
+### hooks —— 生命周期脚本（issue #3 / #56 / #64 / #86）
 
 **先说定位：hooks 不是权限系统。** 它不定义 allow/deny 规则、不做命令策略表、不提供沙箱。
 它只是「在几个固定时机，跑你自己写的脚本」。权限判定（`ask` / `auto-edit` / `auto-all` / `plan`）
@@ -153,11 +153,11 @@ Windows 启动用 `neo.cmd`（需要 Bun 在 PATH）；Linux/macOS 用 `neo.sh` 
 | --- | --- | --- |
 | `enabled` | 否 | 缺省 `false` —— 不配就是零开销，也不会有人被意外阻断 |
 | `verbose` | 否 | 缺省 `true`：阻断/失败/超时都打到 UI；`false` 只保留阻断提示 |
-| `PreToolUse` / `PostToolUse` / `TurnEnd` / `Notification` / `SessionStart` / `UserPromptSubmit` / `Stop` / `PreCompact` | — | 每个事件一个数组，按配置顺序执行 |
+| `PreToolUse` / `PostToolUse` / `TurnEnd` / `Notification` / `SessionStart` / `UserPromptSubmit` / `Stop` / `PreCompact` / `SubagentStart` / `SubagentStop` | — | 每个事件一个数组，按配置顺序执行 |
 | `command` | 是 | shell 命令，经与 `shell` 工具同一套平台解析执行（`shell` 段配置同样生效） |
-| `matcher` | 否 | 工具事件匹配工具名；`Notification` 匹配原因，`PreCompact` 匹配 `manual` / `auto`。其余事件恒匹配 |
+| `matcher` | 否 | 工具事件匹配工具名；`Notification` 匹配原因，`PreCompact` 匹配 `manual` / `auto`，`SubagentStart` / `SubagentStop` 只认 `agent_type`（本切为 `task`，不读 `agent_name`）。其余事件恒匹配 |
 | `timeout` | 否 | 秒，缺省 30，上限 600（超上限截断并 warning） |
-| `onFailure` | 否 | `continue`（缺省）/ `block`：PostToolUse / TurnEnd / UserPromptSubmit / PreCompact 的失败策略。SessionStart / Stop 失败仅诊断，Notification 恒不阻断 |
+| `onFailure` | 否 | `continue`（缺省）/ `block`：PostToolUse / TurnEnd / UserPromptSubmit / PreCompact 的失败策略。SessionStart / Stop / SubagentStart / SubagentStop 失败仅诊断，Notification 恒不阻断 |
 
 `matcher` 三种写法：精确名（`shell`、`write_file`）、末尾通配（`mcp__*`、`mcp__fs__*`）、
 正则（`/^mcp__/`）。注意**不支持** `write_file|edit_file` 这种竖线写法 —— 那是正则语法的一部分，
@@ -191,6 +191,26 @@ Windows 启动用 `neo.cmd`（需要 Bun 在 PATH）；Linux/macOS 用 `neo.sh` 
 **只给摘要器**，不落主历史。Stop 普通 stdout 不续跑；续跑共享原预算、取消信号与总迭代上限，
 每条真实输入最多一次，drive/loop 内部轮不重置额度；abort/error 不续跑，最终收口不重复发
 TurnEnd / Notification。ACP 诊断不写 stdout。
+
+#### 子代理生命周期（#86）
+
+`SubagentStart` / `SubagentStop` 跑在**父会话上下文**（`session_id` / `cwd` / `mode` / `turn` 用父代理，
+载荷里的 `subagent` 为 `false`）。钩子打在 `runSubagent` 内部，因此覆盖 task 工具、后台 `/tasks`、
+`/ingest` 以及同样走这条函数的 ACP 派出。wiki 维护 worker 虽然代码也走 `runSubagent`，但产品上
+不算子代理，会显式关闭这两个 hook。
+
+| 事件 | 时机与语义 |
+| --- | --- |
+| `SubagentStart` | 校验通过、真正派出之后。不可阻断，失败只诊断。本切不把 `additionalContext` 注入子代理。 |
+| `SubagentStop` | 子代理结束时（`finally`，且只在已经打过 Start 时成对出现）。`reason` 为 `completed` / `error` / `cancelled`（`aborted` 一律 `cancelled`，即使同时有 `hadError`）。不复用 Stop 的一次续跑，也不做 prevent-stop；失败默认 continue。 |
+
+`matcher` 只认 `agent_type`（本切唯一值 `task`）。载荷预留 `agent_name`（本切锁死为空字符串），
+matcher 不读它。`task_id`：前台为 `sg-N`（按父代理实例递增，只在真正打出 Start 时加一），
+后台 `/tasks` 用已有的 `bg-N`。`description` 是任务 prompt，按 JS 字符串长度硬截断到 500 个字符。
+
+`/tasks chat` 续跑（传入已有 `resume.messages`）不打第二次 Start，该次结束仍打 Stop——
+**这次 Stop 可能没有成对的 Start**。`task_id` 用原任务的 `bg-N`，不会新生成 `sg-N`。
+超时沿用默认 30 秒。
 
 完整字段、失败策略、入口边界和验收见 [生命周期 hooks 规格](docs/lifecycle-hooks-prd[done].md)。
 这是 neo 的事件子集，**不宣称完全兼容竞品**：不支持 fork / ENV_FILE，compact 不发 SessionStart。
@@ -259,7 +279,8 @@ hook 从 **stdin** 收一行 JSON，字段：
 环境变量（可选，便于脚本直接取）：`NEO_HOOK_EVENT`、`NEO_HOOK_SESSION`、`NEO_HOOK_MODE`、
 `NEO_HOOK_TOOL`（TurnEnd 无；Notification 仅在 `permission_prompt` 时有）、
 `NEO_HOOK_REASON`（仅 Notification：触发原因）、`NEO_HOOK_SOURCE`（SessionStart）、
-`NEO_HOOK_TRIGGER`（PreCompact）。四个新事件的 stdin 字段见上方规格。cwd 是 neo 的工作目录。
+`NEO_HOOK_TRIGGER`（PreCompact）、`NEO_HOOK_AGENT_TYPE` / `NEO_HOOK_TASK_ID`
+（SubagentStart / SubagentStop）。生命周期事件的 stdin 字段见上方规格。cwd 是 neo 的工作目录。
 
 **旧工具/TurnEnd 事件退出码约定**（四个新事件的差异见上方规格）：
 

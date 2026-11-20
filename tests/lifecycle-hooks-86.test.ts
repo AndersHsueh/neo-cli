@@ -191,7 +191,7 @@ function hookDef(over: Partial<HookDef> = {}): HookDef {
 
 function makeParent(
   hooks: HooksConfig,
-  stream: () => Promise<StreamResult>,
+  stream: (() => Promise<StreamResult>) | ((cfg: Config, msgs: Message[]) => Promise<StreamResult>),
   over: { sessionId?: string } = {},
 ): Agent {
   return new Agent({
@@ -201,7 +201,7 @@ function makeParent(
     systemPrompt: "sys",
     sessionId: over.sessionId ?? "parent-sess",
     hooks,
-    chatStream: stream,
+    chatStream: stream as Agent["opt"]["chatStream"],
   });
 }
 

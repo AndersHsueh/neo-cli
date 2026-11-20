@@ -76,6 +76,8 @@ async function runWikiWorker(
           },
         },
         failOnError: true,
+        // 产品上不算子代理：必须显式关闭，不能假设 wiki 不会走进 runSubagent。
+        emitSubagentHooks: false,
       },
     );
   } catch (e) {
@@ -372,8 +374,9 @@ export async function startSession(s: BootstrapSession) {
         { ...job.ctx, signal, onProgress: undefined },
         job.promptTier,
         // issue #48：把子代理的最终 messages 交出来，任务结束即落盘（续聊要用它重建上下文）。
-        // 放在这里而不是 runSubagent 内部：runSubagent 不知道自己的 jobId。
         { onMessages: (msgs) => saveSubagentTranscript(sess.meta.id, job.id, msgs) },
+        // #86：后台任务沿用已有的 bg-N，Start/Stop 用同一个 id，不要在内部再发 sg-N。
+        { jobId: job.id },
       ),
   });
 

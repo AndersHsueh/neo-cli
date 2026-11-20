@@ -27,7 +27,11 @@ export type HookEvent =
   /** #64：模型正常终止后（不是每次工具迭代）。可 JSON block 请求一次续跑。 */
   | "Stop"
   /** #64：压缩前（手动 / 自动），在任何破坏历史的动作之前。 */
-  | "PreCompact";
+  | "PreCompact"
+  /** #86：子代理真正派出之后（父会话上下文）。不可阻断，失败只诊断。 */
+  | "SubagentStart"
+  /** #86：子代理结束（父会话上下文）。不续跑、不做 prevent-stop。 */
+  | "SubagentStop";
 
 export const HOOK_EVENTS: readonly HookEvent[] = [
   "PreToolUse",
@@ -38,6 +42,8 @@ export const HOOK_EVENTS: readonly HookEvent[] = [
   "UserPromptSubmit",
   "Stop",
   "PreCompact",
+  "SubagentStart",
+  "SubagentStop",
 ];
 
 /** #64：会话开始来源。只认这三种 —— 没有 fork / ENV_FILE。 */
@@ -70,7 +76,9 @@ export interface HookDef {
    * 匹配条件。语义随事件而变：
    *  - PreToolUse / PostToolUse：**工具名**（精确、`mcp__*` 前缀通配、`/regex/`）；
    *  - Notification：**触发原因**（`permission_prompt` / `turn_end`，同样支持通配与正则）；
-   *  - TurnEnd：无匹配对象（恒匹配）。
+   *  - PreCompact：压缩来源（`manual` / `auto`）；
+   *  - SubagentStart / SubagentStop：只认 `agent_type`（本切唯一值 `task`），不读 `agent_name`；
+   *  - TurnEnd / SessionStart / Stop：无匹配对象（恒匹配）。
    * 缺省 = 匹配全部。
    */
   matcher?: string;
@@ -112,6 +120,8 @@ export function emptyHooksConfig(): HooksConfig {
       UserPromptSubmit: [],
       Stop: [],
       PreCompact: [],
+      SubagentStart: [],
+      SubagentStop: [],
     },
     warnings: [],
   };
@@ -156,6 +166,14 @@ export function matchReason(matcher: string | undefined, reason: NotificationRea
  */
 export function matchTrigger(matcher: string | undefined, trigger: CompactTrigger): boolean {
   return matchPattern(matcher, trigger);
+}
+
+/**
+ * #86：SubagentStart / SubagentStop 的 matcher 只认 agent_type。
+ * 语法与 matchTool 一致；本切唯一合法值是 `task`。不读 agent_name。
+ */
+export function matchAgentType(matcher: string | undefined, agentType: string): boolean {
+  return matchPattern(matcher, agentType);
 }
 
 /** matchTool / matchReason 共用的语法实现（两者语义不同，只有语法相同）。 */
@@ -394,6 +412,48 @@ export interface PreCompactPayload extends HookPayloadBase {
   message_count: number;
 }
 
+/** #86：本切唯一的 agent_type。预留字段，为 #36 命名子代理留位置。 */
+export type SubagentAgentType = "task";
+
+/** #86：SubagentStop 的结束原因。aborted 一律 cancelled，即使同时 hadError。 */
+export type SubagentStopReason = "completed" | "error" | "cancelled";
+
+/** #86：任务描述硬截断上限（JS 字符串 length）。 */
+export const SUBAGENT_DESCRIPTION_LIMIT = 500;
+
+/**
+ * #86 SubagentStart 载荷。
+ *
+ * 跑在**父会话**上下文：`session_id` / `cwd` / `mode` / `turn` 用父代理，
+ * `subagent` 恒为 `false`。matcher 只认 `agent_type`（本切为 `task`）；
+ * `agent_name` 本切锁死为空字符串，matcher 不读它。
+ */
+export interface SubagentStartPayload extends HookPayloadBase {
+  event: "SubagentStart";
+  agent_type: SubagentAgentType;
+  /** 本切锁死为空字符串（预留；#36 之前 matcher 不读它）。 */
+  agent_name: "";
+  /** 前台 `sg-N`，后台 / 续跑为调用方传入的 `bg-N`。 */
+  task_id: string;
+  /** 任务 prompt，硬截断到 `SUBAGENT_DESCRIPTION_LIMIT`。 */
+  description: string;
+}
+
+/**
+ * #86 SubagentStop 载荷。
+ *
+ * 与 Start 同一套身份字段与同一 `task_id`。`/tasks chat` 续跑可能只打 Stop、
+ * 没有成对的 Start。
+ */
+export interface SubagentStopPayload extends HookPayloadBase {
+  event: "SubagentStop";
+  agent_type: SubagentAgentType;
+  agent_name: "";
+  task_id: string;
+  description: string;
+  reason: SubagentStopReason;
+}
+
 export type HookPayload =
   | PreToolUsePayload
   | PostToolUsePayload
@@ -402,7 +462,9 @@ export type HookPayload =
   | SessionStartPayload
   | UserPromptSubmitPayload
   | StopPayload
-  | PreCompactPayload;
+  | PreCompactPayload
+  | SubagentStartPayload
+  | SubagentStopPayload;
 
 /* ------------------------------------------------------------------ */
 /* 退出码 0 的输出解析（#64）                                          */

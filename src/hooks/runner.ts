@@ -23,6 +23,7 @@ import {
   HOOK_CONTEXT_FIELD_LIMIT,
   HOOK_DIAGNOSTIC_BUFFER_LIMIT,
   HOOK_SEMANTIC_OUTPUT_LIMIT,
+  matchAgentType,
   matchReason,
   matchTool,
   matchTrigger,
@@ -143,6 +144,8 @@ export function extractReason(stdout: string, stderr: string, fallback: string):
  *  - PreToolUse / PostToolUse：工具名；
  *  - Notification：触发原因（`reason`，缺省 = 全部原因）；
  *  - PreCompact（#64）：压缩来源（`trigger`，缺省 = 全部来源）；
+ *  - SubagentStart / SubagentStop（#86）：只认 `agent_type`（缺省 = 全部类型）；
+ *    不读 `agent_name`。没给 agent_type 时按不匹配处理。
  *  - TurnEnd / SessionStart / Stop（#64）：无匹配对象，恒匹配。
  */
 export function hookMatches(
@@ -150,6 +153,7 @@ export function hookMatches(
   tool: string | null,
   reason: NotificationReason | null = null,
   trigger: CompactTrigger | null = null,
+  agentType: string | null = null,
 ): boolean {
   switch (hook.event) {
     case "Notification":
@@ -158,6 +162,10 @@ export function hookMatches(
     case "PreCompact":
       // 没给来源（不该发生）时按不匹配处理：压缩是破坏性动作，宁可不跑。
       return trigger !== null && matchTrigger(hook.matcher, trigger);
+    case "SubagentStart":
+    case "SubagentStop":
+      // 没给 agent_type 时不跑：matcher 只认类型，不能误用 tool / name 兜底。
+      return agentType !== null && matchAgentType(hook.matcher, agentType);
     case "TurnEnd":
     case "SessionStart":
     case "Stop":
@@ -184,6 +192,8 @@ export interface RunHookOptions {
 export interface DispatchMatchOptions {
   /** PreCompact 的匹配对象（manual / auto）。 */
   trigger?: CompactTrigger;
+  /** #86：SubagentStart / SubagentStop 的匹配对象（本切为 task）。 */
+  agentType?: string;
 }
 
 /**
@@ -232,6 +242,9 @@ export async function runHook(
     env["NEO_HOOK_TRIGGER"] = payload.trigger;
   } else if (payload.event === "SessionStart") {
     env["NEO_HOOK_SOURCE"] = payload.source;
+  } else if (payload.event === "SubagentStart" || payload.event === "SubagentStop") {
+    env["NEO_HOOK_AGENT_TYPE"] = payload.agent_type;
+    env["NEO_HOOK_TASK_ID"] = payload.task_id;
   } else if (payload.event !== "TurnEnd" && payload.event !== "Stop" && payload.event !== "UserPromptSubmit") {
     env["NEO_HOOK_TOOL"] = payload.tool_name;
   }
@@ -463,9 +476,10 @@ export function hooksFor(
   tool: string | null,
   reason: NotificationReason | null = null,
   trigger: CompactTrigger | null = null,
+  agentType: string | null = null,
 ): HookDef[] {
   if (!cfg.enabled) return [];
-  return cfg.hooks[event].filter((h) => hookMatches(h, tool, reason, trigger));
+  return cfg.hooks[event].filter((h) => hookMatches(h, tool, reason, trigger, agentType));
 }
 
 /**
@@ -489,7 +503,7 @@ export async function dispatchHooks(
   reason: NotificationReason | null = null,
   match: DispatchMatchOptions = {},
 ): Promise<HookDispatchResult> {
-  const list = hooksFor(cfg, event, tool, reason, match.trigger ?? null);
+  const list = hooksFor(cfg, event, tool, reason, match.trigger ?? null, match.agentType ?? null);
   const outcomes: HookOutcome[] = [];
   if (list.length === 0) return { blocked: false, reason: "", outcomes };
 
@@ -502,6 +516,9 @@ export async function dispatchHooks(
     // #64：SessionStart 失败只诊断 —— 会话已经开始，把它当阻断等于让用户开不了工。
     // 退出码 2 在这里同样降级为诊断（runSessionStart 会把原因显示出来）。
     if (event === "SessionStart") continue;
+    // #86：SubagentStart 同 SessionStart，不可阻断；SubagentStop 不续跑、不做
+    // prevent-stop，失败默认 continue（退出码 2 / onFailure=block 都不改变派出结果）。
+    if (event === "SubagentStart" || event === "SubagentStop") continue;
     if (r.kind === "block") {
       return { blocked: true, reason: r.reason, outcomes };
     }
@@ -528,9 +545,20 @@ export async function dispatchHooks(
  */
 export function describeHook(hook: HookDef): string {
   const label =
-    hook.event === "Notification" ? "reason" : hook.event === "PreCompact" ? "trigger" : "matcher";
+    hook.event === "Notification"
+      ? "reason"
+      : hook.event === "PreCompact"
+        ? "trigger"
+        : hook.event === "SubagentStart" || hook.event === "SubagentStop"
+          ? "agent_type"
+          : "matcher";
   const extra =
-    hook.event === "PreToolUse" || hook.event === "Notification" || hook.event === "SessionStart" || hook.event === "Stop"
+    hook.event === "PreToolUse" ||
+    hook.event === "Notification" ||
+    hook.event === "SessionStart" ||
+    hook.event === "Stop" ||
+    hook.event === "SubagentStart" ||
+    hook.event === "SubagentStop"
       ? ""
       : ` · onFailure=${hook.onFailure}`;
   return `${hook.event} · ${label}=${hook.matcher ?? "*"} · timeout=${hook.timeout}s${extra} · ${hook.command}`;

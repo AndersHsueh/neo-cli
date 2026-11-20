@@ -30,6 +30,10 @@ import { getEnvForPrompt } from "../env/probe.ts";
 import { formatEnvPrompt } from "../env/render.ts";
 import { normalizePromptTierRequest, renderSubagentPrompt } from "../prompt/subagent.ts";
 import { ToolError, type ToolCtx, type ToolImpl } from "./types.ts";
+import {
+  SUBAGENT_DESCRIPTION_LIMIT,
+  type SubagentStopReason,
+} from "../hooks/types.ts";
 
 /** 子代理迭代上限。子代理是单一任务，跑满主代理的 80 次迭代意味着早已跑偏。 */
 const SUB_MAX_ITERATIONS = 24;
@@ -238,6 +242,62 @@ export interface SubagentRunOptions {
   wikiWriteLock?: ToolCtx["wikiWriteLock"];
   /** true：子代理 stats.aborted 或 hadError 时抛 Error（而不是返回文本）。 */
   failOnError?: boolean;
+  /**
+   * 后台 `/tasks` 或续跑时传入已有的 `bg-N`。不传则前台在真正打出 Start 时分配 `sg-N`。
+   * 不要给前台编假的 `bg-N`。
+   */
+  jobId?: string;
+  /**
+   * 是否在父会话打 SubagentStart / SubagentStop。默认 true。
+   * wiki 维护 worker 必须传 false：产品上不算子代理，且关闭时不消耗 `sg-N`。
+   */
+  emitSubagentHooks?: boolean;
+}
+
+/** 按父代理实例计数的前台 task_id（`sg-N`）。只在真正打出 Start 时递增。 */
+const foregroundSgSeq = new WeakMap<Agent, number>();
+
+function allocateForegroundTaskId(main: Agent): string {
+  const n = (foregroundSgSeq.get(main) ?? 0) + 1;
+  foregroundSgSeq.set(main, n);
+  return `sg-${n}`;
+}
+
+function truncateSubagentDescription(prompt: string): string {
+  return prompt.length <= SUBAGENT_DESCRIPTION_LIMIT ? prompt : prompt.slice(0, SUBAGENT_DESCRIPTION_LIMIT);
+}
+
+/** #86：Stop.reason 决策。aborted 一律 cancelled，即使同时 hadError。 */
+export function subagentStopReason(stats: { aborted: boolean; hadError: boolean }): SubagentStopReason {
+  if (stats.aborted) return "cancelled";
+  if (stats.hadError) return "error";
+  return "completed";
+}
+
+function isResumeRun(resume?: { messages?: Message[] }): boolean {
+  return Boolean(resume?.messages && resume.messages.length > 0);
+}
+
+async function emitSubagentHook(
+  main: Agent,
+  event: "SubagentStart" | "SubagentStop",
+  fields: { task_id: string; description: string; reason?: SubagentStopReason },
+  signal?: AbortSignal,
+): Promise<void> {
+  await main.runHooks(
+    event,
+    null,
+    {
+      agent_type: "task",
+      agent_name: "",
+      task_id: fields.task_id,
+      description: fields.description,
+      ...(event === "SubagentStop" ? { reason: fields.reason } : {}),
+    },
+    signal,
+    null,
+    { agentType: "task" },
+  );
 }
 
 /**
@@ -373,8 +433,29 @@ export async function runSubagent(
     sub.messages = resume.messages.map((m) => ({ ...m }));
   }
 
+  // #86：校验已通过（空 prompt / 档位 / 提示词档位放不下都已在前面抛错）。
+  // Start 只在真正派出时打；续跑不打第二次 Start，但结束仍打 Stop。
+  // wiki worker 传 emitSubagentHooks: false，既不打 hook 也不消耗 sg-N。
+  const description = truncateSubagentDescription(trimmed);
+  const emitHooks = opts?.emitSubagentHooks !== false;
+  const resumed = isResumeRun(resume);
+  let hookStarted = false;
+  let taskId = "";
+  let stopReason: SubagentStopReason = "error";
+  if (emitHooks) {
+    if (!resumed) {
+      taskId = opts?.jobId ?? allocateForegroundTaskId(main);
+      await emitSubagentHook(main, "SubagentStart", { task_id: taskId, description }, ctx.signal);
+      hookStarted = true;
+    } else {
+      taskId = opts?.jobId ?? "";
+      hookStarted = true;
+    }
+  }
+
   try {
     const stats = await sub.send(trimmed);
+    stopReason = subagentStopReason(stats);
     // issue #53：worker 需要「失败就是失败」，不能把中止/出错当成功文本返回。
     if (opts?.failOnError) {
       if (stats.aborted) throw new Error("子代理被取消");
@@ -397,8 +478,24 @@ export async function runSubagent(
       return `子代理未产出任何报告（finishReason=${stats.finishReason ?? "unknown"}）。${usage}`;
     }
     return `${report}\n\n${usage}`;
+  } catch (e) {
+    if (stopReason === "error" && (ctx.signal?.aborted === true)) {
+      stopReason = "cancelled";
+    }
+    throw e;
   } finally {
     ctx.signal?.removeEventListener("abort", onAbort);
+    // #86：Stop 放在 finally，且只在已经打过 Start（或续跑约定要打 Stop）时成对出现。
+    if (hookStarted) {
+      try {
+        // 子代理被取消时 ctx.signal 已经 aborted；若把它传给 hook，
+        // Stop 脚本会立刻被杀掉，调用方就看不到结束事件。
+        const stopSignal = ctx.signal?.aborted ? undefined : ctx.signal;
+        await emitSubagentHook(main, "SubagentStop", { task_id: taskId, description, reason: stopReason }, stopSignal);
+      } catch {
+        /* hook 分发已在 runHooks 内收敛，这里再兜一层，不掩盖任务结果 */
+      }
+    }
     // issue #48：把最终 messages 交回调用方（落盘供续聊）。失败不阻断任务。
     try {
       resume?.onMessages?.(sub.messages);

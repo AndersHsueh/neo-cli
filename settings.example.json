@@ -167,6 +167,20 @@
         "timeout": 10,
         "onFailure": "continue"
       }
+    ],
+    "SubagentStart": [
+      {
+        "command": "test -f .neo/hooks/subagent-start.sh && sh .neo/hooks/subagent-start.sh || exit 0",
+        "matcher": "task",
+        "timeout": 30
+      }
+    ],
+    "SubagentStop": [
+      {
+        "command": "test -f .neo/hooks/subagent-stop.sh && sh .neo/hooks/subagent-stop.sh || exit 0",
+        "matcher": "task",
+        "timeout": 30
+      }
     ]
   }
 }

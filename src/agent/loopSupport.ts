@@ -388,7 +388,7 @@ export async function runHooks(this: Agent,
     return { blocked: false, reason: "", outcomes: [] };
   }
 
-  const lifecycle = ["SessionStart", "UserPromptSubmit", "Stop", "PreCompact"].includes(event);
+  const lifecycle = ["SessionStart", "UserPromptSubmit", "Stop", "PreCompact", "SubagentStart", "SubagentStop"].includes(event);
   if (cfg.verbose || lifecycle) {
     for (const o of r.outcomes) {
       if (o.kind === "ok") {
