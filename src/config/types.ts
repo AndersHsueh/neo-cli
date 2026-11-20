@@ -521,6 +521,13 @@ export interface Config {
   lsp: LspConfig;
   /** lsp 配置告警（启动时打印一次）。 */
   lspWarnings: string[];
+  /**
+   * 输出风格（issue #73）。展示和配置用 PascalCase 专名；Default 表示不加 style 段。
+   * `/output-style` 只改本会话，不写回配置文件。
+   */
+  outputStyle: string;
+  /** 启动时未知 outputStyle 的告警；空数组 = 无告警。 */
+  outputStyleWarnings: string[];
   /** #59 有序模型备用链；缺省空数组 = 禁用。与 model_routes.*.fallback_allowed 无关。 */
   modelFallback: ModelTarget[];
   /**

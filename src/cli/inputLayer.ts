@@ -141,6 +141,7 @@ export async function runInteractive(s: AppSession): Promise<number> {
           agent.mode === "auto-edit" ? "edit" : agent.mode === "auto-all" ? "yolo" : agent.mode,
         // 规划态（issue #14）单独显示，避免与 /mode plan 的只读闸门混淆。
         planning: agent.planning,
+        outputStyle: cfg.outputStyle,
         branch: statusFields.branch(),
         ctxUsage: statusFields.ctxUsage(),
         elapsedMs: repl.turnActive ? Math.max(0, Date.now() - repl.turnStartedAt) : repl.lastTurnMs,

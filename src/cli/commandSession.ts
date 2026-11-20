@@ -35,6 +35,7 @@ import { SAFE_MODE_NOTICE } from "./safeMode.ts";
 import { helpText } from "./help.ts";
 
 import type { CommandContext } from "./commandContext.ts";
+import { handleOutputStyleCommand } from "../outputStyle/command.ts";
 
 /** /auto 列表里各实现的说明。 */
 const DESC: Record<string, string> = {
@@ -53,6 +54,10 @@ export async function handleSessionCommands(cmd: string, arg: string, rest: stri
     case "help":
     case "?":
       ui.line(helpText());
+      return true;
+
+    case "output-style":
+      await handleOutputStyleCommand(arg, ctx);
       return true;
 
     case "clear":

@@ -2,6 +2,8 @@ import { clipReason, type StreamResultExitCode, type StreamResultStatus } from "
 import { persist } from "./sessions.ts";
 import { c } from "../ui/theme.ts";
 import { knownSlashCommand } from "../input/commands.ts";
+import { handleOutputStyleCommand } from "../outputStyle/command.ts";
+import type { CommandContext } from "./commandContext.ts";
 import { chatStream, contentText } from "../llm.ts";
 import { runDriveCheck } from "../driveCheck.ts";
 import { DriveManager } from "../drive.ts";
@@ -15,6 +17,26 @@ import {
   feedbackMessage,
   type CompiledSchema,
 } from "../structuredOutput.ts";
+
+/** issue #73：-p 下 `/output-style <name>` 带参数切换同样生效（只改本会话）。 */
+async function runOneshotOutputStyle(s: AppSession, line: string): Promise<number> {
+  const arg = line.trim().replace(/^\/output-style\b/i, "").trim();
+  const ok = await handleOutputStyleCommand(arg, {
+    agent: s.agent,
+    ui: s.ui,
+    cfg: s.cfg,
+    memory: s.memory,
+    classifier: s.classifier,
+    meta: s.sess.meta,
+    shutdown: () => {},
+    selectDeps: {} as CommandContext["selectDeps"],
+    mailbox: s.mailbox ?? null,
+    checkpoints: s.checkpoints ?? null,
+    promptManager: s.promptManager,
+  });
+  s.cleanupEphemeralResources();
+  return ok ? 0 : 2;
+}
 
 /**
  * -p / 非交互 `neo <prompt>` 路径。若不是这些模式，返回 null，交给交互 REPL。
@@ -44,6 +66,10 @@ export async function runOneshotOrPiped(s: AppSession): Promise<number | null> {
     // issue #41：斜杠命令是交互模式的能力。这里必须明确提示，而不是把整串当 prompt
     // 静默发给模型（PRD 写的是「命令会明确提示不可用」）。
     const slashCommand = knownSlashCommand(prompt);
+    if (slashCommand === "output-style") {
+      // issue #73：带参数切换在 -p 下同样生效；无参则非 TTY 列出当前项。
+      return await runOneshotOutputStyle(s, prompt);
+    }
     if (slashCommand) {
       console.error(
         c.err(`✖ -p 不解析斜杠命令：/${slashCommand} 只能在交互模式使用（-p 会把内容当成一次任务）`),
@@ -435,6 +461,9 @@ export async function runOneshotOrPiped(s: AppSession): Promise<number | null> {
     const restPrompt = args.rest.join(" ");
     // issue #41：与 -p 同口径，斜杠命令在非交互模式下必须明确拦下。
     const restSlashCommand = knownSlashCommand(restPrompt);
+    if (restSlashCommand === "output-style") {
+      return await runOneshotOutputStyle(s, restPrompt);
+    }
     if (restSlashCommand) {
       console.error(c.err(`✖ 非交互模式不解析斜杠命令：/${restSlashCommand} 只能在交互模式使用`));
       s.cleanupEphemeralResources();

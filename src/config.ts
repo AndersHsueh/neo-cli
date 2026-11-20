@@ -30,6 +30,7 @@ import {
   type MailboxConfig,
 } from "./mailbox/types.ts";
 import { findSettingsPath } from "./config/settingsPath.ts";
+import { resolveOutputStyleConfig } from "./outputStyle/resolve.ts";
 
 import {
   API_TYPE_PREFERENCE,
@@ -718,6 +719,7 @@ export function loadConfig(overrides: Partial<Config> = {}, options: LoadConfigO
     modelFallback: resolveModelFallback(raw["model_fallback"], providers),
     mailbox: resolveMailboxSettings(raw),
     crossSessionInbound: resolveInboundPolicy(raw["cross_session_inbound"]), experimental: { codeMode: (raw["experimental"] as Raw | undefined)?.["code_mode"] === true },
+    ...resolveOutputStyleConfig(raw, { cwd: here }),
     ...overrides,
   };
 

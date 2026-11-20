@@ -22,6 +22,7 @@ export const COMMANDS: CommandEntry[] = [
   { name: "export", description: "导出会话 Markdown（/export <session-id>）" },
   { name: "provider", description: "切换 provider" },
   { name: "tier", description: "切换模型档位" },
+  { name: "output-style", description: "切换输出风格（只改本会话；Default 不加 style 段）" },
   { name: "fast", description: "快捷：/tier fast" },
   { name: "balanced", description: "快捷：/tier balanced" },
   { name: "deep", description: "快捷：/tier deep_reasoning" },

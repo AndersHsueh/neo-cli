@@ -4,13 +4,17 @@
  * 纯函数，无 IO：输入是快照，输出是**可直接写终端的一行**（不折行是硬约束）。
  *
  * 版式（字段顺序固定，与优先级解耦）：
- *   `v0.4.54 · model · tier · mode · ⎇ branch · ctx ▓▓░░░ 42% · 0:42 · 12k tok`
+ *   `v0.4.54 · model · tier · mode · Concise · ⎇ branch · ctx ▓▓░░░ 42% · 0:42 · 12k tok`
+ *
+ * 输出风格段（issue #73）：仅非 Default 时出现，专名 muted，不加 `style:` 前缀。
+ * 位置在 mode 之后、branch 之前。优先级低于 queue/todos/tokens 以及 mode/tier/branch，
+ * 窄屏最先丢掉这一段，不因此拔掉档位和模式。
  *
  * mode 段在交互规划态（`/plan`，issue #14）显示 `planning · 规划中`，
  * 与只读闸门 `plan`（`/mode plan` / `--plan`）区分。
  *
- * 宽度不足时按 priority **从低到高**丢字段（queue 30 → todos 35 → tokens 40 → branch 50 →
- * elapsed 60 → ctx 70 → mode 80 → tier 90 → version/model 100），但 `model` 与 `ctx` 是保底：
+ * 宽度不足时按 priority **从低到高**丢字段（style 25 → queue 30 → todos 35 → tokens 40 →
+ * branch 50 → elapsed 60 → ctx 70 → mode 80 → tier 90 → version/model 100），但 `model` 与 `ctx` 是保底：
  * 两者仍超宽时用 `…` 截断 model（theme.truncate 按显示列切，CJK 也不会超宽）。
  * `version` 与 `model` 同为 100，但**不保底**：窄屏先丢 version，再截 model。
  *
@@ -37,6 +41,11 @@ export interface StatusSnapshot {
    * 但用户要能一眼看出「我现在是在出方案，还是在只读」。
    */
   planning?: boolean;
+  /**
+   * 当前输出风格专名（issue #73）。Default / 缺省 / 空串不显示。
+   * 位置在 mode 之后、branch 之前；muted；无 `style:` 前缀。
+   */
+  outputStyle?: string | null;
   /** git 分支；null / 空 / 纯空白 = 不显示。 */
   branch?: string | null;
   /** 上下文占用比 0..1（>1 允许，显示时 clamp 并显示 ">100%"）。 */
@@ -70,7 +79,7 @@ const BAR_CELLS = 5;
 const ELLIPSIS_WIDTH = 1;
 
 /** 内部字段种类：用于识别保底字段（model / ctx）与丢弃目标。 */
-type Kind = "version" | "model" | "tier" | "mode" | "branch" | "ctx" | "elapsed" | "tokens" | "queue" | "todos";
+type Kind = "version" | "model" | "tier" | "mode" | "style" | "branch" | "ctx" | "elapsed" | "tokens" | "queue" | "todos";
 
 interface Built {
   kind: Kind;
@@ -168,6 +177,11 @@ function build(s: StatusSnapshot): Built[] {
     // 规划态优先于权限模式：生效模式恒为 plan，但用户要看的是「在出方案」。
     add("mode", "planning · 规划中", "warn", 80);
   } else if (s.mode !== undefined && s.mode !== "") add("mode", s.mode, "text", 80);
+  const styleName = (s.outputStyle ?? "").trim();
+  if (styleName !== "" && styleName !== "Default") {
+    // issue #73：优先级 25，低于 queue/tokens/branch/mode/tier，窄屏先丢这一段。
+    add("style", styleName, "muted", 25);
+  }
   if (s.branch !== undefined && s.branch !== null && s.branch.trim() !== "") {
     add("branch", `⎇ ${s.branch}`, "muted", 50);
   }

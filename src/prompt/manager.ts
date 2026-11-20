@@ -26,6 +26,7 @@ import {
   type PromptSelection,
 } from "./select.ts";
 import { countSystemTokens } from "./tokens.ts";
+import { activeOutputStyle, renderStyleSection } from "../outputStyle/index.ts";
 import type { PromptTier } from "./tiers.ts";
 import {
   knownToolNames,
@@ -227,6 +228,10 @@ export class PromptManager {
     // 指纹覆盖所有会改变输出的状态；cwd 内文件变化不在其中（与旧行为一致：目录树只在构建时取一次）。
     // issue #68：已加载集合必须进指纹 —— 否则「带集合」与「不带集合」的渲染会互相串台。
     const nonInteractive = this.opts.nonInteractive !== false;
+    // issue #73：指纹必须含风格 id 和正文（或 hash），不能只用 cfg.outputStyle，
+    // 因为 /output-style 再扫可能改同名文件。本轮永不摘 renderCore。
+    const style = activeOutputStyle(cfg);
+    const styleBlock = renderStyleSection(style);
     const key = JSON.stringify([
       this.sessionName,
       this.memory?.path,
@@ -245,6 +250,8 @@ export class PromptManager {
       this.opts.askUser,
       nonInteractive,
       loaded,
+      style.name,
+      style.body,
     ]);
     if (this.cache?.key === key) return this.cache.rendered;
 
@@ -260,8 +267,10 @@ export class PromptManager {
       : "";
     const specs = requestSpecs(cfg, loaded, codeModeVisibleForPrompt(cfg, nonInteractive));
 
+    // style 是指令，接在 renderCore + dynamic 之后、memory 之前，并计入选档开销。
+    // 本轮只作用于主会话；fork 继承留给 #65，不要在这里顺手做。
     const compose = (tier: PromptTier): string =>
-      `${renderCore(tier, this.sessionName)}\n\n${dynamic}${memoryBlock}`;
+      `${renderCore(tier, this.sessionName)}\n\n${dynamic}${styleBlock}${memoryBlock}`;
 
     const overhead: Partial<Record<PromptTier, number>> = {};
     for (const t of TIER_ORDER) overhead[t] = countSystemTokens([compose(t)], specs).tokens;
