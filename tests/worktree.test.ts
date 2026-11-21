@@ -700,7 +700,7 @@ describe("f. /worktree 命令", () => {
     const { ui, out } = captureConsole();
     await dispatchCommand("/worktree bogus", makeCmdCtx(repo, ui));
     expect(out()).toContain("未知子命令");
-    expect(out()).toContain("list | remove");
+    expect(out()).toContain("可用：list | create <name> | enter <name> | exit | remove <name> [--force]");
   });
 });
 

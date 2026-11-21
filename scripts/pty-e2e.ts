@@ -3751,12 +3751,142 @@ async function scenarioS45(tmpRoot: string): Promise<void> {
   }
 }
 
+/** #85：工作目录做成 git 仓库；settings.json 被 gitignore 并列入 .worktreeinclude，新建托管树时随之拷入。 */
+async function makeWorktreeRepo(tmpRoot: string, name: string): Promise<RunDirs> {
+  const dirs = await makeDirs(tmpRoot, name);
+  await writeFile(join(dirs.work, ".gitignore"), "settings.json\n.neo/\n", "utf8");
+  await writeFile(join(dirs.work, ".worktreeinclude"), "settings.json\n", "utf8");
+  await writeFile(join(dirs.work, "README.md"), "S85\n", "utf8");
+  await writeFile(join(dirs.work, "settings.json"), JSON.stringify(PTY_SETTINGS, null, 2), "utf8");
+  initGitRepo(dirs.work);
+  return dirs;
+}
+
+/** #85 S46：--worktree 启动 → /worktree 提示 → exit 回主检出 → 非隔离态 exit 拒绝 → 会话中 create。 */
+async function scenarioS46(tmpRoot: string): Promise<void> {
+  const dirs = await makeWorktreeRepo(tmpRoot, "s46-worktree-session");
+  const work = realpathSync(dirs.work);
+  const fake = await startFake("narration");
+  const run = await startNeo({ fake, dirs, name: "s46", args: [...BASE_ARGS, "--worktree", "feat"] });
+  try {
+    await waitPrompt(run);
+    check(run.screen.text().includes("已创建 worktree feat"), "--worktree 启动新建托管树", run.screen);
+    await run.type("/worktree");
+    await waitFor(() => run.screen.text().includes("可用：list | create <name> | enter <name> | exit | remove <name> [--force]"), {
+      label: "/worktree 无子命令提示可用子命令",
+      run,
+      timeoutMs: 6000,
+    });
+    await run.type("/worktree exit");
+    await waitFor(() => run.screen.text().includes("已退出 worktree feat"), { label: "/worktree exit 回到 mainRoot", run, timeoutMs: 8000 });
+    check(run.screen.text().includes(work), "exit 后主根是主检出", run.screen);
+    await run.type("/worktree exit");
+    await waitFor(() => run.screen.text().includes("当前不在托管 worktree 会话里"), {
+      label: "非隔离态 exit 拒绝",
+      run,
+      timeoutMs: 6000,
+    });
+    await run.type("/worktree create beta");
+    await waitFor(() => run.screen.text().includes("已创建 worktree beta"), { label: "会话中 create", run, timeoutMs: 8000 });
+    check(existsSync(join(work, ".neo", "worktrees", "feat")), "exit 不删树", run.screen);
+    maybeDumpScreen(run.screen);
+    await run.type("/exit");
+    await run.waitExit();
+  } catch (e) {
+    throw attachScreen(e, run.screen, run.stderr);
+  } finally {
+    await run.close();
+    await fake.stop();
+  }
+}
+
+/** #85 S47：续聊恢复隔离；显式 -c --worktree 不走自动回到记录树的例外。 */
+async function scenarioS47(tmpRoot: string): Promise<void> {
+  const dirs = await makeWorktreeRepo(tmpRoot, "s47-worktree-resume");
+  const fake = await startFake("narration");
+  try {
+    const first = await startNeo({ fake, dirs, name: "s47-a", args: BASE_ARGS });
+    try {
+      await waitPrompt(first);
+      await first.type("/worktree create feat");
+      await waitFor(() => first.screen.text().includes("已创建 worktree feat"), { label: "会话中 create feat", run: first, timeoutMs: 8000 });
+      await first.type("/exit");
+      await first.waitExit();
+    } catch (e) {
+      throw attachScreen(e, first.screen, first.stderr);
+    } finally {
+      await first.close();
+    }
+    const explicit = await startNeo({ fake, dirs, name: "s47-b", args: [...BASE_ARGS, "-c", "--worktree", "other"] });
+    try {
+      await waitPrompt(explicit);
+      check(explicit.screen.text().includes("已创建 worktree other"), "显式 --worktree 先按 #9 进入该树", explicit.screen);
+      check(!explicit.screen.text().includes("续聊恢复隔离"), "显式 --worktree 不走自动回到记录树", explicit.screen);
+      await explicit.type("/exit");
+      await explicit.waitExit();
+    } catch (e) {
+      throw attachScreen(e, explicit.screen, explicit.stderr);
+    } finally {
+      await explicit.close();
+    }
+    const again = await startNeo({ fake, dirs, name: "s47-c", args: [...BASE_ARGS, "-c"] });
+    try {
+      await waitPrompt(again);
+      await waitFor(() => again.screen.text().includes("已回到 worktree other（续聊恢复隔离）"), {
+        label: "-c 三条件满足回到记录的树",
+        run: again,
+        timeoutMs: 6000,
+      });
+      await again.type("/worktree exit");
+      await waitFor(() => again.screen.text().includes("已退出 worktree other"), { label: "续聊后可 exit", run: again, timeoutMs: 8000 });
+      maybeDumpScreen(again.screen);
+      await again.type("/exit");
+      await again.waitExit();
+    } catch (e) {
+      throw attachScreen(e, again.screen, again.stderr);
+    } finally {
+      await again.close();
+    }
+  } finally {
+    await fake.stop();
+  }
+}
+
+/** #85 S48：忙碌时 /worktree create 按 #66 排队，轮末作为独立命令执行。 */
+async function scenarioS48(tmpRoot: string): Promise<void> {
+  const dirs = await makeWorktreeRepo(tmpRoot, "s48-worktree-busy");
+  const fake = await startFake("slow");
+  const run = await startNeo({ fake, dirs, name: "s48", args: BASE_ARGS, cols: DEFAULT_COLS, rows: DEFAULT_ROWS });
+  try {
+    await waitPrompt(run);
+    await run.type("第一问");
+    await waitFor(() => run.screen.text().includes("运行中"), { label: "首轮进行中", run, timeoutMs: 8000 });
+    await run.type("/worktree create feat");
+    await waitFor(() => (statusLineOf(run.screen) ?? "").includes("⇥ 1 排队"), { label: "忙碌时 /worktree 入队", run, timeoutMs: 6000 });
+    check(!run.screen.text().includes("已创建 worktree feat"), "忙碌时 /worktree 不应立刻生效", run.screen);
+    await waitFor(() => run.screen.text().includes("已创建 worktree feat"), { label: "轮末作为独立命令执行", run, timeoutMs: 15_000 });
+    const text = run.screen.text();
+    check(text.indexOf("慢回答完成。") >= 0 && text.indexOf("慢回答完成。") < text.indexOf("已创建 worktree feat"), "/worktree 应在本轮回答之后才执行", run.screen);
+    maybeDumpScreen(run.screen);
+    await run.type("/exit");
+    await run.waitExit();
+  } catch (e) {
+    throw attachScreen(e, run.screen, run.stderr);
+  } finally {
+    await run.close();
+    await fake.stop();
+  }
+}
+
 const SCENARIOS: Scenario[] = [
   {id:"s42", title:"#63 交互 TTY：--add-dir 多余位置参数报用法错误 2",fn:scenarioS42,focus:["每个目录各写一次 --add-dir"]},
   {id:"s42b", title:"#63 交互 TTY：-p 同样报多余位置参数错；单个 --add-dir 的 -p 照常",fn:scenarioS42b,focus:["每个目录各写一次 --add-dir"]},
   {id:"s43", title:"#63 /add-dir 加入/列出，/cd 换主根清空额外根",fn:scenarioS43,focus:["已加入","已清空本会话额外工作根"]},
   {id:"s44", title:"#63 忙碌时 /add-dir 排队到轮末执行",fn:scenarioS44,focus:["排队","已加入"]},
   {id:"s45", title:"#63 -c 恢复额外根；换主根续聊不恢复",fn:scenarioS45,focus:["不恢复","额外工作根"]},
+  {id:"s46", title:"#85 --worktree 启动后 exit 回主检出；/worktree 提示；会话中 create",fn:scenarioS46,focus:["已退出 worktree","可用：list"]},
+  {id:"s47", title:"#85 续聊恢复隔离；显式 -c --worktree 不走例外",fn:scenarioS47,focus:["续聊恢复隔离","已创建 worktree other"]},
+  {id:"s48", title:"#85 忙碌时 /worktree create 排队到轮末执行",fn:scenarioS48,focus:["排队","已创建 worktree feat"]},
   {id:"s34", title:"#64 drive 内部轮共享额度与 clear 生命周期",fn:scenarioS34,focus:["已启动自动续跑","上下文已清空"]},
   {id:"s35", title:"#90 Ctrl+O 打开/Esc 关闭/再次 Ctrl+O 关闭 transcript 视图",fn:scenarioS35,focus:["本会话还没有记录","/ 搜索"]},
   {id:"s36", title:"#90 视图内 / 或 Ctrl+F 搜索并跳到命中",fn:scenarioS36,focus:["UNIQUE_ALPHA","会话恢复测试答案。"]},
