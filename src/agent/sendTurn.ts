@@ -7,6 +7,7 @@ import { dispatch, isParallelizable } from "../tools/index.ts";
 import { isContextOverflowError, parseContextLimitFromError } from "../contextWindow.ts";
 import { CompactBlockedError, reportLifecycle } from "./lifecycle.ts";
 import { previewArgs } from "./render.ts";
+import { injectSteers } from "./midTurnSteer.ts";
 import type {
   ToolEndEventData,
   ToolEventStatus,
@@ -104,6 +105,8 @@ export async function sendTurn(
   // 回滚基线：opts.rollbackOnAbort 时，abort 返回前把历史截回 turnStart，
   // 本轮（含召回临时消息与 user 消息）整体作废 —— 面向「输入错了要重来」的场景。
   const startLen = turnStart;
+  // #66：一旦有转向写进本轮，Esc / busy Ctrl+C 改为只停不删（合同第 11 条）。
+  let rollbackOnAbort = opts.rollbackOnAbort === true;
   this.messages.push(
     images.length > 0
       ? {
@@ -254,6 +257,9 @@ export async function sendTurn(
         /* 后台结果注入是增强项，失败不拖垮主循环 */
       }
     }
+
+    // ---- #66 运行中转向：同一切点、排在 inbox / background 之后；首次请求前与终答轮没有切点 ----
+    if (toolCalls > 0 && (await injectSteers(this, signal)) > 0) rollbackOnAbort = false;
 
     // ---- 路径作用域规则（issue #17）----
     // 触达路径在工具批次之后才变多，所以按**每次请求**重算：命中集合变了就换掉临时
@@ -669,7 +675,7 @@ export async function sendTurn(
       if (e instanceof LLMError || (e as Error).name === "AbortError") {
         const err = e as Error;
         if (err.name === "AbortError" || signal.aborted) {
-          if (opts.rollbackOnAbort) {
+          if (rollbackOnAbort) {
             this.messages.length = startLen;
           }
           if (recallMsg) this.dropTransientMessage(recallMsg);

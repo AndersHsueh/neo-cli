@@ -387,7 +387,7 @@ export function commitUserInput(this: Composer, text: string, firstPrefix = c.ac
 }
 
 export function handleCtrlC(this: Composer): void {
-  if (this.busy) this.deps.onCancelTurn?.();
+  const note = this.busy ? this.deps.onCancelTurn?.() : undefined;
   // issue #79：输入框非空（或有附件 / 处于 shell 模式）时，第一次 Ctrl+C 把整份草稿
   // 推进召回环再清空（不提交），随后照旧武装「再按一次退出」。
   // 空框 Ctrl+C 保持原语义：双击退出，不进环。
@@ -411,7 +411,8 @@ export function handleCtrlC(this: Composer): void {
   }
   this.armedExit = true;
   this.lastCtrlCAt = now;
-  this.notice("再按 Ctrl+C 退出（清掉的草稿可按 ↑ 找回）", DOUBLE_CTRL_C_MS);
+  const exitHint = "再按 Ctrl+C 退出（清掉的草稿可按 ↑ 找回）";
+  this.notice(note ? `${note} · ${exitHint}` : exitHint, DOUBLE_CTRL_C_MS);
 }
 
 // ---------------------------------------------------------------- 命令菜单（issue #31）

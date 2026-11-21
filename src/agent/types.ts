@@ -164,6 +164,12 @@ export interface AgentOptions {
    */
   pollInbox?: () => string[];
   /**
+   * #66 运行中转向：真人在忙碌时排队的转向指示。只在 pollInbox 那一处切点
+   * （本轮已有工具批次回填、compact 之后、下一次请求之前）、pollBackground 之后调用。
+   * 只有交互 REPL 接线；-p / ACP / 子代理不传 = 行为不变。
+   */
+  pollSteer?: () => SteerItem[] | Promise<SteerItem[]>;
+  /**
    * 是否为 task 工具派生的子代理。
    * 只有子代理才应用 TOOL_NAMES_EXCLUDED_FOR_SUBAGENT 过滤；
    * 主代理必须能看到全部运行时注册工具（task / wiki_* / remember / send_message / list_peers）。
@@ -345,4 +351,16 @@ export interface AgentHost {
     userInput: string | { text: string; images: string[] },
     opts?: { rollbackOnAbort?: boolean },
   ): Promise<TurnStats>;
+}
+
+/**
+ * #66：一条可注入的转向（宿主已按 drain 同规则展开 @ 引用与附件）。
+ * 宿主队列是真源：注入前 `claim()` 才摘除（已被 ↑ 收回则返回 false，不注入）；
+ * UserPromptSubmit 阻断时 `block()`，条目留在队列等轮末 drain 作为新轮。
+ */
+export interface SteerItem {
+  text: string;
+  images: string[];
+  claim(): boolean;
+  block(reason: string): void;
 }

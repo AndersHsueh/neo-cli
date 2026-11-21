@@ -127,8 +127,8 @@ export function handleNormalAction(this: Composer, action: KeyAction): void {
         return;
       }
       if (this.busy) {
-        this.deps.onCancelTurn?.();
-        this.notice("已请求取消本轮");
+        const note = this.deps.onCancelTurn?.();
+        this.notice(note || "已请求取消本轮");
       } else if (this.shellMode) {
         this.exitShellMode();
         this.buf.clear();

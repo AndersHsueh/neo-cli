@@ -147,8 +147,8 @@ export interface ComposerDeps {
   onShellCommand?: (command: string) => void;
   /** 用户确认退出（双 Ctrl+C / Ctrl+D）。 */
   onExit: () => void;
-  /** 运行中 ESC / Ctrl+C：请求取消当前轮。 */
-  onCancelTurn?: () => void;
+  /** 运行中 ESC / Ctrl+C：请求取消当前轮；返回字符串 = 替换默认提示（#66 注入后「不回滚」）。 */
+  onCancelTurn?: () => string | void;
   /** 大段粘贴 → chip（真实实现来自 src/attachments.ts）。 */
   pasteText?: (text: string) => { chip: string; attachment: unknown };
   /** Ctrl+V 贴图；返回 null 表示剪贴板无图。 */

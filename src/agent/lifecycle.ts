@@ -287,6 +287,8 @@ export interface UserTurnState {
   contextMessage?: Message | null;
   /** 这条用户输入的原文（UPS 载荷用；宿主可提前声明）。 */
   prompt?: string;
+  /** #66：运行中转向各自 UPS 的附加上下文（临时，随 endUserTurn 摘除）。 */
+  steerContext?: Message[];
 }
 
 function newUserTurnState(): UserTurnState {
@@ -313,6 +315,7 @@ export function endUserTurn(this: Agent): void {
     this.dropTransientMessage(this.userTurn.contextMessage);
     this.userTurn.contextMessage = null;
   }
+  for (const m of this.userTurn?.steerContext?.splice(0) ?? []) this.dropTransientMessage(m);
   this.userTurn = null;
 }
 
@@ -355,4 +358,24 @@ export async function ensureUserPromptSubmit(
   state.result = await runUserPromptSubmit.call(this, state.prompt ?? prompt);
   if (state.result.context) state.contextMessage = this.messages.at(-1) ?? null;
   return state.result;
+}
+
+/**
+ * #66：运行中转向的 UserPromptSubmit —— 每条注入各跑一次（#64「交互每条输入一次」）。
+ *
+ * 刻意不走 `ensureUserPromptSubmit`：那份缓存属于本轮发起时的那条输入，复用它等于
+ * 让转向绕过用户策略。也不 `beginUserTurn`：不重置 Stop 额度、不另开边界。
+ * 附加上下文与本轮那条同口径：临时 system 消息，轮末随 `endUserTurn` 摘除。
+ */
+export async function runSteerPromptSubmit(
+  this: Agent,
+  prompt: string,
+): Promise<LifecycleHookResult> {
+  if (skipForSubagent(this)) return EMPTY;
+  const r = await this.runHooks("UserPromptSubmit", null, { prompt }, this.abort?.signal);
+  if (r.blocked) return { blocked: true, reason: r.reason, context: "", continue: false };
+  const context = collectContext(this, r.outcomes);
+  const msg = context === "" ? null : appendLifecycleContext(this, context);
+  if (msg && this.userTurn) (this.userTurn.steerContext ??= []).push(msg);
+  return { blocked: false, reason: "", context, continue: false };
 }

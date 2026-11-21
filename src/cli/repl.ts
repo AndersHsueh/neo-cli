@@ -4,14 +4,14 @@ import { makePreviousCwdSlot } from "./cdWorkdir.ts";
 import { lspServers } from "../lsp/index.ts";
 import { persist, showStats } from "./sessions.ts";
 import { authorizeShell, executeShell, runShell } from "./shell.ts";
-import { bindAttachments, resolveLine, type Attachment, type QueuedLine } from "../attachments.ts";
+import { bindAttachments, type Attachment, type QueuedLine } from "../attachments.ts";
 import type { SelectDeps } from "../ui/select.ts";
 import { c } from "../ui/theme.ts";
 import { FileIndex } from "../input/fileIndex.ts";
 import type { Composer } from "../tui/composer.ts";
 import type { TitleAnimator } from "../tui/title.ts";
-import { expandMessageReferences } from "../input/references.ts";
-import { normalizeRelPath } from "../rules/index.ts";
+import { expandUserLine } from "./expandUserLine.ts";
+import { SteerController } from "./midTurnSteer.ts";
 import { chatStream, contentText } from "../llm.ts";
 import { runSubagent } from "../tools/task.ts";
 import { saveSubagentTranscript, loadSubagentTranscript } from "../tools/transcript.ts";
@@ -41,6 +41,8 @@ export interface QueueItem extends QueuedLine {
    * 由 drain 直接交给 runShellWithTui —— 不再走「整行 startsWith !」那条，避免双重剥前缀。
    */
   shell?: boolean;
+  /** #66：本条作为运行中转向时被 UserPromptSubmit 阻断 —— 不再中途尝试，等 drain 作为新一轮。 */
+  steerBlocked?: boolean;
 }
 
 /**
@@ -73,6 +75,8 @@ export interface ReplState {
   turnActive: boolean;
   drive: DriveManager;
   loopScheduler: LoopScheduler;
+  /** #66 运行中转向：队列 → Agent 切点（AgentOptions.pollSteer）。 */
+  steer: SteerController;
   // ---- 粘贴 chip / @ 补全 ----
   pasteTextCounter: number;
   pasteImageCounter: number;
@@ -234,6 +238,13 @@ export function createRepl(s: AppSession): ReplState {
       else ui.line(line);
     },
   });
+  // #66：只有交互 REPL 接上运行中转向（-p / ACP 不经 createRepl，不接线）。
+  repl.steer = new SteerController({
+    queue: () => repl.queue,
+    expand: (q) => expandUserLine(s, q.text, q.attachments),
+    onQueueChange: () => s.composerRef?.setQueueCount(repl.queue.length),
+  });
+  agent.opt.pollSteer = repl.steer.poll;
   repl.pasteTextCounter = 0; // chip 编号会话内递增（PRD §3），图片/文本各自独立
   repl.pasteImageCounter = 0;
 
@@ -500,37 +511,11 @@ export function createRepl(s: AppSession): ReplState {
           }
 
           // 合成行（mailbox/notice）文本已经是 frame 后的内容，不经命令分发、不做 chip 还原。
-          // v0.2.4 C3：先展开 @ 引用，再做 chip 还原 ——
-          // 反过来会把「粘贴内容里恰好出现的 @foo」也当成引用展开（用户并没有这个意图）。
-          const expanded =
-            origin === "user"
-              ? await expandMessageReferences(line, {
-                  cwd: cfg.cwd,
-                  mcp: {
-                    connectedServers: mcpManager.connectedServerNames(),
-                    read: (server, uri) => mcpManager.readResource(server, uri),
-                  },
-                })
-              : { text: line, refs: [], errors: [] as string[] };
+          // 真人行的展开规则与 #66 运行中转向共用（expandUserLine）。
           const resolved =
             origin === "user"
-              ? resolveLine(expanded.text, q.attachments)
+              ? await expandUserLine(s, line, q.attachments)
               : { text: line, images: [] as string[] };
-          if (expanded.refs.length > 0) {
-            // issue #17：用户 @ 引用算触达（规则只看路径，不看被引用内容）。
-            agent.noteTouchedPaths(
-              expanded.refs
-                .map((r) => normalizeRelPath(cfg.cwd, r.path))
-                .filter((p): p is string => p !== null && p !== "."),
-            );
-            const lines = expanded.refs.reduce((n, r) => n + r.lines, 0);
-            ui.line(c.dim(`· 已引用 ${expanded.refs.length} 个文件（+${lines} 行）`));
-          }
-          for (const e of expanded.errors) ui.line(c.dim(`· ${e}`));
-          if (resolved.images.length > 0) {
-            // PRD §5.8：用户对「发出去了什么」有知情权（图片可能含敏感信息）
-            ui.line(c.dim(`· 已发送图片 ×${resolved.images.length}`));
-          }
           ui.blank();
           repl.turnStartedAt = Date.now();
           repl.turnActive = true;
@@ -574,9 +559,11 @@ export function createRepl(s: AppSession): ReplState {
             }
             agent.userTurn = userBoundary;
           }
+          repl.steer.beginTurn();
           try {
             // ESC 回滚语义（PRD §4.11 裁决 A）：人类输入的 turn 保留回滚；
             // 由 mailbox / 状态通知触发的自动 turn 只停不删（否则会连任务消息与已完成结果一起抹掉）。
+            // #66：本轮一旦写入过运行中转向，sendTurn 会把回滚关掉（只停不删）。
             turnStats = await agent.send(
               resolved.images.length > 0 ? { text: resolved.text, images: resolved.images } : resolved.text,
               { rollbackOnAbort: origin === "user" },
@@ -614,6 +601,7 @@ export function createRepl(s: AppSession): ReplState {
             if (process.env["NEO_DEBUG"]) console.error(e);
           } finally {
             // 每次持久化前摘除临时上下文，但保留额度对象供同链内部轮复用。
+            repl.steer.endTurn();
             agent.endUserTurn();
             repl.turnActive = false;
             s.composerRef?.setBusy(false);

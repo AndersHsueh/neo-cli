@@ -25,6 +25,7 @@ import { describeShell, getShell } from "../shell.ts";
 import { bootLines } from "../bootDiagnostics.ts";
 import type { AppSession } from "./sessionStart.ts";
 import { createRepl } from "./repl.ts";
+import { recallQueuedUser } from "./midTurnSteer.ts";
 import { installFatalSignalHandlers } from "../signals.ts";
 
 type RlInternal = { line: string; cursor: number; _refreshLine?: () => void; history?: string[] };
@@ -168,14 +169,10 @@ export async function runInteractive(s: AppSession): Promise<number> {
         }
       },
       onRecallQueue: () => {
-        for (let i = repl.queue.length - 1; i >= 0; i--) {
-          const item = repl.queue[i];
-          if (!item || item.origin !== "user") continue;
-          repl.queue.splice(i, 1);
-          s.composerRef?.setQueueCount(repl.queue.length);
-          return { text: item.text, attachments: item.attachments ?? [] };
-        }
-        return null;
+        // #66：已注入本轮的转向早已离队，这里只可能收回尚未注入的条目。
+        const item = recallQueuedUser(repl.queue);
+        if (item) s.composerRef?.setQueueCount(repl.queue.length);
+        return item;
       },
       onFlushQueue: () => {
         s.composerRef?.setQueueCount(repl.queue.length);
@@ -196,6 +193,8 @@ export async function runInteractive(s: AppSession): Promise<number> {
         // 有在跑的就把出口指出来，别让人以为 ESC 也把后台一起停了。
         const running = s.backgroundTasks?.runningCount ?? 0;
         if (running > 0) ui.line(c.dim(`· ${running} 个后台子代理仍在运行（/tasks cancel 可取消）`));
+        // #66：注入过转向则换成「不回滚」文案；否则 undefined，输入框沿用「已请求取消本轮」。
+        return repl.steer.cancelNotice();
       },
       pasteText: (text) => {
         repl.pasteTextCounter += 1;
@@ -548,6 +547,13 @@ export async function runInteractive(s: AppSession): Promise<number> {
       },
     );
 
+    /** readline 的 ESC / busy Ctrl+C 共用：取消本轮；#66 注入过转向时打出不回滚文案。 */
+    const cancelTurn = (): void => {
+      agent.cancel();
+      const note = repl.steer.cancelNotice();
+      if (note) ui.line(c.dim(`· ${note}`));
+    };
+
     const onSigint = (): void => {
       // C9：select 存续期间 Ctrl+C = 取消选择，不武装双击退出
       if (repl.selectActive && repl.selectCancel) {
@@ -555,9 +561,8 @@ export async function runInteractive(s: AppSession): Promise<number> {
         return;
       }
       if (repl.queue.length > 0 || repl.draining) {
-        agent.cancel();
-        // 中断不回滚：跑了几十轮工具的进展不该被一次误按丢掉。
-        // 回滚是 ESC 的语义（输入错了重来）。
+        // 与 ESC 同一套语义：是否回滚由本轮 rollbackOnAbort 决定；#66 注入过转向则只停不删。
+        cancelTurn();
         exitStrike();
         return;
       }
@@ -613,7 +618,7 @@ export async function runInteractive(s: AppSession): Promise<number> {
     };
     rl.on("line", origLineHandler);
 
-    // ESC 等按键走 keypress 语义。仅运行中响应：取消当前轮并回滚历史。
+    // ESC 等按键走 keypress 语义。仅运行中响应：取消当前轮（回滚与否同 composer，见 cancelTurn）。
     const hotkeys = new HotkeyRouter();
     hotkeys.attach(rl, process.stdin);
     hotkeys.on("escape", () => {
@@ -624,7 +629,7 @@ export async function runInteractive(s: AppSession): Promise<number> {
         applyLine("", 0);
         return;
       }
-      if (repl.draining) agent.cancel();
+      if (repl.draining) cancelTurn();
       // 空闲时无操作，留给将来的热键语义
     });
 
