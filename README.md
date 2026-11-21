@@ -33,7 +33,7 @@ bun run src/index.ts -p "修到测试全绿" --drive "bun test" --max 5 --max-mi
 | 其它 POSIX（dash/ksh/fish） | 自动探测 | ✅ 解析器支持；fish 不吃登录 PATH preamble |
 | Windows 11 | `pwsh` → `powershell` → `cmd` | 🟡 **实验性，未实机验证**（见 PD-1） |
 
-> **v0.4.98 发布验证（Linux worktree）**：`bun x tsc --noEmit` exit 0；2547 pass / 3 skip / 0 fail（149 文件）；PTY 36/0；`bash scripts/verify.sh` **ALL GREEN**。表内 macOS 数字保留为历史记录，不代表本次在 macOS 复测。
+> **v0.4.99 发布验证（Linux worktree）**：`bun x tsc --noEmit` exit 0；3022 pass / 3 skip / 0 fail（168 文件）；PTY 51/0；`bash scripts/verify.sh` **ALL GREEN**。表内 macOS 数字保留为历史记录，不代表本次在 macOS 复测。
 
 Windows 启动用 `neo.cmd`（需要 Bun 在 PATH）；Linux/macOS 用 `neo.sh` 或 `bun run src/index.ts`。
 
@@ -64,6 +64,7 @@ Windows 启动用 `neo.cmd`（需要 Bun 在 PATH）；Linux/macOS 用 `neo.sh` 
 - **v0.4.96**：`-p --json-schema` 结构化输出（#77）——仅 `-p` 增加该旗标，在 harness 层把进程级最终答案校验为符合给定 JSON Schema 的 JSON 值；不合规最多回喂 2 次（共 3 次尝试）。`json` 按需增加 `structured_output`，不删现有 `answer`；带旗标的 `text` 只把 stdout 收成那份校验通过的紧凑单行 JSON 值；`stream-json` 只在最终 `result` 携带该字段。不宣称与 Claude Code 或 Codex 兼容。详见 `docs/release-notes/v0.4.96.md`。
 - **v0.4.97**：交互启动 Banner 改为圆角框线卡片（#83）——首行 `neo` + 版本，展示 provider（含 tier）、model、endpoint host、cwd 与工具摘要；一行提示原文为 `/help 查看命令 · ? 快捷键 · Shift+Tab 切换模式`。外宽 `min(终端列数, 80)`，`< 40` 列退化为无框纯文本；40 列下超长字段按内宽截断，右边框对齐。圆角框线只是视觉灵感，不宣称与 Claude Code 兼容。`-p` 与 `neo acp` 仍不打印 Banner。详见 `docs/release-notes/v0.4.97.md`。
 - **v0.4.98**：会话默认名改为顺序编号 Neo#N（#82）——默认名单调递增、关闭后不复用；去掉角色池与 Mr.Anderson 渐变，标题改为静态 `Agent: <name>`。优先级：`--name` > `--resume`/`--continue` 旧名 > 默认 Neo#N；resume 保留历史名（含 Matrix 角色名）；碰撞后缀只留给显式 `--name`（及既有 `/rename`）。P2：计数器预留失败可见报错并 exit 2，不再发未预留的号；活持有者（含暂停）不会被偷锁；默认名撞名会重新分配另一个 Neo#N，不会静默变成 Neo#N-2。详见 `docs/release-notes/v0.4.98.md`。
+- **v0.4.99**：自 v0.4.98 起合入尚未发版的 15 单。子代理 dispatch 校验排除表（#84）；交互 transcript 视图 Ctrl+O（#90）；初次使用引导配置 default provider（#88）；SubagentStart/Stop 生命周期 hook（#86）；`--safe-mode` 干净启动（#70）；`/doctor` 配置体检（#91）；按需加载嵌套 AGENTS.md / CLAUDE.md（#54）；`/output-style`（#73）；自定义命名子代理（#36）；MCP 资源与提示词（#67）；事件驱动监视（#87）；会话 fork（#65）；把排队消息在工具切点注入当前轮（#66）；`--add-dir`（#63）；会话 worktree（#85，含 detectRepo 相对路径修复，影响 #9 从子目录 `--worktree`：以前算错，现在按仓根算对）。详见 `docs/release-notes/v0.4.99.md`。
 
 ## 配置
 
