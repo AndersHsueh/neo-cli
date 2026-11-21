@@ -211,6 +211,25 @@ describe("启动 --add-dir：路径校验（startupAddDirCheck）", () => {
     expect(ADD_DIR_HINT).toBe("每个目录各写一次 --add-dir");
   });
 
+  test("交互 TTY + -p：用了 --add-dir 又有未消费位置参数同样报用法错误（不丢 ./b）", () => {
+    const ws = workspace();
+    const r = startupAddDirCheck(parseArgs(["-p", "q", "--add-dir", "lib", "shared"]), {
+      stdinIsTTY: true,
+      processCwd: ws.top,
+    });
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.message).toContain("每个目录各写一次 --add-dir");
+  });
+
+  test("非 TTY + -p：位置参数规则不变，不报位置参数错", () => {
+    const ws = workspace();
+    const r = startupAddDirCheck(parseArgs(["-p", "q", "--add-dir", "lib", "shared"]), {
+      stdinIsTTY: false,
+      processCwd: ws.top,
+    });
+    expect(r.ok).toBe(true);
+  });
+
   test("非 TTY：位置参数照旧当一次性提示词，不报错", () => {
     const ws = workspace();
     const r = startupAddDirCheck(parseArgs(["--add-dir", "lib", "解释一下"]), { stdinIsTTY: false, processCwd: ws.top });

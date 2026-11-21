@@ -3593,6 +3593,40 @@ async function scenarioS42(tmpRoot: string): Promise<void> {
   }
 }
 
+/** #63 S42b：交互 TTY 下 -p 同样适用位置参数规则；无多余位置参数的 -p 照常跑完。 */
+async function scenarioS42b(tmpRoot: string): Promise<void> {
+  const dirs = await makeDirs(tmpRoot, "s42b-add-dir-positional-p");
+  await mkdir(join(dirs.work, "a"), { recursive: true });
+  await mkdir(join(dirs.work, "b"), { recursive: true });
+  const fake = await startFake("resume");
+  const bad = await startNeo({ fake, dirs, name: "s42b-bad", args: [...BASE_ARGS, "-p", "q", "--add-dir", "./a", "./b"] });
+  try {
+    await waitFor(() => bad.screen.text().includes("每个目录各写一次 --add-dir"), {
+      label: "交互 TTY + -p 下多余位置参数报用法错误",
+      timeoutMs: 15_000,
+    });
+    const code = await bad.waitExit();
+    check(code === 2, `-p + 多余位置参数退出码应为 2（实际 ${code}）`, bad.screen);
+    check(readdirSync(dirs.sessions).length === 0, "用法错误不应创建会话", bad.screen);
+  } catch (e) {
+    throw attachScreen(e, bad.screen, bad.stderr);
+  } finally {
+    await bad.close();
+  }
+  const ok = await startNeo({ fake, dirs, name: "s42b-ok", args: [...BASE_ARGS, "-p", "q", "--add-dir", "./a"] });
+  try {
+    const code = await ok.waitExit();
+    check(code === 0, `-p + 单个 --add-dir 应正常退出 0（实际 ${code}）`, ok.screen);
+    check(!ok.screen.text().includes("每个目录各写一次 --add-dir"), "无多余位置参数不应报位置参数错", ok.screen);
+    maybeDumpScreen(ok.screen);
+  } catch (e) {
+    throw attachScreen(e, ok.screen, ok.stderr);
+  } finally {
+    await ok.close();
+    await fake.stop();
+  }
+}
+
 /** #63 S43：/add-dir 加入 → 不带参数列出 → /cd 换主根清空额外根并列出被清掉的根。 */
 async function scenarioS43(tmpRoot: string): Promise<void> {
   const dirs = await makeDirs(tmpRoot, "s43-add-dir-cd");
@@ -3719,6 +3753,7 @@ async function scenarioS45(tmpRoot: string): Promise<void> {
 
 const SCENARIOS: Scenario[] = [
   {id:"s42", title:"#63 交互 TTY：--add-dir 多余位置参数报用法错误 2",fn:scenarioS42,focus:["每个目录各写一次 --add-dir"]},
+  {id:"s42b", title:"#63 交互 TTY：-p 同样报多余位置参数错；单个 --add-dir 的 -p 照常",fn:scenarioS42b,focus:["每个目录各写一次 --add-dir"]},
   {id:"s43", title:"#63 /add-dir 加入/列出，/cd 换主根清空额外根",fn:scenarioS43,focus:["已加入","已清空本会话额外工作根"]},
   {id:"s44", title:"#63 忙碌时 /add-dir 排队到轮末执行",fn:scenarioS44,focus:["排队","已加入"]},
   {id:"s45", title:"#63 -c 恢复额外根；换主根续聊不恢复",fn:scenarioS45,focus:["不恢复","额外工作根"]},
