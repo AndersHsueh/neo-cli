@@ -15,7 +15,7 @@
  *
  * 环境变量：
  *   PORT      监听端口，默认 18123；0 = 自动分配
- *   SCENARIO  tool-then-answer（默认）| narration | resume | echo-ref
+ *   SCENARIO  tool-then-answer（默认）| narration | resume | echo-ref | steer（#66 运行中转向）
  *   HOST      监听地址，默认 127.0.0.1
  *
  * 路由：
@@ -27,7 +27,7 @@
  * 所有请求体仅在内存中读取、不落盘；不记录日志（避免把测试数据写进仓库）。
  */
 
-type Scenario = "tool-then-answer" | "narration" | "resume" | "echo-ref" | "slow" | "slow-500" | "slow-800" | "write-then-answer" | "ask-user";
+type Scenario = "tool-then-answer" | "narration" | "resume" | "echo-ref" | "slow" | "slow-500" | "slow-800" | "write-then-answer" | "ask-user" | "steer";
 
 const SCENARIOS: readonly Scenario[] = [
   "tool-then-answer",
@@ -39,6 +39,7 @@ const SCENARIOS: readonly Scenario[] = [
   "slow-800",
   "write-then-answer",
   "ask-user",
+  "steer",
 ];
 
 function pickScenario(raw: string | undefined): Scenario {
@@ -219,6 +220,32 @@ function lastUserText(messages: WireMessage[]): string {
   return "";
 }
 
+/**
+ * #66 steer 场景：本轮最后一批 tool 结果之后、下一条 assistant 之前出现的、含 STEER 的 user 条数。
+ * 真正的中轮注入 = 紧跟 tool 结果；退化成「轮末新一轮」时中间隔着上一轮的终答 assistant，计 0。
+ */
+function steerInjectedCount(messages: WireMessage[]): number {
+  let lastTool = -1;
+  messages.forEach((m, i) => {
+    if (m.role === "tool") lastTool = i;
+  });
+  if (lastTool < 0) return 0;
+  let n = 0;
+  for (let i = lastTool + 1; i < messages.length; i++) {
+    const m = messages[i]!;
+    if (m.role === "assistant") break;
+    if (m.role === "user" && lastUserText([m]).includes("STEER")) n++;
+  }
+  return n;
+}
+
+/** #66 steer 场景的首帧延迟：首个请求慢一点，留时间在忙碌中敲转向；STEER HOLD 让注入后的请求挂住等 Esc。 */
+function steerDelayMs(messages: WireMessage[]): number {
+  if (countToolMessages(messages) === 0) return 1500;
+  if (steerInjectedCount(messages) > 0 && lastUserText(messages).includes("HOLD")) return 8000;
+  return 0;
+}
+
 function framesFor(scenario: Scenario, messages: WireMessage[]): string[] {
   const toolRounds = countToolMessages(messages);
   switch (scenario) {
@@ -266,6 +293,17 @@ function framesFor(scenario: Scenario, messages: WireMessage[]): string[] {
       return [...contentFrames("写完了。"), ...finishFrames("stop")];
     }
 
+    case "steer": {
+      // #66：第 1 次请求调 read_file；之后按「转向是否紧跟 tool 结果」作答（无状态）。
+      if (toolRounds === 0) {
+        return [...contentFrames("先读文件。"), ...toolCallFrames(), ...finishFrames("tool_calls")];
+      }
+      const n = steerInjectedCount(messages);
+      if (n > 0) return [...contentFrames(`STEER_SEEN n=${n}`), ...finishFrames("stop")];
+      if (lastUserText(messages).includes("STEER")) return [...contentFrames("STEER_MISS"), ...finishFrames("stop")];
+      return [...contentFrames("读完了：内容是 hello。"), ...finishFrames("stop")];
+    }
+
     case "tool-then-answer":
     default: {
       if (toolRounds === 0) {
@@ -282,13 +320,14 @@ function framesFor(scenario: Scenario, messages: WireMessage[]): string[] {
 /* HTTP                                                                */
 /* ------------------------------------------------------------------ */
 
-function sseResponse(frames: string[]): Response {
+function sseResponse(frames: string[], delayMs = 0): Response {
   const body = new ReadableStream<Uint8Array>({
     async start(controller) {
       try {
         if (SCENARIO === "slow") await Bun.sleep(1300);
         if (SCENARIO === "slow-500") await Bun.sleep(500);
         if (SCENARIO === "slow-800") await Bun.sleep(800);
+        if (delayMs > 0) await Bun.sleep(delayMs);
         // 每帧之间让出事件循环：既模拟真实流式，也让 PTY 侧能观察到中间态。
         for (const f of frames) {
           controller.enqueue(encoder.encode(f));
@@ -346,7 +385,7 @@ const server = (() => {
       } catch {
         // 请求体不是合法 JSON 也照常回一个 stop 帧，避免测试被语法错误卡死
       }
-      return sseResponse(framesFor(SCENARIO, messages));
+      return sseResponse(framesFor(SCENARIO, messages), SCENARIO === "steer" ? steerDelayMs(messages) : 0);
     }
 
     return new Response(`not found: ${req.method} ${url.pathname}`, { status: 404 });

@@ -424,7 +424,8 @@ async function startFake(
     | "slow-500"
     | "slow-800"
     | "write-then-answer"
-    | "ask-user",
+    | "ask-user"
+    | "steer",
 ): Promise<FakeServer> {
   const proc = Bun.spawn([BUN, "run", FAKE_LLM], {
     cwd: ROOT,
@@ -3500,6 +3501,73 @@ async function scenarioS39(tmpRoot: string): Promise<void> {
   }
 }
 
+/** #66 S40：忙碌中有字 Enter → ❯ 上屏 + ⇥ 1 排队 → 工具切点自动注入（计数下降）→ 同一轮改路，不另起一轮。 */
+async function scenarioS40(tmpRoot: string): Promise<void> {
+  const dirs = await makeDirs(tmpRoot, "s40-mid-turn-steer");
+  await writeFile(join(dirs.work, "a.txt"), "hello\n", "utf8");
+  const fake = await startFake("steer");
+  const run = await startNeo({ fake, dirs, name: "s40", args: BASE_ARGS, cols: DEFAULT_COLS, rows: DEFAULT_ROWS });
+  try {
+    await waitPrompt(run);
+    await run.type("读一下 a.txt");
+    await waitFor(() => run.screen.text().includes("运行中"), { label: "首轮进行中", run, timeoutMs: 8000 });
+    await run.type("STEER 改成只看第一行");
+    await waitFor(() => (statusLineOf(run.screen) ?? "").includes("⇥ 1 排队"), {
+      label: "忙碌时有字 Enter 先入队（⇥ 1 排队）",
+      run,
+      timeoutMs: 6000,
+    });
+    check(run.screen.lines().some((l) => l.startsWith("❯ STEER 改成只看第一行")), "转向应按现有 ❯ 上屏", run.screen);
+    await waitFor(() => run.screen.text().includes("STEER_SEEN n=1"), { label: "转向在工具切点注入本轮", run, timeoutMs: 15_000 });
+    await waitPrompt(run, "本轮结束、回到提示符");
+    const text = run.screen.text();
+    check(!text.includes("STEER_MISS"), "转向不应退化成轮末新一轮", run.screen);
+    check((text.match(/STEER_SEEN/g) ?? []).length === 1, "注入只引发一次后续请求", run.screen);
+    check(!(statusLineOf(run.screen) ?? "").includes("排队"), "注入后排队计数应下降为 0", run.screen);
+    maybeDumpScreen(run.screen);
+    await run.type("/exit");
+    await run.waitExit();
+  } catch (e) {
+    throw attachScreen(e, run.screen, run.stderr);
+  } finally {
+    await run.close();
+    await fake.stop();
+  }
+}
+
+/** #66 S41：转向注入后按 Esc → 只停不删，文案换成「已中断（不回滚，转向已写入本轮）」。 */
+async function scenarioS41(tmpRoot: string): Promise<void> {
+  const dirs = await makeDirs(tmpRoot, "s41-steer-cancel");
+  await writeFile(join(dirs.work, "a.txt"), "hello\n", "utf8");
+  const fake = await startFake("steer");
+  const run = await startNeo({ fake, dirs, name: "s41", args: BASE_ARGS, cols: DEFAULT_COLS, rows: DEFAULT_ROWS });
+  try {
+    await waitPrompt(run);
+    await run.type("读一下 a.txt");
+    await waitFor(() => run.screen.text().includes("运行中"), { label: "首轮进行中", run, timeoutMs: 8000 });
+    await run.type("STEER HOLD 等一下");
+    await waitFor(() => (statusLineOf(run.screen) ?? "").includes("⇥ 1 排队"), { label: "转向入队", run, timeoutMs: 6000 });
+    await waitFor(() => !(statusLineOf(run.screen) ?? "").includes("排队"), { label: "转向已注入（计数下降）", run, timeoutMs: 10_000 });
+    check(run.screen.text().includes("运行中"), "注入后的请求应仍在进行（HOLD）", run.screen);
+    await run.write("\x1b");
+    await waitFor(() => run.screen.text().includes("已中断（不回滚，转向已写入本轮）"), {
+      label: "注入后取消显示不回滚文案",
+      run,
+      timeoutMs: 6000,
+    });
+    await waitPrompt(run, "取消后回到提示符");
+    check(!run.screen.text().includes("STEER_SEEN"), "HOLD 请求被取消，不应产出回答", run.screen);
+    maybeDumpScreen(run.screen);
+    await run.type("/exit");
+    await run.waitExit();
+  } catch (e) {
+    throw attachScreen(e, run.screen, run.stderr);
+  } finally {
+    await run.close();
+    await fake.stop();
+  }
+}
+
 const SCENARIOS: Scenario[] = [
   {id:"s34", title:"#64 drive 内部轮共享额度与 clear 生命周期",fn:scenarioS34,focus:["已启动自动续跑","上下文已清空"]},
   {id:"s35", title:"#90 Ctrl+O 打开/Esc 关闭/再次 Ctrl+O 关闭 transcript 视图",fn:scenarioS35,focus:["本会话还没有记录","/ 搜索"]},
@@ -3507,6 +3575,8 @@ const SCENARIOS: Scenario[] = [
   {id:"s37", title:"#88 初次使用向导：测通后写入 ~/.neo/settings.json 并正常启动",fn:scenarioS37,focus:["请输入 base_url","请输入 api_key","已写入"]},
   {id:"s38", title:"#88 探测失败不写文件并退出 2",fn:scenarioS38,focus:["探测失败","重试或退出"]},
   {id:"s39", title:"#70 --safe-mode 启动提示干净配置，自定义项未加载",fn:scenarioS39,focus:["当前为干净配置，自定义项未加载","未加载"]},
+  {id:"s40", title:"#66 运行中转向：排队计数 → 工具切点注入 → 同轮改路",fn:scenarioS40,focus:["STEER_SEEN","排队","STEER 改成只看第一行"]},
+  {id:"s41", title:"#66 转向注入后 Esc：只停不删，不回滚文案",fn:scenarioS41,focus:["已中断（不回滚，转向已写入本轮）","STEER HOLD"]},
   {
     id: "s1",
     title: "S1 narration：两轮正文都有行首 ● 前缀",
