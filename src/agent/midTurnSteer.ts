@@ -24,7 +24,8 @@ function userMessage(item: SteerItem): Message {
 /**
  * 返回本切点实际写入历史的转向条数（> 0 时调用方关掉本轮回滚，见合同第 11 条）。
  *
- * - UPS 阻断：该条不写入、`block()` 让它留在宿主队列等轮末，原因可见；其余条目照常处理。
+ * - UPS 阻断：该条不写入、`block()` 让它留在宿主队列等轮末，原因可见；补签 2：碰到第一条阻断即止，
+ *   其后条目不跑 UPS、不写入，原样留在队列（只注入阻断之前已放行的条目，仍只有一次后续请求）。
  * - 取消（含 UPS 跑到一半时取消）：立即停手，未写入的条目全部留在队列。
  * - `claim()` 失败（已被 ↑ 收回）：跳过，不重复注入。
  */
@@ -47,7 +48,7 @@ export async function injectSteers(agent: Agent, signal: AbortSignal): Promise<n
     if (ups.blocked) {
       reportLifecycle(agent, `UserPromptSubmit hook 阻断了运行中转向（已留在队列，轮末作为新一轮）：${ups.reason}`);
       item.block(ups.reason);
-      continue;
+      break;
     }
     if (!item.claim()) continue;
     agent.messages.push(userMessage(item));

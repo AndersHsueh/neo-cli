@@ -354,9 +354,10 @@ export interface AgentHost {
 }
 
 /**
- * #66：一条可注入的转向（宿主已按 drain 同规则展开 @ 引用与附件）。
- * 宿主队列是真源：注入前 `claim()` 才摘除（已被 ↑ 收回则返回 false，不注入）；
- * UserPromptSubmit 阻断时 `block()`，条目留在队列等轮末 drain 作为新轮。
+ * #66：一条可注入的转向（宿主已按 drain 同规则静默展开 @ 引用与附件，UPS 看到的就是这份文本）。
+ * 宿主队列是真源：UPS 放行后 `claim()` 才摘除并执行可见副作用（已被 ↑ 收回则返回 false，不注入、无副作用），
+ * 返回 true 后调用方必须立刻写入本轮；UserPromptSubmit 阻断时 `block()`，条目留在队列等轮末 drain
+ * 作为新轮，且本切点（及本轮其余切点）不再处理其后条目。
  */
 export interface SteerItem {
   text: string;

@@ -10,7 +10,7 @@ import { c } from "../ui/theme.ts";
 import { FileIndex } from "../input/fileIndex.ts";
 import type { Composer } from "../tui/composer.ts";
 import type { TitleAnimator } from "../tui/title.ts";
-import { expandUserLine } from "./expandUserLine.ts";
+import { expandUserLine, prepareUserLine } from "./expandUserLine.ts";
 import { SteerController } from "./midTurnSteer.ts";
 import { chatStream, contentText } from "../llm.ts";
 import { runSubagent } from "../tools/task.ts";
@@ -43,6 +43,8 @@ export interface QueueItem extends QueuedLine {
   shell?: boolean;
   /** #66：本条作为运行中转向时被 UserPromptSubmit 阻断 —— 不再中途尝试，等 drain 作为新一轮。 */
   steerBlocked?: boolean;
+  /** #66 补签 1：enqueueUserTurn 排进来的合成消息（/技能名、MCP prompt），不可运行中注入。 */
+  synthetic?: true;
 }
 
 /**
@@ -241,7 +243,9 @@ export function createRepl(s: AppSession): ReplState {
   // #66：只有交互 REPL 接上运行中转向（-p / ACP 不经 createRepl，不接线）。
   repl.steer = new SteerController({
     queue: () => repl.queue,
-    expand: (q) => expandUserLine(s, q.text, q.attachments),
+    // 补签 4：只在 stdin 是 TTY 时注入（每次切点现读，管道 / 非 TTY 每行各自成轮）。
+    interactive: () => process.stdin.isTTY === true,
+    prepare: (q) => prepareUserLine(s, q.text, q.attachments),
     onQueueChange: () => s.composerRef?.setQueueCount(repl.queue.length),
   });
   agent.opt.pollSteer = repl.steer.poll;
@@ -396,7 +400,7 @@ export function createRepl(s: AppSession): ReplState {
                 // issue #13：/技能名 把合成消息排进队列，由 drain 的 while 在下一轮取出。
                 // 不在这里直接 agent.send —— drain 正在跑，重入会打乱 draining 状态机。
                 enqueueUserTurn: (text) => {
-                  repl.queue.push({ text, attachments: [], origin: "user" });
+                  repl.queue.push({ text, attachments: [], origin: "user", synthetic: true });
                   s.composerRef?.setQueueCount(repl.queue.length);
                 },
                 memoryMode,
