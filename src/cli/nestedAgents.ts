@@ -3,7 +3,8 @@
  *
  * - 启动 / `/cd`：cwd 根文件 +（若在 git 工作树内）向上到工作树根的祖先文件，写入永久项目记忆段。
  * - 子目录文件不预载：本轮触达路径时再以临时 system 消息注入，轮末摘除（与 #17 同生命周期）。
- * - `roots` 预留多工作根（#63 可把额外根传进来）；本单只接线当前会话 cwd。
+ * - `roots` 是会话有序工作根列表（主根在前，#63 额外根按加入顺序在后）；
+ *   每个额外根按与主根相同的算法各算永久段，触达路径归入最具体（路径最长）的根。
  */
 import { realpathSync, readFileSync, statSync } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
@@ -132,32 +133,57 @@ export function collectAncestorInstructionFiles(
   return out;
 }
 
-/** 永久项目记忆段：cwd 根文件 + git 祖先。不含 cwd 子目录。无文件则 null。 */
-export function composePermanentMemory(cwd: string): PermanentMemory | null {
-  const cwdFile = pickInstructionFile(cwd);
-  const ancestors = collectAncestorInstructionFiles(cwd);
-  const files = [...(cwdFile ? [cwdFile] : []), ...ancestors];
-  if (files.length === 0) return null;
+/** 单个工作根的永久文件：根文件 + 该根自己的 git 祖先。 */
+function rootPermanentFiles(root: string): { rootFile: InstructionFile | null; ancestors: InstructionFile[] } {
+  return { rootFile: pickInstructionFile(root), ancestors: collectAncestorInstructionFiles(root) };
+}
+
+/**
+ * 永久项目记忆段：cwd 根文件 + git 祖先。不含 cwd 子目录。无文件则 null。
+ * #63：`extraRoots` 每个额外根各算一遍（根文件 + 该根自己的 git 祖先），按文件 realpath
+ * 去重后合并进同一永久段；已在主根段里的文件不重复出现。
+ */
+export function composePermanentMemory(cwd: string, extraRoots: readonly string[] = []): PermanentMemory | null {
+  const { rootFile: cwdFile, ancestors } = rootPermanentFiles(cwd);
+  const seen = new Set<string>();
+  const keep = (f: InstructionFile): boolean => {
+    const key = tryRealpath(f.path);
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  };
+  const mainFiles = [...(cwdFile ? [cwdFile] : []), ...ancestors].filter(keep);
   const parts: string[] = [];
-  if (cwdFile) parts.push(cwdFile.text);
-  if (ancestors.length > 0) {
-    const sections = ancestors.map((f) => `### ${f.path}\n${f.text}`).join("\n\n");
+  if (cwdFile && mainFiles.includes(cwdFile)) parts.push(cwdFile.text);
+  const mainAncestors = ancestors.filter((f) => mainFiles.includes(f));
+  if (mainAncestors.length > 0) {
+    const sections = mainAncestors.map((f) => `### ${f.path}\n${f.text}`).join("\n\n");
     parts.push(`## 上级项目指令（git 工作树根到当前目录之间）\n\n${sections}`);
   }
+  const files = [...mainFiles];
+  for (const root of extraRoots) {
+    const { rootFile, ancestors: up } = rootPermanentFiles(root);
+    const picked = [...up, ...(rootFile ? [rootFile] : [])].filter(keep);
+    if (picked.length === 0) continue;
+    files.push(...picked);
+    const sections = picked.map((f) => `### ${f.path}\n${f.text}`).join("\n\n");
+    parts.push(`## 额外工作根指令（${root}：根文件与其 git 工作树内的祖先）\n\n${sections}`);
+  }
+  if (files.length === 0) return null;
   return {
-    path: cwdFile?.path ?? ancestors[0]!.path,
+    path: cwdFile?.path ?? files[0]!.path,
     text: parts.join("\n\n"),
     files,
   };
 }
 
-/** safe-mode 下根 / 祖先 / 嵌套全部不加载。 */
+/** safe-mode 下根 / 祖先 / 嵌套全部不加载（含 #63 额外根）。 */
 export function loadSessionInstructionMemory(
   cwd: string,
-  opts: { safeMode?: boolean } = {},
+  opts: { safeMode?: boolean; extraRoots?: readonly string[] } = {},
 ): PermanentMemory | null {
   if (opts.safeMode) return null;
-  return composePermanentMemory(cwd);
+  return composePermanentMemory(cwd, opts.extraRoots ?? []);
 }
 
 function startDirForTouched(abs: string): string {
@@ -185,23 +211,23 @@ function walkUpExclusive(start: string, root: string): string[] {
   return out;
 }
 
+/**
+ * 触达路径归入**最具体**的工作根（realpath 最长者优先），不是 roots 里先命中的那个：
+ * 祖先根（例如 monorepo 根）不能截走主根下的嵌套指令。相对路径相对主根（roots[0]）。
+ */
 function locateTouchedUnderRoots(
   raw: string,
   roots: string[],
 ): { abs: string; root: string } | null {
   const trimmed = raw.trim();
-  if (trimmed === "") return null;
-  if (isAbsolute(trimmed)) {
-    const abs = resolve(trimmed);
-    const root = roots.find((r) => isInside(r, abs));
-    return root ? { abs, root } : null;
+  if (trimmed === "" || roots.length === 0) return null;
+  const abs = isAbsolute(trimmed) ? resolve(trimmed) : resolve(roots[0]!, trimmed.replace(/\\/g, "/"));
+  let best: string | null = null;
+  for (const r of roots) {
+    if (!isInside(r, abs)) continue;
+    if (best === null || tryRealpath(r).length > tryRealpath(best).length) best = r;
   }
-  const posix = trimmed.replace(/\\/g, "/");
-  for (const root of roots) {
-    const abs = resolve(root, posix);
-    if (isInside(root, abs)) return { abs, root };
-  }
-  return null;
+  return best ? { abs, root: best } : null;
 }
 
 function depthFromRoot(dir: string, root: string): number {
@@ -226,6 +252,7 @@ export function collectNestedInstructionFiles(opts: {
     excluded.add(tryRealpath(p));
   }
   const byPath = new Map<string, InstructionFile>();
+  const rootOf = new Map<string, string>();
   for (const raw of opts.touched) {
     const located = locateTouchedUnderRoots(raw, roots);
     if (!located) continue;
@@ -234,12 +261,16 @@ export function collectNestedInstructionFiles(opts: {
       const file = pickInstructionFile(dir);
       if (!file) continue;
       if (excluded.has(file.path) || excluded.has(resolve(file.path))) continue;
-      if (!byPath.has(file.path)) byPath.set(file.path, file);
+      if (!byPath.has(file.path)) {
+        byPath.set(file.path, file);
+        rootOf.set(file.path, located.root);
+      }
     }
   }
+  // 深度按各自所属工作根算，不只看 roots[0]。
   return [...byPath.values()].sort((a, b) => {
-    const da = depthFromRoot(a.dir, roots[0] ?? a.dir);
-    const db = depthFromRoot(b.dir, roots[0] ?? b.dir);
+    const da = depthFromRoot(a.dir, rootOf.get(a.path) ?? a.dir);
+    const db = depthFromRoot(b.dir, rootOf.get(b.path) ?? b.dir);
     if (da !== db) return da - db;
     return a.path.localeCompare(b.path);
   });

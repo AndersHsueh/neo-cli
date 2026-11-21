@@ -17,13 +17,14 @@ import { parseArgs } from "../src/cli/args.ts";
 import { acpUsageError } from "../src/acp/entry.ts";
 import {
   ADD_DIR_HINT,
+  additionalRootsReport,
   isFilesystemRoot,
   resolveAddDirPath,
   settleSessionAdditionalDirs,
   startupAddDirCheck,
   workRoots,
 } from "../src/cli/additionalDirs.ts";
-import { changeSessionCwd, makePreviousCwdSlot } from "../src/cli/cdWorkdir.ts";
+import { changeSessionCwd, completeCdLine, makePreviousCwdSlot } from "../src/cli/cdWorkdir.ts";
 import { dispatchCommand, type CommandContext } from "../src/cli/commands.ts";
 import { forkSession } from "../src/cli/forkSession.ts";
 import { helpText } from "../src/cli/help.ts";
@@ -51,13 +52,17 @@ import { captureConsole } from "./helpers.ts";
 
 const made: string[] = [];
 const prevSessionsDir = process.env["NEO_SESSIONS_DIR"];
+const prevMailboxDir = process.env["NEO_MAILBOX_DIR"];
 const sessionsRoot = realpathSync(mkdtempSync(join(tmpdir(), "neo-63-sessions-")));
 made.push(sessionsRoot);
 process.env["NEO_SESSIONS_DIR"] = sessionsRoot;
+process.env["NEO_MAILBOX_DIR"] = join(sessionsRoot, "mailbox");
 
 afterAll(() => {
   if (prevSessionsDir === undefined) delete process.env["NEO_SESSIONS_DIR"];
   else process.env["NEO_SESSIONS_DIR"] = prevSessionsDir;
+  if (prevMailboxDir === undefined) delete process.env["NEO_MAILBOX_DIR"];
+  else process.env["NEO_MAILBOX_DIR"] = prevMailboxDir;
   for (const d of made) rmSync(d, { recursive: true, force: true });
 });
 
@@ -837,7 +842,7 @@ describe("#54：每个工作根各算永久段", () => {
     put(ws.main, "AGENTS.md", "MAIN");
     const mem = composePermanentMemory(ws.main, [ws.top]);
     expect((mem?.text.match(/TOP-ONCE/g) ?? []).length).toBe(1);
-    expect(new Set(mem?.files.map((f) => f.path)).size).toBe(mem?.files.length);
+    expect(new Set(mem?.files.map((f) => f.path)).size).toBe(mem?.files.length ?? -1);
   });
 
   test("safe-mode 下额外根的指令文件也不加载", () => {
@@ -917,25 +922,24 @@ describe("触达路径识别额外根", () => {
 /* ------------------------------------------------------------------ */
 
 describe("/context 列出额外工作根与其 #54 指令文件路径", () => {
-  test("列根与路径，不倒正文", async () => {
-    const h = harness();
-    put(h.ws.shared, "AGENTS.md", "SHARED-BODY-SHOULD-NOT-BE-DUMPED");
-    await run(h, "/add-dir ../shared");
-    const out = await run(h, "/context", {
-      agent: {
-        messages: h.messages,
-        refreshSystemPrompt: () => {},
-        activeNestedAgents: [],
-        activeRules: [],
-        cumulative: { prompt: 0, completion: 0, reasoning: 0 },
-        mcpLoadedNames: () => new Set(),
-        lastCompaction: null,
-      },
-    } as unknown as Partial<CommandContext>);
+  // /context 处理器需要完整 Agent（窗口探测 / 能力视图 / 工具清单），这里对它调用的报告函数做单测，
+  // 并钉住 /context 确实调用了它。
+  test("列根与因额外根加载的指令文件路径，不倒正文；safe-mode 只列根", () => {
+    const ws = workspace();
+    put(ws.shared, "AGENTS.md", "SHARED-BODY-SHOULD-NOT-BE-DUMPED");
+    const nested = put(ws.shared, "pkg/AGENTS.md", "NESTED-BODY");
+    const cfg = makeCfg(ws.main, { additionalDirs: [ws.shared] } as Partial<Config>);
+    const out = additionalRootsReport(cfg, [{ path: nested }]).join("\n");
     expect(out).toContain("额外工作根");
-    expect(out).toContain(h.ws.shared);
-    expect(out).toContain(join(h.ws.shared, "AGENTS.md"));
+    expect(out).toContain(ws.shared);
+    expect(out).toContain(join(ws.shared, "AGENTS.md"));
+    expect(out).toContain(nested);
     expect(out).not.toContain("SHARED-BODY-SHOULD-NOT-BE-DUMPED");
+    const safe = additionalRootsReport({ ...cfg, safeMode: true }, []).join("\n");
+    expect(safe).toContain(ws.shared);
+    expect(safe).not.toContain(join(ws.shared, "AGENTS.md"));
+    const src = readFileSync(join(import.meta.dir, "../src/cli/commandSession.ts"), "utf8");
+    expect(src).toContain("additionalRootsReport(");
   });
 });
 
@@ -1001,5 +1005,19 @@ describe("帮助与 README：现在时与对照段", () => {
   test("release-notes v0.4.94 的未来时表述已对齐", () => {
     const rn = readFileSync(join(import.meta.dir, "../docs/release-notes/v0.4.94.md"), "utf8");
     expect(rn).toMatch(/#63[^\n]*(已实现|现已实现|已在)/);
+  });
+});
+
+describe("/add-dir 路径补全（与 /cd 同类，只补目录）", () => {
+  test("补最后一个路径参数，相对会话主根，不列文件", () => {
+    const ws = workspace();
+    put(ws.top, "shared-note.txt", "x");
+    const line = "/add-dir ../lib ../sh";
+    const r = completeCdLine(line, line.length, ws.main);
+    expect(r).not.toBeNull();
+    expect(r?.token).toBe("../sh");
+    expect(r?.start).toBe(line.length - "../sh".length);
+    expect(r?.matches.some((m) => m.startsWith("../shared"))).toBe(true);
+    expect(r?.matches.some((m) => m.includes("shared-note.txt"))).toBe(false);
   });
 });

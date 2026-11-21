@@ -5,6 +5,7 @@ import type { CommandContext } from "./commandContext.ts";
 import { chooseSessionName } from "../sessionName.ts";
 import { mailboxRoot } from "../mailbox/types.ts";
 import { cwdSwitchBusyReason } from "./cdWorkdir.ts";
+import { composeSessionProjectMemory, settleSessionAdditionalDirs } from "./additionalDirs.ts";
 
 export function forkBusyReason(opts: {
   turnActive?: boolean;
@@ -28,6 +29,10 @@ export function forkSession(parent: SessionMeta, messages: Message[], model: str
   meta.forkedFrom = parent.id;
   if (parent.outputStyle !== undefined) meta.outputStyle = parent.outputStyle;
   if (parent.todos) meta.todos = structuredClone(parent.todos);
+  // #63：主根不变才拷贝额外根；主根变了按换主根口径不带过去（缺失路径由宿主按 resume 办法跳过）。
+  if (parent.additionalDirs && parent.additionalDirs.length > 0 && parent.cwd === cwd) {
+    meta.additionalDirs = [...parent.additionalDirs];
+  }
   if (parent.rewind) meta.rewind = structuredClone(parent.rewind).map(r => ({ ...r, checkpointSeqs: [],
     messagesBefore: messages[0]?.role === "system"
       ? 1 + messages.slice(0, r.messagesBefore).filter(m => m.role !== "system").length
@@ -55,12 +60,19 @@ export async function handleFork(arg: string, ctx: CommandContext): Promise<void
   ctx.prepareFork?.();
   if (ctx.todos) meta.todos = structuredClone(ctx.todos());
   if (cfg.outputStyle !== undefined) meta.outputStyle = cfg.outputStyle;
+  // #63：同进程 /fork 主根不变，额外根取本会话当前值（与 todos 同理先同步进父 meta）。
+  const liveDirs = cfg.additionalDirs ?? [];
+  if (liveDirs.length > 0) meta.additionalDirs = [...liveDirs];
+  else delete meta.additionalDirs;
   const messages = agent.messages.filter(m => m.role !== "system");
   meta.turns = messages.filter(m => m.role === "user").length;
   // Parent is saved at the fork point; child writes are independent thereafter.
   saveSession(messages, meta);
   const oldId = meta.id;
   const child = forkSession(meta, agent.messages, cfg.model, cfg.cwd);
+  const settled = settleSessionAdditionalDirs({ mainCwd: cfg.cwd, recordedCwd: cfg.cwd, recordedDirs: liveDirs, cliDirs: [] });
+  if (settled.dirs.length > 0) child.meta.additionalDirs = settled.dirs;
+  else delete child.meta.additionalDirs;
   let name: string | undefined;
   if (ctx.mailbox) name = ctx.mailbox.fork(child.meta.id, cfg.cwd, agent.mode).name ?? undefined;
   else name = chooseSessionName({ root: mailboxRoot() })?.name;
@@ -77,6 +89,13 @@ export async function handleFork(arg: string, ctx: CommandContext): Promise<void
     ctx.onNameChange?.(name);
     ctx.promptManager?.setSessionName(name);
   }
+  if (settled.dirs.length !== liveDirs.length) {
+    cfg.additionalDirs = settled.dirs;
+    ctx.fileIndex?.setRoots?.(cfg.cwd, settled.dirs);
+    ctx.promptManager?.setProjectMemory(composeSessionProjectMemory(cfg));
+    saveSession(child.messages, meta);
+  }
+  for (const n of settled.notices) ui.warn(n);
   ctx.promptManager?.invalidate();
   agent.refreshSystemPrompt();
   await agent.runSessionStart("fork");

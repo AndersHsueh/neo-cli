@@ -38,6 +38,7 @@ import { formatGapLogLine, formatProbeIntent, makeOverBudgetReporter, formatWind
 import type { PromptSelection } from "../prompt/select.ts";
 import { parseArgs, HELP, streamJsonUsageError } from "./args.ts";
 import { runDoctorCli } from "./doctor.ts";
+import { settleSessionAdditionalDirs, startupAddDirCheck } from "./additionalDirs.ts";
 import { SAFE_MODE_NOTICE, applySafeMode, isSafeModeEnabled } from "./safeMode.ts";
 import { findSettingsPath } from "../config/settingsPath.ts";
 import {
@@ -106,6 +107,13 @@ export async function bootstrap() {
   // issue #91：`neo doctor` 是独立只读体检入口，不进入 TUI、不发模型请求、不启动向导。
   if (args.rest[0] === "doctor") {
     return runDoctorCli(args);
+  }
+  // #63：--add-dir 校验先于建会话 / 发模型请求；相对路径按进程启动 cwd（不随 -C）。
+  const addDir = startupAddDirCheck(args, { stdinIsTTY: process.stdin.isTTY === true, processCwd: process.cwd() });
+  if (!addDir.ok) {
+    if (args.outputFormat === "stream-json") return await streamJsonUsageError(addDir.message);
+    console.error(c.err(`✖ ${addDir.message}`));
+    return 2;
   }
   // #37：stream-json 只在 -p/--print 下合法。缺 -p（交互模式或
   // `neo <prompt>` 非 -p 形式）在会话创建前按 JSONL 收口为用法错误 2，
@@ -593,6 +601,8 @@ export async function bootstrap() {
     }
   }
 
+  // #63：恢复额外根要看「会话记录的主根」，fork 会把 meta.cwd 改成本次 cwd，先记下来。
+  const recordedRoots = { cwd: meta?.cwd ?? null, dirs: meta?.additionalDirs };
   // #65 new-process fork never acquires, retires, or mutates the parent identity/file.
   if (args.fork && meta && restored) {
     const child = forkSession(meta, restored, cfg.model, cfg.cwd);
@@ -621,6 +631,18 @@ export async function bootstrap() {
   // --resume：沿用被恢复会话的 id/path（真续接），而不是新开一个 fork。
   const sess = meta ? adoptSession(meta, cfg.model) : createSession(cfg.model, cfg.cwd);
   if (cfg.outputStyle !== undefined) sess.meta.outputStyle = cfg.outputStyle;
+  {
+    const settled = settleSessionAdditionalDirs({
+      mainCwd: cfg.cwd,
+      recordedCwd: recordedRoots.cwd,
+      recordedDirs: recordedRoots.dirs,
+      cliDirs: addDir.dirs,
+    });
+    cfg.additionalDirs = settled.dirs;
+    if (settled.dirs.length > 0) sess.meta.additionalDirs = settled.dirs;
+    else delete sess.meta.additionalDirs;
+    for (const n of settled.notices) ui.info(n);
+  }
 
   // #37 stream-json：唯一 writer 只在 streamJsonMode 下创建，session_id 取 sess.meta.id。
   // （s.stdoutClosed / s.turnNo 的语义见 SharedMut。）

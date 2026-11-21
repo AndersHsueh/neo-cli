@@ -3,7 +3,7 @@
  */
 import { statSync } from "node:fs";
 import type { ToolImpl } from "./types.ts";
-import { listSearchFiles } from "./fileList.ts";
+import { listSearchFiles, listWorkRootFiles } from "./fileList.ts";
 import { abs, requireDir } from "./fsPaths.ts";
 
 export const globTool: ToolImpl = {
@@ -19,7 +19,7 @@ export const globTool: ToolImpl = {
         type: "object",
         properties: {
           pattern: { type: "string", description: "glob 模式" },
-          path: { type: "string", description: "搜索根目录，默认工作目录" },
+          path: { type: "string", description: "搜索根目录；不给则默认本会话全部工作根（主根 + /add-dir 额外根）" },
           limit: { type: "integer", description: "最多返回条数，默认 200" },
         },
         required: ["pattern"],
@@ -28,12 +28,16 @@ export const globTool: ToolImpl = {
   },
   async execute(args, ctx) {
     const pattern = String(args["pattern"] ?? "");
+    const hasPath = args["path"] !== undefined && args["path"] !== null && String(args["path"]) !== "";
     const root = abs(ctx, String(args["path"] ?? "."));
     requireDir(root);
     const limit = Math.max(1, Number(args["limit"] ?? 200) || 200);
 
     const re = globToRegExp(pattern);
-    const { files, backend, truncated } = await listSearchFiles(root);
+    // #63：未给 path 时搜本会话全部工作根；给了 path 仍只搜那一个。
+    const { files, backend, truncated } = hasPath
+      ? await listSearchFiles(root)
+      : await listWorkRootFiles(ctx.cfg.cwd, ctx.cfg.additionalDirs ?? []);
     const hits: Array<{ p: string; mtime: number }> = [];
 
     for (const f of files) {

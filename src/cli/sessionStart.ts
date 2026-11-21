@@ -12,6 +12,7 @@ import {
   formatNestedAgentsBlock,
   loadSessionInstructionMemory,
 } from "./nestedAgents.ts";
+import { workRoots } from "./additionalDirs.ts";
 import { makeRememberTool } from "../tools/memory.ts";
 import { makeTodoWriteTool, type TodoItem } from "../tools/todo.ts";
 import { chatStream } from "../llm.ts";
@@ -149,19 +150,19 @@ export async function startSession(s: BootstrapSession) {
     getSessionName: () => s.sessionLabel,
     classifier,
     // issue #17：路径作用域规则。loop 只拿回调，不 import rules 模块。
-    toolPathsOf: (name, argsJson) => extractTouchedPaths(name, argsJson, cfg.cwd),
+    toolPathsOf: (name, argsJson) => extractTouchedPaths(name, argsJson, cfg.cwd, cfg.additionalDirs ?? []),
     scopedRulesPrompt: (touched) => {
       if (scopedRuleList.length === 0) return null;
       const matches = selectScopedRules(scopedRuleList, touched, { cwd: cfg.cwd });
       const text = formatScopedRulesBlock(matches);
       return text === "" ? null : { text, matches };
     },
-    // issue #54：嵌套 AGENTS.md / CLAUDE.md。roots 只接线当前 cwd；#63 可把额外根传入同一 helper。
+    // issue #54/#63：嵌套 AGENTS.md / CLAUDE.md。roots = 主根 + 本会话额外根（同一 helper，归属最具体根）。
     nestedAgentsPrompt: (touched) => {
       if (cfg.safeMode) return null;
-      const perm = composePermanentMemory(cfg.cwd);
+      const perm = composePermanentMemory(cfg.cwd, cfg.additionalDirs ?? []);
       const files = collectNestedInstructionFiles({
-        roots: [cfg.cwd],
+        roots: workRoots(cfg),
         touched,
         exclude: perm?.files.map((f) => f.path),
       });
@@ -575,7 +576,10 @@ export async function startSession(s: BootstrapSession) {
   // issue #18：注入仍在这里（系统提示必须早于首轮），但**提示行**延后到
   // banner + shell 行之后输出（见下方「启动输出顺序」），避免记忆提示跑到 banner 前面。
   // issue #54：cwd 根文件 +（git 仓内）祖先指令写入永久项目记忆段；子目录不预载。
-  const permanentMem = loadSessionInstructionMemory(cfg.cwd, { safeMode: cfg.safeMode });
+  const permanentMem = loadSessionInstructionMemory(cfg.cwd, {
+    safeMode: cfg.safeMode,
+    extraRoots: cfg.additionalDirs ?? [],
+  });
   const memoryFile = permanentMem?.path;
   // issue #17：无 paths 的规则按「每会话」并入项目记忆段（独立小节，便于 /context 区分）。
   const alwaysOnText = formatAlwaysOnRules(projectRules);

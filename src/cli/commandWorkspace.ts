@@ -341,6 +341,11 @@ export async function handleWorkspaceCommands(cmd: string, arg: string, rest: st
       }
       ui.success(`工作目录 → ${formatCwdForDisplay(result.cwd)}`);
       ui.line(c.dim(`  ${result.cwd}（对话保留；/cd - 回上一根）`));
+      const cleared = result.clearedAdditionalDirs ?? [];
+      if (cleared.length > 0) {
+        ui.info(`已清空本会话额外工作根 ${cleared.length} 个：${cleared.join("、")}`);
+        ui.line(c.dim("  （/cd 换主根会清空额外根；/cd - 不恢复）"));
+      }
       for (const w of result.warnings ?? []) ui.warn(w);
       ui.info("新目录的 MCP / 本地 settings 需在该目录重新启动 neo 才生效（有意收窄）。");
       return true;

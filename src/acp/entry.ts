@@ -32,6 +32,7 @@ export function acpUsageError(args: Args): string | null {
   if (args.cwd !== null) conflicts.push("-C/--cwd");
   if (args.fallbackArgs.length > 0) conflicts.push("--fallback");
   if (args.noFallback) conflicts.push("--no-fallback");
+  if (args.addDirs.length > 0 || args.addDirError !== null) conflicts.push("--add-dir");
   if (conflicts.length === 0) return null;
   return (
     `neo acp 不能与 ${conflicts.join(" / ")} 同时使用：` +

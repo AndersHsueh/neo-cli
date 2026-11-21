@@ -24,6 +24,7 @@ import {
 } from "../env/modelWindows.ts";
 import { rulesReport } from "../rules/index.ts";
 import { nestedAgentsReport } from "./nestedAgents.ts";
+import { additionalRootsReport } from "./additionalDirs.ts";
 import { toolNames } from "../tools/index.ts";
 import { repoMapSummary } from "../prompt/repoMap.ts";
 import { listModels } from "../llm.ts";
@@ -241,6 +242,16 @@ export async function handleSessionCommands(cmd: string, arg: string, rest: stri
         ui.kv("repo map", cfg.safeMode ? c.dim("未加载") : repoMapSummary(cfg));
       } catch {
         /* 诊断是增强项 */
+      }
+      // issue #63：额外工作根与因其加载的 #54 指令文件路径（只列路径；safe-mode 只列根）。
+      if ((cfg.additionalDirs ?? []).length > 0) {
+        try {
+          const report = additionalRootsReport(cfg, agent.activeNestedAgents ?? []);
+          ui.kv("额外工作根", report[0]?.replace(/^额外工作根：/, "") ?? "");
+          for (const line of report.slice(1)) ui.line(c.dim(line));
+        } catch {
+          /* 诊断是增强项 */
+        }
       }
       // issue #17：路径作用域规则 —— 每会话几条、本轮命中了哪几条、为什么。
       // 规则发现/匹配都可能抛错（cwd 权限、并发删除），失败就省略，不让 /context 崩。

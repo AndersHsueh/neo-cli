@@ -151,7 +151,7 @@ export interface CommandContext {
   promptManager?: PromptManager;
   persistSession?: (messages: Message[], meta: SessionMeta) => void;
   previousCwd?: PreviousCwdSlot;
-  fileIndex?: { setCwd: (cwd: string) => void };
+  fileIndex?: { setCwd: (cwd: string) => void; setRoots?: (cwd: string, extraRoots: readonly string[]) => void };
   /** 本轮 turn / 工具循环是否在进行（`/cd` 忙碌判定）。 */
   turnActive?: boolean | (() => boolean);
   /** 换根后替换路径作用域规则（新根 .neo/rules）。 */

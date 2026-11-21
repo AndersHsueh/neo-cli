@@ -10,7 +10,7 @@
  */
 import { resolveLine, type Attachment, type ResolvedLine } from "../attachments.ts";
 import { expandMessageReferences } from "../input/references.ts";
-import { normalizeRelPath } from "../rules/index.ts";
+import { normalizeTouchedPath } from "../rules/index.ts";
 import { c } from "../ui/theme.ts";
 import type { AppSession } from "./sessionStart.ts";
 
@@ -47,7 +47,7 @@ export async function prepareUserLine(s: ExpandSession, line: string, attachment
       // issue #17：用户 @ 引用算触达（规则只看路径，不看被引用内容）。
       agent.noteTouchedPaths(
         expanded.refs
-          .map((r) => normalizeRelPath(cfg.cwd, r.path))
+          .map((r) => normalizeTouchedPath(cfg.cwd, r.path, cfg.additionalDirs ?? []))
           .filter((p): p is string => p !== null && p !== "."),
       );
       const lines = expanded.refs.reduce((n, r) => n + r.lines, 0);

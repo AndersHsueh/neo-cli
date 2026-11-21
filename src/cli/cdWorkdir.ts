@@ -103,7 +103,7 @@ export interface CwdSwitchDeps {
   promptManager: PromptManager;
   refreshSystemPrompt: () => void;
   previousCwd: PreviousCwdSlot;
-  fileIndex?: { setCwd: (cwd: string) => void };
+  fileIndex?: { setCwd: (cwd: string) => void; setRoots?: (cwd: string, extraRoots: readonly string[]) => void };
   memory?: { setCwd: (cwd: string) => void };
   mailbox?: { setCwd: (cwd: string) => void } | null;
   checkpoints?: { rebind: (cwd: string) => void };
@@ -115,7 +115,7 @@ export interface CwdSwitchDeps {
 }
 
 export type CwdSwitchResult =
-  | { ok: true; cwd: string; unchanged: boolean; warnings?: string[] }
+  | { ok: true; cwd: string; unchanged: boolean; warnings?: string[]; clearedAdditionalDirs?: string[] }
   | { ok: false; error: string };
 
 /**
@@ -188,6 +188,14 @@ export async function changeSessionCwd(arg: string, deps: CwdSwitchDeps): Promis
       : null;
 
   const oldMetaCwd = meta.cwd;
+  // #63：成功换主根清空本会话全部额外根（含启动 --add-dir）；任何失败都恢复原表。
+  const oldExtras = cfg.additionalDirs ?? [];
+  const oldMetaExtras = meta.additionalDirs;
+  const restoreExtras = (): void => {
+    cfg.additionalDirs = oldExtras;
+    if (oldMetaExtras === undefined) delete meta.additionalDirs;
+    else meta.additionalDirs = oldMetaExtras;
+  };
   const oldMemory = currentProjectMemory(deps.promptManager);
   const undos: Array<() => void> = [];
 
@@ -201,6 +209,7 @@ export async function changeSessionCwd(arg: string, deps: CwdSwitchDeps): Promis
     }
     cfg.cwd = oldCwd;
     meta.cwd = oldMetaCwd;
+    restoreExtras();
     deps.promptManager.setProjectMemory(oldMemory);
     deps.promptManager.invalidate();
     try {
@@ -217,19 +226,25 @@ export async function changeSessionCwd(arg: string, deps: CwdSwitchDeps): Promis
 
   cfg.cwd = target;
   meta.cwd = target;
+  cfg.additionalDirs = [];
+  delete meta.additionalDirs;
 
   try {
     deps.persist(messages, meta);
   } catch (e) {
     cfg.cwd = oldCwd;
     meta.cwd = oldMetaCwd;
+    restoreExtras();
     return { ok: false, error: `会话落盘失败，工作目录未切换：${(e as Error).message}` };
   }
 
   try {
     if (deps.fileIndex) {
       deps.fileIndex.setCwd(target);
-      undos.push(() => deps.fileIndex?.setCwd(oldCwd));
+      undos.push(() => {
+        deps.fileIndex?.setCwd(oldCwd);
+        if (oldExtras.length > 0) deps.fileIndex?.setRoots?.(oldCwd, oldExtras);
+      });
     }
     if (deps.memory) {
       deps.memory.setCwd(target);
@@ -269,7 +284,13 @@ export async function changeSessionCwd(arg: string, deps: CwdSwitchDeps): Promis
     }
   }
 
-  return { ok: true, cwd: target, unchanged: false, ...(warnings.length > 0 ? { warnings } : {}) };
+  return {
+    ok: true,
+    cwd: target,
+    unchanged: false,
+    ...(warnings.length > 0 ? { warnings } : {}),
+    ...(oldExtras.length > 0 ? { clearedAdditionalDirs: [...oldExtras] } : {}),
+  };
 }
 
 /** 补全时跳过的目录（只做最简单的两个，不做复杂忽略）。 */
@@ -341,12 +362,22 @@ export function cwdLabel(cwd: string): string {
   return basename(cwd) || dirname(cwd);
 }
 
-/** 行内 `/cd <prefix>` 的补全结果；不是 `/cd` 参数上下文则返回 null。 */
+/**
+ * 行内 `/cd <prefix>` 的补全结果；不是 `/cd` 参数上下文则返回 null。
+ * #63：`/add-dir` 同类（只补目录、相对会话主根），补的是最后一个路径参数。
+ */
 export function completeCdLine(line: string, cursor: number, sessionCwd: string, limit?: number): CompleteResult | null {
   const head = line.slice(0, Math.max(0, Math.min(cursor, line.length)));
-  const m = /^\/cd(\s+)(.*)$/.exec(head);
+  const m = /^\/(cd|add-dir)(\s+)(.*)$/.exec(head);
   if (!m) return null;
-  const prefix = m[2] ?? "";
-  const start = m[0].length - prefix.length;
+  let prefix = m[3] ?? "";
+  let start = m[0].length - prefix.length;
+  if (m[1] === "add-dir") {
+    const cut = prefix.lastIndexOf(" ");
+    if (cut >= 0) {
+      start += cut + 1;
+      prefix = prefix.slice(cut + 1);
+    }
+  }
   return { matches: listCdCompletions(sessionCwd, prefix, limit), token: prefix, start };
 }

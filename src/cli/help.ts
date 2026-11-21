@@ -61,6 +61,11 @@ ${c.bold("选项")}
   -w, --worktree <name> 在托管 worktree 里开会话：<仓库>/.neo/worktrees/<name>，
                         分支 neo/<name>（已存在则复用，不覆盖）。非 git 目录报错退出。
                         隔离的是文件，不是权限；建议把 .neo/ 加入 .gitignore
+      --add-dir <路径>  本会话额外工作根（#63；也可写 --add-dir=<路径>）。每次只跟一个路径、可重复：
+                        neo --add-dir ../apps --add-dir ../lib。主根不变；相对路径按进程启动目录解析
+                        （不随 -C），~ 展开；必须已存在且是目录，拒绝文件系统根，否则用法错误 2、不启会话。
+                        交互 TTY 下用了 --add-dir 又有多余位置参数会报错：每个目录各写一次 --add-dir；
+                        非 TTY 时位置参数仍当一次性提示词。与 -p 同用有效；不能与 acp 同用
   -y, --yes             自动批准所有操作（慎用）
       --edit            自动批准文件写入，shell 仍需批准
       --plan            只读闸门：禁止一切写操作（≠ 交互规划工作流，后者在会话里用 /plan）
@@ -77,7 +82,19 @@ ${c.bold("项目指令")}
   启动时加载会话 cwd 上的 AGENTS.md / NEO.md / .neo.md / CLAUDE.md（按此顺序取一个）；
   若 cwd 在 git 工作树内，再加载向上到工作树根的祖先指令文件。子目录里的同名文件不预载，
   只在本轮触达该子目录时按需注入，轮末从历史摘除（#54）。这与 #17 的 .neo/rules（paths: glob）
-  不是同一件事；也与尚未实现的 #63 --add-dir / /add-dir（额外工作根）不同。
+  不是同一件事；也与 #63 --add-dir / /add-dir（额外工作根）不同：额外根上的根指令文件及其
+  自身 git 工作树内的祖先进入永久段，额外根里的子目录同样按 #54 按需加载（safe-mode 不加载）。
+
+${c.bold("--add-dir / /add-dir 与 Claude Code 的差异")}
+  - 每个 --add-dir 只跟一个路径（官方一个 flag 可跟多个，并为此修过吞提示词的问题）；交互 TTY 下
+    neo --add-dir ../a ../b 报用法错误，提示每个目录各写一次 --add-dir；非 TTY 时位置参数仍当一次性提示词。
+  - 与 Claude Code 不同：Claude Code 的 /cd 保留额外目录；neo 的 /cd 成功换主根会清空额外根，/cd - 不恢复。
+  - 忙碌时 /add-dir 排队到轮末才生效（官方在本轮确认后马上生效）。
+  - 没有信任询问，没有 DirectoryAdded hook，没有 --remember 持久化。
+  - 不从额外根加载技能、命令、子代理；要用请走 skills_extra_paths。
+  - 额外根的指令文件默认加载（根文件 + 它自己 git 范围内的祖先）；官方默认不加载额外目录里的 CLAUDE.md，
+    要设 CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD=1 才加载。这是有意不同。
+  - /add-dir --remove 与不带参数列出所有根是 neo 自己加的。
 
 ${c.bold("交互命令")}
   /help            帮助            /clear       清空上下文
@@ -110,8 +127,14 @@ ${c.bold("交互命令")}
                    /cd                  打印当前会话工作目录
                    /cd ../other         相对当前会话 cwd（不是进程 cwd）；支持 ~、路径补全
                    /cd -                回到上一根（还没切换过则拒绝）
-                   与 -C（启动时定根）、shell.cwd（只影响单条命令）、#63 /add-dir（主根不变、加额外范围，本单未实现；未来 /cd 成功后应清空已 add 的额外目录）、#9 --worktree（开新会话）、#54 嵌套 AGENTS.md / CLAUDE.md（/cd 会刷新新根及其 git 祖先的永久段；子目录仍按需加载，不在换根时预载）不同。
+                   与 -C（启动时定根）、shell.cwd（只影响单条命令）、#63 /add-dir（主根不变、加额外范围；/cd 成功换主根会清空本会话额外根，/cd - 不恢复）、#9 --worktree（开新会话）、#54 嵌套 AGENTS.md / CLAUDE.md（/cd 会刷新新根及其 git 祖先的永久段；子目录仍按需加载，不在换根时预载）不同。
                    会话文件仍在全局 ~/.neo/sessions，只更新记录里的 cwd；在新目录可按同一 id --resume。这和 Claude 按项目搬家会话文件不是一回事。要新项目的 MCP / 本地 settings，须在该目录重新启动。
+  /add-dir [路径…] 本会话额外工作根（#63；主根不变，扩展 @ 补全、默认 glob/grep、目录树、仓库地图与 #54 指令）
+                   /add-dir ../lib ../apps     加入一个或多个（相对当前会话主根；~ 展开；只补目录）
+                   /add-dir                    列出主根与当前额外根，不改状态
+                   /add-dir --remove ../lib    去掉（按 realpath，目录已删时按记录的绝对路径）
+                   失败的路径各报一行、不回滚已通过的；已在范围内的不重复添加。
+                   /cd 成功换主根会清空本会话额外根；只活在本会话（启动参数、斜杠命令、会话记录）
   /env [refresh]   环境快照（平台/shell/资源/工具链）；refresh 重采并写 wiki 页
   /peers [name]    跨会话状态：列出存活会话 / 查单个
   /inbox           查看 held 消息；/inbox release <id> 放行一条

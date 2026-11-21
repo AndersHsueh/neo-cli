@@ -4,7 +4,7 @@
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { sep } from "node:path";
 import { ToolError, type ToolImpl } from "./types.ts";
-import { listSearchFiles } from "./fileList.ts";
+import { listSearchFiles, listWorkRootFiles } from "./fileList.ts";
 import { globToRegExp } from "./glob.ts";
 import { MAX_GREP_FILE, abs, requireDir } from "./fsPaths.ts";
 
@@ -21,7 +21,7 @@ export const grepTool: ToolImpl = {
         type: "object",
         properties: {
           pattern: { type: "string", description: "正则表达式" },
-          path: { type: "string", description: "搜索根目录或单个文件路径，默认工作目录" },
+          path: { type: "string", description: "搜索根目录或单个文件路径；不给则默认本会话全部工作根（主根 + /add-dir 额外根）" },
           glob: { type: "string", description: "只搜索匹配该 glob 的文件，例如 *.ts" },
           ignore_case: { type: "boolean", description: "忽略大小写，默认 false" },
           limit: { type: "integer", description: "最多返回匹配行数，默认 200" },
@@ -32,6 +32,7 @@ export const grepTool: ToolImpl = {
   },
   async execute(args, ctx) {
     const pattern = String(args["pattern"] ?? "");
+    const hasPath = args["path"] !== undefined && args["path"] !== null && String(args["path"]) !== "";
     const root = abs(ctx, String(args["path"] ?? "."));
     const globPat = args["glob"] ? String(args["glob"]) : null;
     const globRe = globPat ? globToRegExp(globPat) : null;
@@ -58,7 +59,8 @@ export const grepTool: ToolImpl = {
 
     // 文件清单走 gitignore 语义（git 工作区用 git ls-files，非 git 目录用内置匹配器）；
     // 匹配仍用上面的 JS 正则，不切 git grep —— 保持 \d、lookahead 等语义不变。
-    const listed = await listSearchFiles(root);
+    // #63：未给 path 时搜本会话全部工作根；给了 path 仍只搜那一个。
+    const listed = hasPath ? await listSearchFiles(root) : await listWorkRootFiles(ctx.cfg.cwd, ctx.cfg.additionalDirs ?? []);
     for (const f of listed.files) {
       if (hits.length >= limit) {
         truncated = true;

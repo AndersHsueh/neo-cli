@@ -59,6 +59,31 @@ function listFiles(root: string, depth = 2, max = 200): string[] {
   return out;
 }
 
+const TREE_BUDGET = 120;
+
+function singleRootTree(cwd: string): string {
+  const tree = existsSync(cwd) ? listFiles(cwd, 2, TREE_BUDGET) : [];
+  return tree.length > 0
+    ? `\n工作目录结构（最多两层）：\n${tree.map((t) => `  ${t}`).join("\n")}`
+    : `\n工作目录为空。`;
+}
+
+/**
+ * #63：目录树预算在所有工作根之间共享（均分，主根先拿余数），每段标注所属根，
+ * 两棵树不混成一套相对路径。
+ */
+function multiRootTree(cwd: string, extras: readonly string[]): string {
+  const roots = [cwd, ...extras];
+  const share = Math.max(1, Math.floor(TREE_BUDGET / roots.length));
+  const sections = roots.map((root, i) => {
+    const max = i === 0 ? TREE_BUDGET - share * (roots.length - 1) : share;
+    const tree = existsSync(root) ? listFiles(root, 2, Math.max(1, max)) : [];
+    const head = `[${i === 0 ? "主根" : "额外根"}] ${root}`;
+    return tree.length > 0 ? `${head}\n${tree.map((t) => `  ${t}`).join("\n")}` : `${head}\n  （空）`;
+  });
+  return `\n工作根目录结构（最多两层；预算 ${TREE_BUDGET} 条在 ${roots.length} 个工作根之间共享）：\n${sections.join("\n")}`;
+}
+
 /**
  * 产出系统提示词的动态块（不含三档核心；核心由 PromptManager 渲染并置于最前）。
  * 保留旧函数名：测试与 skills 等调用方只关心动态内容。
@@ -76,11 +101,8 @@ export function buildSystemPrompt(
     nonInteractive?: boolean;
   } = {},
 ): string {
-  const tree = existsSync(cfg.cwd) ? listFiles(cfg.cwd, 2, 120) : [];
-  const treeText =
-    tree.length > 0
-      ? `\n工作目录结构（最多两层）：\n${tree.map((t) => `  ${t}`).join("\n")}`
-      : `\n工作目录为空。`;
+  const extraRoots = cfg.additionalDirs ?? [];
+  const treeText = extraRoots.length === 0 ? singleRootTree(cfg.cwd) : multiRootTree(cfg.cwd, extraRoots);
 
   // issue #15：符号级仓库地图。空图/关闭/异常一律不注入（增强项）。
   let repoMapText = "";
@@ -172,7 +194,7 @@ ${opts.mailbox ? "- send_message：给另一个存活的 neo 会话投递纯文�
 ## 环境
 
 - 工作目录：${cfg.cwd}
-${formatModelLine(cfg)}
+${extraRoots.length > 0 ? `- 额外工作根（/add-dir，本会话）：${extraRoots.join("、")}（默认 glob/grep、@ 补全、目录树、仓库地图覆盖；技能/命令/子代理/settings 不从这些根加载）\n` : ""}${formatModelLine(cfg)}
 ${envText ? `${envText}\n` : ""}${treeText}${repoMapText}
 `;
 }

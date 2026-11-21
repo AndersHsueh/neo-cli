@@ -253,7 +253,7 @@ export function createRepl(s: AppSession): ReplState {
   repl.pasteImageCounter = 0;
 
   // 文件索引：@ 补全的唯一来源。启动预热一次（2 万文件 ~75ms），按键路径只读缓存。
-  repl.fileIndex = new FileIndex({ cwd: cfg.cwd });
+  repl.fileIndex = new FileIndex({ cwd: cfg.cwd, extraRoots: cfg.additionalDirs ?? [] });
   // 不阻塞首帧：composer 先起来，索引在后台刷新（Tab 路径有 in-flight 去重）。
   repl.fileIndexPreheat = process.stdin.isTTY
     ? repl.fileIndex.refresh().catch(() => {

@@ -329,8 +329,29 @@ const TOOL_PATH_KEYS: Record<string, string[]> = {
   grep: ["path"],
 };
 
-/** 从一次工具调用里提取触达路径（已归一成 cwd 相对 POSIX；cwd 外丢弃）。 */
-export function extractTouchedPaths(toolName: string, argsJson: string, cwd: string): string[] {
+/**
+ * #63：触达路径归一。主根内 → 主根相对 POSIX（与旧口径一致）；落在某个额外工作根内 →
+ * 绝对路径（#54 helper 按最具体根归类）；都不在 → null。
+ */
+export function normalizeTouchedPath(cwd: string, p: string, extraRoots: readonly string[] = []): string | null {
+  const rel = normalizeRelPath(cwd, p);
+  if (rel !== null || extraRoots.length === 0) return rel;
+  const cleaned = p.trim().replace(/\\/g, "/");
+  const abs = isAbsolute(cleaned) ? resolve(cleaned) : resolve(cwd, cleaned);
+  for (const root of extraRoots) {
+    const r = relative(root, abs).replace(/\\/g, "/");
+    if (r === "" || !(r === ".." || r.startsWith("../") || isAbsolute(r))) return abs;
+  }
+  return null;
+}
+
+/** 从一次工具调用里提取触达路径（已归一成 cwd 相对 POSIX；#63 额外根内为绝对路径；都不在则丢弃）。 */
+export function extractTouchedPaths(
+  toolName: string,
+  argsJson: string,
+  cwd: string,
+  extraRoots: readonly string[] = [],
+): string[] {
   const keys = TOOL_PATH_KEYS[toolName];
   if (!keys) return [];
   let args: unknown;
@@ -345,7 +366,7 @@ export function extractTouchedPaths(toolName: string, argsJson: string, cwd: str
   for (const key of keys) {
     const value = rec[key];
     if (typeof value !== "string" || value.trim() === "") continue;
-    const rel = normalizeRelPath(cwd, value);
+    const rel = normalizeTouchedPath(cwd, value, extraRoots);
     if (rel !== null && rel !== "." && !out.includes(rel)) out.push(rel);
   }
   return out;

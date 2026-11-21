@@ -66,10 +66,14 @@ describe("--add-dir 用法错误：退出码 2，不启会话", () => {
     const r = runNeo(["-p", "q", "--output-format", "stream-json", "--add-dir", "nope"]);
     expect(r.code).toBe(2);
     const events = r.stdout.trim().split("\n").filter(Boolean).map((l) => JSON.parse(l) as Record<string, unknown>);
-    expect(events.some((e) => e["type"] === "error" && (e["error"] as Record<string, unknown>)?.["code"] === "usage_error" || e["code"] === "usage_error")).toBe(true);
-    const result = events.find((e) => e["type"] === "result") as Record<string, unknown> | undefined;
-    expect(result?.["status"]).toBe("usage_error");
-    expect(result?.["exit_code"]).toBe(2);
+    // #37 信封：事件字段在 data 里。
+    const dataOf = (e: Record<string, unknown> | undefined): Record<string, unknown> =>
+      (e?.["data"] as Record<string, unknown> | undefined) ?? {};
+    expect(events.some((e) => e["type"] === "error" && dataOf(e)["code"] === "usage_error")).toBe(true);
+    const result = events.find((e) => e["type"] === "result");
+    expect(dataOf(result)["status"]).toBe("usage_error");
+    expect(dataOf(result)["exit_code"]).toBe(2);
+    expect(String(dataOf(result)["error"])).toContain("--add-dir");
   });
 
   test("neo acp 带 --add-dir：报冲突退出 2", () => {

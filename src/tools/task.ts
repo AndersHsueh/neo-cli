@@ -391,6 +391,8 @@ export async function runSubagent(
     ...cfg,
     modelTier: decision.tier,
     maxToolIterations: Math.min(SUB_MAX_ITERATIONS, cfg.maxToolIterations),
+    // #63：额外根是派发时快照（父会话后续 /add-dir、/cd 不影响已在跑的子代理）。
+    additionalDirs: [...(cfg.additionalDirs ?? [])],
   };
   const applied = applyTier(subCfg, decision.tier);
   if (!applied.ok) {

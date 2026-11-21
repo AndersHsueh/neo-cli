@@ -549,6 +549,12 @@ export interface Config {
    * 只是运行时标记，不从 settings.json 读取，也不写回。
    */
   safeMode?: boolean;
+  /**
+   * #63：本会话额外工作根（realpath，按加入顺序）。只是运行时状态：来自 `--add-dir` /
+   * `/add-dir` / 会话元数据，不从 settings.json 读取，也不写回。整表替换、不原地改，
+   * 子代理派出时的浅拷贝因此天然是快照。
+   */
+  additionalDirs?: string[];
 }
 
 /** settings.json 顶层 `experimental` 段（issue #71）。 */

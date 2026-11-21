@@ -48,6 +48,8 @@ export interface SessionMeta {
    * 旧会话没有该字段 = 空清单。
    */
   backgroundTasks?: PersistedBackgroundJob[];
+  /** #63：本会话额外工作根（realpath）。主根相同的 --resume / -c / fork 才恢复。 */
+  additionalDirs?: string[];
 }
 
 export interface SessionFile {

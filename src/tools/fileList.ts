@@ -13,9 +13,10 @@
  *
  * 不依赖 ripgrep：本机未安装 rg，git 是更稳的最小公共底座。
  */
-import { existsSync, lstatSync, readFileSync, readdirSync, statSync, type Dirent } from "node:fs";
+import { existsSync, lstatSync, readFileSync, readdirSync, realpathSync, statSync, type Dirent } from "node:fs";
 import { join } from "node:path";
 import { isRealDir } from "../skills.ts";
+import { displayFromMain } from "../input/fileIndex.ts";
 
 export interface ListedFile {
   /** 相对搜索根的路径，统一用 "/" 分隔。 */
@@ -326,4 +327,50 @@ export async function listSearchFiles(
     return { files, backend: "git", truncated: fromGit.length >= maxFiles || files.length >= maxFiles };
   }
   return walkList(root, maxFiles);
+}
+
+/**
+ * #63：未给 path 时 glob / grep 的默认搜索面 —— 本会话全部工作根（主根在前，额外根按加入顺序）。
+ * 主根结果仍是主根相对路径；额外根结果与 `@` 同规则写成相对主根（`../shared/x.ts`），
+ * 写不成再用绝对路径。总上限共享，按 realpath 去重（祖先根不把主根文件扫两遍）。
+ */
+export async function listWorkRootFiles(
+  mainCwd: string,
+  extraRoots: readonly string[],
+  maxFiles: number = MAX_LIST_FILES,
+): Promise<ListResult> {
+  const first = await listSearchFiles(mainCwd, maxFiles);
+  if (extraRoots.length === 0) return first;
+  const realOf = (p: string): string => {
+    try {
+      return realpathSync(p);
+    } catch {
+      return p;
+    }
+  };
+  const mainReal = realOf(mainCwd);
+  const files = [...first.files];
+  const seen = new Set(files.map((f) => join(mainReal, f.rel)));
+  let truncated = first.truncated;
+  for (const root of extraRoots) {
+    const room = maxFiles - files.length;
+    if (room <= 0) {
+      truncated = true;
+      break;
+    }
+    const rootReal = realOf(root);
+    const listed = await listSearchFiles(root, Math.min(maxFiles, room + seen.size));
+    truncated ||= listed.truncated;
+    for (const f of listed.files) {
+      if (files.length >= maxFiles) {
+        truncated = true;
+        break;
+      }
+      const key = join(rootReal, f.rel);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      files.push({ rel: displayFromMain(mainReal, key), full: f.full });
+    }
+  }
+  return { files, backend: first.backend, truncated };
 }

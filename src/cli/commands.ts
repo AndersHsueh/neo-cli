@@ -21,11 +21,18 @@ export type { CommandContext } from "./commandContext.ts";
 import { handleSessionCommands } from "./commandSession.ts";
 import { handleSystemCommands } from "./commandSystem.ts";
 import { handleWorkspaceCommands } from "./commandWorkspace.ts";
+import { handleAddDirCommand } from "./additionalDirs.ts";
 
 export async function handleCommand(line: string, ctx: CommandContext): Promise<void> {
   const [cmdRaw, ...rest] = line.slice(1).split(/\s+/);
   const cmd = (cmdRaw ?? "").toLowerCase();
   const arg = rest.join(" ").trim();
+  switch (cmd) {
+    // issue #63：本会话额外工作根（实现在 additionalDirs.ts，命令组文件已接近行数上限）。
+    case "add-dir":
+      await handleAddDirCommand(line.slice(1 + (cmdRaw ?? "").length).trim(), ctx);
+      return;
+  }
   if (await handleSessionCommands(cmd, arg, rest, ctx)) return;
   if (await handleSystemCommands(cmd, arg, rest, ctx)) return;
   if (await handleWorkspaceCommands(cmd, arg, rest, ctx)) return;

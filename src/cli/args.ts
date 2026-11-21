@@ -45,6 +45,10 @@ export interface Args {
    * 环境变量 `NEO_SAFE_MODE` 在 bootstrap 里合并；解析层只记录旗标。
    */
   safeMode: boolean;
+  /** #63：`--add-dir <路径>` / `--add-dir=<路径>`，每次一个、可重复；原样记录，校验在 bootstrap。 */
+  addDirs: string[];
+  /** #63：`--add-dir` 的句法错误（缺值 / 空值 / 下一个参数以 - 开头）；首个错误。 */
+  addDirError: string | null;
   rest: string[];
 }
 
@@ -72,6 +76,8 @@ export function parseArgs(argv: string[]): Args {
     jsonSchema: null,
     badArgs: false,
     safeMode: false,
+    addDirs: [],
+    addDirError: null,
     rest: [],
   };
   for (let i = 0; i < argv.length; i++) {
@@ -90,6 +96,29 @@ export function parseArgs(argv: string[]): Args {
       } else {
         a.outputFormat = val;
       }
+      continue;
+    }
+    // #63：一次只吃一个路径（不吞后面的启动提示词）；缺值 / 空值 / 下一个以 - 开头都是用法错误。
+    if (v === "--add-dir" || v.startsWith("--add-dir=")) {
+      const eq = v.startsWith("--add-dir=");
+      const next = argv[i + 1];
+      let err: string | null = null;
+      if (eq) {
+        const val = v.slice("--add-dir=".length);
+        if (val.trim() === "") err = "--add-dir 需要一个目录路径（值为空）";
+        else a.addDirs.push(val);
+      } else if (next === undefined) {
+        err = "--add-dir 需要一个目录路径（缺值）";
+      } else if (next.trim() === "") {
+        i += 1;
+        err = "--add-dir 需要一个目录路径（值为空）";
+      } else if (next.startsWith("-")) {
+        err = `--add-dir 后面的 ${next} 以 - 开头，不当作路径（目录名真以 - 开头请写成 ./${next}）`;
+      } else {
+        i += 1;
+        a.addDirs.push(next);
+      }
+      if (err !== null && a.addDirError === null) a.addDirError = err;
       continue;
     }
     if (v.startsWith("--json-schema=")) {

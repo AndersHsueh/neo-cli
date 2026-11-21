@@ -9,8 +9,8 @@
  * 索引带 TTL 缓存（默认 5s）：Tab 连按不会反复扫盘；新建文件后 5s 内可见，
  * 也可以用 `invalidate()` 立即失效。
  */
-import { readdirSync, statSync } from "node:fs";
-import { join } from "node:path";
+import { readdirSync, realpathSync, statSync } from "node:fs";
+import { isAbsolute, join, relative, sep } from "node:path";
 
 export interface RunOutput {
   ok: boolean;
@@ -19,6 +19,11 @@ export interface RunOutput {
 
 export interface FileIndexOptions {
   cwd: string;
+  /**
+   * #63：额外工作根（按加入顺序）。主根文件仍是主根相对路径；额外根文件写成相对主根
+   * （`../shared/foo.ts`），写不成再用绝对路径。总上限共享，主根优先，按 realpath 去重。
+   */
+  extraRoots?: string[];
   /** 文件数上限（默认 20000，防超大仓库撑爆候选）。 */
   limit?: number;
   /** 缓存有效期（默认 5000ms）：只在过期后触发后台刷新，不阻塞按键。 */
@@ -155,6 +160,21 @@ export function walkFiles(root: string, limit: number): string[] {
   return out;
 }
 
+function realOr(p: string): string {
+  try {
+    return realpathSync(p);
+  } catch {
+    return p;
+  }
+}
+
+/** #63：额外根里的文件写成相对主根的 POSIX 路径；跨盘等写不成时用绝对路径。 */
+export function displayFromMain(mainCwd: string, abs: string): string {
+  const rel = relative(mainCwd, abs);
+  if (rel === "" || isAbsolute(rel)) return abs;
+  return rel.split(sep).join("/");
+}
+
 /** 文件索引：懒加载 + TTL 缓存。 */
 export class FileIndex {
   private files: string[] | null = null;
@@ -191,22 +211,55 @@ export class FileIndex {
     return this.inflight;
   }
 
-  private async doRefresh(): Promise<void> {
+  /** 单个根的清单（git 优先，失败回退遍历），相对该根。 */
+  private async listRoot(root: string, limit: number): Promise<string[]> {
     let files: string[] | null = null;
     if (this.opts.run) {
-      files = listFromGit(this.opts.cwd, this.limit, this.opts.run);
+      files = listFromGit(root, limit, this.opts.run);
     } else if (this.opts.runAsync) {
-      files = await listFromGitAsync(this.opts.cwd, this.limit, this.opts.runAsync);
+      files = await listFromGitAsync(root, limit, this.opts.runAsync);
     } else {
-      files = await listFromGitAsync(this.opts.cwd, this.limit);
+      files = await listFromGitAsync(root, limit);
     }
-    this.files = files ?? this.walk(this.opts.cwd, this.limit);
+    return files ?? this.walk(root, limit);
+  }
+
+  private async doRefresh(): Promise<void> {
+    const main = this.opts.cwd;
+    const out = await this.listRoot(main, this.limit);
+    const extras = this.opts.extraRoots ?? [];
+    if (extras.length > 0) {
+      const mainReal = realOr(main);
+      const seen = new Set(out.map((f) => join(mainReal, f)));
+      for (const root of extras) {
+        const room = this.limit - out.length;
+        if (room <= 0) break;
+        const rootReal = realOr(root);
+        // 多取一截：祖先根里与主根重叠的条目会被去重掉。
+        for (const f of await this.listRoot(root, Math.min(this.limit, room + seen.size))) {
+          if (out.length >= this.limit) break;
+          const abs = join(rootReal, f);
+          if (seen.has(abs)) continue;
+          seen.add(abs);
+          out.push(displayFromMain(mainReal, abs));
+        }
+      }
+    }
+    this.files = out;
     this.loadedAt = this.now();
   }
 
-  /** 换会话工作目录（issue #69 `/cd`）：改根并立刻失效缓存。 */
+  /** 换会话工作目录（issue #69 `/cd`）：改根并立刻失效缓存。#63：`/cd` 清空额外根。 */
   setCwd(cwd: string): void {
     this.opts.cwd = cwd;
+    this.opts.extraRoots = [];
+    this.invalidate();
+  }
+
+  /** #63：设置主根与额外根（`/add-dir`、换根失败回滚）并立刻失效缓存。 */
+  setRoots(cwd: string, extraRoots: readonly string[]): void {
+    this.opts.cwd = cwd;
+    this.opts.extraRoots = [...extraRoots];
     this.invalidate();
   }
 

@@ -13,8 +13,8 @@
  *  - **结果缓存**：同一进程同一 cwd 缓存 20 秒，且**目录 mtime / 文件数变化即失效**（#49）；
  *  - **失败静默**：读不到/解析失败就当没有地图（增强项，不得阻塞启动）。
  */
-import { readdirSync, readFileSync, statSync, type Dirent } from "node:fs";
-import { extname, join, posix, sep } from "node:path";
+import { readdirSync, readFileSync, realpathSync, statSync, type Dirent } from "node:fs";
+import { extname, isAbsolute, join, posix, relative, sep } from "node:path";
 
 import { DEFAULT_REPO_MAP, type Config, type RepoMapConfig } from "../config.ts";
 
@@ -399,10 +399,52 @@ function dirStamp(cwd: string): string {
   return parts.join("|");
 }
 
+function realOr(p: string): string {
+  try {
+    return realpathSync(p);
+  } catch {
+    return p;
+  }
+}
+
+/**
+ * #63：逐根收集并按引用度排序（引用图在各自根内建），主根优先；额外根条目的 rel 写成
+ * 相对主根（`../shared/x.ts`，写不成用绝对路径）以区分所属根；按 realpath 去重，
+ * 祖先根不会把主根文件再收一遍。只有主根时与旧实现完全一致。
+ */
+function collectRootSources(mainCwd: string, extras: readonly string[], maxFiles: number): SourceFile[] {
+  const out: SourceFile[] = [];
+  const mainReal = realOr(mainCwd);
+  const seen = new Set<string>();
+  for (const [idx, root] of [mainCwd, ...extras].entries()) {
+    const room = maxFiles - out.length;
+    if (room <= 0) break;
+    const rootReal = realOr(root);
+    const collected = collectSources(root, idx === 0 ? room : Math.min(maxFiles, room + seen.size));
+    const refs = buildRefGraph(
+      root,
+      collected.map((f) => f.rel),
+    );
+    for (const f of sortSourcesByRefs(collected, refs, (x) => x.rel)) {
+      if (out.length >= maxFiles) break;
+      const abs = join(rootReal, f.rel.split("/").join(sep));
+      if (seen.has(abs)) continue;
+      seen.add(abs);
+      if (idx === 0) {
+        out.push(f);
+        continue;
+      }
+      const rel = relative(mainReal, abs);
+      out.push({ ...f, rel: rel === "" || isAbsolute(rel) ? abs : rel.split(sep).join("/") });
+    }
+  }
+  return out;
+}
+
 /**
  * 生成仓库地图。关闭 / 空仓库 / 任何 IO 异常 → 空图（text=""），调用方直接跳过注入。
  */
-export function buildRepoMap(cfg: Pick<Config, "cwd" | "repoMap">): RepoMap {
+export function buildRepoMap(cfg: Pick<Config, "cwd" | "repoMap"> & { additionalDirs?: string[] }): RepoMap {
   const conf: RepoMapConfig = cfg.repoMap ?? DEFAULT_REPO_MAP;
   const empty = (enabled: boolean): RepoMap => ({
     text: "",
@@ -410,20 +452,17 @@ export function buildRepoMap(cfg: Pick<Config, "cwd" | "repoMap">): RepoMap {
   });
   if (!conf.enabled) return empty(false);
 
-  const key = `${cfg.cwd}\u0000${conf.budgetTokens}\u0000${conf.maxFiles}`;
+  // #63：主根在前、额外根按加入顺序在后；预算与 maxFiles 在所有工作根之间共享。
+  const extras = cfg.additionalDirs ?? [];
+  const roots = [cfg.cwd, ...extras];
+  const key = `${roots.join("\u0001")}\u0000${conf.budgetTokens}\u0000${conf.maxFiles}`;
   const now = Date.now();
   // 目录状态变了就失效，不必等满 20s（issue #49）。
-  const stamp = dirStamp(cfg.cwd);
+  const stamp = roots.map(dirStamp).join("\u0001");
   if (cache && cache.key === key && cache.stamp === stamp && now - cache.at < CACHE_TTL_MS) return cache.map;
 
   try {
-    const collected = collectSources(cfg.cwd, conf.maxFiles);
-    // issue #49：按「被多少个文件引用」排序，被引用多的先出现（预算不够时先保住入口文件）。
-    const refs = buildRefGraph(
-      cfg.cwd,
-      collected.map((f) => f.rel),
-    );
-    const sources = sortSourcesByRefs(collected, refs, (f) => f.rel);
+    const sources = collectRootSources(cfg.cwd, extras, conf.maxFiles);
     const lines: string[] = [];
     let chars = 0;
     let symbols = 0;
@@ -484,7 +523,7 @@ export function buildRepoMap(cfg: Pick<Config, "cwd" | "repoMap">): RepoMap {
 }
 
 /** `/context` 用的一行摘要（不触发重复扫描：命中缓存）。 */
-export function repoMapSummary(cfg: Pick<Config, "cwd" | "repoMap">): string {
+export function repoMapSummary(cfg: Pick<Config, "cwd" | "repoMap"> & { additionalDirs?: string[] }): string {
   const { stats } = buildRepoMap(cfg);
   if (!stats.enabled) return "已关闭";
   if (stats.chars === 0) return "未生成（没有可提取的源文件符号）";
