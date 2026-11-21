@@ -5,7 +5,7 @@
  * 取消文案（10、11、18）、空 Enter / Ctrl+X Ctrl+S（13、16）、不做 /steer --steer（17）、
  * /help 与文档（18、19）、-p / ACP 不接线（21），以及真实组合根回归。
  * 补签（/workspace/neo-cli-issue-66-signed-contract-amendment.md）：合成消息不可注入（1）、第一条阻断即止
- * 且同轮后续切点不再注入（2）、只在 stdin 为 TTY 时注入，管道 readline 每行各自成轮（4）、静默展开 + 写入后
+ * 且同轮后续切点不再注入（2）、只看 stdin 是否为 TTY（stdin 非 TTY / 管道每行各自成轮；stdin 是 TTY 而 stdout 非 TTY 走 readline 时仍注入）（4）、静默展开 + 写入后
  * 才执行可见副作用（5）。
  * 真实组合根与 readline 都在沙箱子进程里跑，不碰真实 ~/.neo。
  */

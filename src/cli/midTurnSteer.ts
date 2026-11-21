@@ -53,7 +53,7 @@ export function recallQueuedUser(queue: QueueItem[]): { text: string; attachment
 
 export interface SteerControllerDeps {
   queue: () => QueueItem[];
-  /** 补签 4：stdin 是否为 TTY（composer 或 readline 交互回退）。false 时不注入。 */
+  /** 补签 4：stdin 是否为 TTY（composer，或 stdout 非 TTY 时的 readline 交互回退）。false 时不注入。 */
   interactive: () => boolean;
   /** 与 drain 同规则静默展开（@ 引用 / 附件 / 图片）；可见副作用留在 `commit()`。 */
   prepare: (q: QueueItem) => Promise<PreparedLine>;
