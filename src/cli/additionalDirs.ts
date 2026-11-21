@@ -84,17 +84,18 @@ export function resolveAddDirPath(base: string, raw: string, opts: { home?: stri
  * cwd，不相对 `-C`。任一路径不满足即报错，不静默跳过其余路径。
  */
 export function startupAddDirCheck(
-  args: Pick<Args, "addDirs" | "addDirError" | "rest" | "print">,
+  args: Pick<Args, "addDirs" | "addDirError" | "rest">,
   env: { stdinIsTTY: boolean; processCwd: string; home?: string },
 ): { ok: true; dirs: string[] } | { ok: false; message: string } {
   if (args.addDirError !== null) return { ok: false, message: args.addDirError };
   if (args.addDirs.length === 0) return { ok: true, dirs: [] };
-  // 交互 TTY 下没被消费的位置参数今天会被静默丢掉（见 #63 预检），用了 --add-dir 时必须报错。
-  if (env.stdinIsTTY && args.print === null && args.rest.length > 0) {
+  // 交互 TTY 下没被消费的位置参数会被静默丢掉（见 #63 预检），用了 --add-dir 时必须报错；
+  // 带 -p 同样适用（合同「与 -p 同时有效（位置参数规则见上）」）。非 TTY 时位置参数仍当一次性提示词。
+  if (env.stdinIsTTY && args.rest.length > 0) {
     return {
       ok: false,
       message:
-        `--add-dir 每次只跟一个路径；交互模式下多余的位置参数不会被使用（收到：${args.rest.join(" ")}）。` +
+        `--add-dir 每次只跟一个路径；交互终端下多余的位置参数不会被使用（收到：${args.rest.join(" ")}）。` +
         `${ADD_DIR_HINT}，例如 neo --add-dir ../a --add-dir ../b`,
     };
   }
