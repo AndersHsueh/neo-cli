@@ -223,6 +223,11 @@ export class CaptureEngine {
 
   constructor(private readonly deps: CaptureDeps) {}
 
+  /** #65: only subsequent records use the fork audit identity. */
+  setSessionId(sessionId: string): void {
+    this.deps.sessionId = sessionId;
+  }
+
   /** 换会话工作目录（issue #69 `/cd`）：后续捕获写入新的项目 wiki 根。 */
   setCwd(cwd: string): void {
     this.deps.cwd = cwd;

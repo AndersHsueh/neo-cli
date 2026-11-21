@@ -1,4 +1,5 @@
 import { dispatchCommand } from "./commands.ts";
+import { forkBusyReason } from "./forkSession.ts";
 import { makePreviousCwdSlot } from "./cdWorkdir.ts";
 import { lspServers } from "../lsp/index.ts";
 import { persist, showStats } from "./sessions.ts";
@@ -113,7 +114,6 @@ export function createRepl(s: AppSession): ReplState {
     agent,
     restoredJobs,
     syncBackgroundJobs,
-    sessionTodos,
     mcpManager
   } = s;
   const previousCwd = makePreviousCwdSlot();
@@ -250,6 +250,14 @@ export function createRepl(s: AppSession): ReplState {
   repl.submitUserLine = function submitUserLine(raw: string, attachments: Attachment[]): void {
     const line = raw.trim();
     if (!line) return;
+    if (/^\/fork(?:\s|$)/i.test(line)) {
+      if (!/^\/fork\s*$/i.test(line)) { ui.warn("用法：/fork（不接受名字或 prompt）"); return; }
+      const busy = forkBusyReason({ turnActive: repl.turnActive || repl.externalShellActive,
+        wikiRunning: s.wikiMaintainer?.running, backgroundTasks: s.backgroundTasks?.list(),
+        shells: backgroundShells.list(), loopRunning: repl.loopScheduler.state !== null,
+        driveRunning: repl.drive.state?.status === "running" });
+      if (busy) { ui.warn(`无法分叉：${busy}`); return; }
+    }
     const bound = bindAttachments(line, attachments);
     repl.queue.push({ text: line, attachments: bound, origin: "user" });
     s.composerRef?.setQueueCount(repl.queue.length);
@@ -354,6 +362,10 @@ export function createRepl(s: AppSession): ReplState {
                 previousCwd,
                 fileIndex: repl.fileIndex,
                 turnActive: () => repl.turnActive,
+                loopRunning: () => repl.loopScheduler.state !== null,
+                driveRunning: () => repl.drive.state?.status === "running",
+                prepareFork: () => { syncBackgroundJobs(); sess.meta.rewind = rewindLog.serialize(); },
+                onFork: () => { s.forkRuntimeState(); repl.ctxCacheAt = 0; },
                 replaceRules: replaceProjectRules,
                 restartLsp: async (c) => {
                   await lspServers.configure(c);
@@ -377,7 +389,7 @@ export function createRepl(s: AppSession): ReplState {
                   s.composerRef?.setQueueCount(repl.queue.length);
                 },
                 memoryMode,
-                todos: () => sessionTodos,
+                todos: () => sess.meta.todos ?? [],
                 mcp: () => mcpManager.statuses(),
                 mcpPrompts: () => mcpManager.connectedPrompts(),
                 mcpGetPrompt: (server, name, args) => mcpManager.getPrompt(server, name, args),
@@ -438,7 +450,7 @@ export function createRepl(s: AppSession): ReplState {
                 tasks: {
                   list: () => {
                     const live = s.backgroundTasks?.list() ?? [];
-                    return live.length > 0 ? live : restoredJobs;
+                    return [...restoredJobs, ...live];
                   },
                   cancel: (target) => s.backgroundTasks?.cancel(target) ?? 0,
                   // issue #48：续聊 —— 读回该任务的子代理对话，追加用户消息后继续跑。

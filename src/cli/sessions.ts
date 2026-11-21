@@ -99,6 +99,8 @@ export function printSessions(ui: Console, opts: PrintSessionsOpts = {}): void {
   const available = all.filter((x) => x.id !== opts.currentId && !runningIds.has(x.id));
   const list = available.slice(0, 15);
   ui.blank();
+  const current = all.find(s => s.id === opts.currentId);
+  if (current?.forkedFrom) ui.line(c.dim(`  当前会话 ${current.id} 分叉自 ${current.forkedFrom}`));
   if (list.length === 0) {
     if (runningOther.length > 0) ui.info("没有可恢复的会话（运行中的会话不列出）。");
     else ui.info("还没有历史会话。");
@@ -108,7 +110,7 @@ export function printSessions(ui: Console, opts: PrintSessionsOpts = {}): void {
       const failed = s.lastTurn && s.lastTurn.outcome !== "ok" ? c.warn(" ⚠") : "";
       ui.line(
         `  ${c.accent(s.id)} ${c.dim(s.updatedAt.slice(0, 16).replace("T", " "))} ` +
-          `${c.muted(`${s.turns} 轮`)} ${c.dim(s.model)}${failed}`,
+          `${c.muted(`${s.turns} 轮`)} ${c.dim(s.model)}${failed}${s.forkedFrom ? c.dim(` 分叉自 ${s.forkedFrom}`) : ""}`,
       );
     }
     ui.line(c.dim("  用 /resume <id> 或 neo --resume <id> 恢复"));

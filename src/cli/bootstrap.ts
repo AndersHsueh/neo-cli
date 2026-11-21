@@ -22,6 +22,8 @@ import { setMaxTokensLimitLearnedHandler, type Message } from "../llm.ts";
 import { detectAndRecordModelWindow, formatCapabilityGapHint, resolveAndApplyModelWindow } from "../env/modelWindows.ts";
 import { currentProviderConfig, probeCapabilitiesOnFirstUse, undeclaredCapabilityFields } from "../env/modelCaps.ts";
 import { describeProbeOutcome, persistLearnedOutputLimit, probeOutputLimitForConfig, readOutputProbeMemo, shouldRunOutputProbe } from "../env/outputProbe.ts";
+import { forkSession } from "./forkSession.ts";
+import { applyOutputStyle } from "../outputStyle/apply.ts";
 import { adoptSession, createSession, listSessions, loadSession, type SessionMeta } from "../session.ts";
 import { Mailbox } from "../mailbox/store.ts";
 import { readProfile, releaseAlive, sessionLiveness, sweepSessions } from "../mailbox/identity.ts";
@@ -494,7 +496,7 @@ export async function bootstrap() {
 
     // B5：清理过期工具输出与已死 mailbox 会话目录（默认 7 天）。
     try {
-      const cleaned = cleanupRuntime(cfg.cwd, mailboxRoot());
+      const cleaned = args.fork ? { removedTmpFiles: 0, removedMailboxDirs: [], freedBytes: 0 } : cleanupRuntime(cfg.cwd, mailboxRoot());
       if (cleaned.removedTmpFiles + cleaned.removedMailboxDirs.length > 0) {
         ui.info(
           `已清理过期文件：tmp ${cleaned.removedTmpFiles} 个、mailbox ${cleaned.removedMailboxDirs.length} 个` +
@@ -561,7 +563,7 @@ export async function bootstrap() {
     const target = args.resume ?? "last";
     if (target === "last") {
       // 跳过运行中的会话：取最近一个「可恢复」的，而不是先取最近再报错。
-      const available = listSessions(50).find((x) => !isRunningSession(x.id));
+      const available = listSessions(50).find((x) => args.fork || !isRunningSession(x.id));
       if (!available) {
         console.error(c.err("✖ 没有可恢复的会话（运行中的会话不列出）。"));
         return 2;
@@ -579,7 +581,7 @@ export async function bootstrap() {
         console.error(c.err(`✖ 未找到会话 ${target}`));
         return 2;
       }
-      if (isRunningSession(full.meta.id)) {
+      if (!args.fork && isRunningSession(full.meta.id)) {
         console.error(
           c.err(`✖ 会话 ${full.meta.id} 正在另一个进程中运行，不能恢复。`) +
             c.dim("\n  请先退出那个进程；/peers 可查看存活会话（v0.3.x 才会提供 attach）。"),
@@ -591,9 +593,20 @@ export async function bootstrap() {
     }
   }
 
+  // #65 new-process fork never acquires, retires, or mutates the parent identity/file.
+  if (args.fork && meta && restored) {
+    const child = forkSession(meta, restored, cfg.model, cfg.cwd);
+    meta = child.meta;
+    restored = child.messages;
+  }
+  if (meta?.outputStyle !== undefined) {
+    const style = applyOutputStyle(cfg, meta.outputStyle);
+    if (!style.ok) ui.warn(style.error);
+  }
+
   // resume 命中时：读旧信箱 profile 的名字（真续接保证 id 一致；读不到则当无旧名）。
   let resumePreviousName: string | null = null;
-  if (meta) {
+  if (meta && !args.fork) {
     try {
       resumePreviousName = readProfile(resumeRoot, meta.id)?.name ?? null;
     } catch {
@@ -607,6 +620,7 @@ export async function bootstrap() {
   // 会话文件先建：记忆桥需要 sessionId 作为审计键，必须在 Agent 构造前就位。
   // --resume：沿用被恢复会话的 id/path（真续接），而不是新开一个 fork。
   const sess = meta ? adoptSession(meta, cfg.model) : createSession(cfg.model, cfg.cwd);
+  if (cfg.outputStyle !== undefined) sess.meta.outputStyle = cfg.outputStyle;
 
   // #37 stream-json：唯一 writer 只在 streamJsonMode 下创建，session_id 取 sess.meta.id。
   // （s.stdoutClosed / s.turnNo 的语义见 SharedMut。）
@@ -659,7 +673,7 @@ export async function bootstrap() {
 
   // ---- 跨会话信箱（PRD v1.2）----
   // -p / 非交互模式不启用（D7 裁决）：不建目录、不注册工具、不跑 tick / watchdog。
-  const mailboxEnabled = memoryMode === "interactive";
+  const mailboxEnabled = memoryMode === "interactive" || args.fork;
   let mailbox: Mailbox | null = null;
   if (mailboxEnabled) {
     try {
@@ -673,7 +687,7 @@ export async function bootstrap() {
         sessionId: sess.meta.id,
         cwd: cfg.cwd,
         mode: args.mode,
-        explicit: args.name,
+        explicit: args.fork ? null : args.name,
         previous: resumePreviousName,
         deadAfterMs: cfg.mailbox.deadAfterMs,
       });
@@ -682,7 +696,7 @@ export async function bootstrap() {
       if (opened.suffixFrom && s.sessionLabel) {
         ui.info(`代号 ${opened.suffixFrom} 已被占用，本会话使用 ${s.sessionLabel}`);
       }
-      sweepSessions(mailbox.root, { ttlMs: cfg.mailbox.sessionTtlMs });
+      if (!args.fork) sweepSessions(mailbox.root, { ttlMs: cfg.mailbox.sessionTtlMs });
     } catch (e) {
       // 默认名预留失败（计数器写不进去）= 没有拿到号，绝不能静默换个名字继续：
       // 那样下一个进程会发出同一个 Neo#N。必须致命退出。
@@ -712,7 +726,7 @@ export async function bootstrap() {
     let local: ChosenName | null = null;
     try {
       local = chooseSessionName({
-        explicit: args.name,
+        explicit: args.fork ? null : args.name,
         previous: resumePreviousName,
         root: mailboxRoot(),
       });

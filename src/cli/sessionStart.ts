@@ -409,16 +409,25 @@ export async function startSession(s: BootstrapSession) {
   // 写盘时机与 todos 一致：任务状态变化后立刻落盘（persist 内部已吞异常）。
   const persistBackgroundJobs = (): void => {
     if (!s.backgroundTasks) return;
-    sess.meta.backgroundTasks = serializeJobs(s.backgroundTasks.rawJobs());
+    sess.meta.backgroundTasks = [...frozenJobs, ...serializeJobs(s.backgroundTasks.rawJobs())];
     persist(agent.messages, sess.meta);
   };
   // 恢复（issue #45）：旧会话没有该字段 = 空清单；running 一律映射成 interrupted。
   const restoredJobs = restoreJobs(sess.meta.backgroundTasks);
+  s.backgroundTasks.reserveHistory(restoredJobs.map(j => j.id));
+  let frozenJobs = sess.meta.backgroundTasks ?? [];
+  const forkRuntimeState = (): void => {
+    s.backgroundTasks!.freeze();
+    frozenJobs = sess.meta.backgroundTasks ?? [];
+    restoredJobs.splice(0, restoredJobs.length, ...restoreJobs(frozenJobs));
+    sessionTodos = sess.meta.todos ?? [];
+    rewindLog.fork(sess.meta.rewind ?? []);
+  };
   // 任务结束（done / error / cancelled）时落盘。BackgroundTasks 没有完成回调，
   // 这里用主循环已有的 pollBackground 钩子顺带刷新：每次取结果前先同步快照。
   const syncBackgroundJobs = (): void => {
     if (!s.backgroundTasks) return;
-    const next = serializeJobs(s.backgroundTasks.rawJobs());
+    const next = [...frozenJobs, ...serializeJobs(s.backgroundTasks.rawJobs())];
     // 整表比对（上限 20 条 + 单条结果 2k 字符，成本可忽略）：只比「条数或末条」会漏掉
     // 非末条任务的完成状态（任务可以乱序完成），导致 resume 后看到过期的 running。
     if (JSON.stringify(next) === JSON.stringify(sess.meta.backgroundTasks ?? [])) return;
@@ -545,7 +554,7 @@ export async function startSession(s: BootstrapSession) {
 
   if (restored && restored.length > 0) {
     agent.messages = applyRestored(agent.messages[0], restored);
-    ui.info(`已恢复会话 ${meta?.id ?? ""}（${restored.length} 条消息）`);
+    if (!args.fork) ui.info(`已恢复会话 ${meta?.id ?? ""}（${restored.length} 条消息）`);
     // 用户裁决：恢复对话/名字/信箱，但不偷偷切换工作目录。
     if (meta?.cwd && meta.cwd !== cfg.cwd) {
       ui.info(`会话原目录 ${meta.cwd}，本次按 ${cfg.cwd} 运行`);
@@ -599,7 +608,8 @@ export async function startSession(s: BootstrapSession) {
   // 历史回放**不算**用户提交，所以这里只发 SessionStart，不发 UserPromptSubmit。
   // 失败只诊断：会话已经开始，把 SessionStart 的失败当阻断等于让用户开不了工。
   // 诊断走 stderr：-p 下 stdout 是结果通道，不能混进 hook 文本。
-  await agent.runSessionStart(restored !== null ? "resume" : "new");
+  await agent.runSessionStart(args.fork ? "fork" : restored !== null ? "resume" : "new");
+  if (args.fork) ui.success(`已分叉 → ${sess.meta.id}（源自 ${sess.meta.forkedFrom}）`);
 
 
 
@@ -665,6 +675,7 @@ export async function startSession(s: BootstrapSession) {
     persistBackgroundJobs,
     restoredJobs,
     syncBackgroundJobs,
+    forkRuntimeState,
     sessionTodos,
     mcpManager,
     memoryFile,

@@ -32,6 +32,11 @@ export interface CommandContext {
   memory: MemoryBridge;
   classifier: Classifier;
   meta: SessionMeta;
+  /** #65 composition-root bookkeeping, without replacing the Agent/approval state. */
+  prepareFork?: () => void;
+  onFork?: () => void;
+  loopRunning?: () => boolean;
+  driveRunning?: () => boolean;
   shutdown: () => void | Promise<void>;
   selectDeps: SelectDeps;
   mailbox: Mailbox | null;

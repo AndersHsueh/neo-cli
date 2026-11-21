@@ -66,6 +66,7 @@ ${c.bold("选项")}
       --plan            只读闸门：禁止一切写操作（≠ 交互规划工作流，后者在会话里用 /plan）
   -c, --continue        继续上一次会话
       --resume [id]     恢复会话（默认 last）
+      --fork            必须搭配 --resume 或 --continue；拷贝对话并切进新会话（-p 同样生效）
       --sessions        列出历史会话
       --no-reasoning    不显示思维链
       --name <n>        设置本会话名字（跨会话寻址用）
@@ -127,6 +128,10 @@ ${c.bold("交互命令")}
   /remember <文本> 显式记忆（--user 写用户级；-p 模式仅项目级）
   /save [path]     导出会话        /sessions    历史会话
   /resume [id]     恢复会话（无参进入选择；last = 最近一次）
+  /fork            拷贝当前对话并立刻切进新会话；无名字/prompt 参数；/sessions 标注分叉自旧 id
+                   官方 /branch 的交互，不是官方后台 /fork（#55 本轮不做）；不自动建 worktree
+                   /btw 是临时旁问；/rewind 回滚当前历史/代码；--resume 接回同一 id；/fork 留住原快照再另走一条
+                   当前 turn、/ps、/tasks、wiki worker、/loop、/drive 忙碌时先结束再分叉
   /last [n]        回看最近 n 次工具调用（默认 1；紧凑模式的信息找回入口）
   /undo [n]        撤销最近 n 次 write/edit（默认 1；仅工具写，不含 shell）
   /rewind [n|last] 按轮次回滚（默认 both = 代码+对话；可 code / conversation；--resume 后仍可用）

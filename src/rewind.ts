@@ -94,6 +94,12 @@ export class RewindLog {
     this.now = opts.now ?? (() => new Date());
   }
 
+  /** #65: keep conversation anchors but old code snapshots belong to the parent. */
+  fork(records: RewindTurn[]): void {
+    this.records = records.map(r => ({ ...r, checkpointSeqs: [] }));
+    this.pending = null;
+  }
+
   get turns(): readonly RewindTurn[] {
     return this.records;
   }

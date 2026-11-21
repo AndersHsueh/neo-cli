@@ -76,7 +76,7 @@ export class CheckpointStore implements CheckpointSink {
   private cwd: string;
   /** cwd 的真实路径（cwd 自身可能是软链，如 macOS 的 /var → /private/var）。 */
   private realCwd: string;
-  private readonly sessionId: string;
+  private sessionId: string;
   private readonly customDir: boolean;
   private readonly maxEntries: number;
   private nextSeq: number | null = null;
@@ -107,6 +107,13 @@ export class CheckpointStore implements CheckpointSink {
       this.realCwd = this.cwd;
     }
     if (!this.customDir) this.dir = join(cwd, ".neo", "backups", this.sessionId);
+    this.nextSeq = null;
+  }
+
+  /** #65: new backup namespace; never copy or reuse the parent's sequences. */
+  fork(sessionId: string): void {
+    this.sessionId = sessionId;
+    this.dir = join(this.cwd, ".neo", "backups", sessionId);
     this.nextSeq = null;
   }
 

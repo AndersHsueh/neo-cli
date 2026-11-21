@@ -1,10 +1,10 @@
 /** #65 signed /fork contract. All persistence is sandboxed. */
 import { afterEach, beforeEach, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parseArgs } from "../src/cli/args.ts";
-import { createSession, loadSession, saveSession, type SessionMeta } from "../src/session.ts";
+import { createSession, loadSession, saveSession } from "../src/session.ts";
 import { forkSession, forkBusyReason } from "../src/cli/forkSession.ts";
 import { dispatchCommand } from "../src/cli/commands.ts";
 import type { CommandContext } from "../src/cli/commandContext.ts";
@@ -46,15 +46,15 @@ function context() {
   settings();
   const cfg = loadConfig({}, { settingsDir: dir });
   const meta = createSession(cfg.model, dir).meta;
-  const { ui, lines } = captureConsole();
-  const agent = new Agent({ cfg, system: "system", io: { approve: async () => true } });
+  const { ui, out } = captureConsole();
+  const agent = new Agent({ cfg, systemPrompt: "system", mode: "ask", console: ui });
   agent.messages.push({ role: "user", content: "parent question" }, { role: "assistant", content: "parent answer" });
   const mailbox = new Mailbox({ sessionId: meta.id });
   openMailboxIdentity({ root: mailbox.root, sessionId: meta.id, cwd: dir, mode: "ask", explicit: "Parent" });
   const ctx = { agent, cfg, meta, ui, mailbox, checkpoints: new CheckpointStore({ cwd: dir, sessionId: meta.id }),
     memory: { flush: async () => {}, setSessionId: () => {} }, selectDeps: {}, shutdown: () => {},
   } as unknown as CommandContext;
-  return { ctx, lines };
+  return { ctx, out };
 }
 
 test("#65 --fork requires --resume or --continue, including -p", () => {
@@ -70,10 +70,10 @@ test("#65 --fork requires --resume or --continue, including -p", () => {
 
 test("#65 copy is detached, strips system, freezes jobs, re-persists images; no mailbox/backups", () => {
   const meta = createSession("model", dir).meta;
-  meta.todos = [{ content: "todo", status: "pending", activeForm: "doing" }];
+  meta.todos = [{ id: "t1", content: "todo", status: "pending" }];
   meta.rewind = [{ index: 0, prompt: "old", at: "now", messagesBefore: 1, checkpointSeqs: [3] }];
   meta.outputStyle = "Learning";
-  meta.backgroundTasks = [{ id: "bg-1", status: "running", kind: "task", prompt: "job", tier: "fast", startedAt: 1 }];
+  meta.backgroundTasks = [{ id: "bg-1", status: "running", prompt: "job", tier: "fast", startedAt: 1, finishedAt: null, result: null, error: null }];
   const messages = [{ role: "system" as const, content: "private system" }, { role: "user" as const,
     content: [{ type: "image_url" as const, image_url: { url: "data:image/png;base64,YQ==" } }] }];
   saveSession(messages, meta);
@@ -85,9 +85,9 @@ test("#65 copy is detached, strips system, freezes jobs, re-persists images; no 
   expect(fork.meta.todos).toEqual(meta.todos);
   expect(fork.meta.rewind![0]!.checkpointSeqs).toEqual([]);
   expect(fork.meta.backgroundTasks![0]!.status).toBe("interrupted");
-  expect(meta.backgroundTasks[0]!.status).toBe("running");
+  expect(meta.backgroundTasks![0]!.status).toBe("running");
   fork.meta.todos![0]!.content = "changed";
-  expect(meta.todos[0]!.content).toBe("todo");
+  expect(meta.todos![0]!.content).toBe("todo");
   const raw = readFileSync(fork.meta.path, "utf8");
   expect(raw).not.toContain("private system");
   expect(raw).toContain(`attachments/${fork.meta.id}/img-0.png`);
@@ -108,7 +108,7 @@ test("#65 finished background work is not busy", () => {
 });
 
 test("#65 /fork switches immediately, preserves parent name/mail, releases parent alive; one success line", async () => {
-  const { ctx, lines } = context();
+  const { ctx, out } = context();
   const old = ctx.meta.id;
   const profile = readFileSync(join(ctx.mailbox!.root, old, "profile.json"), "utf8");
   const calls: string[] = [];
@@ -131,8 +131,8 @@ test("#65 /fork switches immediately, preserves parent name/mail, releases paren
   expect(ctx.mailbox!.profile().name).toMatch(/^Neo#/);
   expect(calls).toContain("fork");
   expect(calls).not.toContain("Stop");
-  expect(lines.join("\n")).toContain(`已分叉 → ${ctx.meta.id}（源自 ${old}）`);
-  expect(lines.join("\n")).not.toContain("parent answer");
+  expect(out()).toContain(`已分叉 → ${ctx.meta.id}（源自 ${old}）`);
+  expect(out()).not.toContain("parent answer");
   const parent = readFileSync(loadSession(old)!.meta.path, "utf8");
   await dispatchCommand("/clear", ctx);
   expect(ctx.cfg.outputStyle).toBe("Learning");
@@ -141,15 +141,15 @@ test("#65 /fork switches immediately, preserves parent name/mail, releases paren
 });
 
 test("#65 rejects extra /fork arguments and /ps running, without changing identity", async () => {
-  const { ctx, lines } = context();
+  const { ctx, out } = context();
   const old = ctx.meta.id;
   await dispatchCommand("/fork name or prompt", ctx);
   expect(ctx.meta.id).toBe(old);
-  expect(lines.join("\n")).toContain("用法");
+  expect(out()).toContain("用法");
   ctx.shells = { list: () => [{ status: "running" }] as never, kill: () => 0 };
   await dispatchCommand("/fork", ctx);
   expect(ctx.meta.id).toBe(old);
-  expect(lines.join("\n")).toContain("/ps");
+  expect(out()).toContain("/ps");
   releaseAlive(ctx.mailbox!.root, old);
 });
 
@@ -157,9 +157,11 @@ test("#65 sessions lineage and fork hook source", () => {
   const meta = createSession("m", dir).meta;
   meta.forkedFrom = "parent-id";
   saveSession([], meta);
-  const { ui, lines } = captureConsole();
+  const { ui, out } = captureConsole();
   printSessions(ui);
-  expect(lines.join("\n")).toContain("分叉自 parent-id");
+  expect(out()).toContain("分叉自 parent-id");
+  printSessions(ui, { currentId: meta.id });
+  expect(out()).toContain(`当前会话 ${meta.id} 分叉自 parent-id`);
   expect(SESSION_START_SOURCES).toContain("fork");
 });
 
@@ -192,7 +194,7 @@ test("#65 --resume --fork -p succeeds with live parent, only child receives prom
     const path = settings(`http://127.0.0.1:${server.port}/v1`);
     const mark = join(dir, "hooks.jsonl");
     const hook = join(dir, "hook.sh");
-    writeFileSync(hook, `#!/bin/sh\ncat >> '${mark}'\nprintf '\n' >> '${mark}'\n`, { mode: 0o755 });
+    writeFileSync(hook, `#!/bin/sh\ncat >/dev/null\necho "$NEO_HOOK_EVENT:$NEO_HOOK_SOURCE" >> '${mark}'\n`, { mode: 0o755 });
     const s = JSON.parse(readFileSync(path, "utf8"));
     s.hooks = { enabled: true, SessionStart: [{ command: hook }], UserPromptSubmit: [{ command: hook }] };
     writeFileSync(path, JSON.stringify(s));
@@ -202,7 +204,7 @@ test("#65 --resume --fork -p succeeds with live parent, only child receives prom
     saveSession([{ role: "user", content: "old prompt" }, { role: "assistant", content: "old reply" }], meta);
     const parentBefore = readFileSync(meta.path, "utf8");
     openMailboxIdentity({ root: process.env.NEO_MAILBOX_DIR!, sessionId: meta.id, cwd: dir, mode: "ask", explicit: "Parent" });
-    const alivePath = join(process.env.NEO_MAILBOX_DIR!, meta.id, ".alive");
+    const alivePath = join(process.env.NEO_MAILBOX_DIR!, meta.id, ".alive", "owner.json");
     const aliveBefore = readFileSync(alivePath, "utf8");
     const profilePath = join(process.env.NEO_MAILBOX_DIR!, meta.id, "profile.json");
     const profileBefore = readFileSync(profilePath, "utf8");
@@ -221,8 +223,57 @@ test("#65 --resume --fork -p succeeds with live parent, only child receives prom
     expect(child.meta.forkedFrom).toBe(meta.id);
     expect(child.meta.outputStyle).toBe("Learning");
     expect(child.messages.map((m: { content: unknown }) => m.content)).toContain("new prompt");
-    const hooks = readFileSync(mark, "utf8").trim().split("\n").map(l => JSON.parse(l));
-    expect(hooks.map(h => [h.hook_event_name, h.source].filter(Boolean))).toEqual([["SessionStart", "fork"], ["UserPromptSubmit"]]);
+    const hooks = readFileSync(mark, "utf8").trim().split("\n");
+    expect(hooks).toEqual(["SessionStart:fork", "UserPromptSubmit:"]);
     expect(requests.at(-1)!.messages.map(m => m.content)).toContain("old prompt");
+    const childId = child.meta.id as string;
+    expect(sessionLiveness(process.env.NEO_MAILBOX_DIR!, childId)).not.toBe("running");
+    const resumed = Bun.spawn(["bun", join(import.meta.dir, "../src/index.ts"), "--resume", childId, "-p", "child followup", "--auto", "off"],
+      { cwd: dir, env: process.env, stdout: "pipe", stderr: "pipe" });
+    const resumedResult = await Promise.all([new Response(resumed.stdout).text(), new Response(resumed.stderr).text(), resumed.exited]);
+    expect(resumedResult[2]).toBe(0);
+    expect(loadSession(childId)!.meta.outputStyle).toBe("Learning");
+    expect(requests.at(-1)!.messages[0]!.content).toMatch(/Learning|学习/);
+    expect(readFileSync(meta.path, "utf8")).toBe(parentBefore);
+    const childBeforeParentResume = readFileSync(loadSession(childId)!.meta.path, "utf8");
+    releaseAlive(process.env.NEO_MAILBOX_DIR!, meta.id);
+    const parentResume = Bun.spawn(["bun", join(import.meta.dir, "../src/index.ts"), "--resume", meta.id, "-p", "parent followup", "--auto", "off"],
+      { cwd: dir, env: process.env, stdout: "pipe", stderr: "pipe" });
+    const parentResult = await Promise.all([new Response(parentResume.stdout).text(), new Response(parentResume.stderr).text(), parentResume.exited]);
+    expect(parentResult[2]).toBe(0);
+    expect(loadSession(meta.id)!.messages.map(m => m.content)).not.toContain("child followup");
+    expect(readFileSync(loadSession(childId)!.meta.path, "utf8")).toBe(childBeforeParentResume);
   } finally { server.stop(true); }
 }, 20000);
+
+
+test("#65 real REPL switches runtime todos/rewind/jobs/prompt identity; busy submit is never queued", async () => {
+  settings();
+  const before = readFileSync(join(dir, "settings.json"), "utf8");
+  const proc = Bun.spawn(["bun", join(import.meta.dir, "fixtures/session-fork-runtime.ts")], {
+    cwd: dir, env: process.env, stdin: "ignore", stdout: "pipe", stderr: "pipe",
+  });
+  const [out, err, code] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text(), proc.exited]);
+  expect({ code, err }).toEqual({ code: 0, err: "" });
+  expect(out).toContain("fork-runtime-ok");
+  expect(readFileSync(join(dir, "settings.json"), "utf8")).toBe(before);
+}, 20000);
+
+
+test("#65 restored rewind anchors retain their system-root offset", () => {
+  const parent = createSession("m", dir).meta;
+  parent.rewind = [{ index: 0, prompt: "first", at: "now", messagesBefore: 1, checkpointSeqs: [1] }];
+  const child = forkSession(parent, [{ role: "user", content: "first" }], "m", dir);
+  expect(child.meta.rewind![0]!.messagesBefore).toBe(1);
+});
+
+
+test("#65 mailbox-degraded sessions still receive a fresh default name", async () => {
+  const { ctx } = context();
+  releaseAlive(ctx.mailbox!.root, ctx.meta.id);
+  ctx.mailbox = null;
+  let name = "Parent";
+  ctx.onNameChange = value => { name = value; };
+  await dispatchCommand("/fork", ctx);
+  expect(name).toMatch(/^Neo#/);
+});

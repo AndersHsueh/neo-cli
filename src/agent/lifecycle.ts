@@ -73,7 +73,7 @@ function appendLifecycleContext(agent: Agent, text: string): Message | null {
 /**
  * SessionStart（#64）。
  *
- * 只认 new / resume / clear —— 没有 fork / ENV_FILE（与竞品的差异，见 README）。
+ * 只认 new / resume / clear / fork —— 没有 ENV_FILE（与竞品的差异，见 README）。
  * 非法来源直接抛错，**不静默当成 new**：宿主传错值时应该立刻发现，
  * 而不是让用户的 hook 在错误的语义下跑一遍。
  *

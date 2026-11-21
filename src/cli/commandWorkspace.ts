@@ -872,6 +872,8 @@ export async function handleWorkspaceCommands(cmd: string, arg: string, rest: st
         }
       }
       agent.messages = applyRestored(agent.messages[0], full.messages);
+      delete meta.forkedFrom;
+      delete meta.outputStyle;
       Object.assign(meta, full.meta, { model: cfg.model });
       // #64 SessionStart(resume)：历史恢复成功后触发一次。
       // 回放（下面的 replayTranscript）只是把旧对话画到屏幕上，**不算**用户提交，

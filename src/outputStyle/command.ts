@@ -76,6 +76,7 @@ export async function handleOutputStyleCommand(arg: string, ctx: CommandContext)
     ui.warn(result.error);
     return false;
   }
+  ctx.meta.outputStyle = cfg.outputStyle;
   confirmSwitch(result.style, ctx);
   return true;
 }

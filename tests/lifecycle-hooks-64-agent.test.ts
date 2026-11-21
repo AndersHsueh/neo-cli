@@ -256,10 +256,10 @@ test("#64 SessionStart failure is diagnostic only and never blocks the turn", as
   expect(seen.length).toBe(1);
 });
 
-test("#64 SessionStart has no fork or env-file source", async () => {
+test("#64/#65 SessionStart supports fork but not env-file", async () => {
   const { agent } = setup({ SessionStart: [hook("x")] }, [{ content: "reply" }]);
   // 只认 new / resume / clear；其它来源一律拒绝（不静默当成 new）。
-  await expect(agent.runSessionStart("fork" as unknown as "new")).rejects.toThrow();
+  await expect(agent.runSessionStart("fork")).resolves.toHaveProperty("blocked", false);
   await expect(agent.runSessionStart("env-file" as unknown as "new")).rejects.toThrow();
 });
 

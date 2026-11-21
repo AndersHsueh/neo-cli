@@ -19,6 +19,10 @@ export interface SessionMeta {
   model: string;
   cwd: string;
   turns: number;
+  /** #65: direct parent, not an alias for its file or identity. */
+  forkedFrom?: string;
+  /** Session-local style; never written to settings. */
+  outputStyle?: string;
   /**
    * 最后一轮的诊断摘要（v0.4.1 A1）。旧会话没有该字段 = 正常。
    * 仅用于 resume 告警与 /sessions 标记，不参与消息恢复。

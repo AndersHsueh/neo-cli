@@ -16,6 +16,8 @@ export interface Args {
   cwd: string | null;
   mode: PermissionMode;
   resume: string | null;
+  /** #65: fork restored history into a new session. */
+  fork: boolean;
   name: string | null;
   listSessions: boolean;
   noReasoning: boolean;
@@ -56,6 +58,7 @@ export function parseArgs(argv: string[]): Args {
     cwd: null,
     mode: "ask",
     resume: null,
+    fork: false,
     name: null,
     listSessions: false,
     noReasoning: false,
@@ -150,6 +153,9 @@ export function parseArgs(argv: string[]): Args {
         }
         break;
       }
+      case "--fork":
+        a.fork = true;
+        break;
       case "--name":
         a.name = argv[++i] ?? "";
         break;
@@ -192,6 +198,10 @@ export function parseArgs(argv: string[]): Args {
       default:
         a.rest.push(v);
     }
+  }
+  if (a.fork && a.resume === null && !a.continueLast) {
+    console.error("✖ --fork 必须搭配 --resume 或 --continue");
+    a.badArgs = true;
   }
   return a;
 }

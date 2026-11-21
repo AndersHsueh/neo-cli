@@ -73,6 +73,12 @@ export class MemoryBridge implements MemoryPort {
     });
   }
 
+  /** #65: subsequent captures use the new audit identity. Queued records retain theirs. */
+  setSessionId(sessionId: string): void {
+    this.opts.sessionId = sessionId;
+    this.engine.setSessionId(sessionId);
+  }
+
   /** 换会话工作目录（issue #69 `/cd`）：项目级记忆改挂到新根；用户级不变。 */
   setCwd(cwd: string): void {
     this.opts.cwd = cwd;

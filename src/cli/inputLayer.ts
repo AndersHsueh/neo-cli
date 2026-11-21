@@ -78,7 +78,6 @@ export async function runInteractive(s: AppSession): Promise<number> {
     closeMailbox,
     overBudget,
     agent,
-    sessionTodos,
     memoryFile
   } = s;
   // ---- 交互模式 ----
@@ -116,7 +115,7 @@ export async function runInteractive(s: AppSession): Promise<number> {
     }
     s.bootBlockPrinted = true;
     // v0.2.3 D4：--resume 之后屏幕不能是空的 —— 回放最近几轮，人和上下文对齐
-    if (restored && restored.length > 0) replayTranscript(ui, agent.messages);
+    if (!s.args.fork && restored && restored.length > 0) replayTranscript(ui, agent.messages);
   }
 
   const repl = createRepl(s);
@@ -148,7 +147,7 @@ export async function runInteractive(s: AppSession): Promise<number> {
         elapsedMs: repl.turnActive ? Math.max(0, Date.now() - repl.turnStartedAt) : repl.lastTurnMs,
         active: repl.turnActive,
         tokensTotal: agent.cumulative.prompt + agent.cumulative.completion,
-        todosSummary: todosSummary(sessionTodos),
+        todosSummary: todosSummary(sess.meta.todos ?? []),
       }),
       commands: COMMANDS,
       extraCommands: () => mcpPromptMenuEntries(s.mcpManager.connectedPrompts()),
@@ -610,8 +609,7 @@ export async function runInteractive(s: AppSession): Promise<number> {
       if (bound.length > 0) pendingAttachments = pendingAttachments.filter((a) => !bound.includes(a));
       repl.autoTurnChain = 0; // 人类输入重置自动 turn 链
       tabCycle = null;
-      repl.queue.push({ text: line, attachments: bound, origin: "user" });
-      repl.runDrainSafely();
+      repl.submitUserLine(line, bound);
     };
     rl.on("line", origLineHandler);
 

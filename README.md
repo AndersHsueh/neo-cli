@@ -182,7 +182,7 @@ Windows 启动用 `neo.cmd`（需要 Bun 在 PATH）；Linux/macOS 用 `neo.sh` 
 
 | 事件 | 时机与输出 |
 | --- | --- |
-| `SessionStart` | 仅 `new` / `resume` / `clear`；exit 0 上下文给主模型，失败诊断后继续 |
+| `SessionStart` | `new` / `resume` / `clear` / `fork`（#65 扩展）；exit 0 上下文给主模型，失败诊断后继续 |
 | `UserPromptSubmit` | 每条真实用户输入一次，先于历史写入与模型请求；exit 2 阻断，原因可见 |
 | `Stop` | 模型正常结束而非工具迭代；仅 exit 0 JSON `{"decision":"block","reason":"非空原因"}` 请求一次续跑 |
 | `PreCompact` | 手动/自动压缩之前；exit 2 保留原历史与快照，自动路径停止本轮且不重试 |
@@ -644,6 +644,7 @@ Anthropic 路径的差异处理：`system` 提到顶层字段，连续 `tool` �
 | `--plan` | 只读，禁止一切写操作 |
 | `-c, --continue` | 继续上一次会话 |
 | `--resume [id]` | 恢复指定会话，默认最近一次 |
+| `--fork` | 搭配 `--resume` 或 `--continue`，先分叉再运行（支持 `-p`）；单独使用报错 |
 | `--sessions` | 列出历史会话 |
 | `--no-reasoning` | 不显示思维链 |
 | `--name <n>` | 设置本会话名字（跨会话寻址用） |
@@ -727,6 +728,7 @@ Zed 的 External Agent（Custom Agent）配置，写进 Zed 的 `settings.json`�
 /rename <name> 设置本会话名字（跨会话寻址；撞名自动加后缀）
 /history   历史统计        /save      导出会话
 /sessions  历史会话        /resume    恢复会话（无参进入选择）
+/fork      拷贝对话并立刻切进新会话（不接受参数）
 /skills    技能列表与详情  /agents    自定义命名子代理列表与详情
 /ingest    编译 raw → wiki（首次全量；之后交互会话轮末自动增量）
 /wiki-lint wiki 体检        /memory    记忆子命令族
@@ -773,6 +775,27 @@ deepseek-flash · balanced · ask · ⎇ main · ctx ▓▓░░░ 42% · 0:42
   顶线恒为静态 `Agent: <代号>`（名字为 `neo` 时也是 `Agent: neo`，无动画），`/rename` 即时同步；
   撞名后缀（`-2`、`-3`）只用于 `--name` 与 `/rename`。
 - `--resume`（v0.3.1 起）真续接同一 session-id/文件/信箱身份；运行中的会话不列出、不允许恢复。
+
+### 会话分叉 `/fork`（#65）
+
+`/fork` 拷贝分叉点之前的非 system 对话，生成新 id，**在当前终端立即切进新会话**，不另开进程、不回放历史。
+成功一行：`已分叉 → <newId>（源自 <oldId>）`。这是官方 **`/branch` 的交互**，不是官方现在那种“拷到后台、人留原会话”的 `/fork`（那是 #55，不在本单）。无可选名字或自动开跑 prompt，多余参数报用法错误；本轮没有 `/branch` 别名。
+
+```bash
+neo --resume <oldId> --fork -p "沿另一条思路继续实现"
+neo --continue --fork
+```
+
+`--fork` 只能搭配 `--resume` / `--continue`，`-p` 下也是先分叉再执行本次提示。父会话即使在另一终端运行也可分叉：只锁新 id，不接管父锁/邮箱。
+同进程则释放父 `.alive`，给新 id 独立抢锁；父代号、邮箱目录留原处，子会话用新的默认名。`/sessions` 与 `--sessions` 以 `forkedFrom` 标注 `分叉自 <oldId>`，状态栏不另加字段。
+
+- 原会话以当时快照留在磁盘；旧 id `--resume` 只接回原会话，新 id 只接回 fork；之后两边历史互不串话。`/clear` 只清当前这条，不撤输出风格、不改父文件。
+- 拷贝 todos、rewind 对话轮次表与会话输出风格（`SessionMeta.outputStyle`，不写 settings）；图片按新 id 重新落盘。后台任务只拷冻结历史，`running` 收成 `interrupted`，不重启任务。
+- 不拷贝邮箱、代码备份目录；fork 的 `/rewind` 代码回滚只覆盖分叉后的改码。新会话仍可调工具改码；两条会话默认共用工作目录，代码隔离可显式复用 `--worktree`，不自动创建或强绑 worktree。
+- 当前轮次、`/ps` 后台 shell、`/tasks` 子代理、wiki worker、仍在调度的 `/loop` / `/drive` 都会拒绝分叉，需先结束或查看；不会排队等结束后自动分叉，也不会把旧后台输出接到新会话。
+- 同进程保留 `/mode` 与已批准项；新进程只使用启动 settings / CLI 权限，不继承上一进程的当场批准。两种入口均打 `SessionStart(source: "fork")`，历史不触发 `UserPromptSubmit`，不向父会话发 Stop，切换后刷新系统提示词。
+- `/btw` 是临时旁问；`/rewind` 回滚当前会话的对话/代码；`--resume` 续接同一会话；`/fork` 保留原快照并切进新历史。本轮不做后台 fork、ACP 分叉或 Codex 侧边标签页。
+
 - v0.3.2/0.3.3 hotfix：并发 `--resume` 抢锁失败不再覆盖存活会话 profile（`.alive/owner.json` + 先抢锁后写 profile）；resume 身份失败直接 exit 2；owner 新鲜保护启动窗口。
 - `Ctrl+O` 打开/关闭本会话 transcript 视图（只读浏览；视图内 `/` 或 Ctrl+F 搜索；Esc 关闭）。轮次 diff 与 `[` 回灌到输入框尚未提供，不替代 `/rewind`、`/export`、`/last`、Ctrl+R。
 

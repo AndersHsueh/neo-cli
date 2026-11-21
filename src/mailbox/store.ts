@@ -34,6 +34,7 @@ import {
   type WatchdogNotice,
 } from "./types.ts";
 import * as identity from "./identity.ts";
+import { openMailboxIdentity } from "../sessionName.ts";
 import * as st from "./state.ts";
 
 export interface MailboxOptions {
@@ -178,6 +179,24 @@ export class Mailbox {
     this.lastDelivered = null;
     this.lastSent.clear();
     return this.profile();
+  }
+
+  /** #65: leave the parent's name and mailbox in place; release before acquiring child. */
+  fork(newSessionId: string, cwd: string, mode: PeerProfile["mode"]): PeerProfile {
+    const old = this.sessionId;
+    identity.releaseAlive(this.root, old);
+    try {
+      const opened = openMailboxIdentity({ root: this.root, sessionId: newSessionId, cwd, mode,
+        deadAfterMs: this.cfg.deadAfterMs });
+      this.sessionId = newSessionId;
+      this.lastDelivered = null;
+      this.lastSent.clear();
+      return opened.identity.profile;
+    } catch (e) {
+      // New identity failed: restore only this process's original lock, not its profile/mail.
+      identity.acquireAlive(this.root, old);
+      throw e;
+    }
   }
 
   state(): SessionState | null {

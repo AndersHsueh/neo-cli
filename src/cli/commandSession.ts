@@ -34,6 +34,7 @@ import { c } from "../ui/theme.ts";
 import { SAFE_MODE_NOTICE } from "./safeMode.ts";
 import { helpText } from "./help.ts";
 
+import { handleFork } from "./forkSession.ts";
 import type { CommandContext } from "./commandContext.ts";
 import { handleOutputStyleCommand } from "../outputStyle/command.ts";
 
@@ -58,6 +59,10 @@ export async function handleSessionCommands(cmd: string, arg: string, rest: stri
 
     case "output-style":
       await handleOutputStyleCommand(arg, ctx);
+      return true;
+
+    case "fork":
+      await handleFork(arg, ctx);
       return true;
 
     case "clear":

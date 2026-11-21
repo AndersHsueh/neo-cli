@@ -125,7 +125,7 @@ export async function handleSystemCommands(cmd: string, arg: string, rest: strin
           "  plan 模式下 hook 一律不执行（只读承诺优先）；子代理的工具调用同样触发 Pre/PostToolUse，" +
             "TurnEnd 只在主代理回合结束触发。Notification 按 reason 过滤（permission_prompt / turn_end），" +
             "在弹审批框之前与轮末触发，恒不阻断。" +
-            "SessionStart 在会话开始（new / resume / clear）触发一次，失败只诊断；" +
+            "SessionStart 在会话开始（new / resume / clear / fork）触发一次，失败只诊断；" +
             "UserPromptSubmit 只对真实用户输入触发（-p 一次 / ACP 每次 prompt / 交互每条输入），exit 2 阻断该输入；" +
             "Stop 在模型正常终止后触发，只有 JSON decision:block + 非空 reason 才续跑，每条用户输入最多一次；" +
             "PreCompact 在任何破坏历史的动作之前触发（matcher 匹配 trigger=manual/auto），exit 2 拒绝本次压缩。" +

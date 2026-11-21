@@ -40,7 +40,7 @@ export interface PersistedBackgroundJob {
   id: string;
   prompt: string;
   startedAt: number;
-  status: BackgroundStatus;
+  status: PersistedBackgroundStatus;
   finishedAt: number | null;
   result: string | null;
   error: string | null;
@@ -148,6 +148,21 @@ export class BackgroundTasks {
   /** 原始任务记录（只读语义，供落盘序列化用；调用方不得持有）。 */
   rawJobs(): readonly BackgroundJob[] {
     return this.jobs;
+  }
+
+  /** #65: restored frozen IDs must not collide with subsequently launched tasks. */
+  reserveHistory(ids: string[]): void {
+    for (const id of ids) {
+      const match = /^bg-(\d+)$/.exec(id);
+      if (match) this.seq = Math.max(this.seq, Number(match[1]));
+    }
+  }
+
+  /** #65: detach finished runtime state without delivering its output in the child. */
+  freeze(): void {
+    if (this.runningCount > 0) throw new Error("后台任务仍在运行");
+    this.jobs.length = 0;
+    this.controllers.clear();
   }
 
   /**
@@ -302,7 +317,7 @@ export function serializeJobs(jobs: readonly BackgroundJob[]): PersistedBackgrou
   }));
 }
 
-const KNOWN_STATUS: ReadonlySet<string> = new Set(["running", "done", "error", "cancelled"]);
+const KNOWN_STATUS: ReadonlySet<string> = new Set(["running", "done", "error", "cancelled", "interrupted"]);
 
 /**
  * 落盘快照 → `/tasks` 只读视图。

@@ -20,7 +20,7 @@ export type HookEvent =
   | "PostToolUse"
   | "TurnEnd"
   | "Notification"
-  /** #64：会话开始（new / resume / clear）。宿主显式触发，历史回放不算。 */
+  /** #64：会话开始（new / resume / clear / fork）。宿主显式触发，历史回放不算。 */
   | "SessionStart"
   /** #64：真实用户输入提交（-p 一次输入 / ACP 每次 session/prompt / 交互每条输入）。 */
   | "UserPromptSubmit"
@@ -46,10 +46,10 @@ export const HOOK_EVENTS: readonly HookEvent[] = [
   "SubagentStop",
 ];
 
-/** #64：会话开始来源。只认这三种 —— 没有 fork / ENV_FILE。 */
-export type SessionStartSource = "new" | "resume" | "clear";
+/** #64：会话开始来源。只认这三种 —— 没有 ENV_FILE。 */
+export type SessionStartSource = "new" | "resume" | "clear" | "fork";
 
-export const SESSION_START_SOURCES: readonly SessionStartSource[] = ["new", "resume", "clear"];
+export const SESSION_START_SOURCES: readonly SessionStartSource[] = ["new", "resume", "clear", "fork"];
 
 /** #64：压缩来源（PreCompact 的 matcher 匹配对象）。 */
 export type CompactTrigger = "manual" | "auto";
@@ -367,7 +367,7 @@ export interface NotificationPayload extends HookPayloadBase {
 /**
  * #64 SessionStart 载荷。
  *
- * `source` 只认 new / resume / clear —— 没有 fork / ENV_FILE（与竞品差异，见 README）。
+ * `source` 只认 new / resume / clear / fork —— 没有 ENV_FILE（与竞品差异，见 README）。
  * 历史回放（`--resume` 读盘）不是「用户提交」，所以这里没有 prompt 字段。
  */
 export interface SessionStartPayload extends HookPayloadBase {

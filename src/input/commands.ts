@@ -60,6 +60,7 @@ export const COMMANDS: CommandEntry[] = [
   { name: "remember", description: "显式记忆" },
   { name: "history", description: "历史统计" },
   { name: "save", description: "导出会话" },
+  { name: "fork", description: "拷贝对话并切进新会话" },
   { name: "resume", description: "恢复会话" },
   { name: "last", description: "回看最近 n 次工具调用" },
   { name: "undo", description: "撤销最近 n 次 write/edit" },
