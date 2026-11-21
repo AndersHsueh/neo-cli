@@ -11,7 +11,7 @@
  * 运行：bun test tests/session-worktree-85-subagent.test.ts
  */
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -909,7 +909,9 @@ describe("#85 补丁：/tasks chat 续聊隔离树（Boris 第 4 点）", () => 
     expect(cap.out()).toContain(`该任务的 worktree bg-1（${worktreePath(repo, "bg-1")}）已不存在，续聊在当前目录进行`);
     const chatCfg = fake.seen[fake.seen.length - 2] ?? fake.seen[fake.seen.length - 1]!;
     expect(chatCfg.cwd).toBe(repo);
-    expect(existsSync(join(repo, ".neo", "worktrees"))).toBe(false);
+    // 不重建树：bg-1 仍不在，也没有因续聊新建的 bg-1-2。空的 .neo/worktrees 目录可以留下。
+    expect(existsSync(worktreePath(repo, "bg-1"))).toBe(false);
+    expect(existsSync(worktreePath(repo, "bg-1-2"))).toBe(false);
     expect(existsSync(join(repo, "from-chat.txt"))).toBe(true);
     expect(toolResults(chatMsgs)[0] ?? "").toContain(repo);
     expect(cfg.cwd).toBe(repo);

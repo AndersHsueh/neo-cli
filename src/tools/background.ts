@@ -48,7 +48,13 @@ export interface PersistedBackgroundJob {
   promptTier?: string;
   /** #36：命名子代理名；通用 task 不写。 */
   agent?: string;
+  /**
+   * #85：隔离子代理的托管树（名字与路径）。派出时记下；干净结束删树后仍保留，
+   * 供 /tasks chat 决定是挂回这棵树还是在当前目录续聊。
+   */
+  worktree?: { name: string; path: string };
 }
+
 
 export interface BackgroundJob {
   /** 稳定 id（bg-1、bg-2…，本进程内递增）。 */
@@ -71,7 +77,13 @@ export interface BackgroundJob {
   agent?: string;
   /** #85：task isolation（只可能是 "worktree"）；不写 = 不隔离。不落盘。 */
   isolation?: string;
+  /**
+   * #85：隔离子代理的托管树（名字与路径）。派出时记下；干净结束删树后仍保留，
+   * 供 /tasks chat 决定是挂回这棵树还是在当前目录续聊。
+   */
+  worktree?: { name: string; path: string };
 }
+
 
 /** `task` 工具发起后台任务时带过来的现场。 */
 export interface BackgroundLaunch {
@@ -84,6 +96,8 @@ export interface BackgroundLaunch {
   agent?: string;
   /** #85：task isolation（"worktree"）；任务还在跑时不能删那棵树。 */
   isolation?: string;
+  /** #85：隔离树的名字与路径（launch 时一般还没有，run 建树后写回 job）。 */
+  worktree?: { name: string; path: string };
   /**
    * 任务种类（issue #53）。缺省 "task"（用户可见的后台子代理）。
    * "wiki" = 轮末自动 wiki 维护：不占并发名额、不注入主会话、不落盘。
@@ -108,6 +122,8 @@ export interface BackgroundView {
   kind?: "task" | "wiki";
   /** #36：命名子代理名，/tasks 列表要带上。 */
   agent?: string;
+  /** #85：该任务隔离树的名字与路径（若有）。 */
+  worktree?: { name: string; path: string };
 }
 
 export interface BackgroundOptions {
@@ -197,6 +213,7 @@ export class BackgroundTasks {
       kind,
       ...(job.agent ? { agent: job.agent } : {}),
       ...(job.isolation ? { isolation: job.isolation } : {}),
+      ...(job.worktree ? { worktree: job.worktree } : {}),
     };
     this.jobs.push(record);
     this.controllers.set(record.id, ctrl);
@@ -233,6 +250,7 @@ export class BackgroundTasks {
         error: j.error,
         kind: j.kind,
         ...(j.agent ? { agent: j.agent } : {}),
+        ...(j.worktree ? { worktree: j.worktree } : {}),
       }));
   }
 
@@ -319,6 +337,7 @@ export function serializeJobs(jobs: readonly BackgroundJob[]): PersistedBackgrou
     ...(j.tier !== undefined ? { tier: j.tier } : {}),
     ...(j.promptTier !== undefined ? { promptTier: j.promptTier } : {}),
     ...(j.agent ? { agent: j.agent } : {}),
+    ...(j.worktree ? { worktree: { name: j.worktree.name, path: j.worktree.path } } : {}),
   }));
 }
 
@@ -349,6 +368,14 @@ export function restoreJobs(raw: unknown): BackgroundView[] {
         ? "interrupted"
         : (rawStatus as BackgroundStatus);
     const agent = typeof r["agent"] === "string" && r["agent"].trim() !== "" ? r["agent"] : undefined;
+    const rawWt = r["worktree"];
+    let worktree: { name: string; path: string } | undefined;
+    if (typeof rawWt === "object" && rawWt !== null) {
+      const w = rawWt as Record<string, unknown>;
+      if (typeof w["name"] === "string" && typeof w["path"] === "string" && w["name"] && w["path"]) {
+        worktree = { name: w["name"], path: w["path"] };
+      }
+    }
     out.push({
       id,
       status,
@@ -357,6 +384,7 @@ export function restoreJobs(raw: unknown): BackgroundView[] {
       result: typeof r["result"] === "string" ? r["result"] : null,
       error: typeof r["error"] === "string" ? r["error"] : null,
       ...(agent ? { agent } : {}),
+      ...(worktree ? { worktree } : {}),
     });
   }
   return out;

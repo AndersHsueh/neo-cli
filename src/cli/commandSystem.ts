@@ -661,6 +661,7 @@ export async function handleSystemCommands(cmd: string, arg: string, rest: strin
           ui.warn(r.error);
           return true;
         }
+        if (r.notice) ui.warn(r.notice);
         ui.blank();
         ui.line(r.reply);
         ui.blank();

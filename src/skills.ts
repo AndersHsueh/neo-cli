@@ -59,10 +59,18 @@ export function skillsStore(cfg: Config): string {
   return cfg.skillsStore || join(homedir(), ".neo", "skills");
 }
 
-/** 项目技能区路径。 */
+/** 项目技能区路径（列出 / 解析用）。隔离子代理走 discoveryCwd，仍按父主根发现，不从 worktree 根再发现一套。 */
 export function projectSkillsDir(cfg: Config): string {
   // #85：隔离子代理的 cwd 是自己的 worktree，技能仍按父会话主根发现。
   return join(cfg.discoveryCwd ?? cfg.cwd, "skills");
+}
+
+/**
+ * 全局技能软链的落地目录：始终是当前 cfg.cwd（隔离子代理是自己的 worktree）。
+ * 不得写到 discoveryCwd（父主根的 skills/）——那会改到父树、还可能把它弄脏。
+ */
+export function skillLinkDir(cfg: Config): string {
+  return join(cfg.cwd, "skills");
 }
 
 /**
@@ -367,14 +375,17 @@ export function resolveSkill(cfg: Config, name: string, opts?: { createLink?: bo
 
   const available = discoverSkills(cfg).map((s) => s.name);
 
-  // 1. 项目区命中（约束 4：优先且不碰全局库）
-  const localLink = join(projectSkillsDir(cfg), name);
-  if (pathExists(localLink)) {
-    const found = readOrMalformed(name, localLink, "project", available);
+  // 1. 项目区命中（约束 4：优先且不碰全局库）。隔离子代理先看父主根的 skills/，再看自己 cwd 里已有的链。
+  const discovered = join(projectSkillsDir(cfg), name);
+  const linkDir = skillLinkDir(cfg);
+  const localLink = join(linkDir, name);
+  if (pathExists(discovered) || pathExists(localLink)) {
+    const hit = pathExists(discovered) ? discovered : localLink;
+    const found = readOrMalformed(name, hit, "project", available);
     if ("ok" in found) return found;
     // 项目区里的软链是全局技能的懒加载产物，不是项目私有技能。
     // 必须报 global，否则同一技能两次加载的「来源」行会不一致（global→project 跳变）。
-    if (isSymlink(localLink) && isUnder(found.absPath, safeReal(skillsStore(cfg)) ?? "")) {
+    if (isSymlink(hit) && isUnder(found.absPath, safeReal(skillsStore(cfg)) ?? "")) {
       return { ok: true, meta: { ...found, source: "global", linked: true }, createdLink: false };
     }
     return { ok: true, meta: found, createdLink: false };
@@ -415,7 +426,7 @@ export function resolveSkill(cfg: Config, name: string, opts?: { createLink?: bo
 
   let createdLink = false;
   try {
-    mkdirSync(projectSkillsDir(cfg), { recursive: true });
+    mkdirSync(linkDir, { recursive: true });
     if (!pathExists(localLink)) {
       symlinkSync(globalDir, localLink, "dir");
       createdLink = true;

@@ -12,7 +12,8 @@
  *  - 运行中登记在本进程表里：`/worktree remove` 拒绝删它（--force 同样不放行）。
  */
 import { copyWorktreeInclude } from "./worktreeInclude.ts";
-import { canonicalize, createFreshWorktree, detectRepo, isDirty, removeWorktree } from "./worktree.ts";
+import { existsSync, statSync } from "node:fs";
+import { canonicalize, createFreshWorktree, detectRepo, isDirty, removeWorktree, worktreeBranch } from "./worktree.ts";
 
 export type SubagentIsolation = "worktree";
 
@@ -77,4 +78,44 @@ export function finishSubagentWorktree(wt: SubagentWorktree, completed: boolean)
     `— 隔离 worktree 已保留：${wt.name}（${wt.path}，分支 ${wt.branch}）` +
     `${completed ? "有未提交改动" : "子代理未正常结束"}；查看用 /worktree list，清理用 /worktree remove ${wt.name}`
   );
+}
+
+/** /tasks chat：该任务隔离树已不存在时的规定文案。 */
+export function missingIsolationWorktreeNotice(name: string, path: string): string {
+  return `该任务的 worktree ${name}（${path}）已不存在，续聊在当前目录进行`;
+}
+
+/**
+ * 续聊是否还能挂回该任务自己的树。
+ * 树还在：返回名字与路径（调用方把 cwd 指过去，不新建）。
+ * 树没了：返回规定警告，调用方在父会话当前目录跑。
+ */
+export function resumeIsolationWorktree(
+  recorded: { name: string; path: string },
+): { ok: true; name: string; path: string } | { ok: false; notice: string } {
+  try {
+    if (existsSync(recorded.path) && statSync(recorded.path).isDirectory()) {
+      return { ok: true, name: recorded.name, path: recorded.path };
+    }
+  } catch {
+    /* 不存在或不可访问 */
+  }
+  return { ok: false, notice: missingIsolationWorktreeNotice(recorded.name, recorded.path) };
+}
+
+/** 续聊挂回已有隔离树：登记为运行中（结束后按同样规则清理），不调用 createFreshWorktree。 */
+export function attachSubagentWorktree(recorded: { name: string; path: string }): SubagentWorktree | { ok: false; notice: string } {
+  const settled = resumeIsolationWorktree(recorded);
+  if (!settled.ok) return settled;
+  const repo = detectRepo(settled.path);
+  const mainRoot = repo.ok ? repo.mainRoot : settled.path;
+  running.add(canonicalize(settled.path));
+  return {
+    ok: true,
+    name: settled.name,
+    path: settled.path,
+    branch: worktreeBranch(settled.name),
+    mainRoot,
+    warnings: [],
+  };
 }

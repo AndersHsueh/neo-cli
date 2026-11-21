@@ -41,6 +41,7 @@ import {
   type NamedAgent,
 } from "../agents.ts";
 import {
+  attachSubagentWorktree,
   createSubagentWorktree,
   finishSubagentWorktree,
   isolationPrecheck,
@@ -274,9 +275,14 @@ export interface SubagentRunOptions {
   modelOverride?: string;
   /**
    * #85：`"worktree"` = 在新建的托管 worktree 里跑（只新建不复用、从主检出 HEAD 分出、额外根为空）。
-   * 未知值拒绝派出；内部派出不传 = 不隔离。续聊（/tasks chat）不重建隔离。
+   * 未知值拒绝派出；内部派出不传 = 不隔离。
+   * 续聊（/tasks chat）不新建树：若传入 isolationWorktree 且树还在，挂回那棵树。
    */
   isolation?: string;
+  /** #85：续聊时挂回该任务已有的隔离树（名字与路径）；不要为了续聊再建一棵。 */
+  isolationWorktree?: { name: string; path: string };
+  /** #85：新派出建树成功后回写到任务记录（干净结束删树后仍保留名字与路径）。 */
+  onIsolationWorktree?: (wt: { name: string; path: string }) => void;
 }
 
 /** 按父代理实例计数的前台 task_id（`sg-N`）。只在真正打出 Start 时递增。 */
@@ -400,10 +406,11 @@ export async function runSubagent(
   if (!named.ok) throw new ToolError(named.error);
   const effectiveOpts: SubagentRunOptions = { ...opts, ...named.opts };
   // #85：isolation 校验在一切副作用之前：未知值、不在 git 仓都拒绝派出，不降级。
+  // 续聊不走「只新建」：有记录且树还在则挂回，树没了就在父会话当前目录跑，绝不新建。
   const iso = normalizeIsolation(effectiveOpts.isolation);
   if (!iso.ok) throw new ToolError(iso.error);
-  const isolated = iso.value === "worktree" && !isResumeRun(resume);
-  if (isolated) {
+  const isolatedNew = iso.value === "worktree" && !isResumeRun(resume);
+  if (isolatedNew) {
     const pre = isolationPrecheck(cfg.cwd);
     if (pre) throw new ToolError(pre);
   }
@@ -466,7 +473,7 @@ export async function runSubagent(
     return finishSubagentWorktree(t, completed);
   };
   let isolationText = "";
-  if (isolated) {
+  if (isolatedNew) {
     if (!taskId) taskId = effectiveOpts.emitSubagentHooks !== false ? allocateForegroundTaskId(main) : `sg-tmp-${Math.random().toString(36).slice(2, 8)}`;
     const made = createSubagentWorktree(cfg.cwd, taskId.replace(/^sg-tmp-/, "sg-"));
     if (!made.ok) throw new ToolError(`isolation: worktree 建树失败，未派出：${made.error}`);
@@ -478,6 +485,20 @@ export async function runSubagent(
       `你在独立的托管 git worktree 里工作：${made.path}（名字 ${made.name}，分支 ${made.branch}，从主检出当前 HEAD 分出）。` +
       "相对路径的读写、glob/grep、shell 默认目录都在这份检出里；这是文件级隔离，不是沙箱。" +
       "结束时若树里有未提交改动，会保留给用户查看；干净则自动删除（分支保留）。";
+    try {
+      effectiveOpts.onIsolationWorktree?.({ name: made.name, path: made.path });
+    } catch {
+      /* 回写任务记录失败不阻断派出 */
+    }
+  } else if (isResumeRun(resume) && effectiveOpts.isolationWorktree) {
+    const attached = attachSubagentWorktree(effectiveOpts.isolationWorktree);
+    if (attached.ok) {
+      isoTree = attached;
+      subCfg.discoveryCwd = cfg.discoveryCwd ?? cfg.cwd;
+      subCfg.cwd = attached.path;
+      subCfg.additionalDirs = [];
+    }
+    // 树不在了：保持父会话当前 cwd，不新建树（警告由 /tasks chat 呼叫方打出）。
   }
 
   // 子代理实际可见的工具 schema 计入预算（排除表与 Agent.toolSpecsFor 一致）。

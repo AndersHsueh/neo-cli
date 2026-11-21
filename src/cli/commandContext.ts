@@ -101,7 +101,7 @@ export interface CommandContext {
      * 续聊（issue #48）：给指定任务追加一条用户消息并继续该子代理。
      * 不传 = 不支持续聊（`/tasks chat` 会明说）。
      */
-    chat?: (id: string, text: string) => Promise<{ ok: true; reply: string } | { ok: false; error: string }>;
+    chat?: (id: string, text: string) => Promise<{ ok: true; reply: string; notice?: string } | { ok: false; error: string }>;
   };
   /**
    * 定时 / 自节奏循环提示（issue #25）。仅交互会话注入；`-p` 下为 undefined，

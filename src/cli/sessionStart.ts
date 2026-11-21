@@ -401,7 +401,16 @@ export async function startSession(s: BootstrapSession) {
         // #86：后台任务沿用已有的 bg-N，Start/Stop 用同一个 id，不要在内部再发 sg-N。
         // #36：带上命名子代理名，Hook 与再次发现角色定义。
         // #85：后台任务同样可带 isolation: worktree（任务还在跑时不能删那棵树）。
-        { jobId: job.id, agentName: job.agent, isolation: job.isolation },
+        // 建树后把名字与路径写回任务并落盘，供 /tasks chat 挂回（干净删树后也留着记录）。
+        {
+          jobId: job.id,
+          agentName: job.agent,
+          isolation: job.isolation,
+          onIsolationWorktree: (wt) => {
+            job.worktree = wt;
+            persistBackgroundJobs();
+          },
+        },
         job.agent,
       ),
   });

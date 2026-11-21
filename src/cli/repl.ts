@@ -14,6 +14,7 @@ import { expandUserLine, prepareUserLine } from "./expandUserLine.ts";
 import { SteerController } from "./midTurnSteer.ts";
 import { chatStream, contentText } from "../llm.ts";
 import { runSubagent } from "../tools/task.ts";
+import { resumeIsolationWorktree } from "../subagentWorktree.ts";
 import { saveSubagentTranscript, loadSubagentTranscript } from "../tools/transcript.ts";
 import type { ToolCtx } from "../tools/types.ts";
 import { backgroundShells } from "../tools/backgroundShell.ts";
@@ -495,14 +496,25 @@ export function createRepl(s: AppSession): ReplState {
                       signal: ctrl.signal,
                     };
                     try {
-                      const agentName =
-                        (s.backgroundTasks?.rawJobs().find((j) => j.id === id)?.agent) ??
-                        restoredJobs.find((j) => j.id === id)?.agent;
+                      const liveJob = s.backgroundTasks?.rawJobs().find((j) => j.id === id);
+                      const agentName = liveJob?.agent ?? restoredJobs.find((j) => j.id === id)?.agent;
+                      // #85：续聊挂回该任务自己的隔离树；树没了则警告并在父会话当前目录跑，不新建。
+                      const recorded = liveJob?.worktree ?? restoredJobs.find((j) => j.id === id)?.worktree;
+                      let notice: string | undefined;
+                      let isolationOpts: { isolation?: string; isolationWorktree?: { name: string; path: string } } = {};
+                      if (recorded) {
+                        const settled = resumeIsolationWorktree(recorded);
+                        if (settled.ok) {
+                          isolationOpts = { isolation: "worktree", isolationWorktree: { name: settled.name, path: settled.path } };
+                        } else {
+                          notice = settled.notice;
+                        }
+                      }
                       const reply = await runSubagent(agent, text, undefined, ctx, undefined, {
                         messages,
                         onMessages: (msgs) => saveSubagentTranscript(sess.meta.id, id, msgs),
-                      }, { jobId: id, agentName }, agentName);
-                      return { ok: true as const, reply };
+                      }, { jobId: id, agentName, ...isolationOpts }, agentName);
+                      return { ok: true as const, reply, ...(notice ? { notice } : {}) };
                     } catch (e) {
                       return { ok: false as const, error: `续聊失败：${(e as Error).message}` };
                     }
