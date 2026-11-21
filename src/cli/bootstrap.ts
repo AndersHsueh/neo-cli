@@ -23,6 +23,8 @@ import { detectAndRecordModelWindow, formatCapabilityGapHint, resolveAndApplyMod
 import { currentProviderConfig, probeCapabilitiesOnFirstUse, undeclaredCapabilityFields } from "../env/modelCaps.ts";
 import { describeProbeOutcome, persistLearnedOutputLimit, probeOutputLimitForConfig, readOutputProbeMemo, shouldRunOutputProbe } from "../env/outputProbe.ts";
 import { forkSession } from "./forkSession.ts";
+import { settleResumeWorktree, startupWorktreeBinding } from "./sessionWorktree.ts";
+import { copyWorktreeInclude } from "../worktreeInclude.ts";
 import { applyOutputStyle } from "../outputStyle/apply.ts";
 import { adoptSession, createSession, listSessions, loadSession, type SessionMeta } from "../session.ts";
 import { Mailbox } from "../mailbox/store.ts";
@@ -197,9 +199,15 @@ export async function bootstrap() {
   // 必须在 loadConfig 之前把 cwd 换成 worktree 目录：配置、会话/记忆/信箱路径、
   // 检查点、工具沙箱全部以 cfg.cwd 为根，晚一步就会有一半逻辑指着主仓库。
   // 与 --resume 的兼容：会话仍按 id 恢复（会话文件在 ~/.neo 下，与 cwd 无关），
-  // 恢复后只提示「原目录 ≠ 本次目录」，不偷偷切回去（沿用既有裁决）。
-  let worktreeInfo: { name: string; path: string; branch: string; created: boolean; repoRoot: string } | null =
-    null;
+  // 恢复后只提示「原目录 ≠ 本次目录」，不偷偷切回去（沿用既有裁决；#85 续聊恢复隔离是窄例外，见下方）。
+  let worktreeInfo: {
+    name: string;
+    path: string;
+    branch: string;
+    created: boolean;
+    repoRoot: string;
+    includeWarnings: string[];
+  } | null = null;
   if (args.worktree !== null) {
     const name = args.worktree.trim();
     const probeFrom = args.cwd ? resolve(process.cwd(), args.cwd) : process.cwd();
@@ -213,12 +221,15 @@ export async function bootstrap() {
       console.error(c.err(`✖ ${ensured.message}`));
       return 2;
     }
+    // #85：新建的树按主检出的 .worktreeinclude 拷文件（在 loadConfig 之前，被忽略的本地 settings 也能就位）。
+    const included = ensured.created ? copyWorktreeInclude(repo.mainRoot, ensured.path) : { copied: [], warnings: [] };
     worktreeInfo = {
       name,
       path: ensured.path,
       branch: ensured.branch,
       created: ensured.created,
       repoRoot: ensured.repoRoot,
+      includeWarnings: included.warnings,
     };
     // 显式 -C 与 --worktree 同时给：worktree 是更具体的意图，以它为准并说明。
     if (args.cwd) {
@@ -549,9 +560,10 @@ export async function bootstrap() {
     ui.line(
       c.dim(
         `  隔离的是文件，不是权限：/mode 与审批照旧。退出后可用 /worktree list 查看、` +
-          `/worktree remove ${worktreeInfo.name} 清理。`,
+          `/worktree remove ${worktreeInfo.name} 清理；/worktree exit 回到主检出（对话保留）。`,
       ),
     );
+    for (const w of worktreeInfo.includeWarnings) ui.warn(w);
   }
 
   if (args.listSessions) {
@@ -601,6 +613,24 @@ export async function bootstrap() {
     }
   }
 
+  // #85：隔离绑定。显式 --worktree 以本次为准（origin = 该仓 mainRoot）；
+  // 否则续聊按「三条件」窄例外决定是否回到记录里那棵树（#69 文档已注明）。
+  const explicitWorktree = worktreeInfo
+    ? startupWorktreeBinding(worktreeInfo.name, worktreeInfo.path, worktreeInfo.repoRoot)
+    : null;
+  let settledWorktree = explicitWorktree ?? undefined;
+  if (meta && restored) {
+    const wt = settleResumeWorktree({
+      recorded: meta.worktree,
+      recordedCwd: meta.cwd,
+      startCwd: cfg.cwd,
+      explicit: explicitWorktree,
+    });
+    cfg.cwd = wt.cwd;
+    settledWorktree = wt.binding;
+    if (wt.notice) ui.info(wt.notice);
+  }
+
   // #63：恢复额外根要看「会话记录的主根」，fork 会把 meta.cwd 改成本次 cwd，先记下来。
   const recordedRoots = { cwd: meta?.cwd ?? null, dirs: meta?.additionalDirs };
   // #65 new-process fork never acquires, retires, or mutates the parent identity/file.
@@ -631,6 +661,8 @@ export async function bootstrap() {
   // --resume：沿用被恢复会话的 id/path（真续接），而不是新开一个 fork。
   const sess = meta ? adoptSession(meta, cfg.model) : createSession(cfg.model, cfg.cwd);
   if (cfg.outputStyle !== undefined) sess.meta.outputStyle = cfg.outputStyle;
+  if (settledWorktree) sess.meta.worktree = settledWorktree;
+  else delete sess.meta.worktree;
   {
     const settled = settleSessionAdditionalDirs({
       mainCwd: cfg.cwd,

@@ -132,6 +132,15 @@ export function createRepl(s: AppSession): ReplState {
     alwaysOnRules.splice(0, alwaysOnRules.length, ...always);
   };
   const repl = {} as ReplState;
+  // #85：模型工具 enter_worktree / exit_worktree 与斜杠共用 /cd - 槽、FileIndex、规则与 LSP 重启。
+  s.worktreeToolDeps = () => ({
+    previousCwd,
+    fileIndex: repl.fileIndex,
+    replaceRules: replaceProjectRules,
+    restartLsp: async (c) => {
+      await lspServers.configure(c);
+    },
+  });
   // ---- 共享：队列 / drain / 输入源抽象（TTY composer 与 readline 共用）----
   repl.composer = null;
   repl.titleAnimator = null;

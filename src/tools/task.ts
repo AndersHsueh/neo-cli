@@ -40,6 +40,13 @@ import {
   resolveTaskAgent,
   type NamedAgent,
 } from "../agents.ts";
+import {
+  createSubagentWorktree,
+  finishSubagentWorktree,
+  isolationPrecheck,
+  normalizeIsolation,
+  type SubagentWorktree,
+} from "../subagentWorktree.ts";
 
 /** 子代理迭代上限。子代理是单一任务，跑满主代理的 80 次迭代意味着早已跑偏。 */
 const SUB_MAX_ITERATIONS = 24;
@@ -84,7 +91,7 @@ function subagentVisibleSpecs(
  * 子代理的动态正文：报告格式、环境、任务。不含身份与安全核心——
  * 核心由 prompt/subagent.ts 按子代理实际窗口选档后拼在最前（默认 mini）。
  */
-function subDynamicBody(prompt: string, envText = ""): string {
+function subDynamicBody(prompt: string, envText = "", isolationText = ""): string {
   return [
     "你没有与用户的对话历史，任务描述包含你需要的全部信息。",
     "不要向用户提问；无法完成时，说明缺什么，然后结束。",
@@ -95,6 +102,7 @@ function subDynamicBody(prompt: string, envText = ""): string {
     "2. 关键发现/改动，附 文件:行号 引用",
     "3. 未解决或存疑的点",
     ...(envText ? ["", "## 环境", "", envText] : []),
+    ...(isolationText ? ["", "## 隔离检出", "", isolationText] : []),
     "",
     "## 任务",
     prompt,
@@ -264,6 +272,11 @@ export interface SubagentRunOptions {
   rolePrompt?: string;
   /** #36：当前 provider 已配置的模型 id，只写在子代理 cfg 拷贝上。 */
   modelOverride?: string;
+  /**
+   * #85：`"worktree"` = 在新建的托管 worktree 里跑（只新建不复用、从主检出 HEAD 分出、额外根为空）。
+   * 未知值拒绝派出；内部派出不传 = 不隔离。续聊（/tasks chat）不重建隔离。
+   */
+  isolation?: string;
 }
 
 /** 按父代理实例计数的前台 task_id（`sg-N`）。只在真正打出 Start 时递增。 */
@@ -316,14 +329,16 @@ async function emitSubagentHook(
 /** 把命名子代理定义收成 runSubagent 选项（工具白名单 / 角色正文 / 模型）。 */
 export function optionsFromNamedAgent(cfg: Config, agent: NamedAgent): {
   declaredTier?: string;
-  opts: Pick<SubagentRunOptions, "agentName" | "rolePrompt" | "toolAllowlist" | "modelOverride">;
+  opts: Pick<SubagentRunOptions, "agentName" | "rolePrompt" | "toolAllowlist" | "modelOverride" | "isolation">;
 } {
   const resolved = resolveAgentModel(agent.modelRaw, cfg);
-  const opts: Pick<SubagentRunOptions, "agentName" | "rolePrompt" | "toolAllowlist" | "modelOverride"> = {
+  const opts: Pick<SubagentRunOptions, "agentName" | "rolePrompt" | "toolAllowlist" | "modelOverride" | "isolation"> = {
     agentName: agent.name,
     rolePrompt: agent.body,
   };
   if (agent.tools) opts.toolAllowlist = agent.tools;
+  // #85：frontmatter isolation 原样带上，派出时统一校验（未知值拒绝）。
+  if (agent.isolation) opts.isolation = agent.isolation;
   if (resolved.kind === "model") opts.modelOverride = resolved.model;
   return {
     declaredTier: resolved.kind === "tier" ? resolved.tier : undefined,
@@ -384,6 +399,14 @@ export async function runSubagent(
   const named = resolveNamedRun(cfg, opts, agentName);
   if (!named.ok) throw new ToolError(named.error);
   const effectiveOpts: SubagentRunOptions = { ...opts, ...named.opts };
+  // #85：isolation 校验在一切副作用之前：未知值、不在 git 仓都拒绝派出，不降级。
+  const iso = normalizeIsolation(effectiveOpts.isolation);
+  if (!iso.ok) throw new ToolError(iso.error);
+  const isolated = iso.value === "worktree" && !isResumeRun(resume);
+  if (isolated) {
+    const pre = isolationPrecheck(cfg.cwd);
+    if (pre) throw new ToolError(pre);
+  }
   const decision = decideSubTier(trimmed, declaredTier ?? named.declaredTier, cfg);
 
   // 浅拷贝：applyTier 原地改写 cfg 顶层标量，共享引用会互相污染。
@@ -432,6 +455,31 @@ export async function runSubagent(
   const subMcpLoaded = new McpLoadState();
   for (const name of main.mcpLoadedNames()) subMcpLoaded.mark(name);
 
+  // #85：隔离子代理 —— 起点名 = 任务序号（sg-N / bg-N），只新建不复用；cwd 指向新树，额外根为空；
+  // 技能等按父会话主根发现（discoveryCwd）。sg-N 只在隔离派出时提前分配（建树要用它当名字）。
+  let taskId = effectiveOpts.jobId ?? "";
+  let isoTree: SubagentWorktree | null = null;
+  const finishIso = (completed: boolean): string | null => {
+    if (!isoTree) return null;
+    const t = isoTree;
+    isoTree = null;
+    return finishSubagentWorktree(t, completed);
+  };
+  let isolationText = "";
+  if (isolated) {
+    if (!taskId) taskId = effectiveOpts.emitSubagentHooks !== false ? allocateForegroundTaskId(main) : `sg-tmp-${Math.random().toString(36).slice(2, 8)}`;
+    const made = createSubagentWorktree(cfg.cwd, taskId.replace(/^sg-tmp-/, "sg-"));
+    if (!made.ok) throw new ToolError(`isolation: worktree 建树失败，未派出：${made.error}`);
+    isoTree = made;
+    subCfg.discoveryCwd = cfg.discoveryCwd ?? cfg.cwd;
+    subCfg.cwd = made.path;
+    subCfg.additionalDirs = [];
+    isolationText =
+      `你在独立的托管 git worktree 里工作：${made.path}（名字 ${made.name}，分支 ${made.branch}，从主检出当前 HEAD 分出）。` +
+      "相对路径的读写、glob/grep、shell 默认目录都在这份检出里；这是文件级隔离，不是沙箱。" +
+      "结束时若树里有未提交改动，会保留给用户查看；干净则自动删除（分支保留）。";
+  }
+
   // 子代理实际可见的工具 schema 计入预算（排除表与 Agent.toolSpecsFor 一致）。
   // issue #53：传了 toolAllowlist 时同样收窄 —— 预算必须按真实可见集算。
   // issue #68：MCP schema 同样按「已装入」收窄 —— 预算不能按全量目录算。
@@ -441,7 +489,7 @@ export async function runSubagent(
     window: subCfg.contextWindow,
     source: subCfg.contextWindowSource,
     tools: subTools,
-    dynamicBody: subDynamicBody(trimmed, subEnvText),
+    dynamicBody: subDynamicBody(trimmed, subEnvText, isolationText),
     rolePrompt: effectiveOpts.rolePrompt,
     request: promptTierReq,
     taskText: trimmed,
@@ -449,6 +497,7 @@ export async function runSubagent(
   });
   // 要求的档位在子模型窗口里放不下：不降低控制要求，也不硬跑，交回主代理收窄任务。
   if (!subPrompt.selection.fits && subPrompt.requiredTier !== "mini") {
+    finishIso(true);
     throw new ToolError(
       `子代理需要 ${subPrompt.requiredTier} 档提示词，但其模型窗口放不下（${subPrompt.selection.reason}）。` +
         `请收窄为只读/短任务，或指定窗口更大的 tier 后重试；不要用更短的提示词绕过控制要求。`,
@@ -462,7 +511,6 @@ export async function runSubagent(
   // 监视归属 id 必须在构造 Agent 之前就位（issue #87）。
   // hook 的 task_id 仍按原规则：续跑沿用 jobId，新派出才分配 sg-N。
   const resumedEarly = isResumeRun(resume);
-  let taskId = effectiveOpts.jobId ?? "";
   if (!taskId && !resumedEarly) {
     taskId = effectiveOpts.emitSubagentHooks !== false ? allocateForegroundTaskId(main) : `sg-tmp-${Math.random().toString(36).slice(2, 8)}`;
   }
@@ -540,16 +588,21 @@ export async function runSubagent(
       `— 子代理用量: prompt ${stats.promptTokens} / completion ${stats.completionTokens} tokens, ` +
       `${stats.iterations} 轮, 档位 ${subCfg.modelTier} → ${subCfg.model}（${decision.source}）`;
 
+    // #85：正常结束且干净 → 删树（分支保留）；否则保留并把名字与路径写进报告。
+    const isoNote = finishIso(stopReason === "completed");
+    const isoSuffix = isoNote ? `\n${isoNote}` : "";
     if (!report) {
-      return `子代理未产出任何报告（finishReason=${stats.finishReason ?? "unknown"}）。${usage}`;
+      return `子代理未产出任何报告（finishReason=${stats.finishReason ?? "unknown"}）。${usage}${isoSuffix}`;
     }
-    return `${report}\n\n${usage}`;
+    return `${report}\n\n${usage}${isoSuffix}`;
   } catch (e) {
     if (stopReason === "error" && (ctx.signal?.aborted === true)) {
       stopReason = "cancelled";
     }
     throw e;
   } finally {
+    // #85：异常/取消路径：保留树（不判干净），只解除运行登记。
+    finishIso(false);
     ctx.signal?.removeEventListener("abort", onAbort);
     if (taskId) {
       try {
@@ -600,13 +653,15 @@ export function makeTaskTool(deps: {
     ctx: ToolCtx,
     promptTier?: string,
     agentName?: string,
+    /** #85：task 参数 isolation（只可能是 "worktree"）。 */
+    isolation?: string,
   ) => Promise<string>;
   /**
    * 后台模式（issue #16）。不传 = 只有同步模式（子代理、测试的裸装配）。
    * 传了才允许 `background: true`：立刻返回任务 id，子代理在后台跑。
    */
   background?: {
-    launch: (job: { prompt: string; tier?: string; promptTier?: string; ctx: ToolCtx; agent?: string }) =>
+    launch: (job: { prompt: string; tier?: string; promptTier?: string; ctx: ToolCtx; agent?: string; isolation?: string }) =>
       | { ok: true; id: string }
       | { ok: false; error: string };
   };
@@ -653,6 +708,13 @@ export function makeTaskTool(deps: {
                 "子代理的系统提示词详细程度，默认 auto（精简版，省上下文）。写重要文件、高后果操作、长时间自治的任务用 standard；" +
                 "边界/授权特别复杂时用 full。这只是约束细化，不增加权限，也不等于用户批准。",
             },
+            isolation: {
+              type: "string",
+              enum: ["worktree"],
+              description:
+                "可选。worktree = 子代理在新建的托管 git worktree 里跑（从主检出当前 HEAD 分出，不带当前树的提交与改动；不继承额外工作根）。" +
+                "适合并行改文件、互不踩踏。结束时树干净就自动删除（分支保留），有改动则保留并在报告里给出路径。不在 git 仓库里会拒绝派出。",
+            },
           },
           required: ["prompt"],
         },
@@ -667,10 +729,21 @@ export function makeTaskTool(deps: {
       const resolved = resolveTaskAgent(ctx.cfg, agentName);
       if (!resolved.ok) throw new ToolError(resolved.error);
       const named = resolved.agent ? optionsFromNamedAgent(ctx.cfg, resolved.agent) : undefined;
+      // #85：isolation 只认 "worktree"；未知值、或要隔离却不在 git 仓里，都拒绝派出（不降级）。
+      const isoArg = normalizeIsolation(args["isolation"]);
+      if (!isoArg.ok) throw new ToolError(isoArg.error);
+      const isoNamed = normalizeIsolation(named?.opts.isolation);
+      if (!isoNamed.ok) throw new ToolError(isoNamed.error);
+      const isolation = isoArg.value;
+      if (isolation ?? isoNamed.value) {
+        const pre = isolationPrecheck(ctx.cfg.cwd);
+        if (pre) throw new ToolError(pre);
+      }
       const effectiveTier = tier ?? named?.declaredTier;
       const labelParts = [
         effectiveTier ? `tier=${effectiveTier}` : "tier=auto",
         ...(agentName ? [`agent=${agentName}`] : []),
+        ...((isolation ?? isoNamed.value) ? ["isolation=worktree"] : []),
       ];
       const label = labelParts.join("，");
       const ptRaw = args["prompt_tier"];
@@ -680,7 +753,14 @@ export function makeTaskTool(deps: {
           throw new ToolError("当前装配不支持后台子代理（background 未接线）");
         }
         if (!prompt.trim()) throw new ToolError("prompt 不能为空 —— 子代理没有主代理的上下文");
-        const launched = deps.background.launch({ prompt, tier: effectiveTier, promptTier, ctx, agent: agentName });
+        const launched = deps.background.launch({
+          prompt,
+          tier: effectiveTier,
+          promptTier,
+          ctx,
+          agent: agentName,
+          ...(isolation ? { isolation } : {}),
+        });
         if (!launched.ok) throw new ToolError(launched.error);
         return (
           `后台子代理已启动（id=${launched.id}，${label}）。` +
@@ -688,7 +768,7 @@ export function makeTaskTool(deps: {
         );
       }
       ctx.onProgress?.(`子代理运行中（${label}）…`);
-      return deps.run(prompt, effectiveTier, ctx, promptTier, agentName);
+      return deps.run(prompt, effectiveTier, ctx, promptTier, agentName, isolation);
     },
   };
 }

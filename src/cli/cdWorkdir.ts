@@ -22,6 +22,7 @@ import type { ProjectRule } from "../rules/index.ts";
 import { discoverProjectRules, formatAlwaysOnRules } from "../rules/index.ts";
 import { loadSessionInstructionMemory, pickInstructionFile } from "./nestedAgents.ts";
 import type { SessionMeta } from "../session.ts";
+import { completeWorktreeLine } from "./worktreeCompletion.ts";
 
 /** `~` 前缀（`~` 本身或 `~/...`；`~user` 不展开）。 */
 function expandHome(raw: string, home: string): string {
@@ -369,7 +370,8 @@ export function cwdLabel(cwd: string): string {
 export function completeCdLine(line: string, cursor: number, sessionCwd: string, limit?: number): CompleteResult | null {
   const head = line.slice(0, Math.max(0, Math.min(cursor, line.length)));
   const m = /^\/(cd|add-dir)(\s+)(.*)$/.exec(head);
-  if (!m) return null;
+  // #85：/worktree create|enter|remove 补托管名字（同一个行内补全入口）。
+  if (!m) return completeWorktreeLine(line, cursor, sessionCwd);
   let prefix = m[3] ?? "";
   let start = m[0].length - prefix.length;
   if (m[1] === "add-dir") {

@@ -6,6 +6,8 @@ import { chooseSessionName } from "../sessionName.ts";
 import { mailboxRoot } from "../mailbox/types.ts";
 import { cwdSwitchBusyReason } from "./cdWorkdir.ts";
 import { composeSessionProjectMemory, settleSessionAdditionalDirs } from "./additionalDirs.ts";
+import { canonicalize } from "../worktree.ts";
+import { forkWorktreeBinding } from "./sessionWorktree.ts";
 
 export function forkBusyReason(opts: {
   turnActive?: boolean;
@@ -30,9 +32,13 @@ export function forkSession(parent: SessionMeta, messages: Message[], model: str
   if (parent.outputStyle !== undefined) meta.outputStyle = parent.outputStyle;
   if (parent.todos) meta.todos = structuredClone(parent.todos);
   // #63：主根不变才拷贝额外根；主根变了按换主根口径不带过去（缺失路径由宿主按 resume 办法跳过）。
-  if (parent.additionalDirs && parent.additionalDirs.length > 0 && parent.cwd === cwd) {
+  // #85：主根比较先 canonicalize（软链写法的同一主根也算不变）。
+  if (parent.additionalDirs && parent.additionalDirs.length > 0 && canonicalize(parent.cwd) === canonicalize(cwd)) {
     meta.additionalDirs = [...parent.additionalDirs];
   }
+  // #85：父会话停在某托管树里 → 子会话共用这棵树并拷贝隔离绑定（#65 不新建树）。
+  const binding = forkWorktreeBinding(parent, cwd);
+  if (binding) meta.worktree = binding;
   if (parent.rewind) meta.rewind = structuredClone(parent.rewind).map(r => ({ ...r, checkpointSeqs: [],
     messagesBefore: messages[0]?.role === "system"
       ? 1 + messages.slice(0, r.messagesBefore).filter(m => m.role !== "system").length
@@ -99,5 +105,6 @@ export async function handleFork(arg: string, ctx: CommandContext): Promise<void
   ctx.promptManager?.invalidate();
   agent.refreshSystemPrompt();
   await agent.runSessionStart("fork");
-  ui.success(`已分叉 → ${meta.id}（源自 ${oldId}）`);
+  ui.success(`已分叉 → ${meta.id}（源自 ${oldId}）${meta.worktree ? `，与父会话共用 worktree ${meta.worktree.name}` : ""}`);
+  if (meta.worktree) ui.line(`  两个会话会在同一棵树里写（${meta.worktree.path}）；/fork 不新建 worktree。`);
 }

@@ -583,7 +583,7 @@ describe("task isolation=worktree 与命名子代理 isolation: worktree", () =>
         return "x";
       },
       background: {
-        launch: (job) => {
+        launch: (job: unknown) => {
           seen.push((job as { isolation?: string }).isolation);
           return { ok: true, id: "bg-1" };
         },

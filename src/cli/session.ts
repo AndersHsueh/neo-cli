@@ -5,6 +5,7 @@ import type { BackgroundTasks } from "../tools/background.ts";
 import type { DriveManager } from "../drive.ts";
 import type { LoopScheduler } from "../loop.ts";
 import type { WikiMaintainer } from "../memory/wikiMaintainer.ts";
+import type { CwdSwitchDeps } from "./cdWorkdir.ts";
 
 export type SharedMut = {
   composerRef: Composer | null;
@@ -36,4 +37,6 @@ export type SharedMut = {
   /** 轮末后台 wiki 维护（issue #53）：只有交互会话构造，-p / ACP 恒为 null。 */
   wikiMaintainer?: WikiMaintainer | null;
   cleanupEphemeralResources?: () => void;
+  /** #85：交互 REPL 给 enter_worktree / exit_worktree 补上与 /cd 相同的侧状态（/cd - 槽、FileIndex、规则、LSP）。 */
+  worktreeToolDeps?: () => Partial<CwdSwitchDeps>;
 };

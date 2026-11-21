@@ -69,6 +69,8 @@ export interface BackgroundJob {
   kind: "task" | "wiki";
   /** #36：命名子代理名；通用 task 不写。 */
   agent?: string;
+  /** #85：task isolation（只可能是 "worktree"）；不写 = 不隔离。不落盘。 */
+  isolation?: string;
 }
 
 /** `task` 工具发起后台任务时带过来的现场。 */
@@ -80,6 +82,8 @@ export interface BackgroundLaunch {
   ctx: ToolCtx;
   /** #36：命名子代理名。 */
   agent?: string;
+  /** #85：task isolation（"worktree"）；任务还在跑时不能删那棵树。 */
+  isolation?: string;
   /**
    * 任务种类（issue #53）。缺省 "task"（用户可见的后台子代理）。
    * "wiki" = 轮末自动 wiki 维护：不占并发名额、不注入主会话、不落盘。
@@ -192,6 +196,7 @@ export class BackgroundTasks {
       ctx: job.ctx,
       kind,
       ...(job.agent ? { agent: job.agent } : {}),
+      ...(job.isolation ? { isolation: job.isolation } : {}),
     };
     this.jobs.push(record);
     this.controllers.set(record.id, ctrl);

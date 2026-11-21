@@ -25,6 +25,7 @@ import {
 import { rulesReport } from "../rules/index.ts";
 import { nestedAgentsReport } from "./nestedAgents.ts";
 import { additionalRootsReport } from "./additionalDirs.ts";
+import { worktreeContextLines } from "./sessionWorktree.ts";
 import { toolNames } from "../tools/index.ts";
 import { repoMapSummary } from "../prompt/repoMap.ts";
 import { listModels } from "../llm.ts";
@@ -253,6 +254,8 @@ export async function handleSessionCommands(cmd: string, arg: string, rest: stri
           /* 诊断是增强项 */
         }
       }
+      // #85：隔离态列出当前托管 worktree 名与 isolation origin。
+      for (const line of worktreeContextLines(ctx.meta)) ui.line(c.dim(`  ${line}`));
       // issue #17：路径作用域规则 —— 每会话几条、本轮命中了哪几条、为什么。
       // 规则发现/匹配都可能抛错（cwd 权限、并发删除），失败就省略，不让 /context 崩。
       if (cfg.safeMode) {

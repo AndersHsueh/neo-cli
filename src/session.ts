@@ -50,6 +50,18 @@ export interface SessionMeta {
   backgroundTasks?: PersistedBackgroundJob[];
   /** #63：本会话额外工作根（realpath）。主根相同的 --resume / -c / fork 才恢复。 */
   additionalDirs?: string[];
+  /**
+   * #85：隔离绑定（会话中 /worktree create|enter、enter_worktree，或启动 --worktree）。
+   * 缺省 = 不在隔离态。路径都是写入前 canonicalize 过的绝对路径。
+   */
+  worktree?: WorktreeBinding;
+}
+
+/** #85：当前托管 worktree 名、其路径与 isolation origin（/worktree exit 退回的主根）。 */
+export interface WorktreeBinding {
+  name: string;
+  origin: string;
+  path: string;
 }
 
 export interface SessionFile {

@@ -137,6 +137,9 @@ export const TOOL_NAMES_EXCLUDED_FOR_SUBAGENT: readonly string[] = [
   // 规划态控制工具：子代理不在规划态，调用只会报错。
   "submit_plan",
   "exit_plan_mode",
+  // #85：进出托管 worktree 只给主会话；隔离子代理钉在自己的检出上直到结束。
+  "enter_worktree",
+  "exit_worktree",
 ];
 
 /**

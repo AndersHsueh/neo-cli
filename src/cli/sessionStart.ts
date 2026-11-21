@@ -19,6 +19,8 @@ import { chatStream } from "../llm.ts";
 import { registerTool } from "../tools/index.ts";
 import { McpManager } from "../mcp/index.ts";
 import { makeTaskTool, runSubagent } from "../tools/task.ts";
+import { makeWorktreeTools } from "./sessionWorktree.ts";
+import { makePreviousCwdSlot } from "./cdWorkdir.ts";
 import { discoverAgents } from "../agents.ts";
 import { BackgroundTasks, serializeJobs, restoreJobs } from "../tools/background.ts";
 import { saveSubagentTranscript } from "../tools/transcript.ts";
@@ -126,6 +128,7 @@ export async function startSession(s: BootstrapSession) {
     promptManager,
     projectRules,
     scopedRuleList,
+    alwaysOnRules,
     fallbackController,
   } = s;
   const agent = new Agent({
@@ -397,7 +400,8 @@ export async function startSession(s: BootstrapSession) {
         { onMessages: (msgs) => saveSubagentTranscript(sess.meta.id, job.id, msgs) },
         // #86：后台任务沿用已有的 bg-N，Start/Stop 用同一个 id，不要在内部再发 sg-N。
         // #36：带上命名子代理名，Hook 与再次发现角色定义。
-        { jobId: job.id, agentName: job.agent },
+        // #85：后台任务同样可带 isolation: worktree（任务还在跑时不能删那棵树）。
+        { jobId: job.id, agentName: job.agent, isolation: job.isolation },
         job.agent,
       ),
   });
@@ -439,8 +443,8 @@ export async function startSession(s: BootstrapSession) {
   // task 工具：派生子代理。必须在首次 send 前注册 —— toolSpecs() 每轮现取，注册后即刻生效。
   registerTool(
     makeTaskTool({
-      run: (prompt, tier, ctx, promptTier, agentName) =>
-        runSubagent(agent, prompt, tier, ctx, promptTier, undefined, { agentName }, agentName),
+      run: (prompt, tier, ctx, promptTier, agentName, isolation) =>
+        runSubagent(agent, prompt, tier, ctx, promptTier, undefined, { agentName, ...(isolation ? { isolation } : {}) }, agentName),
       background: {
         launch: (job) => {
           const r = s.backgroundTasks!.launch(job);
@@ -451,6 +455,34 @@ export async function startSession(s: BootstrapSession) {
       },
     }),
   );
+
+  // #85：enter_worktree / exit_worktree（交互与 -p 共用这份装配；ACP 不注册）。
+  // 与 /worktree 斜杠同一套实现；交互 REPL 用 s.worktreeToolDeps 补上 /cd - 槽、FileIndex 与 LSP 重启。
+  const fallbackPreviousCwd = makePreviousCwdSlot();
+  for (const tool of makeWorktreeTools({
+    deps: () => ({
+      cfg,
+      meta: sess.meta,
+      messages: agent.messages,
+      persist,
+      promptManager,
+      refreshSystemPrompt: () => agent.refreshSystemPrompt(),
+      previousCwd: fallbackPreviousCwd,
+      memory,
+      ...(mailbox ? { mailbox } : {}),
+      checkpoints,
+      replaceRules: (_cwd, rules) => {
+        projectRules.splice(0, projectRules.length, ...rules);
+        scopedRuleList.splice(0, scopedRuleList.length, ...rules.filter((r) => r.paths.length > 0));
+        alwaysOnRules.splice(0, alwaysOnRules.length, ...rules.filter((r) => r.paths.length === 0));
+      },
+      wikiRunning: s.wikiMaintainer?.running === true,
+      backgroundTasks: (s.backgroundTasks?.list() ?? []).map((t) => ({ status: t.status, ...(t.kind ? { kind: t.kind } : {}) })),
+      ...(s.worktreeToolDeps?.() ?? {}),
+    }),
+  })) {
+    registerTool(tool);
+  }
 
   // wiki 工具：检索 + 回填唯一路径（raw 不可改拦截在 write_file/edit_file 内）。
   registerWikiTools(registerTool);

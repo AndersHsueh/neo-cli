@@ -555,6 +555,11 @@ export interface Config {
    * 子代理派出时的浅拷贝因此天然是快照。
    */
   additionalDirs?: string[];
+  /**
+   * #85：隔离子代理专用的运行时字段 —— 技能等「按项目根发现」的目录仍按父会话主根解析
+   * （沿用父会话已加载的集合，不按 worktree 根再发现）。缺省 = 用 cwd。不从 settings 读。
+   */
+  discoveryCwd?: string;
 }
 
 /** settings.json 顶层 `experimental` 段（issue #71）。 */

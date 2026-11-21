@@ -118,10 +118,26 @@ ${c.bold("交互命令")}
                    这一步），与 /plan 不是一回事
   /review [基线]   对照 git 改动做只读审查：默认审未提交改动（HEAD + 未跟踪名单），
                    可写分支名/tag/commit 作基线（如 /review main）；默认不改文件
-  /worktree [子命令] 托管 git worktree（创建走命令行 --worktree <name>）
+  /worktree [子命令] 托管 git worktree：会话中进出隔离检出（对话保留），或启动时 --worktree <name>
+                   /worktree create <name> 创建或复用托管树，并把本会话主根切过去
+                   /worktree enter <name>  只进入已有的托管树（不存在则报错、不创建）
+                   /worktree exit          退回 isolation origin（进入前的主根；--worktree 启动则是主检出）；
+                                           永不删树、不删分支，删树用 remove
                    /worktree list          列出 neo 托管的 worktree（名/分支/脏/当前）
                    /worktree remove <name> 清理；有未提交改动或未跟踪文件时拒绝，
-                                           加 --force 需再确认一次；不能删当前所在
+                                           加 --force 需再确认一次；不能删当前所在、也不能删在跑的隔离子代理的树
+                   新建的托管树一律从主检出当前的 HEAD 分出：当前树里的提交和未提交改动都不带过去。
+                   进入 / 切换 / 退出都会换主根：按 /cd 口径清空本会话额外根（/cd - 与 /worktree exit 都不恢复）。
+                   模型用 enter_worktree / exit_worktree（同一批里作为屏障：前面的调用用旧根，后面的用新根；
+                   新建走写操作审批，plan 模式拒绝；进入已有树与 exit 不审批）。忙碌时斜杠排队到轮末。
+                   子代理：task 参数 isolation=worktree 或命名子代理 frontmatter isolation: worktree，
+                   在新建的托管树里跑（只新建不复用；不继承额外根；沿用父会话的指令与技能）；
+                   干净结束自动删树（分支保留），有改动则保留并在报告里写明路径。
+                   .worktreeinclude（主仓根）：新建托管树时拷「匹配且被 gitignore」的文件（如 .env）；
+                   复用不覆盖；--safe-mode 下照常拷。
+                   /cd 到某棵托管树只是普通换根，不算进入；/cd 到当前树外会清除隔离绑定。
+                   -c / --resume：记录在托管树里、树还在、启动目录属于同一个仓时，自动回到那棵树（续聊恢复隔离）；
+                   显式 --worktree 以本次为准。与 Claude Code 的差异见 README「托管 worktree」对照段。
                    只碰 .neo/worktrees/ 下由 neo 创建的，不动你自己的其它 worktree
   /cd [路径]       在本会话中切换工作目录（对话保留，不是开新会话）
                    /cd                  打印当前会话工作目录
@@ -153,6 +169,7 @@ ${c.bold("交互命令")}
   /resume [id]     恢复会话（无参进入选择；last = 最近一次）
   /fork            拷贝当前对话并立刻切进新会话；无名字/prompt 参数；/sessions 标注分叉自旧 id
                    官方 /branch 的交互，不是官方后台 /fork（#55 本轮不做）；不自动建 worktree
+                   在托管 worktree 里 /fork：新会话共用这棵树并带上隔离绑定 —— 两个会话会在同一棵树里写
                    /btw 是临时旁问；/rewind 回滚当前历史/代码；--resume 接回同一 id；/fork 留住原快照再另走一条
                    当前 turn、/ps、/tasks、wiki worker、/loop、/drive 忙碌时先结束再分叉
   /last [n]        回看最近 n 次工具调用（默认 1；紧凑模式的信息找回入口）

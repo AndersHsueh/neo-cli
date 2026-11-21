@@ -124,7 +124,8 @@ export function detectRepo(cwd: string, deps: WorktreeDeps = {}): RepoInfo | Rep
   const root = top.stdout.trim();
   const common = git(deps, ["rev-parse", "--git-common-dir"], cwd);
   const commonRaw = common.code === 0 ? common.stdout.trim() : "";
-  const commonDir = commonRaw === "" ? join(root, ".git") : resolve(root, commonRaw);
+  // #85：--git-common-dir 的相对路径是相对**调用时的 cwd**（子目录里是 ../.git），不是 toplevel。
+  const commonDir = commonRaw === "" ? join(root, ".git") : resolve(cwd, commonRaw);
   const base = commonDir.split(sep).pop() ?? "";
   const rawMainRoot = base === ".git" ? commonDir.slice(0, -(base.length + 1)) || sep : root;
   // issue #26：mainRoot 走 canonical 口径。git 报的是 realpath（macOS 上
@@ -241,6 +242,52 @@ export function ensureWorktree(
     };
   }
   return { ok: true, path, branch, created: true, repoRoot };
+}
+
+export interface FreshOk extends EnsureOk {
+  /** 实际用的名字（起点名或加了 -2、-3… 后缀）。 */
+  name: string;
+}
+
+/**
+ * #85：只新建、不复用（隔离子代理用）。
+ *
+ * 与 ensureWorktree 的区别：托管目录（登记与否）或分支 neo/<name> 只要有一个已存在，
+ * 就换下一个后缀（<base>-2、<base>-3…），直到两者都不存在，再 `worktree add -b`。
+ * 绝不挂到已有分支上 —— `sg-N` 每个进程从 1 重新数，复用会挂到上次留下的脏分支。
+ * 在 repoRoot（主检出）里执行，所以新分支从主检出当前的 HEAD 分出。
+ */
+export function createFreshWorktree(
+  repoRoot: string,
+  base: string,
+  deps: WorktreeDeps = {},
+): FreshOk | EnsureErr {
+  if (!isValidWorktreeName(base)) {
+    return { ok: false, message: `worktree 名字非法："${base}"` };
+  }
+  const registered = new Set(
+    (() => {
+      const r = git(deps, ["worktree", "list", "--porcelain"], repoRoot);
+      return r.code === 0 ? parseWorktreeList(r.stdout).map((w) => canonicalize(w.path)) : [];
+    })(),
+  );
+  for (let i = 1; i <= 1000; i++) {
+    const name = i === 1 ? base : `${base}-${i}`;
+    if (!isValidWorktreeName(name)) break;
+    const path = worktreePath(repoRoot, name);
+    const branch = worktreeBranch(name);
+    if (existsSync(path) || registered.has(canonicalize(path))) continue;
+    if (git(deps, ["rev-parse", "--verify", "--quiet", `refs/heads/${branch}`], repoRoot).code === 0) continue;
+    mkdirSync(worktreeRoot(repoRoot), { recursive: true });
+    const add = git(deps, ["worktree", "add", "-b", branch, path], repoRoot);
+    if (add.code !== 0) {
+      rollback(repoRoot, path, branch, { removeBranch: true, deps });
+      const detail = (add.stderr || add.stdout).trim().split("\n").slice(0, 3).join("\n  ");
+      return { ok: false, message: `创建 worktree 失败（git worktree add 退出码 ${add.code}）：\n  ${detail}` };
+    }
+    return { ok: true, name, path, branch, created: true, repoRoot };
+  }
+  return { ok: false, message: `找不到可用的 worktree 名字（起点 ${base}）` };
 }
 
 /** 失败回滚：尽力把本次可能留下的目录/登记/分支清掉。永不抛错。 */

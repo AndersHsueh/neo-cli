@@ -40,6 +40,8 @@ export interface NamedAgent {
   body: string;
   /** 有 description 才进入索引 / 自动披露。 */
   advertised: boolean;
+  /** #85：frontmatter `isolation` 原始值（已修整）；派出时校验，只认 "worktree"，未知值拒绝派出。 */
+  isolation?: string;
 }
 
 export interface AgentDiscovery {
@@ -336,6 +338,10 @@ function scanAgentsDir(
         warnings.push(`${absPath}: 未知 model/tier "${modelRaw}"，将回落 inherit`);
       }
     }
+    const isolation = (parsed.fields["isolation"] ?? "").trim() || undefined;
+    if (isolation && isolation !== "worktree") {
+      warnings.push(`${absPath}: 未知 isolation "${isolation}"（只支持 worktree），派出时会拒绝`);
+    }
     seen.add(name);
     out.push({
       name,
@@ -346,6 +352,7 @@ function scanAgentsDir(
       modelRaw,
       body: parsed.body,
       advertised: description.length > 0,
+      ...(isolation ? { isolation } : {}),
     });
   }
   return out;

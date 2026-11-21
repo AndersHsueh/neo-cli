@@ -37,7 +37,7 @@
 - 只加载新根上那一个 `AGENTS.md` / `NEO.md` / `.neo.md`（按此顺序取第一个存在的）。没有则清空项目记忆段，不能沿用旧文。不遍历上级，不按需加载子目录（那是 #54）。
 - scoped / always-on 规则只来自新根 `.neo/rules`。
 - 会话文件仍在全局 `~/.neo/sessions/`，不搬文件、不改 id，只更新 `meta.cwd`（立刻 persist）和信箱 profile cwd。
-- `--resume` / `-c` 仍按既有全局查找；启动 cwd ≠ 记录 cwd 时只提示，不偷偷切目录。验收口径是「更新 `meta.cwd` 后在新目录能按 id resume 到同一会话」，不是「旧目录的 `-c` 不再命中」。这和 Claude Code 按项目搬家 transcript 不是同一套模型。
+- `--resume` / `-c` 仍按既有全局查找；启动 cwd ≠ 记录 cwd 时只提示，不偷偷切目录。**窄例外（#85「续聊恢复隔离」）**：会话记录里有托管 worktree 隔离绑定、那棵树还在、且这次启动目录属于同一个仓（主检出或它的任一托管树）时，未再给 `--worktree` 的 `--resume` / `-c` 会自动回到记录里那棵树，并提示「已回到 worktree <name>（续聊恢复隔离）」；三条缺一条就按本条在启动目录运行并清除绑定。显式 `--worktree` 以本次为准，不走例外。验收口径是「更新 `meta.cwd` 后在新目录能按 id resume 到同一会话」，不是「旧目录的 `-c` 不再命中」。这和 Claude Code 按项目搬家 transcript 不是同一套模型。
 
 ## 重载与保持
 

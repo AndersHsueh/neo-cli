@@ -1052,9 +1052,9 @@ neo 支持多个**前台交互式**会话互相发纯文本消息，用于「一
 - **边界**：不做 supervisor / 后台会话 / attach / agent view / 跨机（v0.3）；投递 at-most-once，进程崩溃可能丢一条消息（接受）；多跳环由每会话自动 turn 上限 20 + 限流 + 去重兜底。
 - **规格**：`docs/cross-session-messaging-prd[done].md`。
 
-## 托管 worktree：整会话进隔离检出
+## 托管 worktree：隔离检出（启动时或会话中进入）
 
-`--worktree <name>` 把一个**完整会话**放进独立的 git 检出里跑，用于并行开发时互不踩工作区。
+`--worktree <name>` 把一个**完整会话**放进独立的 git 检出里跑，用于并行开发时互不踩工作区；会话跑到一半也可以 `/worktree create <name>` 进去，对话保留。
 
 ```bash
 neo --worktree feat-a        # 在 .neo/worktrees/feat-a 里开会话（分支 neo/feat-a）
@@ -1078,7 +1078,28 @@ neo -w fix-9 -p "跑一下测试"  # 与 -p / --resume / -C 等入口兼容
   neo --name worker-b --worktree feat-b
   ```
   在 `lead` 里 `send_message("worker-a", "改一下 X")`，两个 worker 各在自己的 worktree 里改文件，不会互相覆盖；`/peers` 看谁在忙、谁卡住了。收工后回主仓库 `/worktree list` 看哪份还脏，提交完再 `remove`。
-- **边界**：worktree 是**文件级隔离**，**不是**安全沙箱、不是权限边界 —— 权限仍由 `/mode` 与审批闸门负责。本片不含子代理自动 isolation、`.worktreeinclude`、allow/deny 设计。
+- **会话中进出（#85）**：
+  - `/worktree create <name>`：创建或复用托管树，把本会话主根切过去；`/worktree enter <name>` 只进已有项；`/worktree exit` 退回 isolation origin（第一次进入前的主根；`--worktree` 启动的会话退回主检出），**永不删树**、不删分支，删树走 `/worktree remove`。无子命令或未知子命令会提示 `可用：list | create <name> | enter <name> | exit | remove <name> [--force]`。
+  - 模型用 `enter_worktree`（必填 `name`）/ `exit_worktree`，与斜杠同语义；两者是同批屏障：同一批里排在前面的调用按旧根、后面的按新根。`enter_worktree` 实际新建时按写操作走 `/mode` 审批（plan 模式拒绝）；进入已有树、`exit_worktree` 与用户亲自打的斜杠不审批。`-p` 也注册这两个工具，ACP 不注册。
+  - 进入 / 切换 / 退出都是换主根：按 `/cd` 口径刷新索引、记忆、规则、系统提示，并清空本会话额外根（`/cd -` 与 `/worktree exit` 都不恢复）。当前主根已在目标树内（含子目录）时算 unchanged，什么都不动。
+  - **新的托管树一律从主检出当前 HEAD 分出**：在隔离态里再 create、派隔离子代理也一样，当前树的提交和未提交改动都不带过去。
+  - `/cd` 到某棵托管树只是普通换根，不算进入；隔离态下 `/cd` 到树内保持绑定，到树外清除绑定（不自动跳回 origin）。
+  - 续聊：`-c` / `--resume` 未再给 `--worktree` 时，若记录在托管树里、那棵树还在、启动目录属于同一个仓（主检出或它的任一托管树），自动回到那棵树并提示「已回到 worktree <name>（续聊恢复隔离）」；否则在启动目录继续并清除绑定。显式 `--worktree` 以本次为准。
+  - `/fork` 不新建树；在托管树里 fork，新会话共用这棵树并带上隔离绑定 —— **两个会话会在同一棵树里写**。
+- **子代理隔离**：`task` 参数 `isolation: "worktree"`，或命名子代理 frontmatter `isolation: worktree`。子代理在**新建**的托管树里跑（起点名 `sg-N` / `bg-N`；目录或分支任一已存在就加后缀，绝不复用上次留下的分支），额外根为空，指令、技能、命名子代理沿用父会话已加载的集合。正常结束且干净（被 gitignore 的文件不算脏）自动删树、保留分支；有改动则保留并在报告里写明名字与路径。未知 isolation 值或不在 git 仓里都拒绝派出，不降级；子代理在跑时不能 `/worktree remove` 它的树（`--force` 也不行）。
+- **`.worktreeinclude`**：只读主仓根上的这个文件（与 Claude Code 同名）。新建托管树时（`--worktree`、会话中 create、子代理隔离）把「匹配且被 gitignore」的文件（如 `.env`、本地 settings）从主检出拷过去；已跟踪文件不拷，复用已有树不覆盖，某个文件拷贝失败只警告。匹配用 git 自己的忽略判定，不承诺与 Claude Code 2.1.239 的 `**/` 整目录细则完全一致。`--safe-mode` 下照常拷贝（只是拷文件，不算加载自定义项）。
+- **与 Claude Code 的对照**（交互不冲突，但按官方习惯会踩空）：
+  - 用户用 `/worktree create|enter|exit`，模型用 `enter_worktree` / `exit_worktree`；官方没有 `/worktree` 斜杠，只有模型工具 `EnterWorktree` / `ExitWorktree`，且可对 `.claude/worktrees/` 以外的路径进入（先问一声）。neo 只进自己的托管树，不问信任框。官方 `--worktree` 可以不写名字、自动起名；neo 的 flag 和工具都要求必填 name。
+  - 官方 `ExitWorktree` 可以顺手删树（要询问，或传 `discard_changes`）；neo 的 exit 永不删树，删树走 `/worktree remove`。
+  - 官方在 worktree 里只能切到已有的树；neo 在隔离态也能 create，origin 不变。
+  - 新的托管树一律从主检出当前 HEAD 分出；官方默认从远端默认分支建树，另有 `baseRef`、lock、定期清扫。neo 不清扫；干净的子代理树删掉但保留分支，脏的留下并报告。
+  - neo 不拦截对主检出的写入；官方在隔离态会挡对主检出的编辑、命令工作目录和部分 git / 命令形态检查。权限仍走 `/mode` 与审批。
+  - 官方 `/cd` 保留额外目录；neo 换主根时清空，`/worktree exit` 和 `/cd -` 都不恢复。
+  - 官方 fork 从启动目录开始；neo 的 fork 若在隔离态则共用同一棵树（两个会话会在同一棵树里写）。
+  - 忙碌时斜杠入队到轮末；模型工具在本轮作为屏障生效。隔离子代理沿用父会话指令与技能，不从 worktree 根再发现配置。
+  - 有意不搬：信任询问、对主检出的写拦截和命令形态检查、`baseRef`、从 PR 建树、WorktreeCreate/Remove hook、定期清扫、进入任意路径的 worktree。
+  - `.worktreeinclude` 只读主仓根、只在新建时拷贝；匹配用 git 自己的忽略判定，不承诺与官方 `**/` 整目录忽略细则（2.1.239）完全一致。`--safe-mode` 下仍拷贝。
+- **边界**：worktree 是**文件级隔离**，**不是**安全沙箱、不是权限边界 —— 权限仍由 `/mode` 与审批闸门负责。不做对主检出的写拦截、命令级 allow/deny 或写路径沙箱。
 
 ## 设计要点
 

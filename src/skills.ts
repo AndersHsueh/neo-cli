@@ -61,7 +61,8 @@ export function skillsStore(cfg: Config): string {
 
 /** 项目技能区路径。 */
 export function projectSkillsDir(cfg: Config): string {
-  return join(cfg.cwd, "skills");
+  // #85：隔离子代理的 cwd 是自己的 worktree，技能仍按父会话主根发现。
+  return join(cfg.discoveryCwd ?? cfg.cwd, "skills");
 }
 
 /**
@@ -72,7 +73,7 @@ export function extraSkillsDirs(cfg: Config): string[] {
   return (cfg.skillsExtraPaths ?? [])
     .map((raw) => {
       const p = raw === "~" ? homedir() : raw.startsWith("~/") ? join(homedir(), raw.slice(2)) : raw;
-      return isAbsolute(p) ? p : resolve(cfg.cwd, p);
+      return isAbsolute(p) ? p : resolve(cfg.discoveryCwd ?? cfg.cwd, p);
     })
     .filter((p, i, arr) => arr.indexOf(p) === i);
 }
