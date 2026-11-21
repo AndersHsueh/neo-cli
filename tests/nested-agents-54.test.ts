@@ -2,7 +2,7 @@
  * issue #54：按子目录按需加载嵌套 AGENTS.md / CLAUDE.md。
  *
  * 纯函数 + 临时目录（含假 git 根与非 git 树），不触网、不碰真实 ~/.neo。
- * 与 #17（`.neo/rules` + `paths:` glob）、#63（额外工作根 / --add-dir）口径对齐但不实现后者。
+ * 与 #17（`.neo/rules` + `paths:` glob）、#63（额外工作根 / --add-dir，已接入同一 helper）口径对齐。
  */
 import { afterAll, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
@@ -281,7 +281,9 @@ describe("F 帮助与 README 口径：#54 / #63 / #17 分开", () => {
     expect(text).toContain("AGENTS.md");
     expect(text).toContain("CLAUDE.md");
     expect(text).toMatch(/按需|嵌套/);
-    expect(text).not.toMatch(/#63[^\n]*已实现/);
+    // #63 落地后改为现在时：不再写「尚未实现」，并说明额外根走同一套按需加载。
+    expect(text).not.toMatch(/尚未实现的 #63|#63[^\n]*本单未实现/);
+    expect(text).toContain("/add-dir");
   });
 
   test("README 说明 #54 按需加载，并与 #17 / #63 区分；不再写只加载新根那一个", () => {
@@ -294,6 +296,7 @@ describe("F 帮助与 README 口径：#54 / #63 / #17 分开", () => {
     expect(readme).toMatch(/按需加载|按子目录按需/);
     expect(readme).toContain(".neo/rules");
     expect(readme).toMatch(/add-dir/);
+    expect(readme).not.toMatch(/尚未实现的 issue #63|#63[^\n]*本版本尚未实现/);
   });
 });
 

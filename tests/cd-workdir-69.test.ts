@@ -278,6 +278,9 @@ describe("声明与帮助（issue #69）", () => {
     const text = helpText();
     expect(text).toContain("/cd");
     expect(text).toContain("-C");
+    // #63 落地：/cd 清空额外根写成现在时，不再是「未来口径」。
+    expect(text).not.toMatch(/未来 \/cd 成功后应清空/);
+    expect(text).toContain("/cd 成功换主根会清空本会话额外根");
   });
 });
 

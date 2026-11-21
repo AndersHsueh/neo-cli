@@ -33,7 +33,7 @@
  *
  * 退出码：全部 PASS → 0，否则 → 1。
  */
-import { closeSync, constants as fsConstants, existsSync, openSync, readdirSync, readFileSync, statSync, writeSync } from "node:fs";
+import { closeSync, constants as fsConstants, existsSync, openSync, readdirSync, readFileSync, realpathSync, statSync, writeSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -3568,7 +3568,160 @@ async function scenarioS41(tmpRoot: string): Promise<void> {
   }
 }
 
+/** #63 S42：交互 TTY 下 `--add-dir ./a ./b`（多余位置参数）→ 用法错误 2，提示每个目录各写一次。 */
+async function scenarioS42(tmpRoot: string): Promise<void> {
+  const dirs = await makeDirs(tmpRoot, "s42-add-dir-positional");
+  await mkdir(join(dirs.work, "a"), { recursive: true });
+  await mkdir(join(dirs.work, "b"), { recursive: true });
+  const fake = await startFake("narration");
+  const run = await startNeo({ fake, dirs, name: "s42", args: [...BASE_ARGS, "--add-dir", "./a", "./b"] });
+  try {
+    await waitFor(() => run.screen.text().includes("每个目录各写一次 --add-dir"), {
+      label: "交互 TTY 下多余位置参数报用法错误",
+      timeoutMs: 15_000,
+    });
+    const code = await run.waitExit();
+    check(code === 2, `位置参数用法错误退出码应为 2（实际 ${code}）`, run.screen);
+    check(!promptReady(run.screen), "用法错误不应进入交互提示符", run.screen);
+    check(readdirSync(dirs.sessions).length === 0, "用法错误不应创建会话", run.screen);
+    maybeDumpScreen(run.screen);
+  } catch (e) {
+    throw attachScreen(e, run.screen, run.stderr);
+  } finally {
+    await run.close();
+    await fake.stop();
+  }
+}
+
+/** #63 S43：/add-dir 加入 → 不带参数列出 → /cd 换主根清空额外根并列出被清掉的根。 */
+async function scenarioS43(tmpRoot: string): Promise<void> {
+  const dirs = await makeDirs(tmpRoot, "s43-add-dir-cd");
+  const shared = join(dirs.root, "shared");
+  await mkdir(join(shared, "inner"), { recursive: true });
+  await writeFile(join(shared, "shared-file.ts"), "export const SHARED_MARK = 1;\n", "utf8");
+  const fake = await startFake("narration");
+  const run = await startNeo({ fake, dirs, name: "s43", args: BASE_ARGS, cols: DEFAULT_COLS, rows: DEFAULT_ROWS });
+  try {
+    await waitPrompt(run);
+    await run.type("/add-dir ../shared ../nope");
+    await waitFor(() => run.screen.text().includes("已加入 1 个，失败 1 个；当前额外根："), {
+      label: "/add-dir 部分失败：每条失败一行 + 汇总",
+      run,
+      timeoutMs: 8000,
+    });
+    check(run.screen.text().includes("✖ ../nope：目录不存在"), "失败路径单独一行", run.screen);
+    await run.type("/add-dir");
+    await waitFor(() => run.screen.text().includes("主根"), { label: "/add-dir 无参列出主根与额外根", run, timeoutMs: 6000 });
+    await run.type("/cd ../shared/inner");
+    await waitFor(() => run.screen.text().includes("已清空本会话额外工作根 1 个"), {
+      label: "/cd 换主根清空额外根并列出",
+      run,
+      timeoutMs: 8000,
+    });
+    check(run.screen.text().includes("（/cd 换主根会清空额外根；/cd - 不恢复）"), "清空提示带口径说明", run.screen);
+    maybeDumpScreen(run.screen);
+    await run.type("/exit");
+    await run.waitExit();
+  } catch (e) {
+    throw attachScreen(e, run.screen, run.stderr);
+  } finally {
+    await run.close();
+    await fake.stop();
+  }
+}
+
+/** #63 S44：忙碌时 /add-dir 排队，不中轮注入；轮末作为独立命令执行。 */
+async function scenarioS44(tmpRoot: string): Promise<void> {
+  const dirs = await makeDirs(tmpRoot, "s44-add-dir-busy");
+  await mkdir(join(dirs.root, "shared"), { recursive: true });
+  const fake = await startFake("slow");
+  const run = await startNeo({ fake, dirs, name: "s44", args: BASE_ARGS, cols: DEFAULT_COLS, rows: DEFAULT_ROWS });
+  try {
+    await waitPrompt(run);
+    await run.type("第一问");
+    await waitFor(() => run.screen.text().includes("运行中"), { label: "首轮进行中", run, timeoutMs: 8000 });
+    await run.type("/add-dir ../shared");
+    await waitFor(() => (statusLineOf(run.screen) ?? "").includes("⇥ 1 排队"), {
+      label: "忙碌时 /add-dir 入队",
+      run,
+      timeoutMs: 6000,
+    });
+    check(!run.screen.text().includes("已加入 1 个"), "忙碌时 /add-dir 不应立刻生效", run.screen);
+    await waitFor(() => run.screen.text().includes("已加入 1 个，失败 0 个"), {
+      label: "轮末作为独立命令执行",
+      run,
+      timeoutMs: 15_000,
+    });
+    const text = run.screen.text();
+    const answerAt = text.indexOf("慢回答完成。");
+    check(answerAt >= 0 && answerAt < text.indexOf("已加入 1 个"), "/add-dir 应在本轮回答之后才执行", run.screen);
+    maybeDumpScreen(run.screen);
+    await run.type("/exit");
+    await run.waitExit();
+  } catch (e) {
+    throw attachScreen(e, run.screen, run.stderr);
+  } finally {
+    await run.close();
+    await fake.stop();
+  }
+}
+
+/** #63 S45：-c 主根相同恢复额外根；-C 换主根续聊则不恢复并给一行说明。 */
+async function scenarioS45(tmpRoot: string): Promise<void> {
+  const dirs = await makeDirs(tmpRoot, "s45-add-dir-resume");
+  await mkdir(join(dirs.root, "shared"), { recursive: true });
+  const shared = realpathSync(join(dirs.root, "shared"));
+  await mkdir(join(dirs.work, "sub"), { recursive: true });
+  const fake = await startFake("narration");
+  try {
+    const first = await startNeo({ fake, dirs, name: "s45-a", args: [...BASE_ARGS, "--add-dir", "../shared"] });
+    try {
+      await waitPrompt(first);
+      await first.type("/add-dir");
+      await waitFor(() => first.screen.text().includes(shared), { label: "启动 --add-dir 进入额外根", run: first, timeoutMs: 6000 });
+      await first.type("/exit");
+      await first.waitExit();
+    } catch (e) {
+      throw attachScreen(e, first.screen, first.stderr);
+    } finally {
+      await first.close();
+    }
+    const again = await startNeo({ fake, dirs, name: "s45-b", args: [...BASE_ARGS, "-c"] });
+    try {
+      await waitPrompt(again);
+      await again.type("/add-dir");
+      await waitFor(() => again.screen.text().includes(shared), { label: "-c 主根相同恢复额外根", run: again, timeoutMs: 6000 });
+      await again.type("/exit");
+      await again.waitExit();
+    } catch (e) {
+      throw attachScreen(e, again.screen, again.stderr);
+    } finally {
+      await again.close();
+    }
+    const moved = await startNeo({ fake, dirs, name: "s45-c", args: [...BASE_ARGS, "-C", "sub", "-c"] });
+    try {
+      await waitPrompt(moved);
+      await waitFor(() => moved.screen.text().includes("不恢复"), { label: "换主根续聊不恢复额外根并说明", run: moved, timeoutMs: 6000 });
+      await moved.type("/add-dir");
+      await waitFor(() => moved.screen.text().includes("当前没有额外工作根"), { label: "额外根为空", run: moved, timeoutMs: 6000 });
+      maybeDumpScreen(moved.screen);
+      await moved.type("/exit");
+      await moved.waitExit();
+    } catch (e) {
+      throw attachScreen(e, moved.screen, moved.stderr);
+    } finally {
+      await moved.close();
+    }
+  } finally {
+    await fake.stop();
+  }
+}
+
 const SCENARIOS: Scenario[] = [
+  {id:"s42", title:"#63 交互 TTY：--add-dir 多余位置参数报用法错误 2",fn:scenarioS42,focus:["每个目录各写一次 --add-dir"]},
+  {id:"s43", title:"#63 /add-dir 加入/列出，/cd 换主根清空额外根",fn:scenarioS43,focus:["已加入","已清空本会话额外工作根"]},
+  {id:"s44", title:"#63 忙碌时 /add-dir 排队到轮末执行",fn:scenarioS44,focus:["排队","已加入"]},
+  {id:"s45", title:"#63 -c 恢复额外根；换主根续聊不恢复",fn:scenarioS45,focus:["不恢复","额外工作根"]},
   {id:"s34", title:"#64 drive 内部轮共享额度与 clear 生命周期",fn:scenarioS34,focus:["已启动自动续跑","上下文已清空"]},
   {id:"s35", title:"#90 Ctrl+O 打开/Esc 关闭/再次 Ctrl+O 关闭 transcript 视图",fn:scenarioS35,focus:["本会话还没有记录","/ 搜索"]},
   {id:"s36", title:"#90 视图内 / 或 Ctrl+F 搜索并跳到命中",fn:scenarioS36,focus:["UNIQUE_ALPHA","会话恢复测试答案。"]},
