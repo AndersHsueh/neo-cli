@@ -36,22 +36,40 @@ describe("#66 可注入判定（第 3、4 条）", () => {
     expect(isSteerable(item("notice", { origin: "notice" }))).toBe(false);
     expect(isSteerable(item("event", { origin: "monitor" }))).toBe(false);
   });
+
+  test("补签 1：enqueueUserTurn 排进来的合成消息（/技能名、MCP prompt）带标记、不可注入；不按文本前缀识别", async () => {
+    const { isSteerable } = await steerMod();
+    expect(isSteerable(item("技能正文……", { synthetic: true }))).toBe(false);
+    expect(isSteerable(item("技能正文……"))).toBe(true);
+    const repl = readFileSync(join(ROOT, "src/cli/repl.ts"), "utf8");
+    const at = repl.indexOf("enqueueUserTurn: (text) =>");
+    expect(at).toBeGreaterThan(-1);
+    expect(repl.slice(at, at + 400)).toContain("synthetic: true");
+  });
 });
 
 describe("#66 宿主控制器", () => {
-  function harness(queue: Q[]) {
+  function harness(queue: Q[], tty = true) {
     let changes = 0;
     const expanded: string[] = [];
-    return {
+    const committed: string[] = [];
+    const h = {
       queue,
+      tty,
       get changes() { return changes; },
       expanded,
+      committed,
       deps: {
         queue: () => queue,
-        expand: async (q: Q) => { expanded.push(q.text); return { text: `${q.text}#x`, images: [] as string[] }; },
+        interactive: () => h.tty,
+        prepare: async (q: Q) => {
+          expanded.push(q.text);
+          return { text: `${q.text}#x`, images: [] as string[], commit: () => { committed.push(q.text); } };
+        },
         onQueueChange: () => { changes++; },
       },
     };
+    return h;
   }
 
   test("轮外不取条目；轮内一次取走全部可注入条目（原序），claim 摘除并触发计数刷新", async () => {
@@ -71,19 +89,89 @@ describe("#66 宿主控制器", () => {
     c.endTurn();
   });
 
-  test("UPS 阻断的条目留在队列、本轮后续切点不再取，轮末交给 drain", async () => {
+  test("补签 2：碰到第一条阻断即止——阻断条与其后条目留队；本轮后续切点一律不再取；其后条目不标阻断，下一轮仍按原序可注入", async () => {
     const { SteerController } = await steerMod();
-    const h = harness([item("BLOCKED"), item("C")]);
+    const h = harness([item("A"), item("BLOCKED"), item("C")]);
     const c = new SteerController(h.deps);
     c.beginTurn();
     const first = await c.poll();
-    first[0]!.block("policy");
+    expect(first[0]!.claim()).toBe(true);
+    first[1]!.block("policy");
     expect(h.queue.map((q) => q.text)).toEqual(["BLOCKED", "C"]);
-    expect((await c.poll()).map((g) => g.text)).toEqual(["C#x"]);
+    expect(h.queue[0]!.steerBlocked).toBe(true);
+    expect(h.queue[1]!.steerBlocked).toBeUndefined();
+    // 同一轮后续切点：不论旧条目还是新排队的条目都不再注入。
+    expect(await c.poll()).toEqual([]);
+    h.queue.push(item("D"));
+    expect(await c.poll()).toEqual([]);
     c.endTurn();
+    // 被阻断条仍在队首时（例如插进来的别的轮），它是屏障：其后条目不得越过它注入。
     c.beginTurn();
-    // 新的一轮（drain 取出后）里同一条目已经不在队列；残留标记不影响新条目。
-    expect((await c.poll()).map((g) => g.text)).toEqual(["C#x"]);
+    expect(await c.poll()).toEqual([]);
+    c.endTurn();
+    // drain 取出被阻断条作为新一轮后，其后条目按原序可注入到那一轮。
+    h.queue.shift();
+    c.beginTurn();
+    expect((await c.poll()).map((g) => g.text)).toEqual(["C#x", "D#x"]);
+    c.endTurn();
+  });
+
+  test("补签 5：取条目时只做静默展开（UPS 看到的是展开后文本）；副作用仅在 claim 成功（确定写入）后执行一次；阻断/被 ↑ 收回的不执行", async () => {
+    const { SteerController } = await steerMod();
+    const h = harness([item("OK"), item("GONE"), item("BLOCKED")]);
+    const c = new SteerController(h.deps);
+    c.beginTurn();
+    const got = await c.poll();
+    expect(got.map((g) => g.text)).toEqual(["OK#x", "GONE#x", "BLOCKED#x"]);
+    expect(h.committed).toEqual([]);
+    expect(got[0]!.claim()).toBe(true);
+    expect(h.committed).toEqual(["OK"]);
+    h.queue.splice(h.queue.findIndex((q) => q.text === "GONE"), 1); // ↑ 收回
+    expect(got[1]!.claim()).toBe(false);
+    got[2]!.block("policy");
+    expect(h.committed).toEqual(["OK"]);
+    c.endTurn();
+  });
+
+  test("补签 4：stdin 非 TTY（管道）时不做运行中注入；TTY 时语义不变", async () => {
+    const { SteerController } = await steerMod();
+    const h = harness([item("A")], false);
+    const c = new SteerController(h.deps);
+    c.beginTurn();
+    expect(await c.poll()).toEqual([]);
+    expect(h.expanded).toEqual([]);
+    h.tty = true;
+    expect((await c.poll()).map((g) => g.text)).toEqual(["A#x"]);
+    c.endTurn();
+  });
+
+  test("补签 5：prepareUserLine 静默展开，commit 时才打印已引用/已发送图片并记 touched paths（一次）", async () => {
+    const { prepareUserLine } = await import("../src/cli/expandUserLine.ts");
+    const work = mkdtempSync(join(tmpdir(), "neo-steer66-expand-"));
+    try {
+      writeFileSync(join(work, "a.txt"), "hello-quiet\n");
+      const lines: string[] = [];
+      const touched: string[][] = [];
+      const ui = new Proxy({}, { get: () => (...a: unknown[]) => { lines.push(a.map(String).join(" ")); } });
+      const fakeS = {
+        cfg: { cwd: work, safeMode: false } as unknown,
+        ui,
+        agent: { noteTouchedPaths: (p: string[]) => { touched.push([...p]); } } as unknown,
+        mcpManager: { connectedServerNames: () => [], readResource: async () => { throw new Error("no mcp"); } },
+      } as unknown as Parameters<typeof prepareUserLine>[0];
+      const p = await prepareUserLine(fakeS, "看 @a.txt", []);
+      expect(p.text).toContain("hello-quiet");
+      expect(lines).toEqual([]);
+      expect(touched).toEqual([]);
+      p.commit();
+      expect(lines.join("\n")).toContain("已引用 1 个文件");
+      expect(touched.length).toBe(1);
+      p.commit();
+      expect(touched.length).toBe(1);
+      expect(lines.filter((l) => l.includes("已引用")).length).toBe(1);
+    } finally {
+      rmSync(work, { recursive: true, force: true });
+    }
   });
 
   test("取消文案：注入前沿用「已请求取消本轮」（不覆盖），注入后换成不回滚文案；新轮复位", async () => {
@@ -198,8 +286,9 @@ describe("#66 /help 与文档（第 18、19 条）", () => {
     const readme = readFileSync(join(ROOT, "README.md"), "utf8");
     const at = readme.indexOf("运行中转向");
     expect(at).toBeGreaterThan(-1);
-    const sec = readme.slice(at, at + 2000);
-    for (const k of ["/btw", "不入历史", "工具", "轮末", "/loop", "#87", "!", "已中断（不回滚，转向已写入本轮）", "已请求取消本轮"]) {
+    const sec = readme.slice(at, at + 4000);
+    for (const k of ["/btw", "不入历史", "工具", "轮末", "/loop", "#87", "!", "已中断（不回滚，转向已写入本轮）", "已请求取消本轮",
+      "第一条", "技能", "MCP prompt", "/review", "/plan", "/tier", "TTY", "管道", "已引用"]) {
       expect(sec).toContain(k);
     }
   });
@@ -258,8 +347,9 @@ function childEnv(extra: Record<string, string> = {}): Record<string, string> {
     ...extra,
   };
 }
-function settings(base: string): void {
+function settings(base: string, extra: Record<string, unknown> = {}): void {
   writeFileSync(join(dir, "settings.json"), JSON.stringify({
+    ...extra,
     default_provider: "fake", providers: [{ provider_name: "fake", provider_type: "openai", base_url: base,
       api_key: "test", default_model_name: "fake-model", fast_model_name: "fake-model", balanced_model_name: "fake-model",
       deep_reasoning_model_name: "fake-model", max_tokens: 64, context_window: 100000 }],
@@ -267,17 +357,21 @@ function settings(base: string): void {
   }));
 }
 
-test("#66 真实 REPL：切点注入/非可注入条目留队/注入前后取消/↑/busy Ctrl+X Ctrl+S/后台子代理", async () => {
-  settings("http://127.0.0.1:9/v1");
+test("#66 真实 REPL：切点注入/非可注入条目留队/注入前后取消/↑/busy Ctrl+X Ctrl+S/后台子代理/补签 1、2、4、5", async () => {
+  // UPS hook：记录每次提交的 prompt（JSON 行），含 BLOCKME 则 exit 2 阻断。
+  const mark = join(dir, "ups-prompts.jsonl");
+  const hook = join(dir, "ups.sh");
+  writeFileSync(hook, `#!/bin/sh\nin=$(cat)\nprintf '%s\\n' "$in" >> '${mark}'\ncase "$in" in *BLOCKME*) echo "steer policy says no" >&2; exit 2;; esac\nexit 0\n`, { mode: 0o755 });
+  settings("http://127.0.0.1:9/v1", { hooks: { enabled: true, UserPromptSubmit: [{ command: hook }] } });
   const proc = Bun.spawn(["bun", join(import.meta.dir, "fixtures/mid-turn-steer-runtime.ts")], {
-    cwd: dir, env: childEnv(), stdin: "ignore", stdout: "pipe", stderr: "pipe",
+    cwd: dir, env: childEnv({ STEER66_UPS_MARK: mark }), stdin: "ignore", stdout: "pipe", stderr: "pipe",
   });
   const [out, err, code] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text(), proc.exited]);
   expect({ code, err: err.split("\n").filter((l) => /Error|assert|✖/.test(l)).join("\n") }).toEqual({ code: 0, err: "" });
   expect(out).toContain("steer-runtime-ok");
 }, 30_000);
 
-test("#66 readline 路径（非 TTY）：排队的转向在工具切点注入同一轮", async () => {
+test("#66 补签 4：readline 管道（非 TTY）不做运行中注入，每行各自作为 drain 轮", async () => {
   writeFileSync(join(dir, "a.txt"), "hello\n");
   const fake = Bun.spawn(["bun", "run", join(ROOT, "scripts/fake-llm.ts")], {
     cwd: ROOT, env: childEnv({ PORT: "0", SCENARIO: "steer" }), stdin: "ignore", stdout: "pipe", stderr: "pipe",
@@ -310,8 +404,9 @@ test("#66 readline 路径（非 TTY）：排队的转向在工具切点注入同
     neo.stdin.end();
     await Promise.race([neo.exited, Bun.sleep(5000)]);
     neo.kill();
-    expect(out).toContain("STEER_SEEN n=1");
-    expect(out).not.toContain("STEER_MISS");
+    expect(out).toContain("读完了");
+    expect(out).toContain("STEER_MISS");
+    expect(out).not.toContain("STEER_SEEN");
   } finally {
     fake.kill();
   }

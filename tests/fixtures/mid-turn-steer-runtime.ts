@@ -3,13 +3,14 @@
  * 只由沙箱化的 tests/mid-turn-steer-66-host.test.ts 拉起；模型请求走进程内假 stream。
  */
 import { strict as assert } from "node:assert";
-import { writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { bootstrap } from "../../src/cli/bootstrap.ts";
 import { startSession } from "../../src/cli/sessionStart.ts";
 import { createRepl } from "../../src/cli/repl.ts";
 import { STEERED_CANCEL_NOTICE, recallQueuedUser } from "../../src/cli/midTurnSteer.ts";
 import { contentText, type Message, type StreamResult } from "../../src/llm.ts";
+import { stripAnsi } from "../../src/tui/ansi.ts";
 
 process.argv = [process.argv[0]!, "neo", "--auto", "off"];
 const boot = await bootstrap();
@@ -19,6 +20,17 @@ const s = await startSession(boot);
 const repl = createRepl(s);
 const agent = s.agent;
 writeFileSync(join(s.cfg.cwd, "a.txt"), "hello-steer\n");
+// 补签 4：运行中注入只在 stdin 是 TTY 时生效；本夹具 stdin 是 ignore，按需模拟 TTY / 管道。
+const setTTY = (v: boolean): void => {
+  Object.defineProperty(process.stdin, "isTTY", { value: v, configurable: true, writable: true });
+};
+setTTY(true);
+const uiLines: string[] = [];
+const origLine = s.ui.line.bind(s.ui);
+s.ui.line = (text?: string): void => {
+  uiLines.push(stripAnsi(text ?? ""));
+  origLine(text);
+};
 
 type Step = (messages: Message[]) => Partial<StreamResult> | Promise<Partial<StreamResult>>;
 const script: Step[] = [];
@@ -142,6 +154,99 @@ assert.equal(r3Notice, STEERED_CANCEL_NOTICE);
 assert.equal((bgSignal as AbortSignal | null)?.aborted, false, "Esc 不误杀后台子代理");
 finishBg("bg ok");
 s.backgroundTasks!.cancel("all");
+assert.equal(script.length, 0);
+
+// ---- R4（补签 2、5）：第一条阻断即止；本轮后续切点不再注入；UPS 看到展开后文本；副作用只对确定写入的条目 ----
+writeFileSync(join(s.cfg.cwd, "p4.txt"), "pass-content\n");
+writeFileSync(join(s.cfg.cwd, "b4.txt"), "blocked-content\n");
+const upsMark = process.env.STEER66_UPS_MARK!;
+const upsPrompts = (): string[] => {
+  try {
+    return readFileSync(upsMark, "utf8").trim().split("\n").filter(Boolean)
+      .map((l) => String((JSON.parse(l) as { prompt?: unknown }).prompt ?? ""));
+  } catch {
+    return [];
+  }
+};
+const refLines = (from: number): number => uiLines.slice(from).filter((l) => l.includes("已引用")).length;
+const r4LineStart = uiLines.length;
+const r4UpsStart = upsPrompts().length;
+script.push(
+  () => toolStep(),
+  (ms) => {
+    const injected = usersAfterTool(ms);
+    assert.equal(injected.length, 1, `injected=${JSON.stringify(injected)}`);
+    assert.ok(injected[0]!.startsWith("STEER pass") && injected[0]!.includes("pass-content"));
+    assert.deepEqual(repl.queue.map((q) => q.text), ["STEER BLOCKME @b4.txt", "STEER after"]);
+    assert.equal(repl.queue[0]!.steerBlocked, true);
+    assert.equal(repl.queue[1]!.steerBlocked, undefined, "阻断条之后的条目不标阻断");
+    assert.ok(agent.touchedPaths.has("p4.txt"), "确定写入的条目记 touched path");
+    assert.ok(!agent.touchedPaths.has("b4.txt"), "被阻断条目不记 touched path");
+    assert.equal(refLines(r4LineStart), 1, `已引用提示只对写入的条目打一次：${JSON.stringify(uiLines.slice(r4LineStart))}`);
+    repl.queue.push({ text: "STEER late4", attachments: [], origin: "user" });
+    return toolStep();
+  },
+  (ms) => {
+    assert.deepEqual(usersAfterTool(ms), [], "同轮后续切点不再注入");
+    return { content: "R4 done" };
+  },
+  (ms) => {
+    assert.equal(userTexts(ms).at(-1), "STEER after", "阻断条作为新轮被 UPS 再拦下后，其后条目各自按序成轮");
+    return { content: "R4 after" };
+  },
+  (ms) => {
+    assert.equal(userTexts(ms).at(-1), "STEER late4");
+    return { content: "R4 late" };
+  },
+);
+repl.queue.push(
+  { text: "R4 first", attachments: [], origin: "user" },
+  { text: "STEER pass @p4.txt", attachments: [], origin: "user" },
+  { text: "STEER BLOCKME @b4.txt", attachments: [], origin: "user" },
+  { text: "STEER after", attachments: [], origin: "user" },
+);
+await repl.drain();
+assert.equal(script.length, 0);
+const blockedUps = upsPrompts().slice(r4UpsStart).filter((p) => p.includes("BLOCKME"));
+assert.equal(blockedUps.length, 2, `blocked UPS=${JSON.stringify(blockedUps)}`);
+assert.ok(blockedUps[0]!.includes("blocked-content"), "运行中 UPS 看到的是展开后文本");
+assert.equal(blockedUps[0], blockedUps[1], "运行中 UPS 与 drain 看到同一份展开文本");
+
+// ---- R5（补签 1）：/技能名 排进来的合成消息不可注入，等轮末自成一轮 ----
+mkdirSync(join(s.cfg.cwd, "skills", "demo66"), { recursive: true });
+writeFileSync(join(s.cfg.cwd, "skills", "demo66", "SKILL.md"), "---\nname: demo66\ndescription: demo skill 66\n---\n\nDEMO66_BODY\n");
+script.push(
+  () => toolStep(),
+  (ms) => {
+    assert.deepEqual(usersAfterTool(ms), [], "合成消息不在切点注入");
+    assert.equal(repl.queue.length, 1);
+    assert.equal(repl.queue[0]!.synthetic, true);
+    return { content: "R5 done" };
+  },
+  (ms) => {
+    assert.ok((userTexts(ms).at(-1) ?? "").includes("DEMO66_BODY"), "合成消息自成一轮");
+    return { content: "R5 skill" };
+  },
+);
+repl.queue.push({ text: "/demo66", attachments: [], origin: "user" }, { text: "R5 first", attachments: [], origin: "user" });
+await repl.drain();
+assert.equal(script.length, 0);
+
+// ---- R0（补签 4）：stdin 非 TTY 时不做运行中注入，每行各自成轮 ----
+setTTY(false);
+script.push(
+  () => toolStep(),
+  (ms) => {
+    assert.deepEqual(usersAfterTool(ms), [], "非 TTY 不注入");
+    return { content: "R0 done" };
+  },
+  (ms) => {
+    assert.equal(userTexts(ms).at(-1), "STEER r0");
+    return { content: "R0 own turn" };
+  },
+);
+repl.queue.push({ text: "R0 first", attachments: [], origin: "user" }, { text: "STEER r0", attachments: [], origin: "user" });
+await repl.drain();
 assert.equal(script.length, 0);
 s.cleanupEphemeralResources();
 console.log("steer-runtime-ok");

@@ -272,9 +272,9 @@ test("#66-6 每条注入各跑一次 UserPromptSubmit（不走幂等缓存），
   expect(seen.length).toBe(2);
 });
 
-test("#66-7 UPS 阻断：该条不入本轮历史、留在队列（block 原因可见），前面已放行的照常注入", async () => {
+test("#66-7 UPS 阻断：该条不入本轮历史、留在队列（block 原因可见），前面已放行的照常注入；补签 2：碰到第一条阻断即止，其后不注入也不跑 UPS", async () => {
   const mark = join(SANDBOX, `ups-${serial++}`);
-  const src = steerSource([fs("STEER ok"), fs("STEER BLOCKME please")]);
+  const src = steerSource([fs("STEER ok"), fs("STEER BLOCKME please"), fs("STEER after block")]);
   const { agent, io, seen } = setup(
     [toolStep(), { content: "done" }],
     { pollSteer: src.poll },
@@ -290,6 +290,11 @@ test("#66-7 UPS 阻断：该条不入本轮历史、留在队列（block 原因�
   expect(src.queue[1]!.claimed).toBe(false);
   expect(src.queue[1]!.blocked).toContain("steer policy says no");
   expect(io.warns.join("\n")).toContain("steer policy says no");
+  // 补签 2：阻断条之后的条目留在队列、不标阻断、本轮不注入（也不提前跑 UPS）。
+  expect(src.queue[2]!.claimed).toBe(false);
+  expect(src.queue[2]!.blocked).toBeNull();
+  expect(users).not.toContain("STEER after block");
+  expect(upsPrompts(mark)).toEqual(["first", "STEER ok", "STEER BLOCKME please"]);
 });
 
 test("#66-8 注入前取消：沿用 rollbackOnAbort 回滚本轮，未注入的条目留在队列", async () => {
