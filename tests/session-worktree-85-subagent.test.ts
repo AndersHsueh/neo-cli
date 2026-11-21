@@ -11,7 +11,7 @@
  * 运行：bun test tests/session-worktree-85-subagent.test.ts
  */
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -23,7 +23,7 @@ import type { Config, ModelTier } from "../src/config.ts";
 import { contentText, type Message, type StreamResult, type ToolCall } from "../src/llm.ts";
 import { PromptManager } from "../src/prompt/manager.ts";
 import { createSession, saveSession, type SessionMeta } from "../src/session.ts";
-import { BackgroundTasks } from "../src/tools/background.ts";
+import { BackgroundTasks, restoreJobs, serializeJobs } from "../src/tools/background.ts";
 import { registerTool } from "../src/tools/index.ts";
 import { makeTaskTool, runSubagent } from "../src/tools/task.ts";
 import { ToolError, type ToolCtx } from "../src/tools/types.ts";
@@ -748,5 +748,202 @@ describe("task isolation=worktree 与命名子代理 isolation: worktree", () =>
     const main = new Agent({ cfg, console: silentIO(), mode: "auto-all", systemPrompt: "main", chatStream: fake.fn });
     await runSubagent(main, "p", undefined, { cfg, approve: async () => true }, undefined, undefined, { isolation: "worktree" });
     expect(sys).toContain(worktreePath(repo, "sg-1"));
+  });
+});
+
+
+/* ------------------------------------------------------------------ */
+/* Boris 补丁 4：/tasks chat 续聊必须回到该任务自己的隔离树               */
+/* ------------------------------------------------------------------ */
+
+function waitJob(bg: BackgroundTasks, id: string): Promise<void> {
+  return (async () => {
+    for (let i = 0; i < 400 && bg.rawJobs().find((j) => j.id === id)?.status === "running"; i++) {
+      await Bun.sleep(10);
+    }
+  })();
+}
+
+describe("#85 补丁：/tasks chat 续聊隔离树（Boris 第 4 点）", () => {
+  test("树还在：续聊 cwd 是那棵树，额外根为空，不新建树", async () => {
+    const { repo, shared } = makeRepo();
+    const cfg = makeCfg(repo);
+    cfg.additionalDirs = [shared];
+    const fake = fakeStream([
+      () => ({ toolCalls: [tc("write_file", { path: "kept.txt", content: "DIRTY\n" })], finishReason: "tool_calls" }),
+      () => ({ content: "first-done" }),
+      () => ({ toolCalls: [tc("shell", { command: "pwd" }), tc("write_file", { path: "second.txt", content: "CHAT\n" })], finishReason: "tool_calls" }),
+      (_c, msgs) => {
+        chatMsgs = msgs;
+        return { content: "chat-done" };
+      },
+    ]);
+    let chatMsgs: Message[] = [];
+    const main = new Agent({ cfg, console: silentIO(), mode: "auto-all", systemPrompt: "main", chatStream: fake.fn });
+    let transcript: Message[] = [];
+    const bg = new BackgroundTasks({
+      run: (job, signal) =>
+        runSubagent(
+          main,
+          job.prompt,
+          undefined,
+          { ...job.ctx, signal },
+          undefined,
+          { onMessages: (msgs) => { transcript = msgs; } },
+          {
+            jobId: job.id,
+            isolation: job.isolation,
+            onIsolationWorktree: (wt: { name: string; path: string }) => {
+              job.worktree = wt;
+            },
+          } as never,
+        ),
+    });
+    const launched = bg.launch({ prompt: "先改一处", isolation: "worktree", ctx: { cfg, approve: async () => true } as ToolCtx });
+    expect(launched.ok).toBe(true);
+    if (!launched.ok) return;
+    await waitJob(bg, launched.job.id);
+    expect(launched.job.status).toBe("done");
+    const recorded = launched.job.worktree;
+    expect(recorded).toEqual({ name: "bg-1", path: worktreePath(repo, "bg-1") });
+    expect(existsSync(join(recorded!.path, "kept.txt"))).toBe(true);
+    const namesBefore = readdirSync(join(repo, ".neo", "worktrees")).sort();
+
+    await runSubagent(
+      main,
+      "继续改",
+      undefined,
+      { cfg, approve: async () => true } as ToolCtx,
+      undefined,
+      { messages: transcript },
+      { jobId: "bg-1", isolation: "worktree", isolationWorktree: recorded },
+    );
+    const chatCfg = fake.seen[fake.seen.length - 2] ?? fake.seen[fake.seen.length - 1]!;
+    expect(chatCfg.cwd).toBe(recorded!.path);
+    expect(chatCfg.additionalDirs ?? []).toEqual([]);
+    expect(readdirSync(join(repo, ".neo", "worktrees")).sort()).toEqual(namesBefore);
+    expect(existsSync(join(repo, "second.txt"))).toBe(false);
+    expect(existsSync(join(recorded!.path, "second.txt"))).toBe(true);
+    const pwd = toolResults(chatMsgs)[0] ?? "";
+    expect(pwd).toContain(recorded!.path);
+    expect(cfg.cwd).toBe(repo);
+    expect(cfg.additionalDirs).toEqual([shared]);
+  });
+
+  test("树已被干净结束删掉：规定警告，续聊在父会话当前目录进行，不重建树", async () => {
+    const { repo } = makeRepo();
+    const cfg = makeCfg(repo);
+    const fake = fakeStream([
+      () => ({ toolCalls: [tc("write_file", { path: "run.log", content: "ignored\n" })], finishReason: "tool_calls" }),
+      () => ({ content: "first-done" }),
+      () => ({ toolCalls: [tc("shell", { command: "pwd" }), tc("write_file", { path: "from-chat.txt", content: "X\n" })], finishReason: "tool_calls" }),
+      (_c, msgs) => {
+        chatMsgs = msgs;
+        return { content: "chat-done" };
+      },
+    ]);
+    let chatMsgs: Message[] = [];
+    const main = new Agent({ cfg, console: silentIO(), mode: "auto-all", systemPrompt: "main", chatStream: fake.fn });
+    let transcript: Message[] = [];
+    const bg = new BackgroundTasks({
+      run: (job, signal) =>
+        runSubagent(
+          main,
+          job.prompt,
+          undefined,
+          { ...job.ctx, signal },
+          undefined,
+          { onMessages: (msgs) => { transcript = msgs; } },
+          {
+            jobId: job.id,
+            isolation: job.isolation,
+            onIsolationWorktree: (wt: { name: string; path: string }) => {
+              job.worktree = wt;
+            },
+          } as never,
+        ),
+    });
+    const launched = bg.launch({ prompt: "干净跑完", isolation: "worktree", ctx: { cfg, approve: async () => true } as ToolCtx });
+    expect(launched.ok).toBe(true);
+    if (!launched.ok) return;
+    await waitJob(bg, launched.job.id);
+    expect(launched.job.status).toBe("done");
+    const recorded = launched.job.worktree;
+    expect(recorded).toEqual({ name: "bg-1", path: worktreePath(repo, "bg-1") });
+    expect(existsSync(recorded!.path)).toBe(false);
+    // 落盘快照也要带上名字与路径，--resume 后 /tasks chat 才找得到。
+    const snap = serializeJobs(bg.rawJobs());
+    expect(snap[0]?.worktree).toEqual(recorded);
+    expect(restoreJobs(snap)[0]?.worktree).toEqual(recorded);
+
+    const sub = await import("../src/subagentWorktree.ts");
+    const settled = sub.resumeIsolationWorktree(recorded!);
+    expect(settled.ok).toBe(false);
+    if (!settled.ok) {
+      expect(settled.notice).toBe(`该任务的 worktree ${recorded!.name}（${recorded!.path}）已不存在，续聊在当前目录进行`);
+    }
+
+    const cap = captureConsole({ stdoutIsTTY: false, stdinIsTTY: false });
+    const h = host(cfg);
+    await dispatchCommand("/tasks chat bg-1 接着写", h.ctx(cap.ui, {
+      tasks: {
+        list: () => bg.list(),
+        cancel: () => 0,
+        chat: async (id: string, text: string) => {
+          const rec = bg.rawJobs().find((j) => j.id === id)?.worktree;
+          const settledChat = rec ? (await import("../src/subagentWorktree.ts")).resumeIsolationWorktree(rec) : { ok: true as const };
+          const notice = !settledChat.ok ? settledChat.notice : undefined;
+          const reply = await runSubagent(
+            main,
+            text,
+            undefined,
+            { cfg, approve: async () => true } as ToolCtx,
+            undefined,
+            { messages: transcript },
+            { jobId: id, ...(settledChat.ok && rec ? { isolation: "worktree", isolationWorktree: rec } : {}) },
+          );
+          return { ok: true as const, reply, ...(notice ? { notice } : {}) };
+        },
+      },
+    } as never));
+    expect(cap.out()).toContain(`该任务的 worktree bg-1（${worktreePath(repo, "bg-1")}）已不存在，续聊在当前目录进行`);
+    const chatCfg = fake.seen[fake.seen.length - 2] ?? fake.seen[fake.seen.length - 1]!;
+    expect(chatCfg.cwd).toBe(repo);
+    expect(existsSync(join(repo, ".neo", "worktrees"))).toBe(false);
+    expect(existsSync(join(repo, "from-chat.txt"))).toBe(true);
+    expect(toolResults(chatMsgs)[0] ?? "").toContain(repo);
+    expect(cfg.cwd).toBe(repo);
+  });
+});
+
+/* ------------------------------------------------------------------ */
+/* Boris 补丁 11：隔离子代理不得在父主根 skills/ 下建软链                 */
+/* ------------------------------------------------------------------ */
+
+describe("#85 补丁：隔离子代理不在父主根 skills/ 建软链（Boris 第 11 点）", () => {
+  test("隔离派出使用全局技能时，不在父主根 skills/ 下创建或写入软链", async () => {
+    const { repo, top } = makeRepo();
+    const store = join(top, "global-skills");
+    put(store, "demo/SKILL.md", "---\nname: demo\ndescription: d\n---\nGLOBAL-SKILL-BODY\n");
+    const cfg = makeCfg(repo);
+    cfg.skillsStore = store;
+    expect(existsSync(join(repo, "skills"))).toBe(false);
+    let skillOut = "";
+    const fake = fakeStream([
+      () => ({ toolCalls: [tc("use_skill", { name: "demo" })], finishReason: "tool_calls" }),
+      (_c, msgs) => {
+        skillOut = toolResults(msgs)[0] ?? "";
+        return { content: "done" };
+      },
+    ]);
+    const main = new Agent({ cfg, console: silentIO(), mode: "auto-all", systemPrompt: "main", chatStream: fake.fn });
+    await runSubagent(main, "p", undefined, { cfg, approve: async () => true } as ToolCtx, undefined, undefined, { isolation: "worktree" });
+    expect(skillOut).toContain("GLOBAL-SKILL-BODY");
+    const parentSkills = join(repo, "skills");
+    expect(existsSync(join(parentSkills, "demo"))).toBe(false);
+    if (existsSync(parentSkills)) {
+      const ents = readdirSync(parentSkills, { withFileTypes: true });
+      expect(ents.some((e) => e.isSymbolicLink() || e.name === "demo")).toBe(false);
+    }
   });
 });
