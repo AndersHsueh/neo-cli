@@ -10,9 +10,10 @@ import type { SteerItem } from "../agent/types.ts";
 import type { ResolvedLine } from "../attachments.ts";
 import type { QueueItem } from "./repl.ts";
 
-/** 注入前取消：沿用既有文案（合同第 18 条）。 */
-export const CANCEL_NOTICE = "已请求取消本轮";
-/** 注入后取消：只停不删，文案要能看出不回滚（合同第 11、18 条）。 */
+/**
+ * 注入后取消：只停不删，文案要能看出不回滚（合同第 11、18 条）。
+ * 注入前取消不在这里定文案：输入框沿用既有的「已请求取消本轮」。
+ */
 export const STEERED_CANCEL_NOTICE = "已中断（不回滚，转向已写入本轮）";
 
 /**
