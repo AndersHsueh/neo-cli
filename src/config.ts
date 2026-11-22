@@ -22,6 +22,7 @@ import type { EnvConfig } from "./env/types.ts";
 import type { ShellConfig } from "./shell.ts";
 import { parseHooksConfig } from "./hooks/types.ts";
 import { statusLineConfigFields } from "./tui/statusLine.ts";
+import { bindStartupProviderModel } from "./config/startupBinding.ts";
 import { DEFAULT_SELECTION_CONFIG, TIER_ORDER, type PromptSelectionConfig } from "./prompt/select.ts";
 
 import {
@@ -727,6 +728,7 @@ export function loadConfig(overrides: Partial<Config> = {}, options: LoadConfigO
   };
 
   if (overrides.cwd && !isAbsolute(overrides.cwd)) cfg.cwd = resolve(here, overrides.cwd);
+  bindStartupProviderModel(cfg, raw["default_provider"], overrides, applyTier, switchProvider);
   return cfg;
 }
 
