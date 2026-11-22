@@ -378,6 +378,8 @@ export function createStatusLineController(deps: StatusLineControllerDeps): Stat
   let columns = 80;
   let rows = 24;
   let seq = 0;
+  let firstRunSeq: number | null = null;
+  let intervalArmed = false;
 
   const sizeNow = (): void => {
     const s = deps.getSize();
@@ -424,29 +426,41 @@ export function createStatusLineController(deps: StatusLineControllerDeps): Stat
       spawnFn: deps.spawnFn,
       signal: ac.signal,
     }).then((r) => {
-      if (disposed || thisSeq !== seq) return;
-      running = false;
-      if (runAbort === ac) runAbort = null;
-      if (r.aborted) return; // 保留上一趟成功输出
-      if (r.ok) {
-        const rowsOut = formatStatusLineRows(r.stdout, columns, padding);
-        if (rowsOut.length === 0) {
-          lastStdout = null;
-        } else {
-          lastStdout = r.stdout;
-          lastPadding = padding;
+      if (!(disposed || thisSeq !== seq)) {
+        running = false;
+        if (runAbort === ac) runAbort = null;
+        if (!r.aborted) {
+          if (r.ok) {
+            const rowsOut = formatStatusLineRows(r.stdout, columns, padding);
+            if (rowsOut.length === 0) {
+              lastStdout = null;
+            } else {
+              lastStdout = r.stdout;
+              lastPadding = padding;
+            }
+          } else {
+            lastStdout = null;
+          }
+          notify();
         }
-      } else {
-        lastStdout = null;
       }
-      notify();
+      maybeArmAfterFirst(thisSeq);
     }).catch(() => {
-      if (disposed || thisSeq !== seq) return;
-      running = false;
-      if (runAbort === ac) runAbort = null;
-      lastStdout = null;
-      notify();
+      if (!(disposed || thisSeq !== seq)) {
+        running = false;
+        if (runAbort === ac) runAbort = null;
+        lastStdout = null;
+        notify();
+      }
+      maybeArmAfterFirst(thisSeq);
     });
+  };
+
+  const maybeArmAfterFirst = (thisSeq: number): void => {
+    if (intervalArmed || disposed) return;
+    if (firstRunSeq === null || thisSeq !== firstRunSeq) return;
+    intervalArmed = true;
+    armInterval();
   };
 
   const armInterval = (): void => {
@@ -472,8 +486,10 @@ export function createStatusLineController(deps: StatusLineControllerDeps): Stat
       if (disposed || started) return;
       started = true;
       sizeNow();
+      const before = seq;
       runNow();
-      armInterval();
+      if (seq !== before) firstRunSeq = seq;
+      else armInterval();
     },
     requestRefresh(): void {
       if (disposed || !deps.getSettings()) return;
