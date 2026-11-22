@@ -183,7 +183,7 @@ describe("#57 stdin JSON", () => {
     projectDir: "/tmp/project-dir",
     addedDirs: [],
     sessionId: "sess-57",
-    version: "0.4.99",
+    version: VERSION,
     contextWindow: 200_000,
     messages,
     tools,
@@ -198,7 +198,6 @@ describe("#57 stdin JSON", () => {
     expect(payload.workspace.project_dir).toBe("/tmp/project-dir");
     expect(payload.workspace.added_dirs).toEqual([]);
     expect(payload.session_id).toBe("sess-57");
-    expect(payload.version).toBe("0.4.99");
     expect(payload.version).toBe(VERSION);
     expect(payload.context_window.context_window_size).toBe(200_000);
     const used = estimateTokens(messages, tools);
