@@ -6,6 +6,7 @@ import type { DriveManager } from "../drive.ts";
 import type { LoopScheduler } from "../loop.ts";
 import type { WikiMaintainer } from "../memory/wikiMaintainer.ts";
 import type { CwdSwitchDeps } from "./cdWorkdir.ts";
+import type { StatusLineController } from "../tui/statusLine.ts";
 
 export type SharedMut = {
   composerRef: Composer | null;
@@ -39,4 +40,8 @@ export type SharedMut = {
   cleanupEphemeralResources?: () => void;
   /** #85：交互 REPL 给 enter_worktree / exit_worktree 补上与 /cd 相同的侧状态（/cd - 槽、FileIndex、规则、LSP）。 */
   worktreeToolDeps?: () => Partial<CwdSwitchDeps>;
+  /** #57：交互 TUI 自定义状态区；-p / ACP / 未配置时为 null。 */
+  statusLine?: StatusLineController | null;
+  /** #57：本会话第一次进对话时的主根（-C / --worktree 解析后）。 */
+  statusLineProjectDir?: string;
 };

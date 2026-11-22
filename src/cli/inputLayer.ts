@@ -10,6 +10,13 @@ import { clipboardImagePlatform, readClipboardImage } from "../clipboard.ts";
 import type { SelectDeps } from "../ui/select.ts";
 import { Composer, type ComposerStatus } from "../tui/composer.ts";
 import { getBranch } from "../git.ts";
+import { basename } from "node:path";
+import { canonicalize, detectRepo } from "../worktree.ts";
+import {
+  buildStatusLinePayload,
+  createStatusLineController,
+  shouldLaunchStatusLine,
+} from "../tui/statusLine.ts";
 import { createThrottledStatusFields } from "./statusCache.ts";
 import { TitleAnimator } from "../tui/title.ts";
 import { banner, c } from "../ui/theme.ts";
@@ -27,6 +34,13 @@ import type { AppSession } from "./sessionStart.ts";
 import { createRepl } from "./repl.ts";
 import { recallQueuedUser } from "./midTurnSteer.ts";
 import { installFatalSignalHandlers } from "../signals.ts";
+
+function linkedGitWorktreeName(cwd: string): string | undefined {
+  const repo = detectRepo(cwd);
+  if (!repo.ok) return undefined;
+  if (canonicalize(repo.root) === repo.mainRoot) return undefined;
+  return basename(repo.root);
+}
 
 type RlInternal = { line: string; cursor: number; _refreshLine?: () => void; history?: string[] };
 interface TabCycle {
@@ -150,6 +164,10 @@ export async function runInteractive(s: AppSession): Promise<number> {
         tokensTotal: agent.cumulative.prompt + agent.cumulative.completion,
         todosSummary: todosSummary(sess.meta.todos ?? []),
       }),
+      getCustomStatusRows: (width) => {
+        s.statusLine?.setSize(width, process.stdout.rows ?? 24);
+        return s.statusLine?.visibleRows(width) ?? [];
+      },
       commands: COMMANDS,
       extraCommands: () => mcpPromptMenuEntries(s.mcpManager.connectedPrompts()),
       files: () => repl.fileIndex.list(),
@@ -167,6 +185,7 @@ export async function runInteractive(s: AppSession): Promise<number> {
         } catch {
           // 状态同步失败不影响模式切换
         }
+        s.statusLine?.requestRefresh();
       },
       onRecallQueue: () => {
         // #66：已注入本轮的转向早已离队，这里只可能收回尚未注入的条目。
@@ -247,6 +266,55 @@ export async function runInteractive(s: AppSession): Promise<number> {
       },
     });
     s.composerRef = repl.composer;
+    s.statusLineProjectDir = cfg.cwd;
+    if (
+      shouldLaunchStatusLine({
+        interactiveTTY: true,
+        printMode: false,
+        acp: false,
+        safeMode: cfg.safeMode === true,
+        config: cfg.statusLine ?? null,
+      })
+    ) {
+      const projectDir = cfg.cwd;
+      s.statusLine = createStatusLineController({
+        getSettings: () => (cfg.safeMode ? null : (cfg.statusLine ?? null)),
+        buildPayload: () => {
+          const binding = sess.meta.worktree;
+          return buildStatusLinePayload({
+            modelId: cfg.model,
+            cwd: cfg.cwd,
+            projectDir,
+            addedDirs: cfg.additionalDirs ?? [],
+            sessionId: sess.meta.id,
+            version: VERSION,
+            contextWindow: cfg.contextWindow,
+            messages: agent.messages,
+            tools: agent.toolSpecsFor(),
+            sessionName: s.sessionLabel,
+            outputStyle: cfg.outputStyle,
+            isolation: binding
+              ? {
+                  name: binding.name,
+                  path: binding.path,
+                  branch: getBranch(binding.path),
+                  origin: binding.origin,
+                }
+              : null,
+            gitWorktreeName: linkedGitWorktreeName(cfg.cwd),
+            thinking: cfg.thinking,
+          });
+        },
+        getCwd: () => cfg.cwd,
+        getSize: () => ({
+          columns: process.stdout.columns ?? 80,
+          rows: process.stdout.rows ?? 24,
+        }),
+        getShellConfig: () => cfg,
+        onUpdate: () => s.composerRef?.scheduleRender(),
+      });
+      s.statusLine.start();
+    }
     repl.titleAnimator = new TitleAnimator();
     repl.titleAnimator.setName(s.sessionLabel ?? "neo");
     repl.composer.setTitleAnimator(repl.titleAnimator);

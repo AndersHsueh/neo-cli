@@ -2,7 +2,7 @@
  * `--safe-mode` / `NEO_SAFE_MODE`：本次进程以干净配置启动，用于排查自定义项故障。
  *
  * 仍加载登录 / provider / 模型、内置工具与 `/mode` 权限模式；
- * 不加载项目记忆文件、路径规则、技能、自定义子代理、hooks、MCP、LSP、仓库地图与记忆 wiki。
+ * 不加载项目记忆文件、路径规则、技能、自定义子代理、hooks、MCP、LSP、仓库地图、记忆 wiki 与 status line。
  * 只改内存中的 Config，不写、不改写 settings.json。这不是沙箱。
  */
 import type { Config } from "../config.ts";
@@ -36,5 +36,7 @@ export function applySafeMode(cfg: Config): Config {
   cfg.repoMap = { ...cfg.repoMap, enabled: false };
   cfg.memory = { ...cfg.memory, enabled: false };
   cfg.skillsExtraPaths = [];
+  cfg.statusLine = null;
+  cfg.statusLineWarnings = [];
   return cfg;
 }

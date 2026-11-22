@@ -516,6 +516,13 @@ export interface Config {
    * 会话启动时加载一次 —— 改配置需重启（与 mcpServers 同口径）。
    */
   hooks: HooksConfig;
+  /**
+   * 自定义状态区（issue #57）。settings.json 顶层 `statusLine` 段。
+   * null / 缺省 = 未配置，只显示内置状态行。解析见 src/tui/statusLine.ts。
+   */
+  statusLine?: StatusLineConfig | null;
+  /** statusLine 配置告警（启动时打印一次）。 */
+  statusLineWarnings?: string[];
   /** 环境探测/注入配置（v0.4.0；不填=默认开启、TTL 12h、注入+写 wiki 页）。 */
   env?: EnvConfig;
   /** 系统提示词三档选择（issue #20）。settings.json 顶层 `system_prompt` 段；缺省按 DEFAULT_SELECTION_CONFIG。 */
@@ -560,6 +567,17 @@ export interface Config {
    * （沿用父会话已加载的集合，不按 worktree 根再发现）。缺省 = 用 cwd。不从 settings 读。
    */
   discoveryCwd?: string;
+}
+
+
+/** settings.json 顶层 `statusLine` 段（issue #57）。业务解析在 tui/statusLine.ts。 */
+export interface StatusLineConfig {
+  command: string;
+  padding: number;
+  /** 秒；null = 只在事件时跑，不设定时器。 */
+  refreshInterval: number | null;
+  /** 秒。默认 2，上限 10。 */
+  timeout: number;
 }
 
 /** settings.json 顶层 `experimental` 段（issue #71）。 */

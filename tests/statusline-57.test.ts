@@ -9,7 +9,6 @@
 import { afterAll, describe, expect, test } from "bun:test";
 import { spawn, type ChildProcess, type SpawnOptions } from "node:child_process";
 import {
-  existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -173,7 +172,7 @@ describe("#57 parseStatusLine 配置解析", () => {
 });
 
 describe("#57 stdin JSON", () => {
-  const tools: ToolSpec[] = [{ name: "read_file", description: "read", parameters: { type: "object", properties: {} } }];
+  const tools: ToolSpec[] = [{ type: "function", function: { name: "read_file", description: "read", parameters: { type: "object", properties: {} } } }];
   const messages: Message[] = [
     { role: "system", content: "you are neo" },
     { role: "user", content: "hello from the session" },
@@ -449,7 +448,7 @@ describe("#57 控制器：防抖、取消在途、失败隔离", () => {
     const dir = sandbox("neo-57-debounce-");
     const script = join(dir, "sl.sh");
     writeFileSync(script, "#!/bin/sh\necho RUN\n", { mode: 0o755 });
-    const calls: Array<{ argv: string[] }> = [];
+    const calls: Array<{ argv: string[]; env: NodeJS.ProcessEnv; cwd?: string }> = [];
     const clock = makeClock();
     const ctl = createStatusLineController({
       getSettings: () => ({ command: script, padding: 0, refreshInterval: null, timeout: 2 }),
@@ -459,7 +458,7 @@ describe("#57 控制器：防抖、取消在途、失败隔离", () => {
       getShellConfig: () => ({ cwd: dir } as Config),
       now: clock.now,
       schedule: clock.schedule,
-      clearSchedule: clock.clear,
+      clearSchedule: (id: unknown) => clock.clear(id as number),
       spawnFn: countingSpawn(calls),
     });
     ctl.start(); // 立刻跑，不走防抖
@@ -513,16 +512,19 @@ describe("#57 控制器：防抖、取消在途、失败隔离", () => {
     ctl.start();
     await new Promise((r) => setTimeout(r, 200));
     expect(ctl.visibleRows(80).some((l) => l.includes("FAST"))).toBe(true);
-    // 再跑 SLOW（在途），期间应仍显示 FAST；随后改 FAST 并刷新，应杀掉 SLOW 并显示新 FAST
+    // 事件刷新走 300ms 防抖；SLOW 开始后自定义区仍保留上一趟 FAST。
+    // 再调度 FAST 时杀掉在途的 SLOW，主会话不被拖死。
     mode = "slow";
     ctl.requestRefresh();
-    await new Promise((r) => setTimeout(r, 50));
+    await new Promise((r) => setTimeout(r, 200));
+    expect(ctl.visibleRows(80).some((l) => l.includes("FAST"))).toBe(true);
+    await new Promise((r) => setTimeout(r, 200));
     expect(ctl.isRunning()).toBe(true);
     expect(ctl.visibleRows(80).some((l) => l.includes("FAST"))).toBe(true);
     expect(ctl.visibleRows(80).some((l) => l.includes("SLOW"))).toBe(false);
     mode = "fast";
     ctl.requestRefresh();
-    await new Promise((r) => setTimeout(r, 250));
+    await new Promise((r) => setTimeout(r, 500));
     expect(ctl.visibleRows(80).some((l) => l.includes("FAST"))).toBe(true);
     expect(ctl.visibleRows(80).some((l) => l.includes("SLOW"))).toBe(false);
     ctl.dispose();
@@ -658,7 +660,7 @@ describe("#57 控制器：防抖、取消在途、失败隔离", () => {
     const dir = sandbox("neo-57-resize-");
     const script = join(dir, "wide.sh");
     writeFileSync(script, "#!/bin/sh\necho ABCDEFGHIJKLMNOPQRSTUVWXYZ\n", { mode: 0o755 });
-    const calls: Array<{ argv: string[] }> = [];
+    const calls: Array<{ argv: string[]; env: NodeJS.ProcessEnv; cwd?: string }> = [];
     const ctl = createStatusLineController({
       getSettings: () => ({ command: script, padding: 0, refreshInterval: null, timeout: 2 }),
       buildPayload: () => buildStatusLinePayload({ ...payloadOnce, cwd: dir, projectDir: dir }),

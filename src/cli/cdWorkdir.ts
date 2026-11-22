@@ -113,6 +113,8 @@ export interface CwdSwitchDeps {
   restartLsp?: (cfg: Config) => void | Promise<void>;
   /** `~` 展开用的 home（测试注入；缺省 os.homedir()）。 */
   home?: string;
+  /** #57：主根变化后刷新自定义状态区。 */
+  onStatusLineRefresh?: () => void;
 }
 
 export type CwdSwitchResult =
@@ -285,13 +287,15 @@ export async function changeSessionCwd(arg: string, deps: CwdSwitchDeps): Promis
     }
   }
 
-  return {
-    ok: true,
+  const result = {
+    ok: true as const,
     cwd: target,
-    unchanged: false,
+    unchanged: false as const,
     ...(warnings.length > 0 ? { warnings } : {}),
     ...(oldExtras.length > 0 ? { clearedAdditionalDirs: [...oldExtras] } : {}),
   };
+  deps.onStatusLineRefresh?.();
+  return result;
 }
 
 /** 补全时跳过的目录（只做最简单的两个，不做复杂忽略）。 */

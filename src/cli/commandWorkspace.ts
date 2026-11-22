@@ -323,6 +323,7 @@ export async function handleWorkspaceCommands(cmd: string, arg: string, rest: st
         },
         ...(busyReason ? { busyReason } : {}),
         ...(ctx.restartLsp ? { restartLsp: ctx.restartLsp } : {}),
+        ...(ctx.onStatusLineRefresh ? { onStatusLineRefresh: ctx.onStatusLineRefresh } : {}),
       });
       if (!result.ok) {
         ui.warn(result.error);
@@ -393,6 +394,7 @@ export async function handleWorkspaceCommands(cmd: string, arg: string, rest: st
               // 状态同步失败不影响模式切换
             }
             ui.success(`权限模式 → ${picked}`);
+            ctx.onStatusLineRefresh?.();
           } else {
             ui.info("已取消。");
           }
@@ -419,6 +421,7 @@ export async function handleWorkspaceCommands(cmd: string, arg: string, rest: st
         // 状态同步失败不影响模式切换
       }
       ui.success(`权限模式 → ${m}`);
+      ctx.onStatusLineRefresh?.();
       // 两套概念别混（issue #14）：/mode plan 只是只读闸门，不会进入交互规划工作流。
       if (m === "plan") {
         ui.info("这是只读闸门：禁止一切写操作，没有「确认后放开」这一步。");

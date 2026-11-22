@@ -158,4 +158,6 @@ export interface CommandContext {
   replaceRules?: (cwd: string, rules: ProjectRule[]) => void;
   /** 换根后重启语言服务器；失败只警告、不回滚。 */
   restartLsp?: (cfg: Config) => void | Promise<void>;
+  /** #57：自定义状态区事件刷新（防抖由控制器负责）。 */
+  onStatusLineRefresh?: () => void;
 }

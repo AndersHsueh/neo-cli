@@ -141,6 +141,7 @@ export function createRepl(s: AppSession): ReplState {
     restartLsp: async (c) => {
       await lspServers.configure(c);
     },
+    onStatusLineRefresh: () => s.statusLine?.requestRefresh(),
   });
   // ---- 共享：队列 / drain / 输入源抽象（TTY composer 与 readline 共用）----
   repl.composer = null;
@@ -291,6 +292,8 @@ export function createRepl(s: AppSession): ReplState {
 
   /** 退出：两类输入源都收敛到 closeInput()。 */
   repl.shutdown = async function shutdown(): Promise<void> {
+    s.statusLine?.dispose();
+    s.statusLine = null;
     // issue #45：退出前把后台任务表的最新状态同步进 session（任务可能在上一次请求之后才完成）。
     syncBackgroundJobs();
     // issue #40：资源清理统一走 cleanupEphemeral（与 -p / 非交互路径同一份清单）。
@@ -384,6 +387,7 @@ export function createRepl(s: AppSession): ReplState {
                 // 自相矛盾。currentSelection 只算不写 —— 不碰 messages[0]，提示词何时生效不受影响。
                 promptManager,
                 persistSession: persist,
+                onStatusLineRefresh: () => s.statusLine?.requestRefresh(),
                 previousCwd,
                 fileIndex: repl.fileIndex,
                 turnActive: () => repl.turnActive,
@@ -406,6 +410,7 @@ export function createRepl(s: AppSession): ReplState {
                   // issue #19：名字进了系统提示词身份句，rename 后必须重建，否则模型仍自称旧名。
                   promptManager.setSessionName(name);
                   agent.refreshSystemPrompt();
+                  if (name && !/^Neo#[1-9]\d*$/.test(name)) s.statusLine?.requestRefresh();
                 },
                 // issue #13：/技能名 把合成消息排进队列，由 drain 的 while 在下一轮取出。
                 // 不在这里直接 agent.send —— drain 正在跑，重入会打乱 draining 状态机。
@@ -630,6 +635,15 @@ export function createRepl(s: AppSession): ReplState {
             agent.endUserTurn();
             repl.turnActive = false;
             s.composerRef?.setBusy(false);
+            if (
+              outcome !== "error"
+              && !turnStats?.aborted
+              && !turnStats?.blocked
+              && !turnStats?.compactBlocked
+              && agent.messages.some((m) => m.role === "assistant")
+            ) {
+              s.statusLine?.requestRefresh();
+            }
             // issue #25：self 节奏循环在「每轮结束」后排下一拍（interval 模式自己在定时器里排）。
             if (turnStats?.blocked || turnStats?.compactBlocked || turnStats?.aborted) repl.loopScheduler.stop();
             else repl.loopScheduler.onTurnEnd();

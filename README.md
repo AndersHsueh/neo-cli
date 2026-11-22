@@ -129,6 +129,50 @@ Windows 启动用 `neo.cmd`（需要 Bun 在 PATH）；Linux/macOS 用 `neo.sh` 
 | `env` | 环境探测与注入（`enabled` / `probe_ttl_hours` / `prompt` / `wiki_page`），见下 |
 | `mcpServers` | 外部 MCP server（stdio），工具动态注册为 `mcp__<server>__<tool>`，见下 |
 | `hooks` | 生命周期 hooks（工具、会话、用户提交、停止与压缩事件），见下 |
+| `statusLine` | 交互 TUI 自定义状态区（一条 shell 命令，见下） |
+
+### statusLine —— 自定义状态区（issue #57）
+
+配置写在获胜的那一份 `settings.json` 顶层 `statusLine`；第一份存在的文件全赢，不合并多层。
+改配置要新开会话（neo 不做 settings 热重载；官方是存盘即重载，改 command 立刻跑且跳过防抖）。
+
+布局：自定义行在输入框与内置状态行之间，不替换内置行。官方同样不替换 footer badges；
+官方配置自定义后会藏 `? for shortcuts` 等 hint；neo 无这些 footer hint，也不藏内置行。
+
+未配置或 `command` 为空则只有内置行，画面与现在完全一样。`--safe-mode`、`-p`、非 TTY、ACP 也不跑命令。
+`--safe-mode` 会显式跳过 `statusLine`（帮助列举里写了 status line）。
+
+失败 / 超时 / 非 0 / 空输出：只让自定义区空白，内置行不变，不往对话打错误、不弹横幅。
+
+不按帧跑；事件防抖 300ms；会话开始第一次立刻跑；可选 `refreshInterval`（最小 1 秒）；
+默认超时 2 秒、上限 10 秒（neo 自定；官方 schema 没有 timeout 字段）。
+刷新集比官方多：`/cd`、`/add-dir`、`/worktree` 及对应工具、`/model`、`/clear`、额外根变化。
+
+多行最多 5 行（丢底部）；`padding` 上限 8；stdout 硬上限 8KiB。均为 neo 自定。
+ANSI / OSC 8 可输出，但不承诺可点击。
+
+JSON 只含 neo 能诚实给出的官方字段名。`context_window.used_percentage` / `remaining_percentage`
+用 `estimateTokens(messages, 当前工具规格) / contextWindow`，与内置行同一口径，不是官方
+「最近一次 API 响应、只计 input/cache、不含 output」。`workspace.project_dir` 是经过
+`-C` / `--worktree` 解析后、第一次进对话的主根，不要按进程启动目录对账。`version` 是 neo 版本。
+没有费用、`rate_limits`、`prompt_cache`，也不输出 `transcript_path`。
+
+不提供 /statusline 命令，只支持手写 settings。
+这不是沙箱，也没有工作区信任对话框。用户自己 settings 里的命令按用户权限跑，口径与 hooks 相同。
+
+例：
+
+```json
+{
+  "statusLine": {
+    "type": "command",
+    "command": "~/.neo/statusline.sh",
+    "padding": 0,
+    "refreshInterval": 5,
+    "timeout": 2
+  }
+}
+```
 
 ### hooks —— 生命周期脚本（issue #3 / #56 / #64 / #86）
 

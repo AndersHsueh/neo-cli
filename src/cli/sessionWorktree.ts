@@ -460,6 +460,7 @@ function switchDepsFromContext(ctx: CommandContext): SessionWorktreeDeps | null 
     ...(ctx.checkpoints ? { checkpoints: ctx.checkpoints } : {}),
     ...(ctx.replaceRules ? { replaceRules: ctx.replaceRules } : {}),
     ...(ctx.restartLsp ? { restartLsp: ctx.restartLsp } : {}),
+    ...(ctx.onStatusLineRefresh ? { onStatusLineRefresh: ctx.onStatusLineRefresh } : {}),
     turnActive,
     wikiRunning: ctx.wikiMaintainer?.running === true,
     backgroundTasks: (ctx.tasks?.list() ?? []).map((t) => ({ status: t.status, ...(t.kind ? { kind: t.kind } : {}) })),

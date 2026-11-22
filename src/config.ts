@@ -21,6 +21,7 @@ import { fileURLToPath } from "node:url";
 import type { EnvConfig } from "./env/types.ts";
 import type { ShellConfig } from "./shell.ts";
 import { parseHooksConfig } from "./hooks/types.ts";
+import { statusLineConfigFields } from "./tui/statusLine.ts";
 import { DEFAULT_SELECTION_CONFIG, TIER_ORDER, type PromptSelectionConfig } from "./prompt/select.ts";
 
 import {
@@ -711,6 +712,7 @@ export function loadConfig(overrides: Partial<Config> = {}, options: LoadConfigO
     mcp: resolveMcpConfig(raw["mcp"]).config,
     // hooks 同理只认本地：模板里的示例 hook 不该在用户机器上被执行。
     hooks: parseHooksConfig(raw["hooks"]),
+    ...statusLineConfigFields(raw["statusLine"]),
     env: resolveEnvConfig(raw["env"]),
     systemPrompt: resolveSystemPromptConfig(raw["system_prompt"]),
     paste: resolvePasteConfig(raw["paste"] as Raw | undefined),

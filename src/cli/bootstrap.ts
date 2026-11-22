@@ -550,6 +550,7 @@ export async function bootstrap() {
   for (const w of cfg.maxTokensWarnings) ui.warn(w);
   for (const w of cfg.lspWarnings) ui.warn(w);
   for (const w of cfg.outputStyleWarnings) ui.warn(w);
+  for (const w of cfg.statusLineWarnings ?? []) ui.warn(w);
 
   // issue #9：让用户一眼看出「这次会话在 worktree 里」，而不是在主仓库里改文件。
   if (worktreeInfo) {

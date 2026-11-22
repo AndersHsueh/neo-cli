@@ -44,7 +44,7 @@ ${c.bold("选项")}
                         同模型重试耗尽后才切换；会话内保持目标，不自动回切、不改写 settings
                         仅主 Agent 请求生效；提高可恢复性，但不保证任务成功
       --safe-mode       以干净配置启动，用于排查自定义项故障（不加载 AGENTS.md / 路径规则 /
-                        技能 / 自定义子代理 / hooks / MCP / LSP / 仓库地图 / 记忆 wiki）。登录、provider /
+                        技能 / 自定义子代理 / hooks / MCP / LSP / 仓库地图 / 记忆 wiki / status line）。登录、provider /
                         模型、内置工具与 /mode 仍可用。只影响本次进程，不改 settings.json。
                         这不是沙箱。等效环境变量 NEO_SAFE_MODE=1/true/yes（大小写不敏感）
       --drive <检查命令>  -p 无人值守长跑：每轮结束跑检查命令，exit 0 = 达成（已验证）。
@@ -203,6 +203,27 @@ ${c.bold("输入")}
   粘贴             小段多行直接进输入框；大段/超长折叠为 [Pasted text #N]
   行尾 \\          多行的等价触发（不支持 Ctrl+J 的终端用这个）
   鼠标/全屏        不使用 alt-screen：历史始终留在终端 scrollback，Cmd+F/tmux 可用
+
+
+${c.bold("自定义状态区（settings.statusLine）")}
+  配置写在获胜的那一份 settings.json 顶层 statusLine；第一份存在的文件全赢，不合并多层。
+  改配置要新开会话（neo 不做 settings 热重载；官方是存盘即重载，改 command 立刻跑且跳过防抖）。
+  布局：自定义行在输入框与内置状态行之间，不替换内置行。官方同样不替换 footer badges。
+  官方配置自定义后会藏 "? for shortcuts" 等 hint；neo 无这些 footer hint，也不藏内置行。
+  未配置或 command 为空则只有内置行，画面与现在完全一样。--safe-mode、-p、非 TTY、ACP 也不跑命令。
+  失败 / 超时 / 非 0 / 空输出：只让自定义区空白，内置行不变，不往对话打错误、不弹横幅。
+  不按帧跑；事件防抖 300ms；会话开始第一次立刻跑；可选 refreshInterval（最小 1 秒）；
+  默认超时 2 秒、上限 10 秒（neo 自定；官方 schema 没有 timeout 字段）。
+  刷新集比官方多：/cd、/add-dir、/worktree 及对应工具、/model、/clear、额外根变化。
+  多行最多 5 行（丢底部）；padding 上限 8；stdout 硬上限 8KiB。均为 neo 自定。
+  ANSI / OSC 8 可输出，但不承诺可点击。
+  JSON 只含 neo 能诚实给出的官方字段名。context_window.used_percentage / remaining_percentage
+  用 estimateTokens(messages, 当前工具规格) / contextWindow，与内置行同一口径，不是官方
+  「最近一次 API 响应、只计 input/cache、不含 output」。workspace.project_dir 是经过
+  -C / --worktree 解析后、第一次进对话的主根，不要按进程启动目录对账。version 是 neo 版本。
+  没有费用、rate_limits、prompt_cache，也不输出 transcript_path。
+  不提供 /statusline 命令，只支持手写 settings。
+  这不是沙箱，也没有工作区信任对话框。用户自己 settings 里的命令按用户权限跑，口径与 hooks 相同。
 
 ${c.bold("环境变量")}
   NEO_PROVIDER / NEO_TIER / NEO_MODEL / NEO_BASE_URL / NEO_API_KEY  覆盖 settings.json

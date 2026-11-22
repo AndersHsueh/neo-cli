@@ -73,6 +73,7 @@ export async function handleSessionCommands(cmd: string, arg: string, rest: stri
       // 失败只诊断 —— 用户已经清空了上下文，不能因为 hook 失败就卡住。
       await agent.runSessionStart("clear");
       ui.success("上下文已清空。");
+      ctx.onStatusLineRefresh?.();
       return true;
 
     case "compact": {
@@ -100,14 +101,18 @@ export async function handleSessionCommands(cmd: string, arg: string, rest: stri
         }
         ui.line(`定点压缩：从第 ${raw} 轮往后…`);
         const ok = await agent.compact({ from });
-        if (ok) ui.success(`压缩完成。上下文使用率 ${(agent.contextUsage() * 100).toFixed(1)}%`);
-        else ui.warn("该轮之后的消息太少或压缩失败，未做处理。");
+        if (ok) {
+          ui.success(`压缩完成。上下文使用率 ${(agent.contextUsage() * 100).toFixed(1)}%`);
+          ctx.onStatusLineRefresh?.();
+        } else ui.warn("该轮之后的消息太少或压缩失败，未做处理。");
         return true;
       }
       ui.line("压缩上下文中…");
       const ok = await agent.compact();
-      if (ok) ui.success(`压缩完成。上下文使用率 ${(agent.contextUsage() * 100).toFixed(1)}%`);
-      else ui.warn("对话太短或压缩失败，未做处理。");
+      if (ok) {
+        ui.success(`压缩完成。上下文使用率 ${(agent.contextUsage() * 100).toFixed(1)}%`);
+        ctx.onStatusLineRefresh?.();
+      } else ui.warn("对话太短或压缩失败，未做处理。");
       return true;
     }
 
@@ -572,6 +577,7 @@ export async function handleSessionCommands(cmd: string, arg: string, rest: stri
             agent.noteModelChange(cfg);
             refreshCapabilitiesAfterModelSwitch(cfg);
             ui.success(`模型已切到 ${picked}（本次会话内生效，已绕过档位）。`);
+            ctx.onStatusLineRefresh?.();
           } else {
             ui.info("已取消。");
           }
@@ -590,6 +596,7 @@ export async function handleSessionCommands(cmd: string, arg: string, rest: stri
       agent.noteModelChange(cfg);
       refreshCapabilitiesAfterModelSwitch(cfg);
       ui.success(`模型已切到 ${arg}（本次会话内生效，已绕过档位）。`);
+      ctx.onStatusLineRefresh?.();
       return true;
     }
 

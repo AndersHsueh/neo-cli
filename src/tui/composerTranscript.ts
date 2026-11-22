@@ -54,15 +54,16 @@ export function composeTranscriptFrame(
   maxRows: number,
   box: { rows: string[]; cursorRow: number; cursorCol: number },
   statusRow: string,
+  customRows: string[] = [],
 ): ComposedFrame {
-  const reserved = box.rows.length + 1;
+  const reserved = box.rows.length + 1 + customRows.length;
   const height = Math.max(3, maxRows - reserved);
   const panel = renderTranscriptPanel(this.transcriptView!, {
     width,
     height,
     busy: this.busy,
   });
-  const rows = [...panel.lines, ...box.rows, statusRow];
+  const rows = [...panel.lines, ...box.rows, ...customRows, statusRow];
   let cursorRow = panel.cursorRow;
   let cursorCol = panel.cursorCol;
   if (rows.length > maxRows) {

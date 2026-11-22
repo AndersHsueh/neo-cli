@@ -33,6 +33,7 @@ function confirmSwitch(style: OutputStyle, ctx: CommandContext): void {
   const notice = keepCodingInstructionsNotice(style);
   if (notice) ui.info(notice);
   ui.line(c.dim(persistOutputStyleHint(cfg.settingsPath)));
+  ctx.onStatusLineRefresh?.();
 }
 
 export async function handleOutputStyleCommand(arg: string, ctx: CommandContext): Promise<boolean> {

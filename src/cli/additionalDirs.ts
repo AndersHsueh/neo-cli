@@ -223,6 +223,7 @@ function applyAdditionalDirs(ctx: CommandContext, dirs: string[]): void {
   ctx.promptManager?.setProjectMemory(composeSessionProjectMemory(cfg));
   ctx.promptManager?.invalidate();
   ctx.agent.refreshSystemPrompt();
+  ctx.onStatusLineRefresh?.();
 }
 
 /** `/add-dir` 参数切词：空白分隔，支持 "…" / '…' 包住含空格的路径。 */

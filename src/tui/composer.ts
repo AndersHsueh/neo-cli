@@ -125,6 +125,8 @@ export interface ComposerDeps {
   columns?: () => number;
   rows?: () => number;
   getStatus: () => ComposerStatus;
+  /** #57：自定义状态区行（已裁好宽度）。隐藏时机由 Composer 决定。 */
+  getCustomStatusRows?: (width: number) => string[];
   /** 顶线右侧标签（会话名 / cwd 短名）。 */
   getTitle?: () => string | TitleView;
   commands: CommandEntry[];
@@ -641,9 +643,10 @@ export class Composer {
     const maxRows = this.maxFrameRows();
     const status = this.buildStatus(width);
     const statusRow = renderStatus(status, (role, text) => paintRole(role, text));
+    const customRows = this.customStatusRows(width);
     if (this.transcriptView && this.mode === "normal") {
       const box = this.composeInput(width, this.buf, this.shellMode ? "shell" : "normal");
-      return this.composeTranscriptFrame(width, maxRows, box, statusRow);
+      return this.composeTranscriptFrame(width, maxRows, box, statusRow, customRows);
     }
 
     const extras: string[] = [];
@@ -666,7 +669,7 @@ export class Composer {
 
     if (this.mode === "select" && this.select) {
       const box = this.composeSelect(width, this.select);
-      rows = [...extras, ...box.rows, statusRow];
+      rows = [...extras, ...box.rows, ...customRows, statusRow];
       const extraCount = extras.length;
       cursorRow = extraCount + box.cursorRow;
       cursorCol = box.cursorCol;
@@ -674,29 +677,31 @@ export class Composer {
       const q = wrapAnsi(c.warn(`? ${this.askState.question}`), width);
       extras.push(...q);
       const box = this.composeInput(width, this.askState.buf, "ask");
-      rows = [...extras, ...box.rows, statusRow];
+      rows = [...extras, ...box.rows, ...customRows, statusRow];
       cursorRow = extras.length + box.cursorRow;
       cursorCol = box.cursorCol;
     } else if (this.mode === "ask_user" && this.askUserState) {
       const box = this.composeAskUser(width, this.askUserState);
-      rows = [...extras, ...box.rows, statusRow];
+      rows = [...extras, ...box.rows, ...customRows, statusRow];
       cursorRow = extras.length + box.cursorRow;
       cursorCol = box.cursorCol;
     } else {
       const box = this.composeInput(width, this.buf, this.shellMode ? "shell" : "normal");
-      rows = [...extras, ...box.rows, statusRow];
+      rows = [...extras, ...box.rows, ...customRows, statusRow];
       cursorRow = extras.length + box.cursorRow;
       cursorCol = box.cursorCol;
     }
 
-    // 高度不够：从顶部丢 extras（pending/hint/notice/activity），再丢输入窗口顶部行
+    // 高度不够：从顶部丢 extras，再丢输入窗口顶部行；自定义行与内置行一起留在底部。
     while (rows.length > maxRows && extras.length > 0) {
       rows = rows.slice(1);
       extras.shift();
       cursorRow -= 1;
     }
     if (rows.length > maxRows) {
-      const drop = rows.length - maxRows;
+      const footer = customRows.length + 1;
+      const prefixLen = Math.max(0, rows.length - footer);
+      const drop = Math.min(rows.length - maxRows, prefixLen);
       rows = rows.slice(drop);
       cursorRow -= drop;
     }
@@ -711,6 +716,13 @@ export class Composer {
       width,
       queueCount: this.queueCount,
     };
+  }
+
+  /** #57：ask / select / ask_user / 空输入 ? 帮助面板期间隐藏自定义行。 */
+  customStatusRows(width: number): string[] {
+    if (this.helpOpen) return [];
+    if (this.mode === "ask" || this.mode === "select" || this.mode === "ask_user") return [];
+    return this.deps.getCustomStatusRows?.(width) ?? [];
   }
 
   /** 当前输入框强调色：随权限模式 / shell 模式变（issue #79）。 */
