@@ -681,4 +681,27 @@ describe("#57 控制器：防抖、取消在途、失败隔离", () => {
     expect(calls.length).toBe(1);
     ctl.dispose();
   });
+
+  test("refreshInterval 等首跑结算后再计时：interval=1s 且首跑超过 1s，第一屏仍能出现自定义行", async () => {
+    const dir = sandbox("neo-57-interval-first-");
+    const script = join(dir, "slow-first.sh");
+    writeFileSync(script, "#!/bin/sh\nsleep 1.3\necho FIRST-SCREEN-57\n", { mode: 0o755 });
+    const calls: Array<{ argv: string[]; env: NodeJS.ProcessEnv; cwd?: string }> = [];
+    const ctl = createStatusLineController({
+      getSettings: () => ({ command: script, padding: 0, refreshInterval: 1, timeout: 10 }),
+      buildPayload: () => buildStatusLinePayload({ ...payloadOnce, cwd: dir, projectDir: dir }),
+      getCwd: () => dir,
+      getSize: () => ({ columns: 80, rows: 24 }),
+      getShellConfig: () => ({ cwd: dir } as Config),
+      spawnFn: countingSpawn(calls),
+    });
+    ctl.start();
+    await new Promise((r) => setTimeout(r, 1100));
+    expect(ctl.isRunning()).toBe(true);
+    expect(calls.length).toBe(1);
+    await new Promise((r) => setTimeout(r, 800));
+    expect(ctl.visibleRows(80).some((l) => l.includes("FIRST-SCREEN-57"))).toBe(true);
+    expect(calls.length).toBe(1);
+    ctl.dispose();
+  });
 });
