@@ -637,3 +637,60 @@ describe("issue #76 空闲时按需启停 composer tick", () => {
     h.composer.stop();
   });
 });
+
+
+
+describe("issue #57 自定义状态行布局与隐藏", () => {
+  test("自定义行插在输入框与内置状态行之间，不替换内置行", () => {
+    const h = makeHarness({
+      getCustomStatusRows: () => ["CUSTOM-SL-A", "CUSTOM-SL-B"],
+    });
+    const rows = h.composer.compose().rows;
+    const customA = rows.findIndex((r) => r.includes("CUSTOM-SL-A"));
+    const customB = rows.findIndex((r) => r.includes("CUSTOM-SL-B"));
+    const status = rows.findIndex((r) => r.includes("ctx ") && r.includes("·"));
+    const input = rows.findIndex((r) => r.includes("─"));
+    expect(customA).toBeGreaterThanOrEqual(0);
+    expect(customB).toBe(customA + 1);
+    expect(status).toBeGreaterThan(customB);
+    expect(input).toBeGreaterThanOrEqual(0);
+    expect(input).toBeLessThan(customA);
+    expect(rows.filter((r) => r.includes("ctx ") && r.includes("·")).length).toBe(1);
+    h.composer.stop();
+  });
+
+  test("? 帮助面板、ask、select、ask_user 期间隐藏自定义行，关掉后恢复", async () => {
+    const h = makeHarness({
+      getCustomStatusRows: () => ["CUSTOM-SL-HIDE"],
+    });
+    expect(h.composer.compose().rows.join("\n")).toContain("CUSTOM-SL-HIDE");
+
+    special(h, { ch: "?" });
+    expect(h.composer.compose().rows.join("\n")).not.toContain("CUSTOM-SL-HIDE");
+    expect(h.composer.compose().rows.join("\n")).toMatch(/ctx /);
+    special(h, { name: "escape" });
+    expect(h.composer.compose().rows.join("\n")).toContain("CUSTOM-SL-HIDE");
+
+    const ask = h.composer.ask("是否继续？");
+    expect(h.composer.compose().rows.join("\n")).not.toContain("CUSTOM-SL-HIDE");
+    expect(h.composer.compose().rows.join("\n")).toMatch(/ctx /);
+    special(h, { name: "escape" });
+    expect(await ask).toBe("");
+    expect(h.composer.compose().rows.join("\n")).toContain("CUSTOM-SL-HIDE");
+
+    const choose = h.composer.choose("选一个", [{ label: "x", value: "x" }]);
+    expect(h.composer.compose().rows.join("\n")).not.toContain("CUSTOM-SL-HIDE");
+    expect(h.composer.compose().rows.join("\n")).toMatch(/ctx /);
+    special(h, { name: "escape" });
+    expect(await choose).toBe(null);
+    expect(h.composer.compose().rows.join("\n")).toContain("CUSTOM-SL-HIDE");
+
+    const user = h.composer.askUser({ question: "项目名？", options: [{ label: "是" }] });
+    expect(h.composer.compose().rows.join("\n")).not.toContain("CUSTOM-SL-HIDE");
+    expect(h.composer.compose().rows.join("\n")).toMatch(/ctx /);
+    special(h, { name: "escape" });
+    await user.catch(() => {});
+    expect(h.composer.compose().rows.join("\n")).toContain("CUSTOM-SL-HIDE");
+    h.composer.stop();
+  });
+});

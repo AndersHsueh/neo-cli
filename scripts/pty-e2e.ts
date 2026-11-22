@@ -3878,7 +3878,56 @@ async function scenarioS48(tmpRoot: string): Promise<void> {
   }
 }
 
+/** #57 S49：自定义状态行出现在内置状态行上方；内置行仍在。 */
+async function scenarioS49(tmpRoot: string): Promise<void> {
+  const dirs = await makeDirs(tmpRoot, "s49-custom-statusline");
+  const fake = await startFake("resume");
+  const run = await startNeo({
+    fake,
+    dirs,
+    name: "s49",
+    args: BASE_ARGS,
+    cols: DEFAULT_COLS,
+    rows: DEFAULT_ROWS,
+    settings: {
+      ...PTY_SETTINGS,
+      statusLine: { type: "command", command: "printf 'CUSTOM-SL-57\\n'" },
+    },
+  });
+  try {
+    await waitPrompt(run);
+    await waitFor(() => run.screen.text().includes("CUSTOM-SL-57"), {
+      label: "自定义状态行 CUSTOM-SL-57 出现",
+      run,
+      timeoutMs: 8000,
+    });
+    const lines = run.screen.lines();
+    const custom = lines.findIndex((l) => l.includes("CUSTOM-SL-57"));
+    let status = -1;
+    for (let i = lines.length - 1; i >= 0; i--) {
+      const l = (lines[i] ?? "").trimEnd();
+      if (l.includes("ctx ") && l.includes("·")) {
+        status = i;
+        break;
+      }
+    }
+    check(custom >= 0, "自定义行未出现在屏幕上", run.screen);
+    check(status >= 0, "内置状态行消失", run.screen);
+    check(custom < status, `自定义行应在内置行上方（custom=${custom} status=${status}）`, run.screen);
+    maybeDumpScreen(run.screen);
+    await run.type("/exit");
+    await run.waitExit();
+  } catch (e) {
+    throw attachScreen(e, run.screen, run.stderr);
+  } finally {
+    await run.close();
+    await fake.stop();
+  }
+}
+
+
 const SCENARIOS: Scenario[] = [
+  {id:"s49", title:"#57 自定义状态行出现在内置状态行上方",fn:scenarioS49,focus:["CUSTOM-SL-57"]},
   {id:"s42", title:"#63 交互 TTY：--add-dir 多余位置参数报用法错误 2",fn:scenarioS42,focus:["每个目录各写一次 --add-dir"]},
   {id:"s42b", title:"#63 交互 TTY：-p 同样报多余位置参数错；单个 --add-dir 的 -p 照常",fn:scenarioS42b,focus:["每个目录各写一次 --add-dir"]},
   {id:"s43", title:"#63 /add-dir 加入/列出，/cd 换主根清空额外根",fn:scenarioS43,focus:["已加入","已清空本会话额外工作根"]},
