@@ -93,6 +93,11 @@ export function buildSystemPrompt(
   opts: {
     mailbox?: boolean;
     askUser?: boolean;
+    /**
+     * 是否在系统提示里暴露 monitor（issue #100）。
+     * 缺省 / 不传 = 暴露（CLI 默认）。ACP 传 false。
+     */
+    monitor?: boolean;
     mcpLoaded?: ReadonlySet<string> | Iterable<string>;
     /**
      * 非交互入口（`-p` / ACP）。issue #71：Code Mode 只开交互 TUI，
@@ -117,11 +122,15 @@ export function buildSystemPrompt(
   // 不能只靠 CONDITIONAL_TOOL_NAMES —— mainToolNames 会把 run_js 滤掉，
   // 提示词「可用工具」行与 /tools 都要显式补回来。
   const codeModeOn = codeModeVisibleForPrompt(cfg, opts.nonInteractive === true);
+  const monitorOn = opts.monitor !== false;
   const tools = [
-    ...mainToolNames(cfg),
+    ...mainToolNames(cfg).filter((n) => monitorOn || n !== "monitor"),
     ...(codeModeOn ? [CODE_MODE_TOOL_NAME] : []),
   ].join(", ");
   const codeModeLine = codeModeOn ? `${codeModePromptSection()}\n` : "";
+  const monitorLine = monitorOn
+    ? "- monitor：启动有限时的命令输出监视，行到达时自动回流当前会话（不要用 shell_output 轮询）。用户也可用 /monitor 启/列/停。本轮不支持 WebSocket 源。\n"
+    : "";
   // issue #68：MCP 工具延迟加载时，把「未装入」的工具以目录短节（名字 + 约 80 字描述，
   // 不含 schema）告诉模型。未启用延迟加载时返回空串，提示词与今日完全一致。
   // 已装入集合由调用方给（PromptManager 传会话的已加载集合）：装入后该工具不再出现在
@@ -178,8 +187,7 @@ ${askUserRule}
 - list_dir / glob / grep：探索代码库。找东西用 grep，找文件用 glob。
 - shell：执行命令。安装依赖、跑测试、git 操作走这里。长跑命令（dev server / watch / 长测试）传 background:true，立刻返回 id，不阻塞会话；前台命令超时也会自动转后台而不是被杀。
 - shell_output：按 id（sh-N）读后台命令的状态与输出尾部（/ps 可列出，/ps kill 停止）。
-- monitor：启动有限时的命令输出监视，行到达时自动回流当前会话（不要用 shell_output 轮询）。用户也可用 /monitor 启/列/停。本轮不支持 WebSocket 源。
-${lspToolLine}- web_fetch：抓网页转纯文本，查文档用。
+${monitorLine}${lspToolLine}- web_fetch：抓网页转纯文本，查文档用。
 - web_search：用 cn.bing.com RSS 搜全网（无需 API key），返回标题/URL/摘要；搜索优先用它，再对结果 web_fetch。
 - use_skill：按需加载技能正文（技能索引见下方「技能」节）。
 - task：派生隔离子代理跑探索/多文件改动，返回结论与用量；子代理不能用 task 递归派生。可选 agent 参数指定自定义命名子代理（见下方「自定义子代理」节；不传则为通用子代理）。

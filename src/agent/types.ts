@@ -259,6 +259,12 @@ export interface AgentOptions {
    */
   toolAllowlist?: readonly string[];
   /**
+   * 宿主侧排除表（issue #100）：从 toolSpecsFor 拿掉这些工具，dispatch 再挡一次。
+   * 文案与「未知工具」同前缀。不传 = 不额外排除。
+   * 不要用 toolAllowlist 反做黑名单，也不要把排除项塞进全局 CONDITIONAL_TOOL_NAMES。
+   */
+  excludeTools?: readonly string[];
+  /**
    * 父会话的 MCP 已加载集合（issue #68，仅子代理派生时传）。
    *
    * 子代理**拷贝**父会话当时的集合（新 Set），自带 `tool_search`；

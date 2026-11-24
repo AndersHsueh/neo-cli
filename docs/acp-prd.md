@@ -190,6 +190,10 @@ ACP 是编辑器里的**交互会话**，记忆走交互模式：用户级 + 项
 跨会话信箱（`src/mailbox/`）与定时循环（`/loop`）**默认关**，不顺手开：ACP 会话不注册 `send_message` /
 `list_peers` 工具，不跑 mailbox tick / watchdog。
 
+`monitor` 暂不向 ACP 暴露（工具清单与系统提示都不出现 `monitor：` 那一行，也不出现「用户也可用 /monitor」）。
+会话释放仍走 `cleanupEphemeral`，按进程组回收监视（含组内子进程）。这不是「ACP 不回收监视」。
+把监视输出回流到 ACP 会话是后续单，不在本范围。
+
 ### 2.13 文档
 
 - `--help`（`src/cli/help.ts`）增加 `neo acp` 一行，说明「stdio 上的 ACP 服务端，供 Zed/JetBrains 等编辑器拉起」；
@@ -272,6 +276,7 @@ ACP 是编辑器里的**交互会话**，记忆走交互模式：用户级 + 项
 - MCP 的 HTTP / SSE 传输（stdio 已做，不广告 http/sse）；
 - `promptCapabilities.image` / `audio` / 内嵌 `resource`（未映射，显式 `false`；`resource_link` 已做）；
 - `session_info_update` / `notice` / compaction 相关 update 广告（`usage_update` 已做）。
+- `monitor` 暂不向 ACP 暴露；会话释放仍走 `cleanupEphemeral`，按进程组回收监视（含组内子进程）。接上 `configure` / `onTurnEnd` 与输出回流是后续单。
 
 ## 6 参考
 
@@ -294,3 +299,4 @@ ACP 是编辑器里的**交互会话**，记忆走交互模式：用户级 + 项
 - 2026-11-17（issue #75）：`SIGINT` / `SIGHUP` / `SIGTERM` 先 `dispose`（含按进程组回收后台 shell）再分别以 130 / 129 / 143 退出。模型 `shell` 工具已 setsid 脱组，信号不会自动传到子进程。
 - 2026-11-18（issue #80）：斜杠命令广告、`session/set_mode`（档位 ask / auto-edit / auto-all / plan）、
   `session/load`（复用 `--resume`，仍单 session）、`usage_update`（真实 token/上下文占用）已做。
+- 2026-11-24（issue #100）：ACP `dispose()` 改为调用 `cleanupEphemeral({ shells, monitors, mcp })`，不再手写释放清单。`monitor` 暂不暴露；会话释放仍按进程组回收监视（含组内子进程）。

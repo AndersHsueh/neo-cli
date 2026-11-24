@@ -397,10 +397,17 @@ export class Agent {
       const allow = this.opt.toolAllowlist;
       return allow ? specs.filter((s) => allow.includes(s.function.name)) : specs;
     };
+    // 宿主侧排除表（issue #100）：在白名单之后再摘掉，避免 ACP 用 allowlist 反做黑名单。
+    const exclude = (specs: ToolSpec[]): ToolSpec[] => {
+      const blocked = this.opt.excludeTools;
+      return blocked && blocked.length > 0
+        ? specs.filter((s) => !blocked.includes(s.function.name))
+        : specs;
+    };
     // 规划态（issue #14）：只给只读工具 + 提交/退出方案两个控制工具。
     // 写盘/执行类工具从清单里摘掉，模型不会「先试着调一下再被拒」。
     // issue #68：规划态同样不暴露 MCP 与 tool_search（白名单里本来就没有它们）。
-    if (this.planning) return narrow(gate(filterPlanTools(all)));
+    if (this.planning) return exclude(narrow(gate(filterPlanTools(all))));
     // 非规划态不把规划控制工具交给模型：平时调不通，留在清单里只会诱使误调。
     // 主代理仍拿其余全量工具（含运行时注册的 task/wiki/remember 等）。
     // v0.2.0 曾把子代理排除表误用于主代理，导致那些工具从未出现。
@@ -408,7 +415,7 @@ export class Agent {
     const base = this.opt.isSubagent
       ? withoutPlan.filter((s) => !TOOL_NAMES_EXCLUDED_FOR_SUBAGENT.includes(s.function.name))
       : withoutPlan;
-    return narrow(this.deferMcpSpecs(gate(base)));
+    return exclude(narrow(this.deferMcpSpecs(gate(base))));
   }
 
   /**

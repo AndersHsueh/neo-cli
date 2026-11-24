@@ -40,6 +40,8 @@ import type { UsageUpdate } from "@agentclientprotocol/sdk";
 import { CheckpointStore } from "../checkpoint.ts";
 import { McpManager } from "../mcp/index.ts";
 import { backgroundShells } from "../tools/backgroundShell.ts";
+import { cleanupEphemeral } from "../cleanup.ts";
+import { sessionMonitors } from "../monitors.ts";
 import { runAcpTurn, type AcpStopReason } from "./turn.ts";
 
 /** 诊断只走 stderr：stdout 是协议通道。 */
@@ -166,6 +168,8 @@ export async function createAcpSession(opts: CreateAcpSessionOptions): Promise<A
     // 信箱在 ACP 默认关（PRD §2.12）：不注册 send_message / list_peers，提示词里也不提。
     mailbox: false,
     askUser: false,
+    // issue #100：暂不向 ACP 暴露 monitor（系统提示去掉那一行）。CLI 默认仍暴露。
+    monitor: false,
     sessionName: null,
   });
 
@@ -217,6 +221,8 @@ export async function createAcpSession(opts: CreateAcpSessionOptions): Promise<A
     refreshContextWindow: () => resolveAndApplyModelWindow(cfg),
     // 编辑器里没有 TUI 提问模态，ask_user 不注册。
     nonInteractive: true,
+    // issue #100：宿主侧排除 monitor；不要用 toolAllowlist 反做黑名单。
+    excludeTools: ["monitor"],
     // 审批走权限桥：decidePermission 已在 makeCtx 里先判过（plan/allow 不会到这里），
     // 这里只处理 needs-confirm —— 问编辑器，或（客户端不在/失败/超时）回退 settings。
     approve: async (tool, detail) => {
@@ -271,25 +277,32 @@ export async function createAcpSession(opts: CreateAcpSessionOptions): Promise<A
   });
 
   // ---- 工具注册：与 sessionStart 同一批运行时工具，但跳过信箱与 TUI 专属 ----
-  registerTool(
-    makeTaskTool({
-      run: (prompt, tier, ctx, promptTier, agentName) =>
-        runSubagent(agent, prompt, tier, ctx, promptTier, undefined, { agentName }, agentName),
-    }),
+  // 记下注销函数：单测同进程会多次 createAcpSession，dispose 时必须摘掉，
+  // 否则第二次 registerTool 会抛「已注册」，也会污染其它测试的工具清单。
+  const unregisters: Array<() => void> = [];
+  unregisters.push(
+    registerTool(
+      makeTaskTool({
+        run: (prompt, tier, ctx, promptTier, agentName) =>
+          runSubagent(agent, prompt, tier, ctx, promptTier, undefined, { agentName }, agentName),
+      }),
+    ),
   );
-  registerWikiTools(registerTool);
-  registerTool(makeRememberTool({ remember: (body, scope) => memory.remember(body, scope) }));
+  unregisters.push(registerWikiTools(registerTool));
+  unregisters.push(registerTool(makeRememberTool({ remember: (body, scope) => memory.remember(body, scope) })));
 
   let sessionTodos: TodoItem[] = Array.isArray(sess.meta.todos) ? sess.meta.todos : [];
-  registerTool(
-    makeTodoWriteTool({
-      get: () => sessionTodos,
-      set: (items) => {
-        sessionTodos = items;
-        sess.meta.todos = items;
-      },
-      persist: () => persist(agent.messages, sess.meta),
-    }),
+  unregisters.push(
+    registerTool(
+      makeTodoWriteTool({
+        get: () => sessionTodos,
+        set: (items) => {
+          sessionTodos = items;
+          sess.meta.todos = items;
+        },
+        persist: () => persist(agent.messages, sess.meta),
+      }),
+    ),
   );
 
   // 运行时工具注册完再刷新系统提示：`可用工具` 行由 toolNames() 现取。
@@ -431,7 +444,8 @@ export async function createAcpSession(opts: CreateAcpSessionOptions): Promise<A
     },
     dispose() {
       // 顺序：先结束在途权限询问（否则工具会卡到超时），再中止模型请求与工具
-      // （在途 shell 由 agent.cancel 的 AbortSignal 杀掉），最后关 MCP 连接。
+      // （在途 shell 由 agent.cancel 的 AbortSignal 杀掉），然后走 cleanupEphemeral
+      //（issue #100：与 CLI 共用释放清单，按进程组回收监视，含组内子进程）。
       cancelled = true;
       try {
         permissionBridge.abortPending();
@@ -443,20 +457,19 @@ export async function createAcpSession(opts: CreateAcpSessionOptions): Promise<A
       } catch (e) {
         log(`dispose：中止在途请求失败 ${(e as Error).message}`);
       }
-      // 后台 shell（background:true）不挂在 agent.cancel 的 AbortSignal 上，
-      // 与 TUI 退出（src/cleanup.ts）同口径单独收掉，否则 EOF 后还会写盘（第三轮 N1）。
-      try {
-        backgroundShells.killAll();
-      } catch (e) {
-        log(`dispose：结束后台 shell 失败 ${(e as Error).message}`);
-      }
-      if (mcpManager) {
+      cleanupEphemeral({
+        shells: backgroundShells,
+        monitors: sessionMonitors,
+        mcp: mcpManager,
+      });
+      for (const u of unregisters) {
         try {
-          mcpManager.closeAll();
+          u();
         } catch (e) {
-          log(`dispose：关闭 MCP 失败 ${(e as Error).message}`);
+          log(`dispose：注销运行时工具失败 ${(e as Error).message}`);
         }
       }
+      unregisters.length = 0;
     },
   };
 }

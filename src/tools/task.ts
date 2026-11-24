@@ -548,6 +548,10 @@ export async function runSubagent(
     checkpoint: ctx.checkpoint,
     // issue #53：白名单与写锁透传（不传 = 旧行为）。
     ...(effectiveOpts.toolAllowlist ? { toolAllowlist: effectiveOpts.toolAllowlist } : {}),
+    // issue #100：宿主排除表要跟着走，否则 ACP 里派 task 仍能调 monitor。
+    ...(main.opt.excludeTools && main.opt.excludeTools.length > 0
+      ? { excludeTools: main.opt.excludeTools }
+      : {}),
     ...(opts?.wikiWriteLock ? { wikiWriteLock: opts.wikiWriteLock } : {}),
     ...(opts?.approve ? { approve: opts.approve } : {}),
     // 生命周期 hooks（issue #3）：子代理的工具调用同样触发 Pre/PostToolUse ——

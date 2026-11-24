@@ -307,6 +307,9 @@ export function makeCtx(this: Agent, signal: AbortSignal): ToolCtx {
     // issue #53：逐次白名单与 wiki 写锁只在宿主显式传入时生效（主会话不传）。
     // issue #84：子代理身份透传给 dispatch，由 toolCallRejection 的 deny 拦排除表。
     ...(this.opt.toolAllowlist ? { toolAllowlist: this.opt.toolAllowlist } : {}),
+    ...(this.opt.excludeTools && this.opt.excludeTools.length > 0
+      ? { excludeTools: this.opt.excludeTools }
+      : {}),
     ...(this.opt.isSubagent ? { isSubagent: true } : {}),
     ...(this.opt.nonInteractive ? { nonInteractive: true } : {}),
     ...(this.opt.subagentId ? { monitorOwnerId: this.opt.subagentId } : {}),
