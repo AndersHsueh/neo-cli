@@ -21,8 +21,8 @@ bun run src/index.ts -p "修到测试全绿" --drive "bun test" --max 5 --max-mi
 未达成自动再发同一提示，直到达成 / 轮次到 `--max` / 墙钟到 `--max-minutes`。
 可选 `--judge "<标准>"` 让模型判断完成条件（来源标注为**模型判断**，绝不冒充已验证）。
 必须显式 `-y`（无人值守没有人类点确认，缺了直接用法错误 exit 2）。
-退出码：达成 0 / 未达成 1 / SIGINT 130 / 用法错误 2；结束时 stderr 打一行
-`[drive] status=done source=verified rounds=2 elapsed=184s`。详见 `docs/oneshot-drive-prd[done].md`。
+退出码优先级为 `abort = 130 > hadError = 1 > drive`：`done + verified → 0`、`done + model → 3`，`exhausted` / `idle-stop` / `timeout` → `1`，SIGINT `130`，用法错误 `2`。结束时 stderr 打一行
+`[drive] status=done source=verified rounds=2 elapsed=184s`，摘要格式不变。详见 `docs/oneshot-drive-prd[done].md`。
 
 ## 平台支持
 
@@ -64,7 +64,7 @@ Windows 启动用 `neo.cmd`（需要 Bun 在 PATH）；Linux/macOS 用 `neo.sh` 
 - **v0.4.96**：`-p --json-schema` 结构化输出（#77）——仅 `-p` 增加该旗标，在 harness 层把进程级最终答案校验为符合给定 JSON Schema 的 JSON 值；不合规最多回喂 2 次（共 3 次尝试）。`json` 按需增加 `structured_output`，不删现有 `answer`；带旗标的 `text` 只把 stdout 收成那份校验通过的紧凑单行 JSON 值；`stream-json` 只在最终 `result` 携带该字段。不宣称与 Claude Code 或 Codex 兼容。详见 `docs/release-notes/v0.4.96.md`。
 - **v0.4.97**：交互启动 Banner 改为圆角框线卡片（#83）——首行 `neo` + 版本，展示 provider（含 tier）、model、endpoint host、cwd 与工具摘要；一行提示原文为 `/help 查看命令 · ? 快捷键 · Shift+Tab 切换模式`。外宽 `min(终端列数, 80)`，`< 40` 列退化为无框纯文本；40 列下超长字段按内宽截断，右边框对齐。圆角框线只是视觉灵感，不宣称与 Claude Code 兼容。`-p` 与 `neo acp` 仍不打印 Banner。详见 `docs/release-notes/v0.4.97.md`。
 - **v0.4.98**：会话默认名改为顺序编号 Neo#N（#82）——默认名单调递增、关闭后不复用；去掉角色池与 Mr.Anderson 渐变，标题改为静态 `Agent: <name>`。优先级：`--name` > `--resume`/`--continue` 旧名 > 默认 Neo#N；resume 保留历史名（含 Matrix 角色名）；碰撞后缀只留给显式 `--name`（及既有 `/rename`）。P2：计数器预留失败可见报错并 exit 2，不再发未预留的号；活持有者（含暂停）不会被偷锁；默认名撞名会重新分配另一个 Neo#N，不会静默变成 Neo#N-2。详见 `docs/release-notes/v0.4.98.md`。
-- **v0.4.99**：自 v0.4.98 起合入尚未发版的 15 单。子代理 dispatch 校验排除表（#84）；交互 transcript 视图 Ctrl+O（#90）；初次使用引导配置 default provider（#88）；SubagentStart/Stop 生命周期 hook（#86）；`--safe-mode` 干净启动（#70）；`/doctor` 配置体检（#91）；按需加载嵌套 AGENTS.md / CLAUDE.md（#54）；`/output-style`（#73）；自定义命名子代理（#36）；MCP 资源与提示词（#67）；事件驱动监视（#87）；会话 fork（#65）；把排队消息在工具切点注入当前轮（#66）；`--add-dir`（#63）；会话 worktree（#85，含 detectRepo 相对路径修复，影响 #9 从子目录 `--worktree`：以前算错，现在按仓根算对）。详见 `docs/release-notes/v0.4.99.md`。
+- **v0.4.99**：自 v0.4.98 起合入、当时尚未发版、已随 v0.4.99 发布的 15 单。子代理 dispatch 校验排除表（#84）；交互 transcript 视图 Ctrl+O（#90）；初次使用引导配置 default provider（#88）；SubagentStart/Stop 生命周期 hook（#86）；`--safe-mode` 干净启动（#70）；`/doctor` 配置体检（#91）；按需加载嵌套 AGENTS.md / CLAUDE.md（#54）；`/output-style`（#73）；自定义命名子代理（#36）；MCP 资源与提示词（#67）；事件驱动监视（#87）；会话 fork（#65）；把排队消息在工具切点注入当前轮（#66）；`--add-dir`（#63）；会话 worktree（#85，含 detectRepo 相对路径修复，影响 #9 从子目录 `--worktree`：以前算错，现在按仓根算对）。详见 `docs/release-notes/v0.4.99.md`。
 - **v0.4.100**：可脚本化自定义状态栏（#57）——`settings.statusLine` 跑一条 shell 命令，把会话 JSON 从 stdin 喂给它，输出画在输入框与内置状态行之间；不替换内置行，`--safe-mode` / `-p` / 非 TTY / ACP 不跑。并修复启动时 `default_provider` 的 endpoint 与陈旧 `model_routes` 里另一家模型名交叉绑定，启动屏和运行时请求不再混拼。详见 `docs/release-notes/v0.4.100.md`。
 
 ## 配置
@@ -465,6 +465,8 @@ exit 0
 }
 ```
 
+未显式配置时 `lsp.enabled` 默认为 `false`；显式布尔值优先。要把 LSP 打开，需在配置里写 `"enabled": true`。
+
 - 安装示例：`bun add -g typescript-language-server typescript`（或你惯用的包管理器）。
 - **编辑后诊断**：`write_file` / `edit_file` 落在被 server 处理的后缀上时，把该文件的新诊断摘要
   （前 10 条，`文件:行:列 [severity] 消息`）附在工具结果里；无 server / 无诊断时结果不变。
@@ -475,7 +477,7 @@ exit 0
 ### repo_map —— 仓库地图（issue #15）
 
 系统提示词会带一份**符号级仓库地图**：每个源码文件后跟其主要导出/定义（TS/JS/Python/Go/Rust），
-让模型在大仓里先看见结构、少做几轮盲扫。默认开启，预算保守：
+让模型在大仓里先看见结构、少做几轮盲扫。未显式配置时 `repo_map.enabled` 默认为 `false`；显式布尔值优先。打开后预算保守：
 
 ```json
 "repo_map": { "enabled": true, "budget_tokens": 800, "max_files": 1200 }
@@ -604,7 +606,11 @@ provider 里的 `*_model_name` 表示「**这个 provider** 在各档位上用�
 
 可写简写形式 `"fast": "ipsa"`，等价于 `{provider:"ipsa", model:null}`（model 取该 provider 的同名档位）。
 
-`fallback_allowed: true`（默认）表示目标不可用时自动降级到 `default` 档并告知。
+`fallback_allowed: true`（默认）表示目标不可用时自动降级到 `default` 档并告知。这与下面的有序备用链 `model_fallback` **不同义**，两处说明互不替代。
+
+### model_fallback —— 有序模型备用链（issue #59）
+
+顶层配置 `model_fallback: [{ "provider": "...", "model": "..." }]`，数组顺序即优先级、最多 8 项，缺省或 `[]` 禁用。CLI `--fallback <provider>:<model>` 可重复（任一项出现即整体替换配置链），`--no-fallback` 本次禁用，二者互斥。只有主 Agent 请求走备用链：同模型重试耗尽后有界切换、任何流式增量已发出后禁止切换、只有完整成功才提交目标、会话内保持且不自动回切、不写回 settings；用量按实际 provider/model 分桶。工具、检查、中断、上下文与普通参数错误不触发切换。
 
 ### 关于 classifier_provider
 
@@ -699,6 +705,22 @@ Anthropic 路径的差异处理：`system` 提到顶层字段，连续 `tool` �
 | `--no-fallback` | 本次禁用备用链，与 `--fallback` 互斥 |
 | `--safe-mode` | 以干净配置启动，用于排查自定义项故障：不加载 `AGENTS.md` / 路径规则 / 技能 / 自定义子代理 / hooks / MCP / LSP / 仓库地图 / 记忆 wiki。登录、provider、模型、内置工具与 `/mode` 仍可用。启动时打印「当前为干净配置，自定义项未加载」。只影响本次进程，不改 `settings.json`。这不是沙箱。等效环境变量 `NEO_SAFE_MODE` |
 
+### `-p --output-format stream-json`（issue #37）
+
+只能与 `-p/--print` 同用；交互模式、`neo <prompt>` 非 `-p` 形式或缺 `-p` 都是用法错误 `2`（此时 stdout 仍输出 `error` + 一个 `result` 两行 JSONL，`session_id` 为 `null`）。stdout 是纯 JSONL，每行恰好一个信封：
+
+```json
+{"schema_version":"1.0","type":"init","session_id":"<会话 ID>","seq":1,"timestamp":"2026-11-14T09:01:23.827Z","data":{"provider":"example","model":"your-model-id","model_tier":"default","output_format":"stream-json","drive":false}}
+```
+
+信封固定六字段：`schema_version`（字符串 `"1.0"`）、`type`、`session_id`、`seq`（单 writer 从 1 严格递增）、`timestamp`（UTC ISO 8601）、`data`（恒为 JSON object）。事件共 9 类：`init`、`turn_started`、`assistant_message`、`tool_started`、`tool_finished`、`model_fallback`、`drive_finished`、`error`、`result`。
+
+- 正常或已捕获失败**恰好一个 `result`**；`result.data` 为 `{ status, exit_code, provider, model, usage: { prompt, completion, reasoning, by_model }, drive, error }`。其中 `usage.reasoning` 是合法用量字段，不是思考链泄漏。
+- 结构化模式（`json` 或 `stream-json`）下 Console、诊断、fallback 人类提示、drive `[drive]` 摘要与警告一律写 **stderr**；stdout 只归 JSONL writer。既有 `text` 与结束时单行 `json` 的 stdout 形状不变。
+- `assistant_message` 不含 `reasoning` / `thinking_blocks` / 原始响应或签名思考块；工具参数与输出按 4000 Unicode code point 截断，敏感键（`api_key` / `authorization` / `token` / `secret` / `password` / `cookie` / `credential` 等）递归替换为 `"[REDACTED]"`。
+- **EPIPE / stdout 写失败是「恰好一个 result」的唯一物理例外**：writer 立即关闭并触发 `agent.cancel()`，不再写任何 stdout（含 result），stderr 只发一条 `[stream-json] stdout closed; aborting`，退出 `1`。
+- v1 schema 不承诺 Claude / Codex 兼容，不承诺 token 级文本流；破坏性变更会提升 `schema_version`。
+
 ### `neo doctor` —— 配置体检
 
 `neo doctor`（交互会话里是 `/doctor`，别名 `/checkup`）对已有配置做一次只读体检：实际载入的 `settings.json` 是否可解析、provider / `api_key` 是否缺失、MCP 配置或（在已启动会话里）连接失败原因、hooks 配置告警、技能与规则是否损坏或重名，以及是否找到 `AGENTS.md` / 项目规则。报告按「问题 / 位置 / 建议」列出，默认不改任何文件；密钥只显示已配置或缺失（掩码为 `***`），不会写出明文。
@@ -720,37 +742,6 @@ Zed 的 External Agent（Custom Agent）配置，写进 Zed 的 `settings.json`�
 ```
 
 `command` 需要是 PATH 上的 `neo`；用源码运行时改成 `bun`，`args` 写成 `["run", "<仓库路径>/src/index.ts", "acp"]`。
-
-## 本轮实现（已实现，尚未发版）：#52 / #59 / #37
-
-> **状态边界**：当前已发布版本仍为 **v0.4.84**（2026-11-10 / `a2858ae`）。本节描述的是已合入并推送至 `main`、通过定向验证、但**尚未发版**的能力；不改写上文 v0.4.84 的历史描述，也不改 `docs/release-notes/`。没有新 tag、新 release note 或新发布日期。
-
-### #52 默认能力收口与 `-p --drive` 退出码
-
-- 未显式配置时 `lsp.enabled` 与 `repo_map.enabled` 默认为 `false`；显式布尔值优先。
-- 退出码优先级固定为 `abort = 130 > hadError = 1 > drive`；drive 终态 `done + verified → 0`、`done + model → 3`，`exhausted` / `idle-stop` / `timeout` 一律 `→ 1`；用法错误 `2`。stderr 的 `[drive]` 摘要格式不变。
-
-### #59 有序模型备用链
-
-顶层配置 `model_fallback: [{ "provider": "...", "model": "..." }]`，数组顺序即优先级、最多 8 项，缺省或 `[]` 禁用。CLI `--fallback <provider>:<model>` 可重复（任一项出现即整体替换配置链），`--no-fallback` 本次禁用，二者互斥。只有主 Agent 请求走备用链：同模型重试耗尽后有界切换、任何流式增量已发出后禁止切换、只有完整成功才提交目标、会话内保持且不自动回切、不写回 settings；用量按实际 provider/model 分桶。工具、检查、中断、上下文与普通参数错误不触发切换。
-
-> `model_routes.*.fallback_allowed` 是「档位目标不可用时降级到 default 档」，与 #59 的有序备用链**不同义**，两处说明互不替代。
-
-### #37 `-p --output-format stream-json`
-
-只能与 `-p/--print` 同用；交互模式、`neo <prompt>` 非 `-p` 形式或缺 `-p` 都是用法错误 `2`（此时 stdout 仍输出 `error` + 一个 `result` 两行 JSONL，`session_id` 为 `null`）。stdout 是纯 JSONL，每行恰好一个信封：
-
-```json
-{"schema_version":"1.0","type":"init","session_id":"<会话 ID>","seq":1,"timestamp":"2026-11-14T09:01:23.827Z","data":{"provider":"example","model":"your-model-id","model_tier":"default","output_format":"stream-json","drive":false}}
-```
-
-信封固定六字段：`schema_version`（字符串 `"1.0"`）、`type`、`session_id`、`seq`（单 writer 从 1 严格递增）、`timestamp`（UTC ISO 8601）、`data`（恒为 JSON object）。事件共 9 类：`init`、`turn_started`、`assistant_message`、`tool_started`、`tool_finished`、`model_fallback`、`drive_finished`、`error`、`result`。
-
-- 正常或已捕获失败**恰好一个 `result`**；`result.data` 为 `{ status, exit_code, provider, model, usage: { prompt, completion, reasoning, by_model }, drive, error }`。其中 `usage.reasoning` 是合法用量字段，不是思考链泄漏。
-- 结构化模式（`json` 或 `stream-json`）下 Console、诊断、fallback 人类提示、drive `[drive]` 摘要与警告一律写 **stderr**；stdout 只归 JSONL writer。既有 `text` 与结束时单行 `json` 的 stdout 形状不变。
-- `assistant_message` 不含 `reasoning` / `thinking_blocks` / 原始响应或签名思考块；工具参数与输出按 4000 Unicode code point 截断，敏感键（`api_key` / `authorization` / `token` / `secret` / `password` / `cookie` / `credential` 等）递归替换为 `"[REDACTED]"`。
-- **EPIPE / stdout 写失败是「恰好一个 result」的唯一物理例外**：writer 立即关闭并触发 `agent.cancel()`，不再写任何 stdout（含 result），stderr 只发一条 `[stream-json] stdout closed; aborting`，退出 `1`。
-- v1 schema 不承诺 Claude / Codex 兼容，不承诺 token 级文本流；破坏性变更会提升 `schema_version`。
 
 ## 交互命令
 

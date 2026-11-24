@@ -160,10 +160,11 @@ git worktree prune
 1. 版本 PRD。行为有变时，在 `docs/` 留一份。文件名用 `docs/<主题>-prd.md`，完成后改为 `docs/<主题>-prd[done].md`。总览体例 `docs/v0.1.0-prd[done].md`，专题体例 `docs/v0.2.4-input-prd[done].md` 及其它 `docs/*-prd[done].md`，验收清单体例 `docs/skills-acceptance-checklist[done].md`。无行为变更不新开 PRD，在 release note 里写「无行为变更」。
 2. 写 `docs/release-notes/vX.Y.Z.md`。抬头对齐 `docs/release-notes/v0.4.80.md`：发布日、基线 commit、闸门结果、证据路径、关联 issue。正文写为什么发、变更、验证时的 `bun x tsc --noEmit` / `bun test` 数字 / `bash scripts/verify.sh` 是否 `ALL GREEN`、已知未做。
 3. 刷新 `README.md`：把本版特性短句和测试基线数字改到与实测一致。只改相关句。
-4. 检查 `.gitignore`（§13 的清单仍在）。
-5. 只改 `package.json` 的 `version` 字段，改为 `X.Y.Z`。其它字段不动。
-6. 先提交含该 `version` 的发版提交。说明里写版本号；有 issue 则写 `#N`。
-7. 再在该提交上 `git tag -a`，然后推送。顺序固定：含 `version` 的提交 → `git tag -a` 打在该提交上 → 推送。
+4. 检查并清理 README / 文档里「尚未发版」类状态段，避免再把已发版内容写成当前未发版。
+5. 检查 `.gitignore`（§13 的清单仍在）。
+6. 只改 `package.json` 的 `version` 字段，改为 `X.Y.Z`。其它字段不动。
+7. 先提交含该 `version` 的发版提交。说明里写版本号；有 issue 则写 `#N`。
+8. 再在该提交上 `git tag -a`，然后推送。顺序固定：含 `version` 的提交 → `git tag -a` 打在该提交上 → 推送。
 
 ```bash
 git tag -a vX.Y.Z -m "vX.Y.Z"
