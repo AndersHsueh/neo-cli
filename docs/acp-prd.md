@@ -194,6 +194,16 @@ ACP 是编辑器里的**交互会话**，记忆走交互模式：用户级 + 项
 会话释放仍走 `cleanupEphemeral`，按进程组回收监视（含组内子进程）。这不是「ACP 不回收监视」。
 把监视输出回流到 ACP 会话是后续单，不在本范围。
 
+### 2.15 与 CLI 对齐的会话装配（issue #101）
+
+项目指令与 CLI 走同一套选取规则，不是「四个文件一并装入」。`AGENTS.md` / `NEO.md` / `.neo.md` / `CLAUDE.md` 是候选文件名：同目录按优先级 `AGENTS.md > NEO.md > .neo.md > CLAUDE.md` 取第一个存在的普通文件，不拼接；git 工作树内的祖先目录同样每层取一个。只有 `CLAUDE.md`、没有更高优先级文件时能读到它，是因为它被选中。子目录指令不预载；触达该子目录文件后按需注入，嵌套同样每目录走 `pickInstructionFile`（四个候选名取一个），不是只认 `AGENTS.md` / `CLAUDE.md`。`--safe-mode` 只让根文件、祖先、嵌套指令不加载；#17 无 paths 的规则仍用 `formatAlwaysOnRules` 并入永久项目记忆段。
+
+`renderSystemPrompt` 传入 `mcpLoaded`：开启延迟加载时，ACP 里用 `tool_search` 装入某 MCP 工具后，下一轮系统提示的目录不再把它标成「尚未装入」。
+
+配置了 `settings.model_fallback` 时，主会话降级行为与 CLI 的 #59 一致。切换与尝试失败的说明走 stderr 的 `[fallback] …` 诊断（可有 `[acp]` 通道前缀）。本单不新增 `session_info_update` / `notice`，也不在 ACP stdout 发 `#37` 的 `model_fallback` JSONL（stdout 只归协议）。编辑器若仍显示开会话时的模型名，是有意接受的可见性代价；会话内可能已切换，诊断在 stderr。未配置或链为空时不建 controller。不为 ACP 增加 `--fallback` / `--no-fallback`。
+
+上下文或输出撞墙时，与 CLI 一样只把空的 `context_window` / `max_output_tokens` 写回，已填的用户值不改。写回说明走 stderr。不把 CLI 交互 TTY 的首次能力探测搬进 ACP。本单不扩协议。
+
 ### 2.13 文档
 
 - `--help`（`src/cli/help.ts`）增加 `neo acp` 一行，说明「stdio 上的 ACP 服务端，供 Zed/JetBrains 等编辑器拉起」；
@@ -300,3 +310,4 @@ ACP 是编辑器里的**交互会话**，记忆走交互模式：用户级 + 项
 - 2026-11-18（issue #80）：斜杠命令广告、`session/set_mode`（档位 ask / auto-edit / auto-all / plan）、
   `session/load`（复用 `--resume`，仍单 session）、`usage_update`（真实 token/上下文占用）已做。
 - 2026-11-24（issue #100）：ACP `dispose()` 改为调用 `cleanupEphemeral({ shells, monitors, mcp })`，不再手写释放清单。`monitor` 暂不暴露；会话释放仍按进程组回收监视（含组内子进程）。
+- 2026-11-24（issue #101）：ACP 会话装配与 CLI 对齐。项目指令改用 `loadSessionInstructionMemory`（`pickInstructionFile` 优先级 `AGENTS.md > NEO.md > .neo.md > CLAUDE.md`，同目录与 git 祖先每层取一个、不拼接；嵌套按需注入同样每目录取一个，不是只认 `AGENTS.md` / `CLAUDE.md`）。#17 无 paths 规则仍并入。`renderSystemPrompt` 传入 `mcpLoaded: agent.mcpLoadedNames()`。配置了 `model_fallback` 时复用 `ModelFallbackController`，诊断在 stderr；不扩协议，编辑器若仍显示开会话时的模型名是有意接受的可见性代价。上下文/输出撞墙只补空字段，说明走 stderr；不把首次启动探测搬进 ACP。

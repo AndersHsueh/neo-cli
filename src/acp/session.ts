@@ -12,10 +12,17 @@
  * stdout 纪律（PRD §2.1）：stdout 只归协议 NDJSON。给 Agent 的 console 全部写 stderr，
  * 不依赖 NO_COLOR 之类的环境变量碰运气。
  */
-import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Config, McpServerConfig } from "../config.ts";
-import type { Message } from "../llm.ts";
+import { chatStream, type Message } from "../llm.ts";
+import {
+  collectNestedInstructionFiles,
+  composePermanentMemory,
+  formatNestedAgentsBlock,
+  loadSessionInstructionMemory,
+} from "../cli/nestedAgents.ts";
+import { workRoots } from "../cli/additionalDirs.ts";
+import { ModelFallbackController } from "../modelFallback.ts";
 import { Agent } from "../agent.ts";
 import type { AgentEvent, AssistantMessageEventData, PermissionMode, ToolEndEventData, ToolStartEventData } from "../agent/types.ts";
 import { createPermissionBridge, type PermissionUi } from "./permission.ts";
@@ -24,7 +31,8 @@ import { usageOf } from "./followup.ts";
 import { Console } from "../ui/console.ts";
 import { PromptManager } from "../prompt/manager.ts";
 import { createMemoryBridge, type MemoryBridge } from "../memory/bridge.ts";
-import { resolveAndApplyModelWindow } from "../env/modelWindows.ts";
+import { formatCapabilityGapHint, recordModelContext, resolveAndApplyModelWindow } from "../env/modelWindows.ts";
+import { writeBackContextLimit, writeBackOutputLimit } from "../env/modelCaps.ts";
 import { loadEnv } from "../env/probe.ts";
 import { syncEnvPage } from "../env/wiki.ts";
 import { ensureScopeLayout } from "../memory/layout.ts";
@@ -117,6 +125,12 @@ export interface CreateAcpSessionOptions {
    * 传了就**沿用原 sessionId**、不再 `createSession`（不新建会话文件）。
    */
   resume?: { meta: SessionMeta; messages: Message[] };
+  /**
+   * 测试注入主会话 LLM 流（与 `Agent.opt.chatStream` 同口径）。
+   * 提供时同时交给备用链 controller 与 compact 等非主路径。
+   * 缺省走真实 `chatStream`。
+   */
+  chatStream?: typeof chatStream;
 }
 
 /**
@@ -197,13 +211,55 @@ export async function createAcpSession(opts: CreateAcpSessionOptions): Promise<A
   /** 同一 call 的原始参数：tool_end.paths 是 cwd 相对且工作区外为空，diff 必须用这个。 */
   const argsByCall = new Map<string, string>();
 
+  // 溢出写回的能力缺口提示：只走 stderr，每个 provider|model 一次，不扩协议。
+  const announcedCapabilityGap = new Set<string>();
+  const announceCapabilityGap = (): void => {
+    const key = `${cfg.providerName}|${cfg.model}`;
+    if (announcedCapabilityGap.has(key)) return;
+    const hint = formatCapabilityGapHint(cfg);
+    if (!hint) return;
+    announcedCapabilityGap.add(key);
+    log(`能力缺口：${hint}`);
+  };
+
+  // #59：有链才建 controller；只包主 Agent 请求。链空与 CLI 一样不建。
+  const fallbackController =
+    (cfg.modelFallback?.length ?? 0) > 0
+      ? new ModelFallbackController({
+          cfg,
+          fallbacks: cfg.modelFallback,
+          ...(opts.chatStream ? { stream: opts.chatStream } : {}),
+          onNotice: (m) => ui.warn(m),
+          onFallback: (e) => {
+            ui.warn(
+              `[fallback] ${e.from.provider}:${e.from.model} → ${e.to.provider}:${e.to.model}` +
+                `（${e.reason.code}：${e.reason.message}）`,
+            );
+          },
+        })
+      : null;
+
   const agent = new Agent({
     cfg,
     console: ui,
     // 权限模式来自 settings 的 permission_mode（缺省 ask），不再硬编码。
     mode,
+    ...(opts.chatStream ? { chatStream: opts.chatStream } : {}),
+    // #59：只有主 Agent 请求经过备用链；compact / subagent 走既有路径。
+    ...(fallbackController
+      ? {
+          mainChatStream: (
+            c2: Config,
+            m: Parameters<typeof chatStream>[1],
+            t: Parameters<typeof chatStream>[2],
+            h?: Parameters<typeof chatStream>[3],
+            s?: AbortSignal,
+          ) => fallbackController.stream(c2, m, t, h, s),
+          isFallbackActive: () => fallbackController.isActive,
+        }
+      : {}),
     systemPrompt: promptManager.render(cfg).text,
-    renderSystemPrompt: () => promptManager.render(cfg).text,
+    renderSystemPrompt: () => promptManager.render(cfg, { mcpLoaded: agent.mcpLoadedNames() }).text,
     getSessionName: () => null,
     toolPathsOf: (name, argsJson) => extractTouchedPaths(name, argsJson, cwd),
     scopedRulesPrompt: (touched) => {
@@ -212,6 +268,18 @@ export async function createAcpSession(opts: CreateAcpSessionOptions): Promise<A
       const text = formatScopedRulesBlock(matches);
       return text === "" ? null : { text, matches };
     },
+    // issue #54：嵌套指令按需注入。roots 用现有 workRoots（通常只有主根），不给 ACP 加 --add-dir。
+    nestedAgentsPrompt: (touched) => {
+      if (cfg.safeMode) return null;
+      const perm = composePermanentMemory(cwd, cfg.additionalDirs ?? []);
+      const files = collectNestedInstructionFiles({
+        roots: workRoots({ cwd, additionalDirs: cfg.additionalDirs }),
+        touched,
+        exclude: perm?.files.map((f) => f.path),
+      });
+      const text = formatNestedAgentsBlock(files);
+      return text === "" ? null : { text, files };
+    },
     memory,
     checkpoint: new CheckpointStore({ cwd, sessionId }),
     sessionId,
@@ -219,6 +287,26 @@ export async function createAcpSession(opts: CreateAcpSessionOptions): Promise<A
     // 目标锚 / 信箱在 ACP 默认关：不读、不写。
     readGoal: () => null,
     refreshContextWindow: () => resolveAndApplyModelWindow(cfg),
+    onContextLimit: (tokens) => {
+      recordModelContext(cfg, {
+        contextWindow: tokens,
+        source: "overflow_error",
+        evidence: "服务端上下文溢出错误",
+      });
+      writeBackContextLimit(cfg, tokens);
+    },
+    onOutputLimit: () => {
+      void writeBackOutputLimit(cfg)
+        .then((r) => {
+          if (r.written.length > 0) {
+            ui.info(`已从网关 /models 补上：${r.written.join("、")}（只写空字段）。`);
+          }
+          announceCapabilityGap();
+        })
+        .catch(() => {
+          /* 探测/写回失败不影响重试 */
+        });
+    },
     // 编辑器里没有 TUI 提问模态，ask_user 不注册。
     nonInteractive: true,
     // issue #100：宿主侧排除 monitor；不要用 toolAllowlist 反做黑名单。
@@ -353,14 +441,14 @@ export async function createAcpSession(opts: CreateAcpSessionOptions): Promise<A
     agent.refreshSystemPrompt();
   }
 
-  // 项目记忆文件（AGENTS.md / NEO.md / .neo.md）与无 paths 的规则并入系统提示。
-  const memoryFile = ["AGENTS.md", "NEO.md", ".neo.md"].map((f) => join(cwd, f)).find((p) => existsSync(p));
+  // 项目记忆：与 CLI 同一 helper（#54 pickInstructionFile + git 祖先）；#17 无 paths 规则仍并入。
+  // extraRoots 走缺省空数组；safeMode 只让指令文件 helper 返回空，不关掉 #17。
+  const permanentMem = loadSessionInstructionMemory(cwd, { safeMode: cfg.safeMode });
   const alwaysOnText = formatAlwaysOnRules(projectRules);
-  if (memoryFile || alwaysOnText !== "") {
-    const base = memoryFile ? readFileSync(memoryFile, "utf8") : "";
+  if (permanentMem || alwaysOnText !== "") {
     promptManager.setProjectMemory({
-      path: memoryFile ?? join(cwd, ".neo/rules"),
-      text: `${base}${alwaysOnText}`,
+      path: permanentMem?.path ?? join(cwd, ".neo/rules"),
+      text: `${permanentMem?.text ?? ""}${alwaysOnText}`,
     });
     agent.refreshSystemPrompt();
   }
