@@ -7,6 +7,8 @@
  *     dispose 后断言组内不再有活动子进程（不得只等组长 exit / dispose 返回）。
  *  2. 隐藏口径：ACP 的 toolSpecsFor 与系统提示都不含 monitor；dispatch 被拒
  *     且不拉起进程。CLI 默认仍暴露 monitor。
+ *  3. 父 Agent 带 excludeTools: ["monitor"] 时，runSubagent 派生的子代理
+ *     同样不含 monitor，凭记忆调用也被拒且不拉起进程（锁住 task 继承）。
  *
  * 形态：同进程调用 createAcpSession（测试直接往监视表里塞任务，符合切面）；
  * 不另起一套 ACP 进程脚手架。禁止 mock.module，不触网，不读真实 ~/.neo。
@@ -24,7 +26,9 @@ import { resetMonitors, sessionMonitors } from "../src/monitors.ts";
 import { PromptManager, type PromptManagerOptions } from "../src/prompt/manager.ts";
 import { groupAlive, groupHasNonZombie } from "../src/processGroup.ts";
 import { buildSystemPrompt } from "../src/system-prompt.ts";
+import { contentText, type Message, type StreamResult, type ToolSpec } from "../src/llm.ts";
 import { dispatch } from "../src/tools/index.ts";
+import { runSubagent } from "../src/tools/task.ts";
 import { Console } from "../src/ui/console.ts";
 
 const SANDBOX = realpathSync(mkdtempSync(join(tmpdir(), "neo-acp-100-")));
@@ -251,6 +255,70 @@ describe("#100 ACP 隐藏 monitor 口径", () => {
     const cfg = loadIsolatedConfig(cwd);
     const agent = makeAgent(cfg);
     expect(agent.toolSpecsFor().map((s) => s.function.name)).toContain("monitor");
+  });
+
+  test("#100 runSubagent 继承父 Agent 的 excludeTools：子代理不含 monitor，dispatch 被拒且不拉起进程", async () => {
+    const cwd = project();
+    const cfg = loadIsolatedConfig(cwd);
+    // sendTurn 每次请求都把 this.toolSpecsFor() 作为 chatStream 的 tools 参数。
+    // 子代理没有对外句柄，这里用这份清单锁住继承：撤掉 task.ts 的透传就会在此失败。
+    const subSpecs: string[][] = [];
+    const toolOutputs: string[] = [];
+    const stream = async (_c: Config, messages: Message[], tools: ToolSpec[]): Promise<StreamResult> => {
+      // 压缩/摘要等旁路请求 tools 为空，不计入子代理清单，也不在那里塞工具调用。
+      if (tools.length > 0) subSpecs.push(tools.map((s) => s.function.name));
+      const hasToolResult = messages.some((m) => m.role === "tool");
+      if (tools.length > 0 && !hasToolResult) {
+        return {
+          content: "",
+          reasoning: "",
+          toolCalls: [
+            {
+              id: "call_mon_sub",
+              type: "function",
+              function: {
+                name: "monitor",
+                arguments: JSON.stringify({ command: "sleep 300", action: "start" }),
+              },
+            },
+          ],
+          finishReason: "tool_calls",
+          usage: null,
+          raw: null,
+        };
+      }
+      if (hasToolResult) {
+        for (const m of messages) {
+          if (m.role === "tool") toolOutputs.push(contentText(m.content) ?? "");
+        }
+      }
+      return {
+        content: "完成",
+        reasoning: "",
+        toolCalls: [],
+        finishReason: "stop",
+        usage: null,
+        raw: null,
+      };
+    };
+
+    const main = makeAgent(cfg, {
+      excludeTools: ["monitor"],
+      nonInteractive: true,
+      mode: "auto-all",
+      chatStream: stream,
+    } as Partial<AgentOptions>);
+
+    const before = sessionMonitors.runningCount();
+    const out = await runSubagent(main, "监视一下日志", "fast", { cfg, approve: async () => true });
+    expect(out).toContain("完成");
+    expect(subSpecs.length).toBeGreaterThan(0);
+    for (const names of subSpecs) {
+      expect(names).not.toContain("monitor");
+    }
+    expect(toolOutputs.length).toBeGreaterThan(0);
+    expect(toolOutputs.every((o) => o.startsWith("未知工具"))).toBe(true);
+    expect(sessionMonitors.runningCount()).toBe(before);
   });
 });
 
