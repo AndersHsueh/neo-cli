@@ -409,15 +409,19 @@ export class Agent {
     // 规划态（issue #14）：只给只读工具 + 提交/退出方案两个控制工具。
     // 写盘/执行类工具从清单里摘掉，模型不会「先试着调一下再被拒」。
     // issue #68：规划态同样不暴露 MCP 与 tool_search（白名单里本来就没有它们）。
-    if (this.planning) return exclude(narrow(gate(filterPlanTools(all))));
-    // 非规划态不把规划控制工具交给模型：平时调不通，留在清单里只会诱使误调。
-    // 主代理仍拿其余全量工具（含运行时注册的 task/wiki/remember 等）。
-    // v0.2.0 曾把子代理排除表误用于主代理，导致那些工具从未出现。
-    const withoutPlan = all.filter((s) => !PLAN_CONTROL_TOOLS.includes(s.function.name));
-    const base = this.opt.isSubagent
-      ? withoutPlan.filter((s) => !TOOL_NAMES_EXCLUDED_FOR_SUBAGENT.includes(s.function.name))
-      : withoutPlan;
-    const specs = exclude(narrow(this.deferMcpSpecs(gate(base))));
+    let specs: ToolSpec[];
+    if (this.planning) {
+      specs = exclude(narrow(gate(filterPlanTools(all))));
+    } else {
+      // 非规划态不把规划控制工具交给模型：平时调不通，留在清单里只会诱使误调。
+      // 主代理仍拿其余全量工具（含运行时注册的 task/wiki/remember 等）。
+      // v0.2.0 曾把子代理排除表误用于主代理，导致那些工具从未出现。
+      const withoutPlan = all.filter((s) => !PLAN_CONTROL_TOOLS.includes(s.function.name));
+      const base = this.opt.isSubagent
+        ? withoutPlan.filter((s) => !TOOL_NAMES_EXCLUDED_FOR_SUBAGENT.includes(s.function.name))
+        : withoutPlan;
+      specs = exclude(narrow(this.deferMcpSpecs(gate(base))));
+    }
     // issue #104：fits=false 时只发送可见集前缀。null = 今天的全量候选。
     // 规划控制工具只在规划态进入 specs；它们不在正常优先级表里，收窄时仍留下，
     // 避免小窗口把「提交方案 / 退出规划」从规划态请求里拿掉。

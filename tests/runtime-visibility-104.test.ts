@@ -357,6 +357,26 @@ describe("#104 运行时只在 fits=false 时收窄", () => {
   });
 });
 
+describe("#104 规划态", () => {
+  test("#104 收窄时规划控制工具仍在，名单外的只读工具不进 schema", () => {
+    const cfg = world({ contextWindow: 2_000_000 });
+    const agent = new Agent({
+      cfg,
+      console: silent(),
+      mode: "auto-all",
+      systemPrompt: "s",
+      planBaseMode: "auto-all",
+      visibleToolNames: () => ["read_file"],
+    } as never);
+    const names = agent.toolSpecsFor().map((s) => s.function.name);
+    expect(names).toContain("read_file");
+    expect(names).toContain("submit_plan");
+    expect(names).toContain("exit_plan_mode");
+    expect(names).not.toContain("grep");
+    expect(names).not.toContain("shell");
+  });
+});
+
 describe("#104 /context 与运行时可见集不矛盾", () => {
   test("#104 已收窄时不再写「dry-run 未启用 / 收窄尚未启用」", async () => {
     const dir = mkdtempSync(join(tmpdir(), "neo-104-ctx-"));

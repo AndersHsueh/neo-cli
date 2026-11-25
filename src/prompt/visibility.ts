@@ -428,7 +428,7 @@ export function decideRuntimeVisibility(input: {
   let trim = dry.trimmed;
   // 硬底线把前缀抬长时，dry-run 的「一样多则不裁」不再覆盖这截前缀。
   // 不裁放得下就留着三项；放不下就裁，即便裁完仍超预算也裁（四个工具配上已裁的动态块）。
-  if (names.length !== dry.names.length) {
+  if (names.length > dry.names.length) {
     trim = measure(names, false) > input.budget;
   }
   const specs = specsForNames(input.specs, names);

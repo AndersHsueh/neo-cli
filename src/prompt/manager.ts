@@ -158,7 +158,6 @@ function presentSelection(raw: PromptSelection, narrowed: boolean, cost: number,
   }
   return {
     ...raw,
-    fits: false,
     estimatedSystemTokens: cost,
     reason: `已收窄工具可见集，估计 ${cost} tokens，仍超过预算 ${raw.budget}。`,
   };
