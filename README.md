@@ -33,7 +33,7 @@ bun run src/index.ts -p "修到测试全绿" --drive "bun test" --max 5 --max-mi
 | 其它 POSIX（dash/ksh/fish） | 自动探测 | ✅ 解析器支持；fish 不吃登录 PATH preamble |
 | Windows 11 | `pwsh` → `powershell` → `cmd` | 🟡 **实验性，未实机验证**（见 PD-1） |
 
-> **v0.4.101 发布验证（Linux worktree）**：`bun x tsc --noEmit` exit 0；3075 pass / 3 skip / 0 fail（172 文件）；PTY 52/0；`bash scripts/verify.sh` **ALL GREEN**。表内 macOS 数字保留为历史记录，不代表本次在 macOS 复测。
+> **v0.5.0 发布验证（Linux worktree）**：`bun x tsc --noEmit` exit 0；3075 pass / 3 skip / 0 fail（172 文件）；PTY 52/0；`bash scripts/verify.sh` **ALL GREEN**。表内 macOS 数字保留为历史记录，不代表本次在 macOS 复测。
 
 Windows 启动用 `neo.cmd`（需要 Bun 在 PATH）；Linux/macOS 用 `neo.sh` 或 `bun run src/index.ts`。
 
@@ -67,6 +67,7 @@ Windows 启动用 `neo.cmd`（需要 Bun 在 PATH）；Linux/macOS 用 `neo.sh` 
 - **v0.4.99**：自 v0.4.98 起合入、当时尚未发版、已随 v0.4.99 发布的 15 单。子代理 dispatch 校验排除表（#84）；交互 transcript 视图 Ctrl+O（#90）；初次使用引导配置 default provider（#88）；SubagentStart/Stop 生命周期 hook（#86）；`--safe-mode` 干净启动（#70）；`/doctor` 配置体检（#91）；按需加载嵌套 AGENTS.md / CLAUDE.md（#54）；`/output-style`（#73）；自定义命名子代理（#36）；MCP 资源与提示词（#67）；事件驱动监视（#87）；会话 fork（#65）；把排队消息在工具切点注入当前轮（#66）；`--add-dir`（#63）；会话 worktree（#85，含 detectRepo 相对路径修复，影响 #9 从子目录 `--worktree`：以前算错，现在按仓根算对）。详见 `docs/release-notes/v0.4.99.md`。
 - **v0.4.100**：可脚本化自定义状态栏（#57）——`settings.statusLine` 跑一条 shell 命令，把会话 JSON 从 stdin 喂给它，输出画在输入框与内置状态行之间；不替换内置行，`--safe-mode` / `-p` / 非 TTY / ACP 不跑。并修复启动时 `default_provider` 的 endpoint 与陈旧 `model_routes` 里另一家模型名交叉绑定，启动屏和运行时请求不再混拼。详见 `docs/release-notes/v0.4.100.md`。
 - **v0.4.101**：清理 README 过期的「尚未发版」状态段（#102）；ACP `dispose()` 回收 #87 monitor 进程组并临时隐藏 `monitor`（#100）；ACP 会话装配对齐 CLI：项目指令文件、嵌套注入、有序 `model_fallback` 与上下文/输出溢出写回（#101）。详见 `docs/release-notes/v0.4.101.md`。
+- **v0.5.0**：优化。清理死代码与重复实现：去重 `userSettingsPath` / `packageRoot`，删除未使用的 `src/agent/index.ts` 与 `insideCwd` 等死导出，本地 `tryRealpath` 改用已有 `realish`，监视入队改用 `MONITOR_QUEUE_ORIGIN`，并补对撞文件头注释。无行为变更。详见 `docs/release-notes/v0.5.0.md`。
 
 ## 配置
 
