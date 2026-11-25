@@ -234,11 +234,6 @@ export function decideSubTier(
   return { tier: current, source: "inherit", reason: "无信号命中，沿用主代理档位" };
 }
 
-/** 供测试与 /why 展示：档位决策的可读描述。 */
-export function describeTierDecision(d: TierDecision): string {
-  return `[task] 子代理档位 ${d.tier}（${d.source}）：${d.reason}`;
-}
-
 /* ------------------------------------------------------------------ */
 /* 子代理运行                                                          */
 /* ------------------------------------------------------------------ */

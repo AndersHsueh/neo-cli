@@ -36,7 +36,7 @@ export { ToolError, gateTool, isNotExecuted, notExecuted } from "./types.ts";
 export type { ToolCtx, ToolImpl, ToolKind, DispatchResult } from "./types.ts";
 export { globToRegExp } from "./glob.ts";
 export { rewriteSearchUrl, extractTitle, htmlToText } from "./webFetch.ts";
-export { shortArgs, abs as resolvePath, insideCwd } from "./fsPaths.ts";
+export { shortArgs, abs as resolvePath } from "./fsPaths.ts";
 
 /* ------------------------------------------------------------------ */
 /* 注册表                                                              */

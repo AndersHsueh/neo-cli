@@ -16,7 +16,6 @@ import { join } from "node:path";
 /* 常量                                                                */
 /* ------------------------------------------------------------------ */
 
-export const ENVELOPE_VERSION = 1 as const;
 export const STATE_VERSION = 1 as const;
 
 /** 单条消息正文上限（字符）。发送端拒绝，超限不产生任何文件。 */

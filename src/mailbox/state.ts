@@ -27,7 +27,6 @@ import {
   type OutstandingDelegation,
   type PeerObservation,
   type Receipt,
-  type SessionPhase,
   type SessionGoal,
   type SessionState,
   type TurnOutcome,
@@ -149,19 +148,6 @@ export function touchProgress(root: string, sessionId: string, nowMs: number = D
   }, nowMs);
 }
 
-export function setPhase(
-  root: string,
-  sessionId: string,
-  phase: SessionPhase,
-  nowMs: number = Date.now(),
-): SessionState {
-  return mutateState(root, sessionId, (s) => {
-    if (s.phase !== phase) s.since = isoNow(nowMs);
-    s.phase = phase;
-    s.heartbeat_at = isoNow(nowMs);
-  }, nowMs);
-}
-
 /** turn 开始：phase=working，记录触发来源（user / mailbox + from）。 */
 export function beginTurn(
   root: string,
@@ -264,12 +250,6 @@ export function noteInbound(
   return mutateState(root, sessionId, (s) => {
     s.last_inbound = { from: inbound.from, message_id: inbound.message_id, at: isoNow(nowMs) };
     s.heartbeat_at = isoNow(nowMs);
-  }, nowMs);
-}
-
-export function setNameInState(root: string, sessionId: string, name: string | null, nowMs: number = Date.now()): SessionState {
-  return mutateState(root, sessionId, (s) => {
-    s.name = name;
   }, nowMs);
 }
 

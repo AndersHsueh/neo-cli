@@ -12,7 +12,7 @@
  */
 import { readdirSync, realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
-import { basename, dirname, isAbsolute, join, resolve } from "node:path";
+import { isAbsolute, join, resolve } from "node:path";
 
 import type { CompleteResult } from "../input/completion.ts";
 import type { Config } from "../config.ts";
@@ -360,11 +360,6 @@ export function makePreviousCwdSlot(initial: string | null = null): PreviousCwdS
       value = v;
     },
   };
-}
-
-/** 目录名（提示用）。 */
-export function cwdLabel(cwd: string): string {
-  return basename(cwd) || dirname(cwd);
 }
 
 /**

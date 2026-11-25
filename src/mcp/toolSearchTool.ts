@@ -12,7 +12,6 @@
  * 只在启用延迟加载时进入 `Agent.toolSpecsFor()`（见 agent/loop.ts），
  * 但**始终**注册进工具表 —— dispatch 得找得到它，规划态白名单里也没有它。
  */
-import type { ToolSpec } from "../llm.ts";
 import { toolSpecs } from "../tools/index.ts";
 import { ToolError, type ToolImpl } from "../tools/types.ts";
 import {
@@ -98,8 +97,3 @@ export const toolSearchTool: ToolImpl = {
     ].join("\n");
   },
 };
-
-/** 供注册表使用：`tool_search` 的 ToolSpec。 */
-export function toolSearchSpec(): ToolSpec {
-  return toolSearchTool.spec;
-}

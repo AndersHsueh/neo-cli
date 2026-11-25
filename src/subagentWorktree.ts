@@ -17,8 +17,6 @@ import { canonicalize, createFreshWorktree, detectRepo, isDirty, removeWorktree,
 
 export type SubagentIsolation = "worktree";
 
-export const SUBAGENT_ISOLATION_VALUES: readonly SubagentIsolation[] = ["worktree"];
-
 /** 校验 isolation 取值：缺省/空 → undefined；"worktree" → "worktree"；其它 → 错误文案。 */
 export function normalizeIsolation(raw: unknown): { ok: true; value?: SubagentIsolation } | { ok: false; error: string } {
   if (raw === undefined || raw === null) return { ok: true };

@@ -237,16 +237,3 @@ export function isMethodMissing(e: unknown): boolean {
   const msg = (e as Error)?.message ?? String(e);
   return msg.includes("-32601") || /method not found/i.test(msg) || /不支持的方法/.test(msg);
 }
-
-/** 看起来像二进制、不应塞进用户消息的资源。 */
-export function isBinaryResource(r: McpResourceReadResult): boolean {
-  if (r.text !== undefined) return r.text.includes("\0");
-  if (r.blob) return true;
-  const mime = (r.mimeType ?? "").toLowerCase();
-  if (!mime) return false;
-  if (mime.startsWith("text/")) return false;
-  if (mime.includes("json") || mime.includes("xml") || mime.includes("javascript") || mime.includes("yaml")) {
-    return false;
-  }
-  return true;
-}

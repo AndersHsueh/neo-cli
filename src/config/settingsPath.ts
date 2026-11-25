@@ -18,7 +18,8 @@ export interface SettingsSearchOptions {
 
 /**
  * 包装根：本文件在 src/config/ 下，两级回到仓库根。
- * 与 src/config.ts 里 `dirname(import.meta.url) + ".."` 同义。
+ * loadConfig 读 settings.example.json 也走这里，不再在 config.ts 里手算一层。
+ * 用 fileURLToPath 还原 Windows 上 URL.pathname 的 /C:/... 形态。
  */
 export function packageRoot(): string {
   return resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");

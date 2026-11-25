@@ -25,7 +25,6 @@ import {
 import {
   DEAD_AFTER_MS,
   MailboxError,
-  PROGRESS_TIMEOUT_MS,
   SESSION_TTL_MS,
   aliveDir,
   aliveOwnerPath,
@@ -596,16 +595,3 @@ export function observePeer(root: string, sessionId: string, opts: ObserveOpts):
     inbox_message_ids: exists ? inboxMessageIds(root, sessionId) : new Set<string>(),
   };
 }
-
-/** 所有 peer（含自己）的观察快照，key = session id。 */
-export function observeAllPeers(root: string, opts: ObserveOpts): Map<string, PeerObservation> {
-  const out = new Map<string, PeerObservation>();
-  for (const p of listProfiles(root)) {
-    out.set(p.session, observePeer(root, p.session, opts));
-  }
-  return out;
-}
-
-/** 供进度判定使用的默认值（避免 identity 依赖 store 配置）。 */
-export const DEFAULT_PROGRESS_TIMEOUT = PROGRESS_TIMEOUT_MS;
-export const DEFAULT_HEARTBEAT_DEAD_AFTER = DEAD_AFTER_MS;

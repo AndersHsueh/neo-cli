@@ -7,6 +7,8 @@
  *
  * 本文件只负责循环。类型在 types.ts，预算提示在 steer.ts，权限判定在 policy.ts，
  * 压缩切分在 compact.ts。新增一种宿主能力走 AgentOptions 回调，不要把具体模块 import 进来。
+ *
+ * 这不是 `/loop` 定时调度；定时循环在 `src/loop.ts`。
  */
 import { chatStream, estimateTokens, type Message, type ToolSpec, type Usage } from "../llm.ts";
 import type { Classifier } from "../classifier/index.ts";

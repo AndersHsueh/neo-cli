@@ -16,6 +16,7 @@ import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import type { Config } from "../config.ts";
 import { discoverProjectRules, formatAlwaysOnRules } from "../rules/index.ts";
 import { c } from "../ui/theme.ts";
+import { realish } from "../worktree.ts";
 import type { Args } from "./args.ts";
 import type { CommandContext } from "./commandContext.ts";
 import { composePermanentMemory, loadSessionInstructionMemory } from "./nestedAgents.ts";
@@ -27,14 +28,6 @@ function expandHome(raw: string, home: string): string {
   if (raw === "~") return home;
   if (raw.startsWith("~/")) return join(home, raw.slice(2));
   return raw;
-}
-
-function tryRealpath(p: string): string {
-  try {
-    return realpathSync(p);
-  } catch {
-    return resolve(p);
-  }
 }
 
 /** 文件系统根：Unix 的 `/`；Windows 盘符根如 `C:\`、`D:/`。 */
@@ -128,7 +121,7 @@ interface ScopeHit {
 function scopeOf(real: string, mainCwd: string, extras: readonly string[]): ScopeHit | null {
   let best: ScopeHit | null = null;
   let bestLen = -1;
-  const mainReal = tryRealpath(mainCwd);
+  const mainReal = realish(mainCwd);
   for (const [i, root] of [mainReal, ...extras].entries()) {
     if (!isInsideOrSame(root, real) || root.length <= bestLen) continue;
     best = { main: i === 0, root, sub: root !== real };
@@ -344,7 +337,7 @@ export function additionalRootsReport(
   }
   const mainOnly = new Set((composePermanentMemory(cfg.cwd)?.files ?? []).map((f) => f.path));
   const perm = (composePermanentMemory(cfg.cwd, extras)?.files ?? []).filter((f) => !mainOnly.has(f.path));
-  const nested = activeNested.filter((f) => extras.some((d) => isInsideOrSame(d, tryRealpath(f.path))));
+  const nested = activeNested.filter((f) => extras.some((d) => isInsideOrSame(d, realish(f.path))));
   const files = [...new Set([...perm.map((f) => f.path), ...nested.map((f) => f.path)])];
   if (files.length === 0) lines.push("  因额外根加载的指令文件：无");
   else {

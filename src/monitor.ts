@@ -1,7 +1,7 @@
 /**
- * issue #87：事件驱动监视的纯逻辑（解析、上限、文案、包装）。
+ * issue #87：事件驱动监视的纯逻辑（解析、上限、文案、包装、入队位置）。
  *
- * 任务表与进程生命周期在 monitors.ts；本文件不碰进程、不写 settings。
+ * 任务表与进程生命周期在 `src/monitors.ts`（MonitorTable）；本文件不碰进程、不写 settings。
  */
 import { parseInterval, formatInterval } from "./loop.ts";
 

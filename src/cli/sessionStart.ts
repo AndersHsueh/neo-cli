@@ -1,3 +1,9 @@
+/**
+ * CLI 会话装配：创建 Agent，接上工具 / 记忆 / TUI，并启动或恢复会话。
+ *
+ * 持久化原语在 `src/session.ts`；跨文件可变字段在 `src/cli/session.ts`；
+ * ACP 编辑器宿主的平行装配在 `src/acp/session.ts`。
+ */
 import { join } from "node:path";
 import { tierDisplayName, tierChoiceLabel, type Config } from "../config.ts";
 import { Agent } from "../agent.ts";

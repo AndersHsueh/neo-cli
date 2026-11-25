@@ -1,4 +1,8 @@
-/** 会话组合对象上跨文件可变的字段。其余字段由 bootstrap/startSession 的返回值推断。 */
+/**
+ * CLI 会话组合对象上跨文件可变的字段（SharedMut）。
+ * 其余字段由 bootstrap/startSession 的返回值推断。
+ * 这不是会话 JSON 持久化（`src/session.ts`），也不是 ACP 装配（`src/acp/session.ts`）。
+ */
 import type { Composer } from "../tui/composer.ts";
 import type { Agent } from "../agent.ts";
 import type { BackgroundTasks } from "../tools/background.ts";

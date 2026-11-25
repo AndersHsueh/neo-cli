@@ -79,7 +79,3 @@ export function escalate(tier: ModelTier): ModelTier {
   return TIER_ORDER[Math.min(tierRank(tier) + 1, TIER_ORDER.length - 1)] ?? tier;
 }
 
-/** 取更低的一档。到顶则返回原值。 */
-export function descend(tier: ModelTier): ModelTier {
-  return TIER_ORDER[Math.max(tierRank(tier) - 1, 0)] ?? tier;
-}

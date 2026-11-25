@@ -21,10 +21,6 @@ export function registerCommand(name: string, handler: CommandHandler): void {
   handlers.set(name, handler);
 }
 
-export function registerCommands(names: readonly string[], handler: CommandHandler): void {
-  for (const name of names) registerCommand(name, handler);
-}
-
 export function commandHandler(name: string): CommandHandler | undefined {
   return handlers.get(name);
 }
@@ -32,8 +28,4 @@ export function commandHandler(name: string): CommandHandler | undefined {
 /** 已注册的命令名。漂移守卫用它对照补全表，不读源码。 */
 export function registeredCommandNames(): string[] {
   return [...handlers.keys()];
-}
-
-export function resetCommands(): void {
-  handlers.clear();
 }

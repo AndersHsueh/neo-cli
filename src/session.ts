@@ -1,6 +1,9 @@
 /**
- * 会话持久化。
- * 每次完整对话落盘到 ~/.neo/sessions/<ts>-<id>.json，支持 --resume 恢复。
+ * 会话 JSON 持久化：每次完整对话落盘到 ~/.neo/sessions/<ts>-<id>.json，支持 --resume 恢复。
+ *
+ * 这不是 CLI 会话装配（`src/cli/sessionStart.ts`），也不是 ACP 会话装配（`src/acp/session.ts`）。
+ * `src/cli/session.ts` 只盛 SharedMut；列表与回放在 `src/cli/sessions.ts`；
+ * 代号在 `src/sessionName.ts`，导出 Markdown 在 `src/sessionExport.ts`。
  */
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
@@ -235,11 +238,4 @@ export function hydrateMessages(messages: Message[]): Message[] {
     });
     return { ...m, content: parts };
   });
-}
-
-/** 持久化前确保附件目录存在（saveSession 内部调用）。 */
-export function ensureAttachmentsDir(sessionId: string): string {
-  const d = join(sessionsDir(), "attachments", sessionId);
-  if (!existsSync(d)) mkdirSync(d, { recursive: true });
-  return d;
 }

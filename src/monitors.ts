@@ -1,7 +1,8 @@
 /**
- * issue #87：监视任务表（独立于 backgroundShells）。
+ * issue #87：监视任务表 MonitorTable（独立于 backgroundShells）。
  *
  * id 形如 mon-N。复用 #28/#75 进程组终止原语，但不把监视塞进后台 shell 表。
+ * 解析、上限与文案在 `src/monitor.ts`；本文件管任务表与进程生命周期。
  */
 import type { Config } from "./config.ts";
 import {

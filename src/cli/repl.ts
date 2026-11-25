@@ -19,7 +19,7 @@ import { saveSubagentTranscript, loadSubagentTranscript } from "../tools/transcr
 import type { ToolCtx } from "../tools/types.ts";
 import { backgroundShells } from "../tools/backgroundShell.ts";
 import { sessionMonitors } from "../monitors.ts";
-import { insertBeforeQueuedUser } from "../monitor.ts";
+import { insertBeforeQueuedUser, MONITOR_QUEUE_ORIGIN } from "../monitor.ts";
 import { runDriveCheck } from "../driveCheck.ts";
 import * as mailboxState from "../mailbox/state.ts";
 import { formatIncomingFrame, formatNotice, formatNoticePreview, formatPreview } from "../mailbox/inbound.ts";
@@ -241,7 +241,7 @@ export function createRepl(s: AppSession): ReplState {
     cfg,
     onInject: (owner, text) => {
       if (owner.kind !== "session") return;
-      insertBeforeQueuedUser(repl.queue, { text, attachments: [], origin: "monitor" });
+      insertBeforeQueuedUser(repl.queue, { text, attachments: [], origin: MONITOR_QUEUE_ORIGIN });
       s.composerRef?.setQueueCount(repl.queue.length);
       repl.runDrainSafely();
     },

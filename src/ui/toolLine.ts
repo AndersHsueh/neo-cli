@@ -128,21 +128,6 @@ export function cardSubject(name: string, argsPreview: string): string {
   return oneLine(value);
 }
 
-/**
- * 路径的中间省略：`src/very/long/path/file.ts` → `src/…/file.ts`。
- * 只保留「头两段 + 文件名」，因为用户认的是文件名与它所在的大目录。
- */
-export function shortenPath(p: string, max = 72): string {
-  const s = oneLine(p);
-  if (displayWidth(s) <= max) return s;
-  const parts = s.split("/");
-  if (parts.length <= 2) return truncate(s, max);
-  const file = parts.at(-1) ?? "";
-  const head = parts.slice(0, 2).join("/");
-  const short = `${head}/…/${file}`;
-  return displayWidth(short) <= max ? short : truncate(file, max);
-}
-
 export interface ToolCardOptions {
   name: string;
   /** 第二行原文（`cardSubject` 的结果）；空串 = 不出这一行。 */

@@ -1,5 +1,6 @@
 /**
  * sessionName.ts — 会话代号的选择与默认编号分配（issue #82）。
+ * 只管显示名与默认编号，不管会话 JSON 落盘或 CLI/ACP 装配。
  *
  * 规则（2026-11-14 拍板，取代 v0.3.1 的角色池随机）：
  *  - 显式 `--name` 最高优先级（撞名后缀交给 identity.pickUniqueName，如 Jacky-2）；

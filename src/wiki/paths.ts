@@ -72,11 +72,6 @@ export function resolveUserWikiLayout(root: string = userWikiRoot()): WikiLayout
   return { pagesDir: pages, rawDir: join(root, "raw"), kind: "user", scope: "user" };
 }
 
-/** 布局是否属于用户级作用域（旧布局无 scope 字段时视为项目级）。 */
-export function isUserScope(layout: WikiLayout): boolean {
-  return layout.scope === "user" || layout.kind === "user";
-}
-
 /**
  * 路径是否位于 raw 目录内（任一布局）。
  * raw 语义：可创建、可删除、删除后可重建同名；不可修改已存在文件的内容。

@@ -8,6 +8,8 @@
  *  - `formatLoopStatus`：`/loop` 无参时的状态行。
  *
  * 纪律：默认关闭；会话退出必须 dispose（不留幽灵定时器）；定时器 unref。
+ *
+ * 这不是 Agent 主循环；主循环在 `src/agent/loop.ts`。
  */
 export type LoopMode = "interval" | "self";
 

@@ -270,8 +270,6 @@ export const INPUT_VIEWPORT = 8;
 export const DOUBLE_CTRL_C_MS = 2000;
 export const NOTICE_DEFAULT_MS = 1800;
 
-export const identityPaint = (_role: StatusSegment["role"], text: string): string => text;
-
 export class Composer {
   readonly buf = new TextBuffer();
   readonly history = new InputHistory();

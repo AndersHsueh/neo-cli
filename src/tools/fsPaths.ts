@@ -2,7 +2,7 @@
  * 工具路径守卫与共用上限：绝对路径、cwd 约束、技能库/raw 不可写、参数摘要。
  */
 import { existsSync, statSync } from "node:fs";
-import { relative, resolve, sep } from "node:path";
+import { resolve } from "node:path";
 import { insideGlobalSkills } from "../skills.ts";
 import { insideRawDir } from "../wiki/paths.ts";
 import { ToolError, type ToolCtx } from "./types.ts";
@@ -10,10 +10,6 @@ import { ToolError, type ToolCtx } from "./types.ts";
 export function abs(ctx: ToolCtx, p: string): string {
   if (!p || typeof p !== "string") throw new ToolError("缺少 path 参数");
   return resolve(ctx.cfg.cwd, p);
-}
-export function insideCwd(ctx: ToolCtx, p: string): boolean {
-  const r = relative(ctx.cfg.cwd, p);
-  return r === "" || (!r.startsWith("..") && !r.startsWith(sep + ".."));
 }
 
 export function requireFile(p: string): string {

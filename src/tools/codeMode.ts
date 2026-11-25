@@ -16,9 +16,9 @@
  *  - 内部调用次数上限对齐 `cfg.maxToolIterations`。
  *  - `Promise.all` 只对 `isParallelizable === true` 的工具真正并行，其余串行。
  */
-import { homedir } from "node:os";
-import { join, resolve } from "node:path";
+import { resolve } from "node:path";
 import type { Config } from "../config.ts";
+import { userSettingsPath } from "../config/settingsPath.ts";
 import type { ToolSpec } from "../llm.ts";
 import { dispatch, isParallelizable, toolNames, toolSpecs } from "./index.ts";
 import type { ToolCtx, ToolImpl } from "./types.ts";
@@ -53,22 +53,12 @@ export const CODE_MODE_EXCLUDED_TOOLS: readonly string[] = [
 ];
 
 /**
- * 用户级 settings 的规范路径。只有**实际载入的是这份文件**时，
- * `experimental.code_mode: true` 才可能打开开关。
- *
- * 为什么不能只看 settings 里的布尔：`loadConfig` 对 settings 是「候选路径里第一份
- * 存在的文件全赢」，工作区 `./settings.json` 排在用户级之前 —— 克隆来的仓库
- * 写一个 true 就能打开实验开关。所以判定必须同时看**实际载入路径**。
- */
-export function userSettingsPath(): string {
-  return join(process.env["HOME"] || process.env["USERPROFILE"] || homedir(), ".neo", "settings.json");
-}
-
-/**
  * 开关是否打开（只看开关本身，不看入口）。
  *
  * 优先级：`NEO_EXPERIMENTAL_CODE_MODE=0` 强制关 > `=1` 强制开 >
  * 用户级 settings 的 `experimental.code_mode === true`。
+ * 用户级路径与 loadConfig 共用 `userSettingsPath()`：只有实际载入的是那份文件时，
+ * settings 里的 `experimental.code_mode: true` 才可能打开开关（工作区 settings 排在前面）。
  */
 export function codeModeEnabled(cfg: Config): boolean {
   const env = (process.env[CODE_MODE_ENV] ?? "").trim();
@@ -100,11 +90,6 @@ export function codeModeExposed(
 /** 提示词 / `/tools` 用的「Code Mode 已开启」判据（交互 TUI 口径）。 */
 export function codeModeVisibleForPrompt(cfg: Config, nonInteractive: boolean): boolean {
   return codeModeExposed(cfg, { nonInteractive, isSubagent: false, planning: false });
-}
-
-/** 脚本可调用的工具名（含已注册未装入的 mcp__*）：供提示词/测试检视。 */
-export function codeModeScriptToolNames(cfg: Config): string[] {
-  return scriptToolNames(cfg, toolSpecs(cfg).map((s) => s.function.name));
 }
 
 /**

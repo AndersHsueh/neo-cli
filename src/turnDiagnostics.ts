@@ -85,10 +85,6 @@ export function dayKey(now: Date): string {
   return `${y}-${m}-${d}`;
 }
 
-export function turnLogFile(now: Date = new Date(), root = turnLogRoot()): string {
-  return join(root, "turns", `${dayKey(now)}.jsonl`);
-}
-
 let prunedForRoot: string | null = null;
 
 function pruneOldFiles(dir: string): void {

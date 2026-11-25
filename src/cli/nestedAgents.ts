@@ -6,8 +6,9 @@
  * - `roots` 是会话有序工作根列表（主根在前，#63 额外根按加入顺序在后）；
  *   每个额外根按与主根相同的算法各算永久段，触达路径归入最具体（路径最长）的根。
  */
-import { realpathSync, readFileSync, statSync } from "node:fs";
+import { readFileSync, statSync } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { realish } from "../worktree.ts";
 
 export const INSTRUCTION_FILE_NAMES = ["AGENTS.md", "NEO.md", ".neo.md", "CLAUDE.md"] as const;
 
@@ -27,23 +28,15 @@ export interface PermanentMemory {
   files: InstructionFile[];
 }
 
-function tryRealpath(p: string): string {
-  try {
-    return realpathSync(p);
-  } catch {
-    return resolve(p);
-  }
-}
-
 function samePath(a: string, b: string): boolean {
-  return tryRealpath(a) === tryRealpath(b);
+  return realish(a) === realish(b);
 }
 
 /** `path` 是 `root` 本身或其子孙。 */
 function isInside(root: string, path: string): boolean {
-  const r = tryRealpath(root);
+  const r = realish(root);
   const p = resolve(path);
-  const pReal = tryRealpath(p);
+  const pReal = realish(p);
   return pReal === r || pReal.startsWith(r + sep) || p === r || p.startsWith(r + sep);
 }
 
@@ -85,7 +78,7 @@ export function findGitWorkTreeRoot(start: string): string | null {
   } catch {
     cur = dirname(cur);
   }
-  cur = tryRealpath(cur);
+  cur = realish(cur);
   for (;;) {
     try {
       const st = statSync(join(cur, ".git"));
@@ -107,10 +100,10 @@ export function collectAncestorInstructionFiles(
   cwd: string,
   opts?: { gitRoot?: string | null },
 ): InstructionFile[] {
-  const start = tryRealpath(resolve(cwd));
+  const start = realish(resolve(cwd));
   const gitRoot = opts && "gitRoot" in opts ? opts.gitRoot : findGitWorkTreeRoot(start);
   if (!gitRoot) return [];
-  const gitAbs = tryRealpath(resolve(gitRoot));
+  const gitAbs = realish(resolve(gitRoot));
   if (!isInside(gitAbs, start)) return [];
   if (samePath(start, gitAbs)) return [];
 
@@ -147,7 +140,7 @@ export function composePermanentMemory(cwd: string, extraRoots: readonly string[
   const { rootFile: cwdFile, ancestors } = rootPermanentFiles(cwd);
   const seen = new Set<string>();
   const keep = (f: InstructionFile): boolean => {
-    const key = tryRealpath(f.path);
+    const key = realish(f.path);
     if (seen.has(key)) return false;
     seen.add(key);
     return true;
@@ -188,7 +181,7 @@ export function loadSessionInstructionMemory(
 
 function startDirForTouched(abs: string): string {
   try {
-    if (statSync(abs).isDirectory()) return tryRealpath(abs);
+    if (statSync(abs).isDirectory()) return realish(abs);
   } catch {
     /* 文件尚不存在（write/edit 创建）按其父目录走 */
   }
@@ -197,7 +190,7 @@ function startDirForTouched(abs: string): string {
 
 /** 从 start 向上走到但不含 root。start 若等于 root 则空。 */
 function walkUpExclusive(start: string, root: string): string[] {
-  const rootAbs = tryRealpath(resolve(root));
+  const rootAbs = realish(resolve(root));
   let cur = resolve(start);
   if (!isInside(rootAbs, cur) && !samePath(cur, rootAbs)) return [];
   const out: string[] = [];
@@ -225,13 +218,13 @@ function locateTouchedUnderRoots(
   let best: string | null = null;
   for (const r of roots) {
     if (!isInside(r, abs)) continue;
-    if (best === null || tryRealpath(r).length > tryRealpath(best).length) best = r;
+    if (best === null || realish(r).length > realish(best).length) best = r;
   }
   return best ? { abs, root: best } : null;
 }
 
 function depthFromRoot(dir: string, root: string): number {
-  const rel = relative(tryRealpath(root), tryRealpath(dir));
+  const rel = relative(realish(root), realish(dir));
   if (rel === "") return 0;
   return rel.split(/[\\/]/).filter(Boolean).length;
 }
@@ -245,11 +238,11 @@ export function collectNestedInstructionFiles(opts: {
   touched: string[];
   exclude?: Iterable<string>;
 }): InstructionFile[] {
-  const roots = opts.roots.map((r) => tryRealpath(resolve(r)));
+  const roots = opts.roots.map((r) => realish(resolve(r)));
   const excluded = new Set<string>();
   for (const p of opts.exclude ?? []) {
     excluded.add(resolve(p));
-    excluded.add(tryRealpath(p));
+    excluded.add(realish(p));
   }
   const byPath = new Map<string, InstructionFile>();
   const rootOf = new Map<string, string>();

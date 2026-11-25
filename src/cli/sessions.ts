@@ -1,7 +1,8 @@
 /**
- * 会话落盘、历史列表、恢复后的只读回放。
+ * CLI 侧的会话落盘、历史列表、恢复后的只读回放。
  *
  * 从入口拆出，是为了让 REPL 和单次模式共用同一套落盘规则。
+ * 落盘原语在 `src/session.ts`；会话装配在 `src/cli/sessionStart.ts`。
  */
 import type { Agent } from "../agent.ts";
 import type { Config } from "../config.ts";

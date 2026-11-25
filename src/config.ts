@@ -14,9 +14,8 @@
  * 自动折算成一个名为 legacy 的 provider 并给出警告。
  */
 import { existsSync, readFileSync } from "node:fs";
-import { dirname, isAbsolute, join, resolve } from "node:path";
+import { isAbsolute, join, resolve } from "node:path";
 import { homedir } from "node:os";
-import { fileURLToPath } from "node:url";
 
 import type { EnvConfig } from "./env/types.ts";
 import type { ShellConfig } from "./shell.ts";
@@ -31,7 +30,7 @@ import {
   type InboundPolicy,
   type MailboxConfig,
 } from "./mailbox/types.ts";
-import { findSettingsPath } from "./config/settingsPath.ts";
+import { findSettingsPath, packageRoot } from "./config/settingsPath.ts";
 import { resolveOutputStyleConfig } from "./outputStyle/resolve.ts";
 
 import {
@@ -538,8 +537,6 @@ interface LoadConfigOptions {
 export function loadConfig(overrides: Partial<Config> = {}, options: LoadConfigOptions = {}): Config {
   // 搜索根：显式给了就用它，否则沿用进程 cwd（TUI 默认行为不变）。
   const here = options.settingsDir ?? process.cwd();
-  // v0.4.0：Windows 上 URL.pathname 是 /C:/... 形态，必须用 fileURLToPath 还原盘符路径。
-  const pkgRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
   // ACP 传 settingsDir=session cwd：先工作区，再启动目录（编辑器拉起进程时的 cwd，
   // 工作区里不一定有 settings.json），然后才是包装根与用户级 ~/.neo。
@@ -548,7 +545,7 @@ export function loadConfig(overrides: Partial<Config> = {}, options: LoadConfigO
   // 候选顺序与「第一份存在的文件全赢」集中在 settingsPath.ts，此处只取结果。
   const found = findSettingsPath({ settingsDir: options.settingsDir });
   const raw = found ? (readJson(found) ?? {}) : {};
-  const dflt = readJson(join(pkgRoot, "settings.example.json")) ?? {};
+  const dflt = readJson(join(packageRoot(), "settings.example.json")) ?? {};
 
   // providers 是数组，无法用 {...a, ...b} 浅合并，必须按「本地优先」逐级判定。
   // 关键顺序：本地 settings.json 的旧版字段必须优先于模板的 providers。

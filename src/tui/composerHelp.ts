@@ -24,6 +24,3 @@ export const HELP_LINES: readonly string[] = [
   "  Ctrl+O 打开/关闭 transcript 视图 · 视图内 / 搜索，或 Ctrl+F · Esc 关闭",
   "  本输入框不做 Vim 模式（无普通/插入模式切换）。",
 ];
-
-/** 帮助面板最多占几行（窄终端下由 compose 的 extras 裁剪兜底）。 */
-export const HELP_MAX_ROWS = HELP_LINES.length;

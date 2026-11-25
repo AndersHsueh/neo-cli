@@ -4,6 +4,7 @@
  * 与 `src/cli/sessionStart.ts` 的关系：**同一套执行引擎**（`Agent.send()`），
  * 但宿主是编辑器而不是 TUI，因此这里只做「Agent + 工具 + 记忆」的装配，
  * 明确跳过 TUI 专属件：composer / dock / 输入层 / 跨会话信箱 / 定时循环。
+ * 这不是 `src/session.ts` 的会话 JSON 落盘模块。
  *
  * 记忆口径（PRD §2.12）：ACP 是**交互会话**，`scopeMode: "both"`（用户级+项目级）。
  * 不走 `-p` 的 oneshot 口径 —— bootstrap 里 oneshot 会把 `cfg.memory.scopeMode`

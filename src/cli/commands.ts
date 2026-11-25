@@ -1,7 +1,11 @@
 /**
- * 斜杠命令实现。
+ * 斜杠命令实现与入口分发。
  *
- * 每个 case 仍是一条命令的实现。分发走注册表，新增命令不用再改入口的 switch。
+ * 真正的分发仍在 handleCommand：/add-dir 走本文件的 case，其余分别交给
+ * handleSessionCommands / handleSystemCommands / handleWorkspaceCommands
+ * 里的 switch。wireCommands 把每个已实现命令名登记到同一个 handleCommand，
+ * 供 dispatchCommand 区分内置命令、技能与 MCP prompt 阴影；并不是「一名一处理函数」。
+ * implementedCommandNames 会扫描源码里的 `case "..."`。
  * 命令名必须同时出现在 input/commands.ts，漂移守卫会对照两边。
  */
 import { readFileSync } from "node:fs";
