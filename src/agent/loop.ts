@@ -417,7 +417,16 @@ export class Agent {
     const base = this.opt.isSubagent
       ? withoutPlan.filter((s) => !TOOL_NAMES_EXCLUDED_FOR_SUBAGENT.includes(s.function.name))
       : withoutPlan;
-    return exclude(narrow(this.deferMcpSpecs(gate(base))));
+    const specs = exclude(narrow(this.deferMcpSpecs(gate(base))));
+    // issue #104：fits=false 时只发送可见集前缀。null = 今天的全量候选。
+    // 规划控制工具只在规划态进入 specs；它们不在正常优先级表里，收窄时仍留下，
+    // 避免小窗口把「提交方案 / 退出规划」从规划态请求里拿掉。
+    const allowed = this.opt.visibleToolNames?.() ?? null;
+    if (allowed === null) return specs;
+    const keep = new Set(allowed);
+    return specs.filter(
+      (s) => keep.has(s.function.name) || PLAN_CONTROL_TOOLS.includes(s.function.name),
+    );
   }
 
   /**

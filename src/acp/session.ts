@@ -261,6 +261,8 @@ export async function createAcpSession(opts: CreateAcpSessionOptions): Promise<A
       : {}),
     systemPrompt: promptManager.render(cfg).text,
     renderSystemPrompt: () => promptManager.render(cfg, { mcpLoaded: agent.mcpLoadedNames() }).text,
+    // issue #104：与 CLI 同一条收窄。monitor 已由 excludeTools 拿掉，不在候选里。
+    visibleToolNames: () => promptManager.runtimeToolNames(cfg, { mcpLoaded: agent.mcpLoadedNames() }),
     getSessionName: () => null,
     toolPathsOf: (name, argsJson) => extractTouchedPaths(name, argsJson, cwd),
     scopedRulesPrompt: (touched) => {

@@ -199,8 +199,8 @@ export async function handleSessionCommands(cmd: string, arg: string, rest: stri
         );
         ui.line(c.dim(`  ${psel.reason}`));
       }
-      // issue #20 收尾：小窗口下的工具可见集方案（**dry-run：只算不生效**）。
-      // 算档要读目录树/技能/wiki 索引并按候选集反复计数，可能抛错 —— 失败就省略这两行。
+      // issue #20 / #104：可见集。applied 时是本轮请求实际发出的集合；
+      // 否则仍是 dry-run（选档 fits=true，运行时不收窄）。算失败就省略这两行。
       let vis: ToolVisibility | null = null;
       try {
         vis = toolVisibility?.() ?? null;
@@ -208,20 +208,37 @@ export async function handleSessionCommands(cmd: string, arg: string, rest: stri
         vis = null;
       }
       if (vis) {
-        ui.kv(
-          "可见工具",
-          vis.fits
-            ? `${vis.names.length}/${vis.total} 个 ${c.dim(`(预算内 · ${vis.cost}/${vis.budget} tokens 估计，dry-run 未启用)`)}`
-            : `预算内放不下 ${c.dim("(dry-run 未启用)")}`,
-        );
-        ui.line(
-          c.dim(
+        if (vis.applied) {
+          const cut = vis.trimmed ? "，已同时裁掉技能索引、记忆库索引与目录树" : "";
+          ui.kv(
+            "可见工具",
+            `${vis.names.length}/${vis.total} 个 ${c.dim(
+              `(${vis.fits ? "预算内" : "仍超预算"} · ${vis.cost}/${vis.budget} tokens 估计，已收窄)`,
+            )}`,
+          );
+          ui.line(
+            c.dim(
+              vis.fits
+                ? `  本轮请求暴露 ${vis.names.length} 个工具${cut}。`
+                : `  本轮请求仍暴露 ${vis.names.length} 个工具${cut}；收窄后仍超预算。`,
+            ),
+          );
+        } else {
+          ui.kv(
+            "可见工具",
             vis.fits
-              ? `  按当前预算最多可暴露 ${vis.names.length} 个工具${vis.trimmed ? "（需同时裁技能/wiki/目录树索引）" : ""}；` +
-                  `收窄尚未启用，当前仍暴露全部 ${vis.total} 个。`
-              : `  当前预算连 0 个工具都容不下；收窄尚未启用，当前仍暴露全部 ${vis.total} 个工具。`,
-          ),
-        );
+              ? `${vis.names.length}/${vis.total} 个 ${c.dim(`(预算内 · ${vis.cost}/${vis.budget} tokens 估计，dry-run 未启用)`)}`
+              : `预算内放不下 ${c.dim("(dry-run 未启用)")}`,
+          );
+          ui.line(
+            c.dim(
+              vis.fits
+                ? `  按当前预算最多可暴露 ${vis.names.length} 个工具${vis.trimmed ? "（需同时裁技能/wiki/目录树索引）" : ""}；` +
+                    `收窄尚未启用，当前仍暴露全部 ${vis.total} 个。`
+                : `  当前预算连 0 个工具都容不下；收窄尚未启用，当前仍暴露全部 ${vis.total} 个工具。`,
+            ),
+          );
+        }
       }
       // issue #68：MCP 工具在「已装入上下文」与「仅目录」之间的分布。
       // 与 /tools 同口径：已装入 = 真的带 schema 进请求（toolSpecsFor），

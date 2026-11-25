@@ -375,11 +375,12 @@ describe("issue #18-4 占位样式更暗但仍可读", () => {
  * issue #20 收尾：「系统提示词放不下预算」的提示文案。
  *
  * 归类与 issue #18 的诊断不同：#18 的诊断是「网关缺了什么字段」（无当下动作），
- * 这条是**当前配置的直接后果**且**当下就能补救**（换窗口更大的模型 / 手写
- * context_window）—— 所以它进 TUI（仅交互模式）+ 写日志。
+ * 这条是**当前配置的直接后果**且**当下就能补救**（换窗口更大的模型）。
+ * issue #104：不再建议手写 context_window（models_api 会盖掉手写窗口）。
+ * 所以它进 TUI（仅交互模式）+ 写日志。
  */
 describe("issue #20 收尾：超预算提示文案", () => {
-  test("文案含窗口、估计开销、预算与两条补救建议", () => {
+  test("#104 文案含窗口、估计开销、预算，只建议换更大窗口，不建议手写 context_window", () => {
     const msg = formatOverBudgetNotice({
       window: 16_384,
       source: "config",
@@ -391,7 +392,8 @@ describe("issue #20 收尾：超预算提示文案", () => {
     expect(msg).toContain("7,918");
     expect(msg).toContain("2,048");
     expect(msg).toContain("换用窗口更大的模型");
-    expect(msg).toContain("context_window");
+    expect(msg).not.toContain("手写 context_window");
+    expect(msg).not.toContain("context_window");
     // 日志要能 grep：不带 ANSI
     expect(msg).not.toContain("\x1b");
   });

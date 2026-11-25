@@ -288,9 +288,15 @@ describe("成本模型保真度", () => {
     return captured;
   }
 
-  /** 带技能索引 / wiki 索引 / 目录树的环境（裁动态块要有东西可裁）。 */
+  /**
+   * 带技能索引 / wiki 索引 / 目录树的环境（裁动态块要有东西可裁）。
+   * 窗口放大到 fits=true：issue #104 起 fits=false 的 render() 已是收窄后的正文，
+   * 成本模型要对照的是收窄前的全文。
+   */
   function richCfg(): Config {
     const cfg = controlledCfg();
+    cfg.contextWindow = 2_000_000;
+    cfg.contextWindowSource = "models_api";
     mkdirSync(join(cfg.cwd, "skills", "demo-skill"), { recursive: true });
     writeFileSync(
       join(cfg.cwd, "skills", "demo-skill", "SKILL.md"),

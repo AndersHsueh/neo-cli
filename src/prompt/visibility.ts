@@ -5,8 +5,11 @@
  * 请求带着注定超预算的系统提示词发出去 —— 实测 16K 窗口下系统提示 + 工具 schema
  * 约 6.1K token（预算只有 2.0K），模型可用上下文被提示词吃掉三分之一以上。
  *
- * 本模块只做**算**：按固定优先级算出「当前预算下最多能暴露哪些工具」。
- * v0.4.72 是 dry-run：算出来的结果只在 `/context` 展示，运行时行为不变。
+ * 本模块按固定优先级算出「当前预算下最多能暴露哪些工具」。
+ * v0.4.72 起 `/context` 用它做 dry-run。issue #104：选档 `fits=false` 时，
+ * `decideRuntimeVisibility` 把同一份计算接到真正发出的系统提示词和工具 schema。
+ * dry-run 在「连 0 个工具都放不下」时仍返回空集；运行时另有四个工具的硬底线，
+ * 不把空集原样发出去。
  *
  * 三条硬约束：
  *  1. **可见集永远是优先级前缀** —— 不能出现「有 grep 没有 read_file」这种组合；
@@ -103,6 +106,11 @@ export interface ToolVisibility {
   cost: number;
   /** 预算（token）。 */
   budget: number;
+  /**
+   * 运行时已经按这个集合收窄请求（issue #104）。
+   * 缺省 / false = 仍是 dry-run，请求没有按它裁。
+   */
+  applied?: boolean;
 }
 
 export interface VisibilityInput {
@@ -169,8 +177,20 @@ const TOOL_SECTION = "工具";
 /** 技能索引节 / wiki 索引节的标题（动态块三项的前两项）。 */
 const SKILL_SECTION = "技能";
 const WIKI_SECTION = "记忆库";
-/** 环境节里目录树的开头标记（动态块三项的第三项）。 */
-const TREE_MARKER = "工作目录结构";
+/**
+ * 环境节里目录树的开头标记（动态块三项的第三项）。
+ * 单根是「工作目录结构」；/add-dir 多根是「工作根目录结构」（issue #104）。
+ * 后者不是前者的前缀，两套都要认。
+ */
+const TREE_MARKERS = ["工作根目录结构", "工作目录结构"] as const;
+
+/** 运行时不得从请求里拿掉的最小闭环（issue #104）。dry-run 空集不沿用这条。 */
+export const RUNTIME_TOOL_FLOOR: readonly string[] = [
+  "read_file",
+  "edit_file",
+  "shell",
+  "shell_output",
+];
 
 /** 计数口径：与选档完全一致（src/prompt/tokens.ts）。 */
 export type VisibilityCounter = (text: string, specs: readonly ToolSpec[]) => number;
@@ -243,12 +263,35 @@ function synthesizeToolSection(
   return out.join("\n");
 }
 
-/** 裁掉目录树：从标记行到本节末尾。 */
+function isTreeLine(line: string): boolean {
+  const t = line.trimStart();
+  return TREE_MARKERS.some((m) => t.startsWith(m));
+}
+
+/** 仓库地图可能跟在目录树后面、仍留在同一节正文里。裁树必须在它之前停。 */
+function isRepoMapLine(line: string): boolean {
+  const t = line.trimStart();
+  return t.startsWith("## 仓库地图") || t.startsWith("仓库地图（");
+}
+
+/**
+ * 裁掉目录树，停在仓库地图之前。
+ * 标记之前的行（工作目录、额外工作根、模型行）保留。
+ * 地图若已经被拆成独立的「## 仓库地图」节，则不在本节正文里，由调用方整节保留。
+ */
 function trimTree(body: string): string {
   const lines = body.split("\n");
-  const at = lines.findIndex((l) => l.startsWith(TREE_MARKER));
+  const at = lines.findIndex(isTreeLine);
   if (at === -1) return body;
-  return lines.slice(0, at).join("\n");
+  let end = lines.length;
+  for (let i = at + 1; i < lines.length; i++) {
+    const line = lines[i];
+    if (line !== undefined && isRepoMapLine(line)) {
+      end = i;
+      break;
+    }
+  }
+  return lines.slice(0, at).concat(lines.slice(end)).join("\n");
 }
 
 export interface MeasureCostInput {
@@ -270,13 +313,13 @@ export interface MeasureCostInput {
 }
 
 /**
- * 估算「给定可见集与裁剪标志」的系统提示词 + schema 开销。
+ * 合成「给定可见集与裁剪标志」的系统提示词。
  *
- * 合成规则与真实渲染保持同构：换掉「可用工具：」那行、去掉隐藏工具的说明行、
- * （可选）去掉技能索引 / wiki 索引 / 目录树三节。
+ * 估算与运行时共用这一份，避免 schema 收窄了、说明行却留着，或目录树裁剪两边不一致。
+ * 规则：换掉「可用工具：」那行、去掉隐藏工具的说明行、（可选）去掉技能索引 / wiki 索引 / 目录树。
+ * 仓库地图、额外工作根、MCP 目录短节、跨会话规则都不在裁剪面里。
  */
-export function measureVisibilityCost(input: MeasureCostInput): number {
-  const count = input.count ?? ((text, specs) => countSystemTokens([text], specs).tokens);
+export function renderVisibilityText(input: Omit<MeasureCostInput, "count" | "specs">): string {
   const known = new Set(input.allToolNames);
   const { head, sections } = splitSections(input.systemText);
   const out: ParsedSection[] = [];
@@ -292,6 +335,128 @@ export function measureVisibilityCost(input: MeasureCostInput): number {
     }
     out.push(s);
   }
-  const text = joinSections(head, out);
+  return joinSections(head, out);
+}
+
+/**
+ * 估算「给定可见集与裁剪标志」的系统提示词 + schema 开销。
+ *
+ * 正文规则见 `renderVisibilityText`。
+ */
+export function measureVisibilityCost(input: MeasureCostInput): number {
+  const count = input.count ?? ((text, specs) => countSystemTokens([text], specs).tokens);
+  const text = renderVisibilityText(input);
   return count(text, input.specs);
+}
+
+/**
+ * 把 dry-run 前缀抬到运行时硬底线。
+ *
+ * 底线工具若在候选优先级里，可见集至少覆盖到它们（仍是优先级前缀）。
+ * 候选里没有的工具不会凭空加进去。
+ */
+export function applyRuntimeFloor(priority: readonly string[], names: readonly string[]): string[] {
+  const floor = RUNTIME_TOOL_FLOOR.filter((n) => priority.includes(n));
+  if (floor.length === 0) return [...names];
+  const need = new Set(floor);
+  let k = 0;
+  for (let i = 0; i < priority.length; i++) {
+    const name = priority[i];
+    if (name !== undefined && need.has(name)) need.delete(name);
+    k = i + 1;
+    if (need.size === 0) break;
+  }
+  if (names.length >= k) return [...names];
+  return priority.slice(0, k);
+}
+
+export interface RuntimeVisibilityDecision {
+  /** false = 选档已落入预算，正文与 schema 都不收窄。 */
+  narrowed: boolean;
+  text: string;
+  /** null = 不按可见集过滤 schema。 */
+  toolNames: readonly string[] | null;
+  trimmed: boolean;
+  /** narrowed 时为收窄后的开销；否则调用方沿用选档自己的估计。 */
+  cost: number;
+  fits: boolean;
+  /** narrowed 时给出实际发出的可见集（applied=true）。 */
+  visibility: ToolVisibility | null;
+}
+
+function specsForNames(specs: readonly ToolSpec[], names: readonly string[]): ToolSpec[] {
+  const allow = new Set(names);
+  return specs.filter((s) => allow.has(s.function.name));
+}
+
+/**
+ * 选档 fits=false 时，决定运行时真正发出的正文和工具名前缀（issue #104）。
+ * fits=true 时原样返回，不重排、不裁。
+ */
+export function decideRuntimeVisibility(input: {
+  tierFits: boolean;
+  systemText: string;
+  specs: readonly ToolSpec[];
+  allToolNames: readonly string[];
+  budget: number;
+  count?: VisibilityCounter;
+}): RuntimeVisibilityDecision {
+  if (input.tierFits) {
+    return {
+      narrowed: false,
+      text: input.systemText,
+      toolNames: null,
+      trimmed: false,
+      cost: 0,
+      fits: true,
+      visibility: null,
+    };
+  }
+  const count = input.count ?? ((text, specs) => countSystemTokens([text], specs).tokens);
+  const priority = visibilityPriority(input.specs.map((s) => s.function.name));
+  const measure = (names: readonly string[], trimDynamic: boolean): number =>
+    measureVisibilityCost({
+      systemText: input.systemText,
+      specs: specsForNames(input.specs, names),
+      visible: new Set(names),
+      allToolNames: input.allToolNames,
+      trimDynamic,
+      count,
+    });
+  const dry = visibleToolNames({ priority, budget: input.budget, measure });
+  let names = applyRuntimeFloor(priority, dry.names);
+  let trim = dry.trimmed;
+  // 硬底线把前缀抬长时，dry-run 的「一样多则不裁」不再覆盖这截前缀。
+  // 不裁放得下就留着三项；放不下就裁，即便裁完仍超预算也裁（四个工具配上已裁的动态块）。
+  if (names.length !== dry.names.length) {
+    trim = measure(names, false) > input.budget;
+  }
+  const specs = specsForNames(input.specs, names);
+  const text = renderVisibilityText({
+    systemText: input.systemText,
+    visible: new Set(names),
+    allToolNames: input.allToolNames,
+    trimDynamic: trim,
+  });
+  const cost = count(text, specs);
+  const keep = new Set(names);
+  const visibility: ToolVisibility = {
+    names: [...names],
+    hidden: priority.filter((n) => !keep.has(n)),
+    total: priority.length,
+    trimmed: trim,
+    fits: cost <= input.budget,
+    cost,
+    budget: input.budget,
+    applied: true,
+  };
+  return {
+    narrowed: true,
+    text,
+    toolNames: names,
+    trimmed: trim,
+    cost,
+    fits: visibility.fits,
+    visibility,
+  };
 }

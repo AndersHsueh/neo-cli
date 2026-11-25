@@ -259,6 +259,12 @@ export interface AgentOptions {
    */
   toolAllowlist?: readonly string[];
   /**
+   * 运行时工具可见集（issue #104）。返回 null / 不传 = 不收窄。
+   * 返回名字列表时，schema 只保留这些名字（规划态控制工具若已在候选集里则仍保留）。
+   * 只在选档 fits=false 时由 PromptManager 给出优先级前缀；fits=true 必须返回 null。
+   */
+  visibleToolNames?: () => readonly string[] | null;
+  /**
    * 宿主侧排除表（issue #100）：从 toolSpecsFor 拿掉这些工具，dispatch 再挡一次。
    * 文案与「未知工具」同前缀。不传 = 不额外排除。
    * 不要用 toolAllowlist 反做黑名单，也不要把排除项塞进全局 CONDITIONAL_TOOL_NAMES。

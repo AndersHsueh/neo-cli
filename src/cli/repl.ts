@@ -399,11 +399,13 @@ export function createRepl(s: AppSession): ReplState {
                 restartLsp: async (c) => {
                   await lspServers.configure(c);
                 },
-                promptSelection: () => promptManager.currentSelection(cfg),
+                promptSelection: () =>
+                  promptManager.currentSelection(cfg, { mcpLoaded: agent.mcpLoadedNames() }),
                 // issue #17：规则条数与命中原因（/context 展示）。
                 rules: () => ({ alwaysOn: alwaysOnRules, loaded: agent.activeRules, total: projectRules.length }),
-                // issue #20 收尾：工具可见集 dry-run（只算不生效，运行时工具集不变）。
-                toolVisibility: () => promptManager.currentVisibility(cfg),
+                // issue #104：已收窄时展示实际发出的可见集；未收窄时仍是 dry-run。
+                toolVisibility: () =>
+                  promptManager.visibilityForContext(cfg, { mcpLoaded: agent.mcpLoadedNames() }),
                 onNameChange: (name) => {
                   s.sessionLabel = name;
                   repl.titleAnimator?.setName(name);

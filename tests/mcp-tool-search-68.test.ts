@@ -1046,7 +1046,13 @@ describe("#68 U 命令与用量口径", () => {
     expect(fullSpecs.some((s) => s.function.name.startsWith("mcp__big__"))).toBe(true);
 
     const rendered = pm.render(cfg);
-    const withSent = countSystemTokens([rendered.text], sentSpecs).tokens;
+    // issue #104：fits=false 时估计开销按收窄后的 schema 计，正文也是收窄后的。
+    // fits=true 时 runtimeToolNames 为 null，仍按实际将发送的全量候选计。
+    const runtimeNames = pm.runtimeToolNames(cfg);
+    const accounted = runtimeNames
+      ? sentSpecs.filter((s) => runtimeNames.includes(s.function.name))
+      : sentSpecs;
+    const withSent = countSystemTokens([rendered.text], accounted).tokens;
     const withFull = countSystemTokens([rendered.text], fullSpecs).tokens;
     expect(withFull).toBeGreaterThan(withSent);
     expect(rendered.selection.estimatedSystemTokens).toBe(withSent);
@@ -1060,9 +1066,18 @@ describe("#68 U 命令与用量口径", () => {
     const agent = makeAgent(cfg);
     await dispatch("tool_search", JSON.stringify({ query: "widget_00" }), toolCtx(agent));
     const loadedRendered = pm.render(cfg, { mcpLoaded: agent.mcpLoadedNames() });
-    const withLoaded = countSystemTokens([loadedRendered.text], agent.toolSpecsFor()).tokens;
+    const loadedNames = pm.runtimeToolNames(cfg, { mcpLoaded: agent.mcpLoadedNames() });
+    const loadedBase = agent.toolSpecsFor();
+    const loadedAccounted = loadedNames
+      ? loadedBase.filter((s) => loadedNames.includes(s.function.name))
+      : loadedBase;
+    const withLoaded = countSystemTokens([loadedRendered.text], loadedAccounted).tokens;
     expect(loadedRendered.selection.estimatedSystemTokens).toBe(withLoaded);
-    expect(withLoaded).toBeGreaterThan(withSent);
+    // 装入的 schema 若仍放得进可见集，开销上升；放不进则请求里没有它（issue #104）。
+    const loadedTool = agent.mcpLoadedNames()[0];
+    const sentLoaded = loadedNames === null || (loadedTool !== undefined && loadedNames.includes(loadedTool));
+    if (sentLoaded) expect(withLoaded).toBeGreaterThan(withSent);
+    else expect(loadedNames).not.toContain(loadedTool);
     // 再问一次不带已加载集合的 render / currentVisibility，仍是第一轮口径（不要搞坏 U2）。
     const again = pm.render(cfg);
     expect(again.selection.estimatedSystemTokens).toBe(withSent);

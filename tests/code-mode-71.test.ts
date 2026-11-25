@@ -657,7 +657,9 @@ describe("#71 只开交互 TUI", () => {
 
   test("开启后 /tools 与提示词「可用工具」行列出 run_js，并出现用法段", async () => {
     await withEnv({ NEO_EXPERIMENTAL_CODE_MODE: "1" }, async () => {
-      const cfg = baseCfg();
+      // 窗口来源缺省是不可信的，预算落到 unknownWindowBudget，#104 会收窄工具行。
+      // 这里要验的是 Code Mode 打开时的正常会话，给一个可信的 100k 窗口。
+      const cfg = baseCfg({ contextWindowSource: "config" });
       const agent = makeAgent(cfg);
       const cap = captureConsole();
       await dispatchCommand("/tools", cmdCtx(agent, cap.ui));

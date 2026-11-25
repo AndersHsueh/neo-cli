@@ -90,8 +90,9 @@ export function formatGapLogLine(hint: string): string {
  *
  * **归类：TUI 保留 + 写日志**，与本模块其余诊断不同 —— 它不是「网关缺了什么字段」
  * 这类无当下动作的诊断，而是**当前配置的直接后果**：系统提示词塞不进预算，
- * 模型的可用上下文被提示词吃掉一大块。用户当下就能补救（换窗口更大的模型 /
- * 在 settings 手写 context_window），不提示的话他只会觉得「这模型好笨」。
+ * 模型的可用上下文被提示词吃掉一大块。用户当下就能补救：换窗口更大的模型。
+ * 不建议在 settings 手写 context_window（issue #104）：models_api 会盖掉手写窗口，
+ * 这条建议对本触发场景无效。
  *
  * 纯函数（便于单测）；不含 ANSI。
  */
@@ -109,7 +110,7 @@ export function formatOverBudgetNotice(sel: {
     sel.estimatedSystemTokens !== null ? sel.estimatedSystemTokens.toLocaleString() : "?";
   return (
     `系统提示词放不下预算：上下文窗口 ${win}，系统提示词估计 ${cost} > 预算 ${sel.budget.toLocaleString()}。` +
-    `可换用窗口更大的模型，或在 settings 手写 context_window。`
+    `可换用窗口更大的模型。`
   );
 }
 

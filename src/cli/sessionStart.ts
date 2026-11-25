@@ -156,6 +156,8 @@ export async function startSession(s: BootstrapSession) {
       : {}),
     systemPrompt: promptManager.render(cfg).text,
     renderSystemPrompt: () => promptManager.render(cfg, { mcpLoaded: agent.mcpLoadedNames() }).text,
+    // issue #104：与上面同一份渲染。fits=true 时返回 null，schema 与今日相同。
+    visibleToolNames: () => promptManager.runtimeToolNames(cfg, { mcpLoaded: agent.mcpLoadedNames() }),
     getSessionName: () => s.sessionLabel,
     classifier,
     // issue #17：路径作用域规则。loop 只拿回调，不 import rules 模块。

@@ -29,6 +29,7 @@ import { countSystemTokens } from "./tokens.ts";
 import { activeOutputStyle, renderStyleSection } from "../outputStyle/index.ts";
 import type { PromptTier } from "./tiers.ts";
 import {
+  decideRuntimeVisibility,
   knownToolNames,
   measureVisibilityCost,
   visibleToolNames,
@@ -133,11 +134,41 @@ export interface RenderOptions {
   mcpLoaded?: ReadonlySet<string> | Iterable<string>;
 }
 
+interface PromptCache {
+  key: string;
+  /** 选档用的未收窄正文。dry-run 必须对着它算，不能对着已经裁过的请求正文再算一遍。 */
+  untrimmed: string;
+  /** null = 本次不按可见集过滤 schema。 */
+  toolNames: readonly string[] | null;
+  /** 非 null = 运行时已收窄，/context 应展示这份而不是 dry-run。 */
+  applied: ToolVisibility | null;
+  rendered: RenderedPrompt;
+}
+
+/** 收窄后的选档展示：档位仍是 selectPromptTier 的结果，开销与 fits 改成实际发出的请求。 */
+function presentSelection(raw: PromptSelection, narrowed: boolean, cost: number, fits: boolean): PromptSelection {
+  if (!narrowed) return raw;
+  if (fits) {
+    return {
+      ...raw,
+      fits: true,
+      estimatedSystemTokens: cost,
+      reason: `已收窄工具可见集，估计 ${cost} tokens，落入预算 ${raw.budget}。`,
+    };
+  }
+  return {
+    ...raw,
+    fits: false,
+    estimatedSystemTokens: cost,
+    reason: `已收窄工具可见集，估计 ${cost} tokens，仍超过预算 ${raw.budget}。`,
+  };
+}
+
 export class PromptManager {
   private sessionName: string | null;
   private memory: ProjectMemory | null = null;
   private last: PromptSelection | null = null;
-  private cache: { key: string; rendered: RenderedPrompt } | null = null;
+  private cache: PromptCache | null = null;
 
   constructor(private readonly opts: PromptManagerOptions = {}) {
     this.sessionName = opts.sessionName ?? null;
@@ -174,20 +205,43 @@ export class PromptManager {
    * /context 用它展示**下一次请求会用哪一档**：探针回写窗口后到下一轮边界之间，
    * lastSelection 还是探针前的旧档，会和同一条命令里的 window 行（读 cfg，已经是
    * 新值）自相矛盾 —— 一行说 131,072、另一行还说「窗口未证实」。
+   *
+   * issue #104：fits=false 且收窄后已落入预算时，这里的 fits / 估计开销是收窄后的请求，
+   * 不再报未收窄的全量开销。
    */
-  currentSelection(cfg: Config): PromptSelection {
-    return this.render(cfg).selection;
+  currentSelection(cfg: Config, opts: RenderOptions = {}): PromptSelection {
+    return this.render(cfg, opts).selection;
+  }
+
+  /**
+   * 运行时要放进请求的工具名（issue #104）。
+   * null = 不收窄（选档 fits=true）。名字是优先级前缀，至少含候选集里的四个最小闭环工具。
+   */
+  runtimeToolNames(cfg: Config, opts: RenderOptions = {}): readonly string[] | null {
+    this.render(cfg, opts);
+    return this.cache?.toolNames ?? null;
+  }
+
+  /**
+   * /context 用的可见集。运行时已收窄时返回实际发出的集合，避免仍写「收窄尚未启用」。
+   * 未收窄时保持 v0.4.72 的 dry-run（`currentVisibility`）。
+   */
+  visibilityForContext(cfg: Config, opts: RenderOptions = {}): ToolVisibility {
+    this.render(cfg, opts);
+    if (this.cache?.applied) return this.cache.applied;
+    return this.currentVisibility(cfg);
   }
 
   /**
    * 当前 cfg 下的**工具可见集方案**（issue #20 收尾，dry-run）。
    *
-   * 只算不生效：结果供 `/context` 展示，运行时暴露的工具集不变（收窄在后续版本落地）。
-   * 开销按**现算**得出（系统提示词 + 该集 schema，与选档同一套计数口径），
-   * 不写死阈值表 —— 技能数、目录大小、MCP 工具数都会改变结论。
+   * 只算、不代表请求已经按它裁。运行时收窄看 `runtimeToolNames` /
+   * `visibilityForContext`（issue #104）。开销按未收窄正文现算，不写死阈值表。
    */
   currentVisibility(cfg: Config): ToolVisibility {
-    const rendered = this.render(cfg);
+    this.render(cfg);
+    const untrimmed = this.cache?.untrimmed ?? "";
+    const budget = this.cache?.rendered.selection.budget ?? 0;
     // 候选集 = 正常模式下模型实际能看到的工具（mainToolNames 去掉 plan-only）：
     // 与「## 工具」节里列出的说明行一一对应，成本模型才对得上。
     // issue #68：MCP 延迟加载下，「实际能看到」= 实际会发送的 specs ——
@@ -206,7 +260,7 @@ export class PromptManager {
       // schema 按注册表顺序（与请求里发出的一致）。
       const specs = toolSpecs(cfg).filter((s) => want.has(s.function.name));
       return measureVisibilityCost({
-        systemText: rendered.text,
+        systemText: untrimmed,
         specs,
         visible: new Set(specs.map((s) => s.function.name)),
         // 归属判定要认识「提示词里可能出现的全部工具名」：那节说明是硬编码的，
@@ -217,7 +271,7 @@ export class PromptManager {
     };
     return visibleToolNames({
       priority: visibilityPriority(all),
-      budget: rendered.selection.budget,
+      budget,
       measure,
     });
   }
@@ -287,15 +341,31 @@ export class PromptManager {
     const overhead: Partial<Record<PromptTier, number>> = {};
     for (const t of TIER_ORDER) overhead[t] = countSystemTokens([compose(t)], specs).tokens;
 
-    const selection = selectPromptTier({
+    const raw = selectPromptTier({
       window: cfg.contextWindow,
       source: cfg.contextWindowSource,
       overhead,
       config: sel,
     });
+    const untrimmed = compose(raw.tier);
+    // issue #104：只有选档 fits=false 才收窄。fits=true 时 decision.text 就是 untrimmed。
+    const decision = decideRuntimeVisibility({
+      tierFits: raw.fits,
+      systemText: untrimmed,
+      specs,
+      allToolNames: knownToolNames(toolNames(cfg)),
+      budget: raw.budget,
+    });
+    const selection = presentSelection(raw, decision.narrowed, decision.cost, decision.fits);
+    const rendered = { text: decision.text, selection };
     this.last = selection;
-    const rendered = { text: compose(selection.tier), selection };
-    this.cache = { key, rendered };
+    this.cache = {
+      key,
+      untrimmed,
+      toolNames: decision.toolNames,
+      applied: decision.visibility,
+      rendered,
+    };
     this.notifySelection(selection);
     return rendered;
   }
