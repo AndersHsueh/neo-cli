@@ -40,6 +40,11 @@ export const readFile: ToolImpl = {
     const slice = all.slice(offset - 1, offset - 1 + limit);
     const body = slice.map((l, i) => `${String(offset + i).padStart(5, " ")}\t${l}`).join("\n");
     const more = all.length > offset - 1 + limit ? `\n\n[还有 ${all.length - (offset - 1 + limit)} 行未显示]` : "";
+    // 完整读取才记账：从第 1 行起且切片覆盖全部行（结果中没有「还有 N 行未显示」）。
+    // 部分读取既不更新指纹，也不关闭已启用的检查。
+    if (offset === 1 && more === "") {
+      ctx.fileFreshness?.recordCompleteRead(path, raw);
+    }
     return `${body}${more}`;
   },
 };

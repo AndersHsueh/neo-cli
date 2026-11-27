@@ -121,7 +121,8 @@ function harness(
       },
     },
     postToolUse: async (tool, args, result) => {
-      h.postCalls += 1;
+      // 只数 write_file：前面的 read_file 成功也会走 PostToolUse，不能算进拒绝断言。
+      if (tool === "write_file") h.postCalls += 1;
       return raw.postToolUse ? raw.postToolUse(tool, args, result) : null;
     },
   };

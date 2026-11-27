@@ -6,6 +6,7 @@ import { dirname } from "node:path";
 import { lspServers } from "../lsp/index.ts";
 import { ToolError, gateTool, notExecuted, type ToolImpl } from "./types.ts";
 import { abs, assertNotGlobalSkills, assertRawImmutable, requireFile } from "./fsPaths.ts";
+import { staleWriteModelReason, staleWriteUserNotice } from "./fileFreshness.ts";
 
 export const writeFileTool: ToolImpl = {
   sensitive: true,
@@ -32,6 +33,13 @@ export const writeFileTool: ToolImpl = {
     const content = String(args["content"] ?? "");
     const isNew = !existsSync(path);
     const detail = isNew ? `新建文件 ${path}` : `覆盖已有文件 ${path}（${content.length} 字符）`;
+    // issue #94：路径已解析，在 gateTool 之前检测中间改动。过期则不弹审批、
+    // 不跑 PreToolUse / beforeWrite，经 notExecuted 退出，不改磁盘。
+    const stale = ctx.fileFreshness?.staleKind(path);
+    if (stale) {
+      ctx.onNotice?.(staleWriteUserNotice(path));
+      notExecuted(staleWriteModelReason(path, stale));
+    }
     // 审批 + PreToolUse（issue #3）：顺序由 gateTool 固化 —— 先审批，通过了才跑 hook。
     // hook 只能拦不能放行，所以被用户拒绝的调用根本走不到 hook。
     // 没执行必须走 notExecuted（异常通道），否则 dispatch 会误跑 PostToolUse。
@@ -47,6 +55,7 @@ export const writeFileTool: ToolImpl = {
     }
     mkdirSync(dirname(path), { recursive: true });
     writeFileSync(path, content, "utf8");
+    ctx.fileFreshness?.recordCompleteWrite(path, content);
     // issue #23：编辑后诊断（没配语言服务器时 afterEdit 恒返回 ""，零开销）。
     const lspNote = await lspServers.afterEdit(path).catch(() => "");
     return `${isNew ? "已创建" : "已覆盖"} ${path}（${content.length} 字符，${content.split("\n").length} 行）${lspNote}`;

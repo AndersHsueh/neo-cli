@@ -47,6 +47,20 @@ export interface CheckpointSink {
   beforeWrite(path: string, op: string): unknown;
 }
 
+/** 磁盘相对指纹过期的原因（issue #94）。 */
+export type StaleFileKind = "stale" | "stale-too-large";
+
+/**
+ * 会话内文件指纹（issue #94）。结构化类型，避免 types.ts 反向依赖实现模块。
+ * write_file 覆盖前用它检测中间改动；不传 = 不检查（测试裸 ctx / 未接线时）。
+ */
+export interface FileFreshnessTracker {
+  recordCompleteRead(path: string, content: string): void;
+  recordCompleteWrite(path: string, content: string): void;
+  /** 未启用或未过期返回 null。 */
+  staleKind(path: string): StaleFileKind | null;
+}
+
 export interface ToolCtx {
   cfg: Config;
   /** 敏感操作审批，返回 true 才执行。 */
@@ -56,6 +70,11 @@ export interface ToolCtx {
    * 不传 = 不做快照（测试裸 ctx / 子代理未接线时）。
    */
   checkpoint?: CheckpointSink;
+  /**
+   * 会话内文件指纹（issue #94，可选）。write_file 在 gateTool 之前查询；
+   * 不传 = 不检查（测试裸 ctx / 未接线时）。
+   */
+  fileFreshness?: FileFreshnessTracker;
   /**
    * 宿主代理（可选，测试的裸 ctx 可不传）。compact_ctx 用它登记压缩请求。
    */
