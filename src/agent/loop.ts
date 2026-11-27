@@ -22,6 +22,7 @@ import {
   toolSearchEnabled,
 } from "../mcp/toolSearch.ts";
 import { ToolError } from "../tools/types.ts";
+import { clearFileFreshness } from "../tools/fileFreshness.ts";
 import { CODE_MODE_TOOL_NAME, codeModeExposed } from "../tools/codeMode.ts";
 import { formatModelLine } from "../prompt/modelLine.ts";
 import { isRecallMessage } from "../memory/port.ts";
@@ -565,6 +566,8 @@ export class Agent {
     // issue #68：/clear 是一次真实的会话重来 —— 已装入的 MCP 工具跟着丢，
     // 只留 alwaysLoad（它们由配置决定，不在这里）。
     this.mcpLoaded.clear();
+    // issue #94：同一 Agent 实例复用，WeakMap 不会自动空；必须 clear() 已发出的 tracker。
+    clearFileFreshness(this);
   }
 
   /**
