@@ -435,6 +435,53 @@ describe("#94 write_file 中间改动检测", () => {
     expect(readFileSync(path, "utf8")).toBe("beta\n");
   });
 
+  test("同一 Agent 完整读/写后 reset()，指纹为空，随后即使用户改盘 write_file 仍成功", async () => {
+    const h = harness();
+    const readRel = "reset-after-read.txt";
+    const writeRel = "reset-after-write.txt";
+    const readAbs = h.abs(readRel);
+    const writeAbs = h.abs(writeRel);
+    writeFileSync(readAbs, "read-orig\n", "utf8");
+    expect((await readPath(h, readRel)).ok).toBe(true);
+    expect((await writePath(h, writeRel, "written-by-agent\n")).ok).toBe(true);
+    // 用 reset 之前已经发出的同一份 ctx，锁住「必须 clear() 已有 tracker，
+    // 而不能只从 WeakMap 删条目」。
+    h.agent.reset();
+    h.notices.length = 0;
+    writeFileSync(readAbs, "user-after-reset-read\n", "utf8");
+    writeFileSync(writeAbs, "user-after-reset-write\n", "utf8");
+    const r1 = await writePath(h, readRel, "new-after-reset-1\n");
+    expect(r1.ok).toBe(true);
+    expect(readFileSync(readAbs, "utf8")).toBe("new-after-reset-1\n");
+    const r2 = await writePath(h, writeRel, "new-after-reset-2\n");
+    expect(r2.ok).toBe(true);
+    expect(readFileSync(writeAbs, "utf8")).toBe("new-after-reset-2\n");
+    expect(h.notices).toEqual([]);
+  });
+
+  test("完整读或写后文件从磁盘消失，write_file 允许重建", async () => {
+    const h = harness();
+    const writtenRel = "gone-after-write.txt";
+    const writtenAbs = h.abs(writtenRel);
+    expect((await writePath(h, writtenRel, "created\n")).ok).toBe(true);
+    rmSync(writtenAbs);
+    h.notices.length = 0;
+    const rebuilt = await writePath(h, writtenRel, "rebuilt\n");
+    expect(rebuilt.ok).toBe(true);
+    expect(readFileSync(writtenAbs, "utf8")).toBe("rebuilt\n");
+    expect(h.notices).toEqual([]);
+
+    const readRel = "gone-after-read.txt";
+    const readAbs = h.abs(readRel);
+    writeFileSync(readAbs, "orig\n", "utf8");
+    expect((await readPath(h, readRel)).ok).toBe(true);
+    rmSync(readAbs);
+    const rebuiltRead = await writePath(h, readRel, "rebuilt-after-read\n");
+    expect(rebuiltRead.ok).toBe(true);
+    expect(readFileSync(readAbs, "utf8")).toBe("rebuilt-after-read\n");
+    expect(h.notices).toEqual([]);
+  });
+
   test("makeCtx 为当前 Agent 注入 fileFreshness，不同 Agent 各用各的表", () => {
     const a = harness();
     const b = harness();
