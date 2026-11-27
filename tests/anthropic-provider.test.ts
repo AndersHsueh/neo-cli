@@ -375,7 +375,7 @@ describe("协议选择与回退", () => {
     const g = gateway();
     await chatStream(cfgFor(g.url, ["anthropic"]), [{ role: "system", content: "S" }, ...U], tools);
     const b = g.hits[0]!.body!;
-    expect(b["system"]).toBe("S");
+    expect(b["system"]).toEqual([{ type: "text", text: "S", cache_control: { type: "ephemeral" } }]);
     expect("parallel_tool_calls" in b).toBe(false);
     expect((b["messages"] as unknown[]).length).toBe(1);
   });

@@ -4,19 +4,45 @@
  *
  * 只 `import type` 自 llm.ts：llm.ts 反过来依赖本文件，运行时不能成环。
  */
-import type { StreamResult, ThinkingBlock, ToolCall } from "./llm.ts";
-import { mapStopReason, mapUsage, type RawUsage } from "@neo/core-compat/compat/v1";
+import type { StreamResult, ThinkingBlock, ToolCall, Usage } from "./llm.ts";
+import {
+  mapStopReason,
+  mapUsage as mapUsageCore,
+  parseAnthropicMessage as parseAnthropicMessageCore,
+  type RawUsage,
+} from "@neo/core-compat/compat/v1";
 export {
   sanitizeToolId,
   toAnthropicMessages,
   toAnthropicTools,
   buildAnthropicBody,
   mapStopReason,
-  mapUsage,
-  parseAnthropicMessage,
   isRetryableAnthropicError,
 } from "@neo/core-compat/compat/v1";
 export type { AnthropicMessage, AnthropicBodyInput, RawUsage } from "@neo/core-compat/compat/v1";
+
+/** 宿主包装：保留 vendor 的 prompt_tokens 合计，同时透出 cache 读写字段。 */
+export function mapUsage(u: RawUsage): Usage {
+  const base = mapUsageCore(u);
+  const out: Usage = { ...base };
+  if (typeof u.cache_creation_input_tokens === "number") {
+    out.cache_creation_input_tokens = u.cache_creation_input_tokens;
+  }
+  if (typeof u.cache_read_input_tokens === "number") {
+    out.cache_read_input_tokens = u.cache_read_input_tokens;
+  }
+  return out;
+}
+
+/** 非流式路径走 vendor 解析后，再用包装过的 mapUsage 补上 cache 字段。 */
+export function parseAnthropicMessage(json: Record<string, unknown>): StreamResult {
+  const result = parseAnthropicMessageCore(json);
+  const raw = json["usage"];
+  if (result.usage && raw && typeof raw === "object") {
+    result.usage = mapUsage(raw as RawUsage);
+  }
+  return result;
+}
 
 export interface AnthropicStreamHandlers {
   onReasoning?: (delta: string) => void;

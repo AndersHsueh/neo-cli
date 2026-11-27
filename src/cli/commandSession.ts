@@ -35,6 +35,7 @@ import { select } from "../ui/select.ts";
 import { c } from "../ui/theme.ts";
 import { SAFE_MODE_NOTICE } from "./safeMode.ts";
 import { helpText } from "./help.ts";
+import { formatContextCacheHit, formatCostCacheLines } from "../prompt/cacheControl.ts";
 
 import { handleFork } from "./forkSession.ts";
 import type { CommandContext } from "./commandContext.ts";
@@ -316,6 +317,23 @@ export async function handleSessionCommands(cmd: string, arg: string, rest: stri
       } else {
         ui.kv("last compact", c.dim("无"));
       }
+      {
+        const last = agent.stats;
+        const hit = formatContextCacheHit(
+          last
+            ? {
+                promptTokens: last.promptTokens,
+                cacheReadTokens: last.cacheReadTokens,
+                cacheFieldsSeen: last.cacheFieldsSeen,
+              }
+            : null,
+        );
+        ui.kv(
+          "cache hit",
+          hit.showLastHint ? `${hit.value} ${c.dim("（上次请求）")}` : hit.value,
+        );
+        if (cfg.promptCache === false) ui.line(c.dim("  提示词缓存已关闭"));
+      }
       ui.line(c.dim("  window 来源：config=settings；models_api=网关元数据；overflow_error=服务端错误校正"));
       ui.blank();
       return true;
@@ -334,6 +352,11 @@ export async function handleSessionCommands(cmd: string, arg: string, rest: stri
       ui.kv("prompt", `${cum.prompt} tokens`);
       ui.kv("completion", `${cum.completion} tokens`);
       ui.kv("thinking", `${cum.reasoning} tokens`);
+      const cacheLines = formatCostCacheLines(cum);
+      ui.kv("cache write", cacheLines.write);
+      ui.kv("cache read", cacheLines.read);
+      ui.kv("cache hit", cacheLines.hit);
+      if (cfg.promptCache === false) ui.line(c.dim("  提示词缓存已关闭"));
       ui.kv("context", `${(agent.contextUsage() * 100).toFixed(1)}% of ${cfg.contextWindow}`);
       ui.kv("messages", String(agent.messages.length));
       const buckets = agent.usageByModel();

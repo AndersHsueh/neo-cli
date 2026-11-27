@@ -373,7 +373,16 @@ describe("compactNow / compact", () => {
       { role: "assistant", content: "a2" },
     );
     await agent.compactNow();
-    expect(agent.cumulative).toEqual({ prompt: 120, completion: 30, reasoning: 0 });
+    expect(agent.cumulative).toEqual({
+      prompt: 120,
+      completion: 30,
+      reasoning: 0,
+      cacheCreation: 0,
+      cacheRead: 0,
+      cacheFieldsSeen: false,
+      cacheCreationSeen: false,
+      cacheReadSeen: false,
+    });
   });
 
   test("P0-2：短历史的最后 user 提问必须保留为原文（切点回退修复）", async () => {

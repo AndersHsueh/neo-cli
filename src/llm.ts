@@ -23,6 +23,7 @@ import {
   isRetryableAnthropicError,
   parseAnthropicMessage,
 } from "./anthropicWire.ts";
+import { applyCacheControl, enrichOpenAICacheUsage } from "./prompt/cacheControl.ts";
 
 
 import {
@@ -209,7 +210,7 @@ function bodyFor(
   const maxTokens = respectLearned ? effectiveMaxTokens(cfg0) : cfg0.maxTokens;
   const cfg = maxTokens === cfg0.maxTokens ? cfg0 : { ...cfg0, maxTokens };
   if (proto === "anthropic") {
-    return buildAnthropicBody(
+    const body = buildAnthropicBody(
       {
         model: cfg.model,
         maxTokens: cfg.maxTokens,
@@ -221,6 +222,7 @@ function bodyFor(
       tools,
       stream,
     );
+    return cfg.promptCache !== false ? applyCacheControl(body) : body;
   }
   return buildBody(cfg, messages, tools, stream);
 }
@@ -328,7 +330,7 @@ async function parseChatResponse(ep: Endpoint, res: Response): Promise<StreamRes
     reasoning: choice?.message?.reasoning_content ?? "",
     toolCalls: choice?.message?.tool_calls ?? [],
     finishReason: choice?.finish_reason ?? null,
-    usage: json.usage ?? null,
+    usage: json.usage ? enrichOpenAICacheUsage(json.usage) : null,
     raw: json,
   };
 }
@@ -657,7 +659,7 @@ async function streamOnce(
     const handleChunk = (chunk: Record<string, unknown>): void => {
       lastRaw = chunk;
       if (typeof chunk["usage"] === "object" && chunk["usage"] !== null) {
-        usage = chunk["usage"] as Usage;
+        usage = enrichOpenAICacheUsage(chunk["usage"] as Usage);
       }
       const choices = chunk["choices"] as Array<Record<string, unknown>> | undefined;
       const choice = choices?.[0];

@@ -14,6 +14,7 @@ import type {
   ToolStartEventData,
   TurnStats,
 } from "./types.ts";
+import { cacheUsageParts } from "../prompt/cacheControl.ts";
 
 import type { Agent } from "./loop.ts";
 
@@ -70,6 +71,9 @@ export async function sendTurn(
       contextUsage: estimateTokens(this.messages, this.toolSpecsFor()) / this.opt.cfg.contextWindow,
       tierSwitch: null,
       blocked: !signal.aborted,
+      cacheCreationTokens: 0,
+      cacheReadTokens: 0,
+      cacheFieldsSeen: false,
     };
     this.writeTurnLog(this.lastStats);
     return this.lastStats;
@@ -125,6 +129,10 @@ export async function sendTurn(
   let finishReason: string | null = null;
   let iterations = 0;
   let promptTokens = 0;
+  let cacheCreationTokens = 0;
+  let cacheReadTokens = 0;
+  let cacheCreationSeen = false;
+  let cacheReadSeen = false;
   let completionTokens = 0;
   let reasoningTokens = 0;
   let hadError = false;
@@ -379,6 +387,11 @@ export async function sendTurn(
         promptTokens += res.usage.prompt_tokens ?? 0;
         completionTokens += res.usage.completion_tokens ?? 0;
         reasoningTokens += res.usage.completion_tokens_details?.reasoning_tokens ?? 0;
+        const cache = cacheUsageParts(res.usage);
+        cacheCreationTokens += cache.creation;
+        cacheReadTokens += cache.read;
+        cacheCreationSeen ||= cache.creationSeen;
+        cacheReadSeen ||= cache.readSeen;
         // #59：按实际提供响应的目标记分桶（总量在 send 末尾统一累加）。
         this.addToBucket(res.usage, this.opt.cfg.providerName, this.opt.cfg.model);
       }
@@ -697,6 +710,9 @@ export async function sendTurn(
             emptyResponse: false,
             contextUsage: estimateTokens(this.messages, specs) / this.opt.cfg.contextWindow,
             tierSwitch,
+            cacheCreationTokens,
+            cacheReadTokens,
+            cacheFieldsSeen: cacheCreationSeen || cacheReadSeen,
           };
           this.writeTurnLog(this.lastStats);
           return this.lastStats;
@@ -750,6 +766,10 @@ export async function sendTurn(
   this.totalPrompt += promptTokens;
   this.totalCompletion += completionTokens;
   this.totalReasoning += reasoningTokens;
+  this.totalCacheCreation += cacheCreationTokens;
+  this.totalCacheRead += cacheReadTokens;
+  this.cacheCreationSeen ||= cacheCreationSeen;
+  this.cacheReadSeen ||= cacheReadSeen;
 
   abortedFlag ||= signal.aborted;
   this.lastStats = {
@@ -766,6 +786,9 @@ export async function sendTurn(
     emptyResponse,
     contextUsage: estimateTokens(this.messages, specs) / this.opt.cfg.contextWindow,
     tierSwitch,
+    cacheCreationTokens,
+    cacheReadTokens,
+    cacheFieldsSeen: cacheCreationSeen || cacheReadSeen,
     ...(compactBlocked !== null ? { compactBlocked: true } : {}),
   };
 

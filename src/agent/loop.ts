@@ -11,6 +11,7 @@
  * 这不是 `/loop` 定时调度；定时循环在 `src/loop.ts`。
  */
 import { chatStream, estimateTokens, type Message, type ToolSpec, type Usage } from "../llm.ts";
+import { cacheUsageParts } from "../prompt/cacheControl.ts";
 import type { Classifier } from "../classifier/index.ts";
 import { applyTier, type Config } from "../config.ts";
 import { toolSpecs, TOOL_NAMES_EXCLUDED_FOR_SUBAGENT } from "../tools/index.ts";
@@ -122,6 +123,10 @@ export class Agent {
   totalPrompt = 0;
   totalCompletion = 0;
   totalReasoning = 0;
+  totalCacheCreation = 0;
+  totalCacheRead = 0;
+  cacheCreationSeen = false;
+  cacheReadSeen = false;
   /** #59：按实际提供响应的 provider|model 分桶（累计总量仍用上面三个字段）。 */
   usageBuckets: UsageBucket[] = [];
   lastStats: TurnStats | null = null;
@@ -302,8 +307,26 @@ export class Agent {
     return this.consecutiveFailures;
   }
 
-  get cumulative(): { prompt: number; completion: number; reasoning: number } {
-    return { prompt: this.totalPrompt, completion: this.totalCompletion, reasoning: this.totalReasoning };
+  get cumulative(): {
+    prompt: number;
+    completion: number;
+    reasoning: number;
+    cacheCreation: number;
+    cacheRead: number;
+    cacheFieldsSeen: boolean;
+    cacheCreationSeen: boolean;
+    cacheReadSeen: boolean;
+  } {
+    return {
+      prompt: this.totalPrompt,
+      completion: this.totalCompletion,
+      reasoning: this.totalReasoning,
+      cacheCreation: this.totalCacheCreation,
+      cacheRead: this.totalCacheRead,
+      cacheFieldsSeen: this.cacheCreationSeen || this.cacheReadSeen,
+      cacheCreationSeen: this.cacheCreationSeen,
+      cacheReadSeen: this.cacheReadSeen,
+    };
   }
 
   /** #59：逐 provider|model 的用量分桶，按实际提供响应的目标记账。 */
@@ -315,12 +338,15 @@ export class Agent {
   addToBucket(usage: Usage, provider: string, model: string): void {
     let bucket = this.usageBuckets.find((b) => b.provider === provider && b.model === model);
     if (!bucket) {
-      bucket = { provider, model, prompt: 0, completion: 0, reasoning: 0 };
+      bucket = { provider, model, prompt: 0, completion: 0, reasoning: 0, cacheCreation: 0, cacheRead: 0 };
       this.usageBuckets.push(bucket);
     }
     bucket.prompt += usage.prompt_tokens ?? 0;
     bucket.completion += usage.completion_tokens ?? 0;
     bucket.reasoning += usage.completion_tokens_details?.reasoning_tokens ?? 0;
+    const cache = cacheUsageParts(usage);
+    if (cache.creationSeen) bucket.cacheCreation = (bucket.cacheCreation ?? 0) + cache.creation;
+    if (cache.readSeen) bucket.cacheRead = (bucket.cacheRead ?? 0) + cache.read;
   }
 
   /**
@@ -334,6 +360,15 @@ export class Agent {
     this.totalPrompt += usage.prompt_tokens ?? 0;
     this.totalCompletion += usage.completion_tokens ?? 0;
     this.totalReasoning += usage.completion_tokens_details?.reasoning_tokens ?? 0;
+    const cache = cacheUsageParts(usage);
+    if (cache.creationSeen) {
+      this.totalCacheCreation += cache.creation;
+      this.cacheCreationSeen = true;
+    }
+    if (cache.readSeen) {
+      this.totalCacheRead += cache.read;
+      this.cacheReadSeen = true;
+    }
     this.addToBucket(usage, this.opt.cfg.providerName, this.opt.cfg.model);
   }
 
@@ -608,12 +643,7 @@ export class Agent {
     }
 
     // 压缩请求本身也花 token：计入累计，否则 /cost 与真实账单对不上（P0-2）。
-    if (res.usage) {
-      this.totalPrompt += res.usage.prompt_tokens ?? 0;
-      this.totalCompletion += res.usage.completion_tokens ?? 0;
-      this.totalReasoning += res.usage.completion_tokens_details?.reasoning_tokens ?? 0;
-      this.addToBucket(res.usage, this.opt.cfg.providerName, this.opt.cfg.model);
-    }
+    if (res.usage) this.recordUsage(res.usage);
 
     // v0.2 记忆激活 §7.6.1 T2：压缩前捕获摘要 —— 历史即将被替换，
     // 这轮对话的信息价值最高（决策/踩坑很可能只在这一轮里出现过）。

@@ -300,6 +300,9 @@ export interface UsageBucket {
   prompt: number;
   completion: number;
   reasoning: number;
+  /** 会话内该桶的 cache write；JSON 对外仍只列 prompt/completion/thinking。 */
+  cacheCreation?: number;
+  cacheRead?: number;
 }
 
 export interface TurnStats {
@@ -324,6 +327,12 @@ export interface TurnStats {
   contextUsage: number;
   /** 本轮因分类而发生的档位切换，无则 null。 */
   tierSwitch: { from: ModelTier; to: ModelTier; reason: string; degraded?: string } | null;
+  /** 本轮 cache write（未收到字段则为 0，是否出现过见 cacheFieldsSeen）。 */
+  cacheCreationTokens: number;
+  /** 本轮 cache read。 */
+  cacheReadTokens: number;
+  /** 本轮是否收到过任何 cache 字段（含值为 0）。 */
+  cacheFieldsSeen: boolean;
   /**
    * #64：本轮被 UserPromptSubmit hook 阻断（用户策略拒绝这条输入）。
    *
@@ -346,7 +355,16 @@ export interface AgentHost {
   readonly io: AgentIO;
   readonly stats: TurnStats | null;
   readonly toolFailureStreak: number;
-  readonly cumulative: { prompt: number; completion: number; reasoning: number };
+  readonly cumulative: {
+    prompt: number;
+    completion: number;
+    reasoning: number;
+    cacheCreation: number;
+    cacheRead: number;
+    cacheFieldsSeen: boolean;
+    cacheCreationSeen: boolean;
+    cacheReadSeen: boolean;
+  };
   usageByModel(): UsageBucket[];
   readonly historyLength: number;
   readonly lastCompactionInfo: { beforeTokens: number; afterTokens: number } | null;

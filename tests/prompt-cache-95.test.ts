@@ -610,6 +610,7 @@ describe("#95 /cost 与 /context 展示", () => {
       messages: [{ role: "system" }, { role: "user" }],
       usageByModel: () => [] as UsageBucket[],
       lastStats: last,
+      stats: last,
       lastCompactionInfo: null,
       toolSpecsFor: () => [],
       activeNestedAgents: [],
@@ -648,15 +649,16 @@ describe("#95 /cost 与 /context 展示", () => {
 
   test("#95 从未收到 cache 字段时三行都是「无」，不是 0 tokens / 0.0%", async () => {
     const h = stubAgent({
-      cum: { prompt: 20, completion: 2, reasoning: 0, cacheFieldsSeen: false },
+      cum: { prompt: 20, completion: 2, reasoning: 1, cacheFieldsSeen: false },
     });
     await handleSessionCommands("cost", "", [], h.ctx);
     const text = stripAnsi(h.out());
-    expect(text).toMatch(/cache write\s+无/);
-    expect(text).toMatch(/cache read\s+无/);
-    expect(text).toMatch(/cache hit\s+无/);
-    expect(text).not.toContain("0 tokens");
-    expect(text).not.toContain("0.0%");
+    const cacheSection = text.slice(text.indexOf("cache write"), text.indexOf("context"));
+    expect(cacheSection).toMatch(/cache write\s+无/);
+    expect(cacheSection).toMatch(/cache read\s+无/);
+    expect(cacheSection).toMatch(/cache hit\s+无/);
+    expect(cacheSection).not.toContain("0 tokens");
+    expect(cacheSection).not.toContain("0.0%");
   });
 
   test("#95 后端回过且值为 0 时可以显示 0 tokens / 0.0%", async () => {
@@ -756,6 +758,7 @@ describe("#95 /cost 与 /context 展示", () => {
         { provider: "p2", model: "m2", prompt: 4, completion: 1, reasoning: 0, cacheCreation: 1, cacheRead: 1 },
       ],
       lastStats: null,
+      stats: null,
       lastCompactionInfo: null,
       toolSpecsFor: () => [],
       activeNestedAgents: [],

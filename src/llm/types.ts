@@ -67,6 +67,12 @@ export interface Usage {
   completion_tokens: number;
   total_tokens: number;
   completion_tokens_details?: { reasoning_tokens?: number };
+  /** Anthropic prompt cache write；缺省表示本响应未回该字段。 */
+  cache_creation_input_tokens?: number;
+  /** Anthropic prompt cache read，或 OpenAI prompt_tokens_details.cached_tokens。 */
+  cache_read_input_tokens?: number;
+  /** OpenAI 兼容用量里已存在的明细；没有就不造。 */
+  prompt_tokens_details?: { cached_tokens?: number };
 }
 
 export interface StreamResult {

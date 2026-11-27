@@ -453,6 +453,11 @@ export interface Config {
   theme: string;
   showReasoning: boolean;
   /**
+   * 提示词缓存（issue #95）。默认 true；false 时不打断点，请求行为与今日相同。
+   * 缺省按开启处理（`promptCache !== false`）。
+   */
+  promptCache?: boolean;
+  /**
    * 工具调用详情显示。false（默认）= 交互模式下紧凑单行（. / .. / ... 动画，下一个调用覆盖）；
    * true = 旧版 header + 缩进结果块。
    */

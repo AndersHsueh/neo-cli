@@ -693,6 +693,7 @@ export function loadConfig(overrides: Partial<Config> = {}, options: LoadConfigO
     parallelToolCalls: resolveParallelToolCalls(raw["parallel_tool_calls"]),
     theme: str(raw["theme"], str(dflt["theme"], "matrix")),
     showReasoning: bool(raw["show_reasoning"], bool(dflt["show_reasoning"], true)),
+    promptCache: bool(raw["prompt_cache"], bool(dflt["prompt_cache"], true)),
     // 兼容用户手写的连字符键名；项目惯例仍是 snake_case。
     toolcallInfoDetails: bool(
       raw["toolcall_info_details"],
