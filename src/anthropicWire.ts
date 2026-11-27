@@ -17,12 +17,17 @@ export {
   toAnthropicTools,
   buildAnthropicBody,
   mapStopReason,
+  mapUsage,
+  parseAnthropicMessage,
   isRetryableAnthropicError,
 } from "@neo/core-compat/compat/v1";
 export type { AnthropicMessage, AnthropicBodyInput, RawUsage } from "@neo/core-compat/compat/v1";
 
-/** 宿主包装：保留 vendor 的 prompt_tokens 合计，同时透出 cache 读写字段。 */
-export function mapUsage(u: RawUsage): Usage {
+/**
+ * 宿主包装（issue #95）：保留 vendor mapUsage 的 prompt_tokens 合计，
+ * 同时透出 cache 读写。不替换再导出的 vendor 原函数（K45b 身份校验）。
+ */
+export function mapUsageWithCache(u: RawUsage): Usage {
   const base = mapUsageCore(u);
   const out: Usage = { ...base };
   if (typeof u.cache_creation_input_tokens === "number") {
@@ -34,12 +39,12 @@ export function mapUsage(u: RawUsage): Usage {
   return out;
 }
 
-/** 非流式路径走 vendor 解析后，再用包装过的 mapUsage 补上 cache 字段。 */
-export function parseAnthropicMessage(json: Record<string, unknown>): StreamResult {
+/** 非流式路径走 vendor 解析后，再用包装补上 cache 字段。 */
+export function parseAnthropicMessageWithCache(json: Record<string, unknown>): StreamResult {
   const result = parseAnthropicMessageCore(json);
   const raw = json["usage"];
   if (result.usage && raw && typeof raw === "object") {
-    result.usage = mapUsage(raw as RawUsage);
+    result.usage = mapUsageWithCache(raw as RawUsage);
   }
   return result;
 }
@@ -213,7 +218,7 @@ export class AnthropicStreamAccumulator {
       reasoning: this.reasoning,
       toolCalls,
       finishReason: this.finishReason,
-      usage: this.usage ? mapUsage(this.usage) : null,
+      usage: this.usage ? mapUsageWithCache(this.usage) : null,
       raw: this.lastRaw,
       ...(thinkingBlocks.length > 0 ? { thinkingBlocks } : {}),
     };

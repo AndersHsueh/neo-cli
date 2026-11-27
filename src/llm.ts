@@ -21,7 +21,7 @@ import {
   AnthropicStreamAccumulator,
   buildAnthropicBody,
   isRetryableAnthropicError,
-  parseAnthropicMessage,
+  parseAnthropicMessageWithCache,
 } from "./anthropicWire.ts";
 import { applyCacheControl, enrichOpenAICacheUsage } from "./prompt/cacheControl.ts";
 
@@ -309,7 +309,7 @@ async function chatOnce(
 /** 非流式响应 → StreamResult（OpenAI / Anthropic 两种协议）。 */
 async function parseChatResponse(ep: Endpoint, res: Response): Promise<StreamResult> {
   if (ep.proto === "anthropic") {
-    return parseAnthropicMessage((await res.json()) as Record<string, unknown>);
+    return parseAnthropicMessageWithCache((await res.json()) as Record<string, unknown>);
   }
 
   const json = (await res.json()) as {

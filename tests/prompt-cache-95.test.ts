@@ -16,8 +16,8 @@ import type { TurnStats, UsageBucket } from "../src/agent/types.ts";
 import {
   AnthropicStreamAccumulator,
   buildAnthropicBody,
-  mapUsage,
-  parseAnthropicMessage,
+  mapUsageWithCache,
+  parseAnthropicMessageWithCache,
 } from "../src/anthropicWire.ts";
 import { handleSessionCommands } from "../src/cli/commandSession.ts";
 import type { CommandContext } from "../src/cli/commandContext.ts";
@@ -432,7 +432,7 @@ describe("#95 bodyFor 接线与协议隔离", () => {
 
 describe("#95 用量包装与命中率口径", () => {
   test("#95 宿主包装 mapUsage：保留 prompt_tokens 合计并透出 cache 读写", () => {
-    const u = mapUsage({
+    const u = mapUsageWithCache({
       input_tokens: 10,
       cache_read_input_tokens: 100,
       cache_creation_input_tokens: 5,
@@ -447,14 +447,14 @@ describe("#95 用量包装与命中率口径", () => {
   });
 
   test("#95 mapUsage 未收到 cache 字段时不补 0", () => {
-    const u = mapUsage({ input_tokens: 10, output_tokens: 2 });
+    const u = mapUsageWithCache({ input_tokens: 10, output_tokens: 2 });
     expect(u.prompt_tokens).toBe(10);
     expect(u.cache_creation_input_tokens).toBeUndefined();
     expect(u.cache_read_input_tokens).toBeUndefined();
   });
 
   test("#95 parseAnthropicMessage 与流式累积都透出 cache 字段（含值为 0）", () => {
-    const parsed = parseAnthropicMessage({
+    const parsed = parseAnthropicMessageWithCache({
       content: [{ type: "text", text: "答" }],
       stop_reason: "end_turn",
       usage: { input_tokens: 4, output_tokens: 1, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 },
